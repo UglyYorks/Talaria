@@ -1,0 +1,106 @@
+#import "DatabaseMigrator.h"
+
+static NSInteger TLDatabaseSchemaVersion(TLSQLiteConnection *connection, NSError **error) {
+  TLSQLiteStatement *statement = [connection prepareSQL:"PRAGMA user_version" error:error];
+  if (!statement) {
+    return -1;
+  }
+
+  int result = [statement step];
+  if (result == SQLITE_ROW) {
+    return sqlite3_column_int(statement.handle, 0);
+  }
+
+  [connection setCurrentError:error];
+  return -1;
+}
+
+static BOOL TLDatabaseSetSchemaVersion(TLSQLiteConnection *connection, NSInteger version, NSError **error) {
+  NSString *sql = [NSString stringWithFormat:@"PRAGMA user_version = %ld", (long)version];
+  return [connection executeSQL:sql.UTF8String error:error];
+}
+
+BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, NSError **error) {
+  NSInteger version = TLDatabaseSchemaVersion(connection, error);
+  if (version < 0) {
+    return NO;
+  }
+
+  if (version > targetVersion) {
+    [connection setError:error message:@"Database was created by a newer version of Talaria."];
+    return NO;
+  }
+
+  if (version == targetVersion) {
+    return YES;
+  }
+
+  if (version < 1) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql =
+        "CREATE TABLE IF NOT EXISTS chats ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  title TEXT NOT NULL,"
+        "  model TEXT NOT NULL,"
+        "  created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+        "  updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+        ");"
+        "CREATE TABLE IF NOT EXISTS messages ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,"
+        "  role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant')),"
+        "  content TEXT NOT NULL,"
+        "  thinking TEXT,"
+        "  created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+        ");"
+        "CREATE TABLE IF NOT EXISTS settings ("
+        "  key TEXT PRIMARY KEY,"
+        "  value TEXT NOT NULL"
+        ");";
+
+      return [connection executeSQL:sql error:transactionError] &&
+        TLDatabaseSetSchemaVersion(connection, 1, transactionError);
+    } error:error];
+    if (!migrated) {
+      return NO;
+    }
+    version = 1;
+  }
+
+  if (version < 2) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql = "ALTER TABLE chats ADD COLUMN icon TEXT NOT NULL DEFAULT ''";
+      return [connection executeSQL:sql error:transactionError] &&
+        TLDatabaseSetSchemaVersion(connection, 2, transactionError);
+    } error:error];
+    if (!migrated) {
+      return NO;
+    }
+    version = 2;
+  }
+
+  if (version < 3) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql =
+        "CREATE TABLE IF NOT EXISTS agents ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  name TEXT NOT NULL,"
+        "  guest_kind TEXT NOT NULL CHECK (guest_kind IN ('linux')),"
+        "  runtime TEXT NOT NULL CHECK (runtime IN ('python')),"
+        "  status TEXT NOT NULL CHECK (status IN ('stopped', 'starting', 'running', 'stopping', 'error')),"
+        "  vm_directory TEXT NOT NULL,"
+        "  last_error TEXT,"
+        "  created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+        "  updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+        ");";
+      return [connection executeSQL:sql error:transactionError] &&
+        TLDatabaseSetSchemaVersion(connection, 3, transactionError);
+    } error:error];
+    if (!migrated) {
+      return NO;
+    }
+    version = 3;
+  }
+
+  return version == targetVersion;
+}

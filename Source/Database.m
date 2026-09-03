@@ -1,0 +1,757 @@
+#import "Database.h"
+#import "DatabaseMigrator.h"
+#import "SQLiteConnection.h"
+
+static NSInteger const TLDatabaseSchemaVersion = 3;
+
+typedef BOOL (^TLDatabaseTransactionBlock)(NSError **error);
+
+static void TLSetDatabaseError(NSError **error, NSString *message) {
+  TLSetSQLiteError(error, message);
+}
+
+static NSString *TLStringFromColumn(sqlite3_stmt *statement, int column) {
+  const unsigned char *text = sqlite3_column_text(statement, column);
+  if (!text) {
+    return @"";
+  }
+
+  return [NSString stringWithUTF8String:(const char *)text] ?: @"";
+}
+
+static NSString *TLNullableStringFromColumn(sqlite3_stmt *statement, int column) {
+  if (sqlite3_column_type(statement, column) == SQLITE_NULL) {
+    return nil;
+  }
+
+  return TLStringFromColumn(statement, column);
+}
+
+static NSString *TLTrimmedString(NSString *value) {
+  return [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+static NSString *TLNonBlank(NSString *value, NSString *fallback) {
+  NSString *trimmed = TLTrimmedString(value);
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+
+static NSString *TLTitleFromMessage(NSString *content) {
+  NSArray<NSString *> *parts = [content componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSMutableArray<NSString *> *words = [NSMutableArray array];
+
+  for (NSString *part in parts) {
+    if (part.length > 0) {
+      [words addObject:part];
+    }
+  }
+
+  NSString *title = [[words componentsJoinedByString:@" "] substringToIndex:MIN((NSUInteger)48, [words componentsJoinedByString:@" "].length)];
+  return title.length > 0 ? title : @"New chat";
+}
+
+@interface TLDatabase ()
+
+@property (nonatomic, strong) TLSQLiteConnection *sqliteConnection;
+
+- (BOOL)executeSQL:(const char *)sql error:(NSError **)error;
+- (BOOL)performTransaction:(TLDatabaseTransactionBlock)block error:(NSError **)error;
+
+@end
+
+@implementation TLDatabase
+
++ (NSURL *)defaultDatabaseURL {
+  NSURL *supportURL = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
+                                                            inDomains:NSUserDomainMask] firstObject];
+  return [[supportURL URLByAppendingPathComponent:@"com.talaria.chat" isDirectory:YES]
+    URLByAppendingPathComponent:@"talaria.sqlite3"];
+}
+
+- (instancetype)initWithURL:(NSURL *)url error:(NSError **)error {
+  self = [super init];
+  if (!self) {
+    return nil;
+  }
+
+  NSURL *directoryURL = [url URLByDeletingLastPathComponent];
+  if (![NSFileManager.defaultManager createDirectoryAtURL:directoryURL
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:error]) {
+    return nil;
+  }
+
+  _sqliteConnection = [TLSQLiteConnection openURL:url error:error];
+  if (!_sqliteConnection) {
+    return nil;
+  }
+
+  if (![self initializeSchema:error]) {
+    return nil;
+  }
+
+  return self;
+}
+
+- (TLAppSettings *)appSettings:(NSError **)error {
+  @synchronized (self) {
+    NSString *rememberValue = [self settingForKey:@"rememberOpenRouterToken" error:error] ?: @"false";
+    BOOL remember = [rememberValue isEqualToString:@"true"];
+
+    TLAppSettings *settings = [[TLAppSettings alloc] init];
+    settings.rememberOpenRouterToken = remember;
+    settings.openRouterToken = remember ? ([self settingForKey:@"openRouterToken" error:error] ?: @"") : @"";
+    settings.selectedModel = [self settingForKey:@"selectedModel" error:error] ?: TLDefaultModelID;
+    settings.supportingModel = [self settingForKey:@"supportingModel" error:error] ?: TLDefaultSupportingModelID;
+    settings.theme = TLThemePreferenceFromString([self settingForKey:@"theme" error:error] ?: @"system");
+    return settings;
+  }
+}
+
+- (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error {
+  @synchronized (self) {
+    NSString *selectedModel = TLNonBlank(settings.selectedModel, TLDefaultModelID);
+    NSString *supportingModel = TLNonBlank(settings.supportingModel, TLDefaultSupportingModelID);
+    NSString *theme = TLStringFromThemePreference(settings.theme);
+
+    BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
+      if (![self setSetting:@"rememberOpenRouterToken" value:settings.rememberOpenRouterToken ? @"true" : @"false" error:transactionError]) {
+        return NO;
+      }
+      if (![self setSetting:@"selectedModel" value:selectedModel error:transactionError]) {
+        return NO;
+      }
+      if (![self setSetting:@"supportingModel" value:supportingModel error:transactionError]) {
+        return NO;
+      }
+      if (![self setSetting:@"theme" value:theme error:transactionError]) {
+        return NO;
+      }
+      return [self setSetting:@"openRouterToken"
+                        value:settings.rememberOpenRouterToken ? TLTrimmedString(settings.openRouterToken) : @""
+                        error:transactionError];
+    } error:error];
+    if (!saved) {
+      return nil;
+    }
+
+    TLAppSettings *savedSettings = [settings copy];
+    savedSettings.selectedModel = selectedModel;
+    savedSettings.supportingModel = supportingModel;
+    savedSettings.theme = TLThemePreferenceFromString(theme);
+    return savedSettings;
+  }
+}
+
+- (NSArray<TLChatSummary *> *)listChats:(NSError **)error {
+  @synchronized (self) {
+    const char *sql =
+      "SELECT id, title, model, icon, created_at, updated_at "
+      "FROM chats "
+      "ORDER BY datetime(updated_at) DESC, id DESC";
+
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+    if (!statement) {
+      return nil;
+    }
+
+    NSMutableArray<TLChatSummary *> *chats = [NSMutableArray array];
+    int result = SQLITE_ROW;
+
+    while ((result = [statement step]) == SQLITE_ROW) {
+      [chats addObject:[self chatSummaryFromStatement:statement.handle]];
+    }
+
+    if (result != SQLITE_DONE) {
+      [self.sqliteConnection setCurrentError:error];
+      return nil;
+    }
+
+    return chats;
+  }
+}
+
+- (TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error {
+  @synchronized (self) {
+    __block sqlite3_int64 chatID = 0;
+    BOOL created = [self performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql =
+        "INSERT INTO chats (title, model, created_at, updated_at) "
+        "VALUES ('New chat', ?1, datetime('now'), datetime('now'))";
+
+      TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
+      if (!statement) {
+        return NO;
+      }
+
+      [statement bindText:TLNonBlank(model, TLDefaultModelID) atIndex:1];
+      if (![statement stepDone:transactionError]) {
+        return NO;
+      }
+
+      chatID = [self.sqliteConnection lastInsertRowID];
+      return YES;
+    } error:error];
+    if (!created) {
+      return nil;
+    }
+
+    return [self loadChatWithID:chatID error:error];
+  }
+}
+
+- (TLChatRecord *)chatWithID:(NSInteger)chatID error:(NSError **)error {
+  @synchronized (self) {
+    return [self loadChatWithID:chatID error:error];
+  }
+}
+
+- (TLChatSummary *)saveChatTitle:(NSString *)title chatID:(NSInteger)chatID error:(NSError **)error {
+  @synchronized (self) {
+    NSString *trimmedTitle = TLTrimmedString(title);
+    if (trimmedTitle.length == 0) {
+      TLSetDatabaseError(error, @"Chat title cannot be empty.");
+      return nil;
+    }
+
+    BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql = "UPDATE chats SET title = ?1, updated_at = datetime('now') WHERE id = ?2";
+      TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
+      if (!statement) {
+        return NO;
+      }
+
+      [statement bindText:trimmedTitle atIndex:1];
+      [statement bindInt64:chatID atIndex:2];
+      return [statement stepDone:transactionError];
+    } error:error];
+    if (!saved) {
+      return nil;
+    }
+
+    return [self loadChatSummaryWithID:chatID error:error];
+  }
+}
+
+- (TLChatSummary *)saveChatIcon:(NSString *)icon chatID:(NSInteger)chatID error:(NSError **)error {
+  @synchronized (self) {
+    NSString *trimmedIcon = TLTrimmedString(icon);
+    if (trimmedIcon.length == 0) {
+      TLSetDatabaseError(error, @"Chat icon cannot be empty.");
+      return nil;
+    }
+
+    BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql = "UPDATE chats SET icon = ?1 WHERE id = ?2";
+      TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
+      if (!statement) {
+        return NO;
+      }
+
+      [statement bindText:trimmedIcon atIndex:1];
+      [statement bindInt64:chatID atIndex:2];
+      return [statement stepDone:transactionError];
+    } error:error];
+    if (!saved) {
+      return nil;
+    }
+
+    return [self loadChatSummaryWithID:chatID error:error];
+  }
+}
+
+- (TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error {
+  @synchronized (self) {
+    if (![self isValidRole:message.role]) {
+      TLSetDatabaseError(error, @"Messages must use system, user, or assistant roles.");
+      return nil;
+    }
+
+    __block TLStoredChatMessage *savedMessage = nil;
+    BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql =
+        "INSERT INTO messages (chat_id, role, content, thinking, created_at) "
+        "VALUES (?1, ?2, ?3, ?4, datetime('now'))";
+
+      TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
+      if (!statement) {
+        return NO;
+      }
+
+      [statement bindInt64:chatID atIndex:1];
+      [statement bindText:message.role atIndex:2];
+      [statement bindText:message.content atIndex:3];
+
+      if (message.thinking.length > 0) {
+        [statement bindText:message.thinking atIndex:4];
+      } else {
+        [statement bindNullAtIndex:4];
+      }
+
+      if (![statement stepDone:transactionError]) {
+        return NO;
+      }
+
+      sqlite3_int64 messageID = [self.sqliteConnection lastInsertRowID];
+      if ([message.role isEqualToString:TLRoleUser]) {
+        if (![self updateTitleForUserMessage:message.content chatID:chatID error:transactionError]) {
+          return NO;
+        }
+      } else if (![self touchChatWithID:chatID error:transactionError]) {
+        return NO;
+      }
+
+      savedMessage = [self loadMessageWithID:messageID error:transactionError];
+      return savedMessage != nil;
+    } error:error];
+    if (!saved) {
+      return nil;
+    }
+
+    return savedMessage;
+  }
+}
+
+- (BOOL)deleteMessageWithID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
+  @synchronized (self) {
+    return [self performTransaction:^BOOL(NSError **transactionError) {
+      TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+        "DELETE FROM messages WHERE id = ?1 AND chat_id = ?2 AND role IN ('user', 'assistant')"
+        error:transactionError];
+      if (!statement) { return NO; }
+      [statement bindInt64:messageID atIndex:1];
+      [statement bindInt64:chatID atIndex:2];
+      if (![statement stepDone:transactionError]) { return NO; }
+      if (sqlite3_changes(self.sqliteConnection.handle) != 1) {
+        TLSetDatabaseError(transactionError, @"Message was not found in this chat.");
+        return NO;
+      }
+      return [self touchChatWithID:chatID error:transactionError];
+    } error:error];
+  }
+}
+
+- (TLChatRecord *)clearChatWithID:(NSInteger)chatID error:(NSError **)error {
+  @synchronized (self) {
+    BOOL cleared = [self performTransaction:^BOOL(NSError **transactionError) {
+      TLSQLiteStatement *deleteStatement = [self.sqliteConnection prepareSQL:"DELETE FROM messages WHERE chat_id = ?1" error:transactionError];
+      if (!deleteStatement) {
+        return NO;
+      }
+      [deleteStatement bindInt64:chatID atIndex:1];
+      BOOL deleted = [deleteStatement stepDone:transactionError];
+
+      if (!deleted) {
+        return NO;
+      }
+
+      const char *sql = "UPDATE chats SET title = 'New chat', icon = '', updated_at = datetime('now') WHERE id = ?1";
+      TLSQLiteStatement *updateStatement = [self.sqliteConnection prepareSQL:sql error:transactionError];
+      if (!updateStatement) {
+        return NO;
+      }
+      [updateStatement bindInt64:chatID atIndex:1];
+      return [updateStatement stepDone:transactionError];
+    } error:error];
+    if (!cleared) {
+      return nil;
+    }
+
+    return [self loadChatWithID:chatID error:error];
+  }
+}
+
+- (BOOL)deleteChatWithID:(NSInteger)chatID error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM chats WHERE id = ?1" error:error];
+    if (!statement) {
+      return NO;
+    }
+    [statement bindInt64:chatID atIndex:1];
+    return [statement stepDone:error];
+  }
+}
+
+- (NSArray<TLAgentRecord *> *)listAgents:(NSError **)error {
+  @synchronized (self) {
+    const char *sql =
+      "SELECT id, name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at "
+      "FROM agents "
+      "ORDER BY id ASC";
+
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+    if (!statement) {
+      return nil;
+    }
+
+    NSMutableArray<TLAgentRecord *> *agents = [NSMutableArray array];
+    int result = SQLITE_ROW;
+
+    while ((result = [statement step]) == SQLITE_ROW) {
+      [agents addObject:[self agentFromStatement:statement.handle]];
+    }
+
+    if (result != SQLITE_DONE) {
+      [self.sqliteConnection setCurrentError:error];
+      return nil;
+    }
+
+    return agents;
+  }
+}
+
+- (TLAgentRecord *)createAgentWithName:(NSString *)name
+                             guestKind:(NSString *)guestKind
+                               runtime:(NSString *)runtime
+                           vmDirectory:(NSString *)vmDirectory
+                                 error:(NSError **)error {
+  @synchronized (self) {
+    NSString *agentName = TLNonBlank(name, @"Agent");
+    NSString *agentGuestKind = TLNonBlank(guestKind, TLAgentGuestKindLinux);
+    NSString *agentRuntime = TLNonBlank(runtime, TLAgentRuntimePython);
+    NSString *agentVMDirectory = TLNonBlank(vmDirectory, @"");
+
+    if (![self isValidAgentGuestKind:agentGuestKind]) {
+      TLSetDatabaseError(error, @"Agent guest kind is not supported.");
+      return nil;
+    }
+    if (![self isValidAgentRuntime:agentRuntime]) {
+      TLSetDatabaseError(error, @"Agent runtime is not supported.");
+      return nil;
+    }
+
+    __block sqlite3_int64 agentID = 0;
+    BOOL created = [self performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql =
+        "INSERT INTO agents (name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, NULL, datetime('now'), datetime('now'))";
+
+      TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
+      if (!statement) {
+        return NO;
+      }
+
+      [statement bindText:agentName atIndex:1];
+      [statement bindText:agentGuestKind atIndex:2];
+      [statement bindText:agentRuntime atIndex:3];
+      [statement bindText:TLAgentStatusStopped atIndex:4];
+      [statement bindText:agentVMDirectory atIndex:5];
+      if (![statement stepDone:transactionError]) {
+        return NO;
+      }
+
+      agentID = [self.sqliteConnection lastInsertRowID];
+      return YES;
+    } error:error];
+    if (!created) {
+      return nil;
+    }
+
+    return [self loadAgentWithID:agentID error:error];
+  }
+}
+
+- (TLAgentRecord *)agentWithID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    return [self loadAgentWithID:agentID error:error];
+  }
+}
+
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID
+                              status:(NSString *)status
+                           lastError:(NSString *)lastError
+                               error:(NSError **)error {
+  @synchronized (self) {
+    NSString *agentStatus = TLNonBlank(status, TLAgentStatusStopped);
+    if (![self isValidAgentStatus:agentStatus]) {
+      TLSetDatabaseError(error, @"Agent status is not supported.");
+      return nil;
+    }
+
+    const char *sql =
+      "UPDATE agents "
+      "SET status = ?1, last_error = ?2, updated_at = datetime('now') "
+      "WHERE id = ?3";
+
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+    if (!statement) {
+      return nil;
+    }
+
+    [statement bindText:agentStatus atIndex:1];
+    if (lastError.length > 0) {
+      [statement bindText:lastError atIndex:2];
+    } else {
+      [statement bindNullAtIndex:2];
+    }
+    [statement bindInt64:agentID atIndex:3];
+
+    if (![statement stepDone:error]) {
+      return nil;
+    }
+
+    return [self loadAgentWithID:agentID error:error];
+  }
+}
+
+- (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM agents WHERE id = ?1" error:error];
+    if (!statement) {
+      return NO;
+    }
+    [statement bindInt64:agentID atIndex:1];
+    return [statement stepDone:error];
+  }
+}
+
+- (BOOL)initializeSchema:(NSError **)error {
+  if (![self executeSQL:"PRAGMA foreign_keys = ON" error:error]) {
+    return NO;
+  }
+
+  return TLDatabaseMigrate(self.sqliteConnection, TLDatabaseSchemaVersion, error);
+}
+
+- (TLChatRecord *)loadChatWithID:(NSInteger)chatID error:(NSError **)error {
+  const char *chatSQL = "SELECT id, title, model, icon, created_at, updated_at FROM chats WHERE id = ?1";
+
+  TLSQLiteStatement *chatStatement = [self.sqliteConnection prepareSQL:chatSQL error:error];
+  if (!chatStatement) {
+    return nil;
+  }
+
+  [chatStatement bindInt64:chatID atIndex:1];
+  int result = [chatStatement step];
+
+  if (result != SQLITE_ROW) {
+    TLSetDatabaseError(error, @"Chat was not found.");
+    return nil;
+  }
+
+  TLChatRecord *chat = [[TLChatRecord alloc] init];
+  TLChatSummary *summary = [self chatSummaryFromStatement:chatStatement.handle];
+  chat.chatID = summary.chatID;
+  chat.title = summary.title;
+  chat.icon = summary.icon;
+  chat.model = summary.model;
+  chat.createdAt = summary.createdAt;
+  chat.updatedAt = summary.updatedAt;
+
+  const char *messagesSQL =
+    "SELECT id, role, content, thinking, created_at "
+    "FROM messages "
+    "WHERE chat_id = ?1 "
+    "ORDER BY id ASC";
+
+  TLSQLiteStatement *messagesStatement = [self.sqliteConnection prepareSQL:messagesSQL error:error];
+  if (!messagesStatement) {
+    return nil;
+  }
+
+  [messagesStatement bindInt64:chatID atIndex:1];
+  NSMutableArray<TLStoredChatMessage *> *messages = [NSMutableArray array];
+
+  while ((result = [messagesStatement step]) == SQLITE_ROW) {
+    [messages addObject:[self storedMessageFromStatement:messagesStatement.handle]];
+  }
+
+  if (result != SQLITE_DONE) {
+    [self.sqliteConnection setCurrentError:error];
+    return nil;
+  }
+
+  chat.messages = messages;
+  return chat;
+}
+
+- (TLChatSummary *)loadChatSummaryWithID:(NSInteger)chatID error:(NSError **)error {
+  const char *sql = "SELECT id, title, model, icon, created_at, updated_at FROM chats WHERE id = ?1";
+
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+  if (!statement) {
+    return nil;
+  }
+
+  [statement bindInt64:chatID atIndex:1];
+  int result = [statement step];
+  if (result != SQLITE_ROW) {
+    TLSetDatabaseError(error, @"Chat was not found.");
+    return nil;
+  }
+
+  return [self chatSummaryFromStatement:statement.handle];
+}
+
+- (TLStoredChatMessage *)loadMessageWithID:(NSInteger)messageID error:(NSError **)error {
+  const char *sql = "SELECT id, role, content, thinking, created_at FROM messages WHERE id = ?1";
+
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+  if (!statement) {
+    return nil;
+  }
+
+  [statement bindInt64:messageID atIndex:1];
+  int result = [statement step];
+
+  if (result != SQLITE_ROW) {
+    TLSetDatabaseError(error, @"Message was not found.");
+    return nil;
+  }
+
+  TLStoredChatMessage *message = [self storedMessageFromStatement:statement.handle];
+  return message;
+}
+
+- (TLAgentRecord *)loadAgentWithID:(NSInteger)agentID error:(NSError **)error {
+  const char *sql =
+    "SELECT id, name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at "
+    "FROM agents "
+    "WHERE id = ?1";
+
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+  if (!statement) {
+    return nil;
+  }
+
+  [statement bindInt64:agentID atIndex:1];
+  int result = [statement step];
+
+  if (result != SQLITE_ROW) {
+    TLSetDatabaseError(error, @"Agent was not found.");
+    return nil;
+  }
+
+  return [self agentFromStatement:statement.handle];
+}
+
+- (TLAgentRecord *)agentFromStatement:(sqlite3_stmt *)statement {
+  TLAgentRecord *agent = [[TLAgentRecord alloc] init];
+  agent.agentID = sqlite3_column_int64(statement, 0);
+  agent.name = TLStringFromColumn(statement, 1);
+  agent.guestKind = TLStringFromColumn(statement, 2);
+  agent.runtime = TLStringFromColumn(statement, 3);
+  agent.status = TLStringFromColumn(statement, 4);
+  agent.vmDirectory = TLStringFromColumn(statement, 5);
+  agent.lastError = TLNullableStringFromColumn(statement, 6);
+  agent.createdAt = TLStringFromColumn(statement, 7);
+  agent.updatedAt = TLStringFromColumn(statement, 8);
+  return agent;
+}
+
+- (TLChatSummary *)chatSummaryFromStatement:(sqlite3_stmt *)statement {
+  TLChatSummary *summary = [[TLChatSummary alloc] init];
+  summary.chatID = sqlite3_column_int64(statement, 0);
+  summary.title = TLStringFromColumn(statement, 1);
+  summary.model = TLStringFromColumn(statement, 2);
+  summary.icon = TLStringFromColumn(statement, 3);
+  summary.createdAt = TLStringFromColumn(statement, 4);
+  summary.updatedAt = TLStringFromColumn(statement, 5);
+  return summary;
+}
+
+- (TLStoredChatMessage *)storedMessageFromStatement:(sqlite3_stmt *)statement {
+  TLStoredChatMessage *message = [[TLStoredChatMessage alloc] init];
+  message.messageID = sqlite3_column_int64(statement, 0);
+  message.role = TLStringFromColumn(statement, 1);
+  message.content = TLStringFromColumn(statement, 2);
+  message.thinking = TLNullableStringFromColumn(statement, 3);
+  message.createdAt = TLStringFromColumn(statement, 4);
+  return message;
+}
+
+- (NSString *)settingForKey:(NSString *)key error:(NSError **)error {
+  const char *sql = "SELECT value FROM settings WHERE key = ?1";
+
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+  if (!statement) {
+    return nil;
+  }
+
+  [statement bindText:key atIndex:1];
+  int result = [statement step];
+  NSString *value = nil;
+
+  if (result == SQLITE_ROW) {
+    value = [statement stringAtColumn:0];
+  } else if (result != SQLITE_DONE) {
+    [self.sqliteConnection setCurrentError:error];
+  }
+
+  return value;
+}
+
+- (BOOL)setSetting:(NSString *)key value:(NSString *)value error:(NSError **)error {
+  const char *sql =
+    "INSERT INTO settings (key, value) VALUES (?1, ?2) "
+    "ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+  if (!statement) {
+    return NO;
+  }
+
+  [statement bindText:key atIndex:1];
+  [statement bindText:value atIndex:2];
+  return [statement stepDone:error];
+}
+
+- (BOOL)updateTitleForUserMessage:(NSString *)content chatID:(NSInteger)chatID error:(NSError **)error {
+  const char *sql =
+    "UPDATE chats "
+    "SET title = CASE WHEN title = 'New chat' THEN ?1 ELSE title END, "
+    "    updated_at = datetime('now') "
+    "WHERE id = ?2";
+
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+  if (!statement) {
+    return NO;
+  }
+
+  [statement bindText:TLTitleFromMessage(content) atIndex:1];
+  [statement bindInt64:chatID atIndex:2];
+  return [statement stepDone:error];
+}
+
+- (BOOL)touchChatWithID:(NSInteger)chatID error:(NSError **)error {
+  const char *sql = "UPDATE chats SET updated_at = datetime('now') WHERE id = ?1";
+
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+  if (!statement) {
+    return NO;
+  }
+
+  [statement bindInt64:chatID atIndex:1];
+  return [statement stepDone:error];
+}
+
+- (BOOL)executeSQL:(const char *)sql error:(NSError **)error {
+  return [self.sqliteConnection executeSQL:sql error:error];
+}
+
+- (BOOL)performTransaction:(TLDatabaseTransactionBlock)block error:(NSError **)error {
+  return [self.sqliteConnection performTransaction:block error:error];
+}
+
+- (BOOL)isValidRole:(NSString *)role {
+  return [role isEqualToString:TLRoleSystem] || [role isEqualToString:TLRoleUser] || [role isEqualToString:TLRoleAssistant];
+}
+
+- (BOOL)isValidAgentGuestKind:(NSString *)guestKind {
+  return [guestKind isEqualToString:TLAgentGuestKindLinux];
+}
+
+- (BOOL)isValidAgentRuntime:(NSString *)runtime {
+  return [runtime isEqualToString:TLAgentRuntimePython];
+}
+
+- (BOOL)isValidAgentStatus:(NSString *)status {
+  return [status isEqualToString:TLAgentStatusStopped] ||
+    [status isEqualToString:TLAgentStatusStarting] ||
+    [status isEqualToString:TLAgentStatusRunning] ||
+    [status isEqualToString:TLAgentStatusStopping] ||
+    [status isEqualToString:TLAgentStatusError];
+}
+
+@end

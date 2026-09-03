@@ -1,0 +1,89 @@
+#!/bin/sh
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export PYTHONUNBUFFERED=1
+
+BB=/usr/bin/busybox
+AGENT_PORT=7047
+
+log() {
+  echo "talaria-init: $*" > /dev/kmsg 2>/dev/null || true
+  echo "talaria-init: $*"
+}
+
+mount_core_filesystems() {
+  $BB mount -t proc proc /proc 2>/dev/null || true
+  $BB mount -t sysfs sysfs /sys 2>/dev/null || true
+  $BB mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+  $BB mkdir -p /dev/pts /run /tmp /.modloop /workspace
+  $BB mount -t devpts devpts /dev/pts 2>/dev/null || true
+  $BB mount -t tmpfs -o mode=0755 tmpfs /run 2>/dev/null || true
+  $BB mount -t tmpfs -o mode=1777 tmpfs /tmp 2>/dev/null || true
+  $BB ln -sf /proc/self/fd /dev/fd
+  $BB ln -sf /proc/self/fd/0 /dev/stdin
+  $BB ln -sf /proc/self/fd/1 /dev/stdout
+  $BB ln -sf /proc/self/fd/2 /dev/stderr
+}
+
+load_base_modules() {
+  load_module loop
+  load_module squashfs
+  if [ -f /modloop-virt ]; then
+    if $BB mount -t squashfs -o loop,ro /modloop-virt /.modloop 2>/dev/null; then
+      log "mounted Alpine module loop"
+    else
+      log "could not mount Alpine module loop"
+    fi
+    if [ -d "/.modloop/modules/$($BB uname -r)" ]; then
+      $BB rm -rf /usr/lib/modules
+      $BB rm -rf /lib/modules
+      $BB ln -sf /.modloop/modules /lib/modules
+      $BB ln -sf /.modloop/modules /usr/lib/modules
+      log "linked Alpine module loop modules"
+    fi
+  fi
+
+  load_module virtio_pci
+  load_module virtio_net
+  load_module af_packet
+  load_module vsock
+  load_module vmw_vsock_virtio_transport
+  load_module virtiofs
+}
+
+load_module() {
+  module="$1"
+  if /usr/sbin/modprobe -q "$module" 2>/dev/null; then
+    log "loaded module $module"
+  else
+    log "could not load module $module"
+  fi
+}
+
+configure_network() {
+  $BB ip link set lo up 2>/dev/null || true
+  for device in /sys/class/net/*; do
+    iface="${device##*/}"
+    [ "$iface" = "lo" ] && continue
+    $BB ip link set dev "$iface" up 2>/dev/null || true
+    $BB udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -q -n 2>/dev/null && return
+  done
+}
+
+mount_workspace() {
+  $BB mount -t virtiofs talaria /workspace 2>/dev/null || true
+}
+
+mount_core_filesystems
+load_base_modules
+configure_network
+mount_workspace
+
+log "starting Python agent service on vsock port $AGENT_PORT"
+while true; do
+  /usr/bin/python3 /opt/talaria/openrouter_agent.py --serve-vsock "$AGENT_PORT"
+  log "Python agent service exited; restarting"
+  $BB sleep 1
+done

@@ -1,0 +1,41 @@
+#import <Foundation/Foundation.h>
+#import "OpenRouterClient.h"
+#import "TalariaModels.h"
+
+NS_ASSUME_NONNULL_BEGIN
+
+@class TLAgentVMService;
+
+typedef NS_ENUM(NSInteger, TLAgentStreamDeltaKind) {
+  TLAgentStreamDeltaKindContent = 0,
+  TLAgentStreamDeltaKindThinking,
+};
+
+typedef void (^TLAgentStreamDeltaHandler)(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text);
+typedef void (^TLAgentStreamCompletionHandler)(NSError *_Nullable error);
+typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLOpenRouterModel *> *_Nullable models, NSError *_Nullable error);
+
+@protocol TLAgentStreaming <NSObject>
+
+- (void)streamChatWithAgent:(TLAgentRecord *)agent
+                  requestID:(NSString *)requestID
+                      token:(NSString *)token
+                      model:(NSString *)model
+                   messages:(NSArray<TLChatMessage *> *)messages
+                      delta:(TLAgentStreamDeltaHandler)delta
+                 completion:(TLAgentStreamCompletionHandler)completion;
+
+- (void)fetchModelCatalogueWithAgent:(TLAgentRecord *)agent
+                                token:(NSString *)token
+                           completion:(TLAgentModelCatalogueHandler)completion;
+
+@end
+
+@interface TLBundledAgentClient : NSObject <TLAgentStreaming>
+
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)initWithVMService:(TLAgentVMService *)vmService NS_DESIGNATED_INITIALIZER;
+
+@end
+
+NS_ASSUME_NONNULL_END
