@@ -2384,12 +2384,40 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 - (void)updateToolbarImages;
 @end
 
-@implementation TLBrowserAddressInput
+@implementation TLGlassMessageInput
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   if (self) {
     self.backgroundView = [[TLGlassPaneView alloc] init];
+    [self applyGlassPalette];
+  }
+  return self;
+}
+
+- (void)setPalette:(TLThemePalette *)palette {
+  [super setPalette:palette];
+  [self applyGlassPalette];
+}
+
+- (void)applyGlassPalette {
+  TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
+  glass.palette = self.palette;
+  glass.cornerRadius = self.palette.messageInputCornerRadius;
+  self.sendButtonSize = self.palette.messageInputSendButtonSize;
+  self.sendButtonInset = self.palette.space4;
+  self.sendButton.solidSurfaceColor = self.palette.messageInputSendButtonSurface;
+  self.sendButton.disabledSolidSurfaceColor = self.palette.messageInputSendButtonDisabledSurface;
+  self.sendButton.contentTintColor = self.palette.messageInputSendButtonText;
+}
+
+@end
+
+@implementation TLBrowserAddressInput
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+  self = [super initWithFrame:frameRect];
+  if (self) {
     self.sendButton.hoverSurfaceOnly = YES;
     _backButton = [self toolbarButtonWithToolTip:@"Back"];
     _forwardButton = [self toolbarButtonWithToolTip:@"Forward"];
@@ -2455,6 +2483,9 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   [self.trailingStack setCustomSpacing:self.palette.space3 afterView:self.responseCountLabel];
   self.responseCountLabel.font = self.palette.smallFont;
   self.responseCountLabel.textColor = self.palette.controlText;
+  self.sendButtonSize = self.palette.composerButtonHeight - (self.palette.space3 * 2.0);
+  self.sendButtonInset = self.palette.space3;
+  self.sendButton.contentTintColor = self.palette.labelText;
   for (NSLayoutConstraint *constraint in self.buttonSizeConstraints) {
     constraint.constant = self.palette.browserToolbarButtonSize;
   }

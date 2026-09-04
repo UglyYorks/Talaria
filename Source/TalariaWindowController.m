@@ -1484,7 +1484,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (NSView *)buildMessageInput {
-  self.messageInput = [[TLMessageInput alloc] init];
+  self.messageInput = [[TLGlassMessageInput alloc] init];
   self.messageInput.palette = self.palette;
   self.promptTextView = self.messageInput.textView;
   self.promptTextView.delegate = self;

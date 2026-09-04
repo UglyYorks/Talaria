@@ -298,6 +298,67 @@ static void TestBrowserComposer(void) {
   [window close];
 }
 
+static void TestNativeMessageComposer(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 100)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  [window.contentView addSubview:input];
+  [NSLayoutConstraint activateConstraints:@[
+    [input.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor constant:30],
+    [input.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor constant:-30],
+    [input.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor constant:20],
+  ]];
+  [window.contentView layoutSubtreeIfNeeded];
+  Check([input.backgroundView isKindOfClass:TLGlassPaneView.class], @"message composer uses the native browser glass");
+  TLHoverIconButton *send = [input.sendButton valueForKey:@"button"];
+  Check(!send.hoverSurfaceOnly, @"message composer keeps its standalone send button");
+  NSSize iconSize = input.sendButton.image.size;
+  for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [window.contentView layoutSubtreeIfNeeded];
+    TLGlassPaneView *glass = (TLGlassPaneView *)input.backgroundView;
+    Check(glass.palette == input.palette, @"message composer reapplies its theme to native glass");
+    Check(glass.cornerRadius == input.palette.messageInputCornerRadius, @"message composer uses the browser pill radius");
+    Check([input.sendButton.solidSurfaceColor isEqual:input.palette.messageInputSendButtonSurface], @"message composer send button is white");
+    Check([input.sendButton.disabledSolidSurfaceColor isEqual:input.palette.messageInputSendButtonDisabledSurface],
+      @"message composer send button has a themed disabled surface");
+    if (input.palette.dark) {
+      Check([input.palette.messageInputSendButtonDisabledSurface isEqual:input.palette.gray600],
+        @"dark theme uses the darker disabled send surface");
+    }
+    Check([input.sendButton.contentTintColor isEqual:input.palette.messageInputSendButtonText], @"message composer send icon has dark contrast");
+    Check(NSWidth(input.sendButton.bounds) == input.palette.messageInputSendButtonSize &&
+          NSHeight(input.sendButton.bounds) == input.palette.messageInputSendButtonSize,
+      @"message composer uses the compact send button size");
+    CGFloat topMargin = NSHeight(input.bounds) - NSMaxY(input.sendButton.frame);
+    CGFloat rightMargin = NSWidth(input.bounds) - NSMaxX(input.sendButton.frame);
+    CGFloat bottomMargin = NSMinY(input.sendButton.frame);
+    Check(topMargin == rightMargin && rightMargin == bottomMargin,
+      @"single-line composer keeps equal top, right, and bottom send button margins");
+    CAShapeLayer *surface = [input.sendButton valueForKey:@"solidSurfaceLayer"];
+    CGRect circleBounds = CGPathGetBoundingBox(surface.path);
+    Check(NSWidth(circleBounds) == NSHeight(circleBounds) && NSWidth(circleBounds) == input.palette.messageInputSendButtonSize,
+      @"message composer send surface is an exact circle");
+    input.sendButton.enabled = NO;
+    Check(CGColorEqualToColor(surface.fillColor, TLCGColor(input.palette.messageInputSendButtonDisabledSurface)),
+      @"message composer send surface turns grey when disabled");
+    input.sendButton.enabled = YES;
+    Check(CGColorEqualToColor(surface.fillColor, TLCGColor(input.palette.messageInputSendButtonSurface)),
+      @"message composer send surface returns to white when enabled");
+    Check(NSEqualSizes(input.sendButton.image.size, iconSize), @"compact send button preserves the arrow icon size");
+    Check(CGColorGetAlpha(input.layer.backgroundColor) == 0 && input.layer.borderWidth == 0,
+      @"message composer leaves its native glass visible");
+  }
+  input.palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  input.sendButton.enabled = NO;
+  NSBitmapImageRep *preview = [input bitmapImageRepForCachingDisplayInRect:input.bounds];
+  [input cacheDisplayInRect:input.bounds toBitmapImageRep:preview];
+  [[preview representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+    writeToFile:@"/tmp/talaria-native-message-composer.png" atomically:YES];
+  [window close];
+}
+
 static void RunFor(NSTimeInterval duration) {
   [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:duration]];
 }
@@ -411,6 +472,7 @@ int main(void) {
     }
     TestURLSuggestions();
     TestBrowserChatPane();
+    TestNativeMessageComposer();
     TestBrowserComposer();
     TestBrowserHeightAnimation();
     TestCommandDescriptions();

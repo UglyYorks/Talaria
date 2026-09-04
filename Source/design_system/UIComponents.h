@@ -41,7 +41,10 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 @property (nonatomic) CGFloat outgoingTailHorizontalOffset;
 @end
 
-@interface TLBrowserAddressInput : TLMessageInput <NSTextViewDelegate>
+@interface TLGlassMessageInput : TLMessageInput
+@end
+
+@interface TLBrowserAddressInput : TLGlassMessageInput <NSTextViewDelegate>
 @property (nonatomic, readonly) BOOL hasUserDraft;
 @property (nonatomic, strong, readonly) NSButton *backButton;
 @property (nonatomic, strong, readonly) NSButton *forwardButton;
