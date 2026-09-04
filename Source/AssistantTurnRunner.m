@@ -92,6 +92,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
 
   __weak typeof(self) weakSelf = self;
   [self.agentOrchestrator streamChatWithDefaultAgentRequestID:requestID
+                                                    sessionID:chat.hermesSessionID
                                                         token:trimmedToken
                                                         model:trimmedModel
                                                      messages:requestMessages

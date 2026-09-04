@@ -27,6 +27,7 @@ static NSUInteger TLFailureCount = 0;
 @property (nonatomic, copy) NSArray<TLChatMessage *> *capturedMessages;
 @property (nonatomic, copy) NSString *capturedToken;
 @property (nonatomic, copy) NSString *capturedModel;
+@property (nonatomic, copy) NSString *capturedSessionID;
 @property (nonatomic, copy) NSString *contentDelta;
 @property (nonatomic, copy) NSString *thinkingDelta;
 @property (nonatomic, strong, nullable) NSError *streamError;
@@ -70,6 +71,28 @@ static NSUInteger TLFailureCount = 0;
   self.capturedAgent = [agent copy];
   self.capturedToken = token;
   completion(@[], nil);
+}
+
+- (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent
+                           requestID:(NSString *)requestID
+                           sessionID:(NSString *)sessionID
+                               token:(NSString *)token
+                               model:(NSString *)model
+                              prompt:(NSString *)prompt
+                               delta:(TLAgentStreamDeltaHandler)delta
+                          completion:(TLAgentStreamCompletionHandler)completion {
+  self.capturedAgent = [agent copy];
+  self.capturedToken = token;
+  self.capturedModel = model;
+  self.capturedSessionID = sessionID;
+  self.capturedMessages = @[[TLChatMessage messageWithRole:@"user" content:prompt thinking:nil]];
+  if (self.streamError) {
+    completion(self.streamError);
+    return;
+  }
+  delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
+  delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
+  completion(nil);
 }
 
 @end
@@ -321,6 +344,7 @@ static void TestDatabasePersistence(void) {
   settings.selectedModel = @"openai/gpt-4";
   settings.supportingModel = @"openrouter/auto";
   settings.theme = TLThemePreferenceDark;
+  settings.onboardingCompleted = YES;
   TLAppSettings *savedSettings = [database saveAppSettings:settings error:&error];
   TLAssertTrue(savedSettings != nil && error == nil, @"saves settings transactionally");
 
@@ -328,6 +352,7 @@ static void TestDatabasePersistence(void) {
   TLAssertEqualObjects(unrememberedSettings.openRouterToken, @"", @"does not reload an unremembered token");
   TLAssertEqualObjects(unrememberedSettings.selectedModel, @"openai/gpt-4", @"persists selected model");
   TLAssertTrue(unrememberedSettings.theme == TLThemePreferenceDark, @"persists theme");
+  TLAssertTrue(unrememberedSettings.onboardingCompleted, @"persists onboarding completion");
 
   settings.rememberOpenRouterToken = YES;
   settings.openRouterToken = @"  sk-test-token  ";
@@ -360,6 +385,7 @@ static void TestDatabasePersistence(void) {
   TLAssertTrue(chat != nil && chat.chatID > 0, @"creates a chat");
   TLAssertEqualObjects(chat.model, @"openai/gpt-4", @"persists chat model");
   TLAssertEqualObjects(chat.icon, @"", @"new chats start without a generated icon");
+  TLAssertTrue([chat.hermesSessionID hasPrefix:@"talaria_"], @"gives each chat a Hermes session id");
 
   TLChatSummary *titleSummary = [database saveChatTitle:@"  AWS Oregon Outage  " chatID:chat.chatID error:&error];
   TLAssertTrue(titleSummary != nil && error == nil, @"saves a chat title");
@@ -415,7 +441,7 @@ static void TestDatabasePersistence(void) {
                @"deleted chats cannot be loaded");
 
   database = nil;
-  TLAssertTrue(TLReadSQLiteUserVersion(url) == 3, @"sets database schema user_version");
+  TLAssertTrue(TLReadSQLiteUserVersion(url) == 4, @"sets database schema user_version");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
 
@@ -559,7 +585,7 @@ static void TestBrowserConversation(void) {
   TLAssertEqualObjects(conversation.title, @"Summarize this page", @"browser pane uses the generated chat title");
   TLAssertTrue([client.capturedMessages.firstObject.content containsString:@"untrusted reference material"], @"page context explicitly isolates untrusted text");
   TLAssertTrue([client.capturedMessages.firstObject.content containsString:@"Main article text"], @"main page text reaches model");
-  TLAssertEqualObjects(client.capturedMessages.lastObject.content, @"Summarize this page", @"prompt stays distinct from page context");
+  TLAssertTrue([client.capturedMessages.firstObject.content hasSuffix:@"Summarize this page"], @"Hermes input ends with the user's distinct prompt");
   TLChatSummary *summary = [database listChats:nil].firstObject;
   TLChatRecord *stored = [database chatWithID:summary.chatID error:nil];
   TLAssertTrue(stored.messages.count == 2, @"background conversation is saved for history");
@@ -569,7 +595,8 @@ static void TestBrowserConversation(void) {
   }];
   TLAssertTrue(conversation.responseCount == 2 && [database listChats:nil].count == 1, @"follow-ups reuse the conversation");
   TLAssertEqualObjects(conversation.title, @"Summarize this page", @"follow-up keeps the original conversation title");
-  TLAssertTrue(client.capturedMessages.count == 4 && !conversation.minimized, @"follow-up retains chat history and opens pane");
+  TLAssertTrue(client.capturedMessages.count == 1 && !conversation.minimized, @"follow-up relies on Hermes session history and opens pane");
+  TLAssertEqualObjects(client.capturedSessionID, summary.hermesSessionID, @"follow-up reuses the browser chat's Hermes session");
   TLAssertTrue([client.capturedMessages.firstObject.content containsString:@"Updated page"], @"each prompt uses a fresh page snapshot");
   [conversation sendPrompt:@"Read again" token:@"token" model:@"test/model" pageReader:^(void (^completion)(NSDictionary *, NSError *)) {
     completion(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Page changed"}]);
@@ -624,6 +651,7 @@ static void TestAssistantTurnRunner(void) {
   TLAssertEqualObjects(client.capturedAgent.runtime, TLAgentRuntimePython, @"uses a Python agent runtime for chat streaming");
   TLAssertEqualObjects(client.capturedToken, @"token", @"trims OpenRouter token before agent streaming");
   TLAssertEqualObjects(client.capturedModel, @"openai/gpt-4", @"trims model before streaming");
+  TLAssertEqualObjects(client.capturedSessionID, chat.hermesSessionID, @"streams the chat through its Hermes session");
   TLAssertTrue(client.capturedMessages.count == 1, @"builds request messages before appending local placeholders");
   TLAssertEqualObjects(client.capturedMessages[0].content, @"hello", @"trims next prompt before request");
   TLAssertTrue(messages.count == 2, @"adds user and assistant messages to visible storage");

@@ -2,7 +2,7 @@
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 
-static NSInteger const TLDatabaseSchemaVersion = 3;
+static NSInteger const TLDatabaseSchemaVersion = 4;
 
 typedef BOOL (^TLDatabaseTransactionBlock)(NSError **error);
 
@@ -105,6 +105,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
     settings.selectedModel = [self settingForKey:@"selectedModel" error:error] ?: TLDefaultModelID;
     settings.supportingModel = [self settingForKey:@"supportingModel" error:error] ?: TLDefaultSupportingModelID;
     settings.theme = TLThemePreferenceFromString([self settingForKey:@"theme" error:error] ?: @"system");
+    settings.onboardingCompleted = [[self settingForKey:@"onboardingCompleted" error:error] isEqualToString:@"true"];
     return settings;
   }
 }
@@ -128,6 +129,9 @@ static NSString *TLTitleFromMessage(NSString *content) {
       if (![self setSetting:@"theme" value:theme error:transactionError]) {
         return NO;
       }
+      if (![self setSetting:@"onboardingCompleted" value:settings.onboardingCompleted ? @"true" : @"false" error:transactionError]) {
+        return NO;
+      }
       return [self setSetting:@"openRouterToken"
                         value:settings.rememberOpenRouterToken ? TLTrimmedString(settings.openRouterToken) : @""
                         error:transactionError];
@@ -147,7 +151,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 - (NSArray<TLChatSummary *> *)listChats:(NSError **)error {
   @synchronized (self) {
     const char *sql =
-      "SELECT id, title, model, icon, created_at, updated_at "
+      "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id "
       "FROM chats "
       "ORDER BY datetime(updated_at) DESC, id DESC";
 
@@ -177,8 +181,8 @@ static NSString *TLTitleFromMessage(NSString *content) {
     __block sqlite3_int64 chatID = 0;
     BOOL created = [self performTransaction:^BOOL(NSError **transactionError) {
       const char *sql =
-        "INSERT INTO chats (title, model, created_at, updated_at) "
-        "VALUES ('New chat', ?1, datetime('now'), datetime('now'))";
+        "INSERT INTO chats (title, model, hermes_session_id, created_at, updated_at) "
+        "VALUES ('New chat', ?1, ?2, datetime('now'), datetime('now'))";
 
       TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
       if (!statement) {
@@ -186,6 +190,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
       }
 
       [statement bindText:TLNonBlank(model, TLDefaultModelID) atIndex:1];
+      [statement bindText:[@"talaria_" stringByAppendingString:NSUUID.UUID.UUIDString.lowercaseString] atIndex:2];
       if (![statement stepDone:transactionError]) {
         return NO;
       }
@@ -515,7 +520,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 }
 
 - (TLChatRecord *)loadChatWithID:(NSInteger)chatID error:(NSError **)error {
-  const char *chatSQL = "SELECT id, title, model, icon, created_at, updated_at FROM chats WHERE id = ?1";
+  const char *chatSQL = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id FROM chats WHERE id = ?1";
 
   TLSQLiteStatement *chatStatement = [self.sqliteConnection prepareSQL:chatSQL error:error];
   if (!chatStatement) {
@@ -538,6 +543,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
   chat.model = summary.model;
   chat.createdAt = summary.createdAt;
   chat.updatedAt = summary.updatedAt;
+  chat.hermesSessionID = summary.hermesSessionID;
 
   const char *messagesSQL =
     "SELECT id, role, content, thinking, created_at "
@@ -567,7 +573,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 }
 
 - (TLChatSummary *)loadChatSummaryWithID:(NSInteger)chatID error:(NSError **)error {
-  const char *sql = "SELECT id, title, model, icon, created_at, updated_at FROM chats WHERE id = ?1";
+  const char *sql = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id FROM chats WHERE id = ?1";
 
   TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
   if (!statement) {
@@ -648,6 +654,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
   summary.icon = TLStringFromColumn(statement, 3);
   summary.createdAt = TLStringFromColumn(statement, 4);
   summary.updatedAt = TLStringFromColumn(statement, 5);
+  summary.hermesSessionID = TLStringFromColumn(statement, 6);
   return summary;
 }
 

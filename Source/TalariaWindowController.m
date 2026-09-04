@@ -14,6 +14,7 @@
 #import "TLHistoryPanelController.h"
 #import "TLMainWindow.h"
 #import "TLOnboardingDemoWindowController.h"
+#import "TLHermesOnboardingWindowController.h"
 #import "TLWorkspaceTabsController.h"
 #import "UIComponents.h"
 #import "WorkspaceState.h"
@@ -208,6 +209,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListHeightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListBottomConstraint;
 @property (nonatomic, strong) TLOnboardingDemoWindowController *onboardingDemoWindowController;
+@property (nonatomic, strong) TLHermesOnboardingWindowController *hermesOnboardingWindowController;
 @property (nonatomic, strong, nullable) TLASCIIPlanetScreensaverView *screensaverView;
 @property (nonatomic) NSRect mainWindowFrameBeforeOnboarding;
 @property (nonatomic) BOOL hasMainWindowFrameBeforeOnboarding;
@@ -1528,6 +1530,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.errorMessage = @"";
   [self applyTheme];
   [self renderMessages];
+  if (!self.settings.onboardingCompleted) {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self showOnboardingDemoWindow:self]; });
+  }
 }
 
 - (void)hydrateWorkspaceTabsFromAppState {
@@ -2923,20 +2928,43 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)showOnboardingDemoWindow:(id)sender {
-  [self.onboardingDemoWindowController.window close];
-  self.onboardingDemoWindowController = [[TLOnboardingDemoWindowController alloc] initWithPalette:self.palette];
-  self.mainWindowFrameBeforeOnboarding = self.window.frame;
-  self.hasMainWindowFrameBeforeOnboarding = YES;
-  self.mainWindowSnapshotBeforeOnboarding = [self snapshotOfMainWindow];
-
+  [self.hermesOnboardingWindowController.window close];
+  self.hermesOnboardingWindowController = [[TLHermesOnboardingWindowController alloc]
+    initWithPalette:self.palette token:self.settings.openRouterToken model:self.settings.selectedModel];
   __weak typeof(self) weakSelf = self;
-  self.onboardingDemoWindowController.openAppHandler = ^{
-    [weakSelf openAppFromOnboarding];
+  self.hermesOnboardingWindowController.startHandler = ^(NSString *token, NSString *model) {
+    TalariaWindowController *strongSelf = weakSelf;
+    if (!strongSelf) return;
+    TLAppSettings *updated = [strongSelf.settings copy];
+    updated.openRouterToken = token;
+    updated.rememberOpenRouterToken = YES;
+    updated.selectedModel = model;
+    NSError *saveError = nil;
+    TLAppSettings *saved = [strongSelf.database saveAppSettings:updated error:&saveError];
+    if (!saved) {
+      [strongSelf.hermesOnboardingWindowController finishWithError:saveError];
+      return;
+    }
+    strongSelf.settings = saved;
+    [strongSelf.agentOrchestrator createFreshHermesAgentWithProgress:^(NSString *text) {
+      [strongSelf.hermesOnboardingWindowController appendProgress:text];
+    } completion:^(TLAgentRecord *agent, NSError *installError) {
+      if (!installError) {
+        TLAppSettings *completed = [strongSelf.settings copy];
+        completed.onboardingCompleted = YES;
+        TLAppSettings *completedSettings = [strongSelf.database saveAppSettings:completed error:nil];
+        if (completedSettings) strongSelf.settings = completedSettings;
+        NSArray<TLAgentRecord *> *agents = [strongSelf.agentOrchestrator listAgents:nil];
+        if (agents) strongSelf.agents = [agents mutableCopy];
+        [strongSelf.agentsTableView reloadData];
+      }
+      [strongSelf.hermesOnboardingWindowController finishWithError:installError];
+    }];
   };
-
-  [self.onboardingDemoWindowController updatePalette:self.palette];
-  [self.onboardingDemoWindowController showFromWindow:self.window];
-  [self.window orderOut:self];
+  self.hermesOnboardingWindowController.closeHandler = ^{
+    [weakSelf.window makeKeyAndOrderFront:nil];
+  };
+  [self.hermesOnboardingWindowController showFromWindow:self.window];
 }
 
 - (void)openAppFromOnboarding {
@@ -4141,6 +4169,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   content.fillColor = palette.tabBackground;
 
   NSTextField *titleLabel = [self labelWithString:@"Settings" font:palette.titleFont color:palette.appText];
+  NSTextField *subtitleLabel = [self labelWithString:@"Configure your Hermes VM, model provider, and appearance."
+                                                font:palette.bodyFont color:palette.textMuted];
+  NSTextField *providerSectionLabel = [self labelWithString:@"AI provider" font:palette.labelFont color:palette.appText];
+  NSTextField *appearanceSectionLabel = [self labelWithString:@"Appearance" font:palette.labelFont color:palette.appText];
   NSTextField *catalogueStatusLabel = [self labelWithString:@"OpenRouter catalogue" font:palette.smallFont color:palette.textMuted];
   NSSecureTextField *tokenField = [[NSSecureTextField alloc] init];
   NSButton *rememberButton = [NSButton checkboxWithTitle:@"Remember token" target:nil action:nil];
@@ -4148,6 +4180,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSButton *closeButton = [self buttonWithTitle:@"Close" action:@selector(closeSettingsTab:)];
   NSButton *saveButton = [self buttonWithTitle:@"Save" action:nil];
   NSButton *reloadButton = [self buttonWithTitle:@"Refresh catalogue" action:nil];
+  NSButton *onboardingButton = [self buttonWithTitle:@"Set up a fresh Hermes VM" action:@selector(showOnboardingDemoWindow:)];
   TLModelPickerView *mainModelPicker = [[TLModelPickerView alloc] initWithTitle:@"Main model"
                                                                         palette:palette
                                                                 selectedModelID:draftSettings.selectedModel];
@@ -4176,6 +4209,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   for (NSView *view in @[
     titleLabel,
+    subtitleLabel,
+    providerSectionLabel,
+    appearanceSectionLabel,
     catalogueStatusLabel,
     tokenLabel,
     tokenField,
@@ -4183,6 +4219,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     themeLabel,
     themePopup,
     reloadButton,
+    onboardingButton,
     mainModelPicker,
     supportingModelPicker,
     closeButton,
@@ -4197,18 +4234,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [closeButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
     [closeButton.centerYAnchor constraintEqualToAnchor:titleLabel.centerYAnchor],
     [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
-    [closeButton.heightAnchor constraintEqualToConstant:34.0],
+    [closeButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
     [saveButton.trailingAnchor constraintEqualToAnchor:closeButton.leadingAnchor constant:-palette.space5],
     [saveButton.centerYAnchor constraintEqualToAnchor:closeButton.centerYAnchor],
     [saveButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
     [saveButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
-    [catalogueStatusLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [catalogueStatusLabel.trailingAnchor constraintLessThanOrEqualToAnchor:saveButton.leadingAnchor constant:-palette.space8],
-    [catalogueStatusLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:palette.space2],
+    [subtitleLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+    [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:palette.space2],
+    [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:saveButton.leadingAnchor constant:-palette.space8],
+    [providerSectionLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+    [providerSectionLabel.topAnchor constraintEqualToAnchor:subtitleLabel.bottomAnchor constant:palette.space8],
+    [appearanceSectionLabel.leadingAnchor constraintEqualToAnchor:content.centerXAnchor constant:palette.space6],
+    [appearanceSectionLabel.centerYAnchor constraintEqualToAnchor:providerSectionLabel.centerYAnchor],
 
     [tokenLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
     [tokenLabel.trailingAnchor constraintEqualToAnchor:content.centerXAnchor constant:-palette.space6],
-    [tokenLabel.topAnchor constraintEqualToAnchor:catalogueStatusLabel.bottomAnchor constant:palette.space11],
+    [tokenLabel.topAnchor constraintEqualToAnchor:providerSectionLabel.bottomAnchor constant:palette.space4],
     [tokenField.leadingAnchor constraintEqualToAnchor:tokenLabel.leadingAnchor],
     [tokenField.trailingAnchor constraintEqualToAnchor:tokenLabel.trailingAnchor],
     [tokenField.topAnchor constraintEqualToAnchor:tokenLabel.bottomAnchor constant:palette.space4],
@@ -4219,7 +4260,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
     [themeLabel.leadingAnchor constraintEqualToAnchor:content.centerXAnchor constant:palette.space6],
     [themeLabel.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
-    [themeLabel.topAnchor constraintEqualToAnchor:tokenLabel.topAnchor],
+    [themeLabel.topAnchor constraintEqualToAnchor:appearanceSectionLabel.bottomAnchor constant:palette.space4],
     [themePopup.leadingAnchor constraintEqualToAnchor:themeLabel.leadingAnchor],
     [themePopup.trailingAnchor constraintEqualToAnchor:themeLabel.trailingAnchor],
     [themePopup.topAnchor constraintEqualToAnchor:themeLabel.bottomAnchor constant:palette.space4],
@@ -4229,6 +4270,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [reloadButton.topAnchor constraintEqualToAnchor:rememberButton.bottomAnchor constant:palette.space8],
     [reloadButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth * 2.0],
     [reloadButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
+
+    [onboardingButton.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+    [onboardingButton.centerYAnchor constraintEqualToAnchor:reloadButton.centerYAnchor],
+    [onboardingButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth * 2.0],
+    [onboardingButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
+
+    [catalogueStatusLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:onboardingButton.trailingAnchor constant:palette.space5],
+    [catalogueStatusLabel.trailingAnchor constraintEqualToAnchor:reloadButton.leadingAnchor constant:-palette.space5],
+    [catalogueStatusLabel.centerYAnchor constraintEqualToAnchor:reloadButton.centerYAnchor],
 
     [mainModelPicker.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
     [mainModelPicker.topAnchor constraintEqualToAnchor:reloadButton.bottomAnchor constant:palette.space6],
@@ -4243,6 +4293,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self styleButton:closeButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   [self styleButton:saveButton background:palette.primaryActionSurface foreground:palette.primaryActionText];
   [self styleButton:reloadButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
+  [self styleButton:onboardingButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
 
   __weak typeof(self) weakSelf = self;
   __weak NSButton *weakReloadButton = reloadButton;
@@ -4322,7 +4373,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   saveButton.target = saveTarget;
   saveButton.action = @selector(perform:);
 
-  if (loadCatalogue) {
+  if (loadCatalogue && tokenField.stringValue.length > 0) {
     loadCatalogue();
   }
 

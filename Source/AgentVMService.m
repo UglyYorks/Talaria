@@ -255,7 +255,7 @@ static NSString *TLAgentTrim(NSString *value) {
   VZVirtualMachineConfiguration *configuration = [[VZVirtualMachineConfiguration alloc] init];
   configuration.platform = platform;
   configuration.CPUCount = [self clampedCPUCount:2];
-  configuration.memorySize = [self clampedMemorySize:512ULL * 1024ULL * 1024ULL];
+  configuration.memorySize = [self clampedMemorySize:2ULL * 1024ULL * 1024ULL * 1024ULL];
   configuration.bootLoader = bootLoader;
   configuration.entropyDevices = @[[[VZVirtioEntropyDeviceConfiguration alloc] init]];
   configuration.networkDevices = @[[self NATNetworkDevice]];

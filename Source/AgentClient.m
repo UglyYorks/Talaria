@@ -259,6 +259,38 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   return self;
 }
 
+- (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent
+                           requestID:(NSString *)requestID
+                           sessionID:(NSString *)sessionID
+                               token:(NSString *)token
+                               model:(NSString *)model
+                              prompt:(NSString *)prompt
+                               delta:(TLAgentStreamDeltaHandler)delta
+                          completion:(TLAgentStreamCompletionHandler)completion {
+  NSDictionary *payload = @{
+    @"operation": @"hermes_session_chat",
+    @"request_id": requestID ?: @"",
+    @"session_id": sessionID ?: @"",
+    @"token": token ?: @"",
+    @"model": model ?: @"",
+    @"prompt": prompt ?: @"",
+  };
+  [self startWorkerWithAgent:agent payload:payload operation:@"hermes_session_chat"
+                       delta:delta streamCompletion:completion modelCompletion:nil];
+}
+
+- (void)installHermesWithAgent:(TLAgentRecord *)agent
+                     requestID:(NSString *)requestID
+                      progress:(TLAgentStreamDeltaHandler)progress
+                    completion:(TLAgentStreamCompletionHandler)completion {
+  NSDictionary *payload = @{
+    @"operation": @"install_hermes",
+    @"request_id": requestID ?: @"install",
+  };
+  [self startWorkerWithAgent:agent payload:payload operation:@"install_hermes"
+                       delta:progress streamCompletion:completion modelCompletion:nil];
+}
+
 - (void)streamChatWithAgent:(TLAgentRecord *)agent
                   requestID:(NSString *)requestID
                       token:(NSString *)token

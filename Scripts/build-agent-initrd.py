@@ -14,7 +14,10 @@ from pathlib import Path
 
 ARCH = "aarch64"
 BASE_URL = "https://dl-cdn.alpinelinux.org/alpine"
-DEFAULT_PACKAGES = ("python3", "ca-certificates-bundle")
+DEFAULT_PACKAGES = (
+    "python3", "ca-certificates-bundle", "bash", "curl", "git", "xz",
+    "build-base", "ripgrep",
+)
 DEPENDENCY_SPLIT_RE = re.compile(r"([<>=~].*)$")
 
 
@@ -296,7 +299,7 @@ def main():
 
     extract_zboot_kernel(args.zboot_kernel, args.kernel_output)
 
-    package_index = PackageIndex(args.alpine_release, ("main",))
+    package_index = PackageIndex(args.alpine_release, ("main", "community"))
     package_index.load()
     packages = package_index.resolve(DEFAULT_PACKAGES)
 
@@ -312,6 +315,30 @@ def main():
         install_file(args.init_script, overlay / "talaria-init", 0o755)
         install_file(args.modloop, overlay / "modloop-virt", 0o644)
         write_text(overlay / "etc/hosts", "127.0.0.1 localhost\n::1 localhost\n")
+        write_text(
+            overlay / "usr/share/udhcpc/default.script",
+            """#!/bin/sh
+case \"$1\" in
+  deconfig)
+    /usr/bin/busybox ip addr flush dev \"$interface\"
+    ;;
+  bound|renew)
+    /usr/bin/busybox ip addr flush dev \"$interface\"
+    /usr/bin/busybox ip addr add \"$ip/24\" dev \"$interface\"
+    for gateway in $router; do
+      /usr/bin/busybox ip route add default via \"$gateway\" dev \"$interface\" && break
+    done
+    : > /etc/resolv.conf
+    for server in $dns; do echo \"nameserver $server\" >> /etc/resolv.conf; done
+    if [ ! -s /etc/resolv.conf ]; then
+      for gateway in $router; do echo \"nameserver $gateway\" >> /etc/resolv.conf; break; done
+    fi
+    ;;
+esac
+exit 0
+""",
+            0o755,
+        )
         write_text(overlay / "opt/talaria/runtime.txt", "linux-aarch64 alpine python vsock\n")
 
         base_data = gzip.decompress(args.base_initrd.read_bytes())

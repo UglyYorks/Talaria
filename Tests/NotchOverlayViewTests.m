@@ -58,6 +58,7 @@
 - (BOOL)isVisible { return self.testVisible; }
 - (void)orderFrontRegardless { self.testVisible = YES; }
 - (void)orderOut:(id)sender { self.testVisible = NO; }
+- (NSRect)constrainFrameRect:(NSRect)frameRect toScreen:(NSScreen *)screen { return frameRect; }
 - (void)setFrame:(NSRect)frame display:(BOOL)display { [super setFrame:frame display:NO]; }
 @end
 

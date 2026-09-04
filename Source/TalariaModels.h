@@ -53,6 +53,7 @@ NSString *TLAgentDisplayStatus(NSString *status);
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *icon;
 @property (nonatomic, copy) NSString *model;
+@property (nonatomic, copy) NSString *hermesSessionID;
 @property (nonatomic, copy) NSString *createdAt;
 @property (nonatomic, copy) NSString *updatedAt;
 
@@ -85,6 +86,7 @@ NSString *TLAgentDisplayStatus(NSString *status);
 @property (nonatomic, copy) NSString *selectedModel;
 @property (nonatomic, copy) NSString *supportingModel;
 @property (nonatomic) TLThemePreference theme;
+@property (nonatomic) BOOL onboardingCompleted;
 
 + (instancetype)defaultSettings;
 

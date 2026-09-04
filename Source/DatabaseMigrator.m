@@ -102,5 +102,20 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     version = 3;
   }
 
+  if (version < 4) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql =
+        "ALTER TABLE chats ADD COLUMN hermes_session_id TEXT NOT NULL DEFAULT '';"
+        "UPDATE chats SET hermes_session_id = 'talaria_' || lower(hex(randomblob(16))) WHERE hermes_session_id = '';"
+        "CREATE UNIQUE INDEX IF NOT EXISTS chats_hermes_session_id ON chats(hermes_session_id);";
+      return [connection executeSQL:sql error:transactionError] &&
+        TLDatabaseSetSchemaVersion(connection, 4, transactionError);
+    } error:error];
+    if (!migrated) {
+      return NO;
+    }
+    version = 4;
+  }
+
   return version == targetVersion;
 }

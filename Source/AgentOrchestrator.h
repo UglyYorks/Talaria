@@ -6,6 +6,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 typedef void (^TLAgentOperationCompletionHandler)(TLAgentRecord *_Nullable agent, NSError *_Nullable error);
+typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 
 @interface TLAgentOrchestrator : NSObject
 
@@ -25,11 +26,14 @@ typedef void (^TLAgentOperationCompletionHandler)(TLAgentRecord *_Nullable agent
 - (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error;
 
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
+                                  sessionID:(NSString *)sessionID
                                       token:(NSString *)token
                                       model:(NSString *)model
                                    messages:(NSArray<TLChatMessage *> *)messages
                                       delta:(TLAgentStreamDeltaHandler)delta
                                  completion:(TLAgentStreamCompletionHandler)completion;
+- (void)createFreshHermesAgentWithProgress:(TLHermesInstallProgressHandler)progress
+                                completion:(TLAgentOperationCompletionHandler)completion;
 - (void)fetchModelCatalogueWithToken:(NSString *)token
                            completion:(TLAgentModelCatalogueHandler)completion;
 
