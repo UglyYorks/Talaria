@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLChromeTabView.h"
 
@@ -151,6 +152,49 @@ static void TestInactiveSeparatorCentering(TLThemePalette *palette) {
   }
 }
 
+static void TestInactiveDecorationFades(TLThemePalette *palette) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, palette.tabMaxWidth, palette.tabHeight)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLChromeTabView *tab = [[TLChromeTabView alloc] initWithFrame:window.contentView.bounds];
+  tab.palette = palette;
+  tab.showsLeadingSeparator = YES;
+  [window.contentView addSubview:tab];
+  [tab layoutSubtreeIfNeeded];
+  CALayer *separator = [tab valueForKey:@"leadingSeparatorLayer"];
+  CALayer *hover = [tab valueForKey:@"inactiveHoverBackgroundLayer"];
+
+  tab.showsLeadingSeparator = NO;
+  AssertClose(separator.opacity, 0.0, @"separator fade-out updates its final state");
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    CABasicAnimation *fade = (CABasicAnimation *)[separator animationForKey:@"tab-decoration-fade"];
+    AssertClose(fade.duration, palette.tabSeparatorFadeDuration, @"separator fades out over the themed duration");
+  }
+  tab.showsLeadingSeparator = YES;
+  AssertClose(separator.opacity, 1.0, @"separator fade-in updates its final state");
+
+  NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                      location:NSZeroPoint
+                                 modifierFlags:0
+                                     timestamp:0
+                                  windowNumber:window.windowNumber
+                                       context:nil
+                                       subtype:0
+                                         data1:0
+                                         data2:0];
+  [tab mouseEntered:event];
+  AssertClose(hover.opacity, 1.0, @"hover background fade-in updates its final state");
+  AssertClose(separator.opacity, 0.0, @"hover fades out the separator");
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    CABasicAnimation *fade = (CABasicAnimation *)[hover animationForKey:@"tab-decoration-fade"];
+    AssertClose(fade.duration, palette.tabHoverFadeDuration, @"hover background fades in over the themed duration");
+  }
+  [tab mouseExited:event];
+  AssertClose(hover.opacity, 0.0, @"hover background fade-out updates its final state");
+  AssertClose(separator.opacity, 1.0, @"hover exit fades the separator back in");
+  [window close];
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -181,6 +225,7 @@ int main(void) {
       TestHoveredTabSeparators(tab.palette);
       TestInactiveFirstTabPadding(tab.palette);
       TestInactiveSeparatorCentering(tab.palette);
+      TestInactiveDecorationFades(tab.palette);
 
       NSLayoutConstraint *leading = [tab valueForKey:@"iconLeadingConstraint"];
       tab.leadingFlareOutset = tab.palette.space0;
