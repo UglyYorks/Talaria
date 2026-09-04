@@ -34,10 +34,10 @@ static void TestSharedFlareSpace(TLThemePalette *palette) {
   [controller setValue:[NSMutableArray arrayWithObjects:leftWidth, rightWidth, nil] forKey:@"tabWidthConstraints"];
 
   [controller updateTabWidthsForAvailableWidth:300.0];
-  AssertClose(leftWidth.constant, 154.0, @"two tabs reclaim their shared flare boundary");
-  AssertClose(rightWidth.constant, 154.0, @"shared flare layout keeps tab widths equal");
-  AssertClose(stack.spacing, -palette.tabFlareRadius, @"neighboring flares overlap in one shared region");
-  AssertClose(leftWidth.constant + rightWidth.constant + stack.spacing, 300.0, @"shared flares leave no unused strip width");
+  AssertClose(leftWidth.constant, 156.0, @"two tabs reclaim their tightened shared boundary");
+  AssertClose(rightWidth.constant, 156.0, @"tightened flare layout keeps tab widths equal");
+  AssertClose(stack.spacing, -(palette.tabFlareRadius + palette.space2), @"neighboring tab bodies sit closer together");
+  AssertClose(leftWidth.constant + rightWidth.constant + stack.spacing, 300.0, @"tightened tabs leave no unused strip width");
 
   [controller updateTabWidthsForAvailableWidth:20.0];
   AssertClose(leftWidth.constant + rightWidth.constant + stack.spacing, 20.0, @"narrow tabs continue sharing their reduced flares");
