@@ -567,9 +567,15 @@
     return;
   }
 
-  NSBezierPath *path = [self tabPathInRect:self.bounds];
+  NSBezierPath *path = [self tabPathInRect:[self activeTabRectInRect:self.bounds]];
   [self.palette.tabBackground setFill];
   [path fill];
+}
+
+- (NSRect)activeTabRectInRect:(NSRect)rect {
+  rect.size.height = MAX(self.palette.space0,
+                         NSHeight(rect) - self.palette.tabActiveHeightReduction);
+  return rect;
 }
 
 - (BOOL)shouldDrawInactiveHoverPill {

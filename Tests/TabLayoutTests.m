@@ -3,6 +3,7 @@
 #import "design_system/TLChromeTabView.h"
 
 @interface TLChromeTabView (TabLayoutTesting)
+- (NSRect)activeTabRectInRect:(NSRect)rect;
 - (NSRect)inactiveHoverPillRectInRect:(NSRect)rect;
 @end
 
@@ -123,6 +124,11 @@ int main(void) {
       AssertOffset(tab, tab.palette.space2, @"Removing favicon restores emoji positioning");
       tab.systemIconName = @"clock";
       AssertOffset(tab, tab.palette.space0, @"System icon positioning is unchanged");
+      NSRect activeRect = [tab activeTabRectInRect:tab.bounds];
+      AssertClose(NSMinY(activeRect), NSMinY(tab.bounds), @"shorter active tab stays attached to content");
+      AssertClose(NSHeight(activeRect),
+                  NSHeight(tab.bounds) - tab.palette.tabActiveHeightReduction,
+                  @"active tab height uses the theme reduction");
       TestSharedFlareSpace(tab.palette);
       TestHoveredTabSeparators(tab.palette);
       TestInactiveFirstTabPadding(tab.palette);
