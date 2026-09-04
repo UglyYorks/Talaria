@@ -39,6 +39,40 @@ static void TestSharedFlareSpace(TLThemePalette *palette) {
   AssertClose(leftWidth.constant + rightWidth.constant + stack.spacing, 20.0, @"narrow tabs continue sharing their reduced flares");
 }
 
+static void TestHoveredTabSeparators(TLThemePalette *palette) {
+  NSStackView *stack = [[NSStackView alloc] init];
+  TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc] initWithTabStack:stack
+                                                                                       target:nil
+                                                                                     delegate:nil
+                                                                                      palette:palette];
+  TLChromeTabView *left = [[TLChromeTabView alloc] init];
+  TLChromeTabView *middle = [[TLChromeTabView alloc] init];
+  TLChromeTabView *right = [[TLChromeTabView alloc] init];
+  middle.dragDelegate = (id<TLChromeTabViewDelegate>)controller;
+  [controller setValue:[NSMutableArray arrayWithObjects:left, middle, right, nil] forKey:@"tabViews"];
+  NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                      location:NSZeroPoint
+                                 modifierFlags:0
+                                     timestamp:0
+                                  windowNumber:0
+                                       context:nil
+                                       subtype:0
+                                         data1:0
+                                         data2:0];
+
+  [middle mouseEntered:event];
+  if (middle.showsLeadingSeparator || right.showsLeadingSeparator) {
+    NSLog(@"FAIL hovered tab keeps an adjacent separator visible");
+    exit(1);
+  }
+
+  [middle mouseExited:event];
+  if (!middle.showsLeadingSeparator || !right.showsLeadingSeparator) {
+    NSLog(@"FAIL leaving a tab does not restore its adjacent separators");
+    exit(1);
+  }
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -61,6 +95,14 @@ int main(void) {
       tab.systemIconName = @"clock";
       AssertOffset(tab, tab.palette.space0, @"System icon positioning is unchanged");
       TestSharedFlareSpace(tab.palette);
+      TestHoveredTabSeparators(tab.palette);
+
+      NSLayoutConstraint *leading = [tab valueForKey:@"iconLeadingConstraint"];
+      tab.leadingFlareOutset = tab.palette.space0;
+      [tab layoutSubtreeIfNeeded];
+      AssertClose(leading.constant,
+                  tab.palette.tabIconLeadingInset - tab.palette.tabFlareRadius,
+                  @"edge-connected first tab keeps the standard body-to-content padding");
 
       TLChromeTabView *neighbor = [[TLChromeTabView alloc] init];
       neighbor.active = YES;

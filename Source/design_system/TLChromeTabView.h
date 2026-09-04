@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (CGFloat)chromeTabView:(TLChromeTabView *)tabView constrainedHorizontalTranslationForEvent:(NSEvent *)event proposedTranslation:(CGFloat)translationX;
 - (void)chromeTabView:(TLChromeTabView *)tabView didDragWithEvent:(NSEvent *)event;
 - (void)chromeTabViewDidEndDragging:(TLChromeTabView *)tabView;
+- (void)chromeTabViewHoverStateDidChange:(TLChromeTabView *)tabView;
 @end
 
 @interface TLChromeTabView : NSControl
@@ -22,6 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL closeable;
 @property (nonatomic) BOOL showsLeadingSeparator;
 @property (nonatomic) BOOL showsTrailingSeparator;
+@property (nonatomic, readonly, getter=isHovered) BOOL hovered;
 @property (nonatomic, readonly) CGFloat dragTranslationX;
 @property (nonatomic) CGFloat leadingFlareOutset;
 @property (nonatomic, weak, nullable) id<TLChromeTabViewDelegate> dragDelegate;

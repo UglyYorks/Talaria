@@ -218,7 +218,7 @@
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
 @property (nonatomic) NSPoint mouseDownWindowPoint;
 @property (nonatomic) BOOL didDrag;
-@property (nonatomic) BOOL hovered;
+@property (nonatomic, readwrite, getter=isHovered) BOOL hovered;
 @property (nonatomic, readwrite) CGFloat dragTranslationX;
 @end
 
@@ -301,6 +301,8 @@
 
 - (void)setLeadingFlareOutset:(CGFloat)leadingFlareOutset {
   _leadingFlareOutset = leadingFlareOutset;
+  [self updateHorizontalContentInset];
+  [self setNeedsLayout:YES];
   [self setNeedsDisplay:YES];
 }
 
@@ -402,6 +404,7 @@
 
 - (void)layout {
   [super layout];
+  [self updateHorizontalContentInset];
   [self updateTitleFadeMask];
 }
 
@@ -422,7 +425,7 @@
   self.tabIconView.icon = hasEmojiIcon ? self.icon : @"";
   self.tabIconView.systemIconName = hasSystemIcon ? self.systemIconName : @"";
   self.tabIconView.contentTintColor = foreground;
-  self.iconLeadingConstraint.constant = self.palette.tabIconLeadingInset;
+  [self updateHorizontalContentInset];
   self.iconWidthConstraint.constant = self.tabIconView.hasIcon ? self.palette.tabIconSize : self.palette.space0;
   self.iconHeightConstraint.constant = self.tabIconView.hasIcon ? self.palette.tabIconSize : self.palette.space0;
   self.iconCenterYConstraint.constant = [self tabIconContainerVerticalOffset];
@@ -470,6 +473,18 @@
   return self.image || self.systemIconName.length > 0 ? self.palette.space0 : self.palette.space2;
 }
 
+- (void)updateHorizontalContentInset {
+  CGFloat width = NSWidth(self.bounds);
+  CGFloat defaultFlareOutset = width > self.palette.space0
+    ? MIN(self.palette.tabFlareRadius, width * 0.18)
+    : self.palette.tabFlareRadius;
+  CGFloat effectiveFlareOutset = self.leadingFlareOutset >= self.palette.space0
+    ? MIN(defaultFlareOutset, self.leadingFlareOutset)
+    : defaultFlareOutset;
+  self.iconLeadingConstraint.constant = self.palette.tabIconLeadingInset -
+    (defaultFlareOutset - effectiveFlareOutset);
+}
+
 - (void)updateTrackingAreas {
   [super updateTrackingAreas];
   if (self.trackingArea) {
@@ -484,19 +499,28 @@
 }
 
 - (void)mouseEntered:(NSEvent *)event {
+  if (self.hovered) {
+    return;
+  }
   self.hovered = YES;
   [self applyCurrentState];
+  [self.dragDelegate chromeTabViewHoverStateDidChange:self];
 }
 
 - (void)mouseExited:(NSEvent *)event {
+  if (!self.hovered) {
+    return;
+  }
   self.hovered = NO;
   [self applyCurrentState];
+  [self.dragDelegate chromeTabViewHoverStateDidChange:self];
 }
 
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
-  if (!self.window) {
+  if (!self.window && self.hovered) {
     self.hovered = NO;
+    [self.dragDelegate chromeTabViewHoverStateDidChange:self];
   }
   [self applyCurrentState];
 }

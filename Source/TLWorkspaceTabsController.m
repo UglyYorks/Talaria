@@ -52,6 +52,7 @@ static CGFloat TLTabFlareOverlapForWidth(CGFloat width, TLThemePalette *palette)
   for (NSUInteger index = 0; index < tabs.count; index += 1) {
     [self.tabStack addArrangedSubview:[self workspaceTabViewForTab:tabs[index] index:index tabs:tabs]];
   }
+  [self updateSeparatorVisibility];
   [self updateEdgeAttachmentState];
 }
 
@@ -60,12 +61,11 @@ static CGFloat TLTabFlareOverlapForWidth(CGFloat width, TLThemePalette *palette)
     tabView.enabled = enabled;
     tabView.alphaValue = enabled ? 1.0 : disabledOpacity;
   }
+  [self updateSeparatorVisibility];
 }
 
 - (TLChromeTabView *)workspaceTabViewForTab:(TLWorkspaceTab *)tab index:(NSUInteger)index tabs:(NSArray<TLWorkspaceTab *> *)tabs {
   BOOL active = [self.delegate workspaceTabsController:self isTabActive:tab];
-  BOOL previousActive = index > 0 && [self.delegate workspaceTabsController:self isTabActive:tabs[index - 1]];
-  BOOL last = index == tabs.count - 1;
   TLChromeTabView *tabView = [[TLChromeTabView alloc] init];
   tabView.translatesAutoresizingMaskIntoConstraints = NO;
   tabView.palette = self.palette;
@@ -80,8 +80,6 @@ static CGFloat TLTabFlareOverlapForWidth(CGFloat width, TLThemePalette *palette)
   tabView.closeAction = [self.delegate workspaceTabsController:self closeActionForTab:tab];
   tabView.closeable = tab.closeable;
   tabView.active = active;
-  tabView.showsLeadingSeparator = !active && index > 0 && !previousActive;
-  tabView.showsTrailingSeparator = !active && last;
   tabView.dragDelegate = self;
   tabView.representedObject = [tab copy];
   [tabView setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
@@ -99,6 +97,27 @@ static CGFloat TLTabFlareOverlapForWidth(CGFloat width, TLThemePalette *palette)
   [self.tabViews addObject:tabView];
   [self.tabWidthConstraints addObject:width];
   return tabView;
+}
+
+- (void)updateSeparatorVisibility {
+  for (NSUInteger index = 0; index < self.tabViews.count; index += 1) {
+    TLChromeTabView *tabView = self.tabViews[index];
+    BOOL hovered = tabView.enabled && tabView.isHovered;
+    TLChromeTabView *previousTabView = index > 0 ? self.tabViews[index - 1] : nil;
+    BOOL previousHovered = previousTabView.enabled && previousTabView.isHovered;
+    tabView.showsLeadingSeparator = !tabView.active &&
+      !hovered &&
+      index > 0 &&
+      !previousTabView.active &&
+      !previousHovered;
+    tabView.showsTrailingSeparator = !tabView.active &&
+      !hovered &&
+      index == self.tabViews.count - 1;
+  }
+}
+
+- (void)chromeTabViewHoverStateDidChange:(TLChromeTabView *)tabView {
+  [self updateSeparatorVisibility];
 }
 
 - (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth {
