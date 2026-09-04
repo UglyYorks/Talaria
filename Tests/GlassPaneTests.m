@@ -312,7 +312,7 @@ static void TestNativeMessageComposer(void) {
   [window.contentView layoutSubtreeIfNeeded];
   Check([input.backgroundView isKindOfClass:TLGlassPaneView.class], @"message composer uses the native browser glass");
   TLHoverIconButton *send = [input.sendButton valueForKey:@"button"];
-  Check(send.hoverSurfaceOnly && !send.bordered, @"message composer matches the browser send control");
+  Check(!send.hoverSurfaceOnly && send.bordered, @"message composer keeps its standalone send button");
   for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
     input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
     TLGlassPaneView *glass = (TLGlassPaneView *)input.backgroundView;

@@ -2390,7 +2390,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   self = [super initWithFrame:frameRect];
   if (self) {
     self.backgroundView = [[TLGlassPaneView alloc] init];
-    self.sendButton.hoverSurfaceOnly = YES;
     [self applyGlassPalette];
   }
   return self;
@@ -2414,6 +2413,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   if (self) {
+    self.sendButton.hoverSurfaceOnly = YES;
     _backButton = [self toolbarButtonWithToolTip:@"Back"];
     _forwardButton = [self toolbarButtonWithToolTip:@"Forward"];
     _reloadButton = [self toolbarButtonWithToolTip:@"Reload"];
