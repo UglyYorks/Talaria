@@ -324,6 +324,10 @@ static void TestNativeMessageComposer(void) {
     Check(NSWidth(input.sendButton.bounds) == input.palette.messageInputSendButtonSize &&
           NSHeight(input.sendButton.bounds) == input.palette.messageInputSendButtonSize,
       @"message composer uses the compact send button size");
+    CAShapeLayer *surface = [input.sendButton valueForKey:@"solidSurfaceLayer"];
+    CGRect circleBounds = CGPathGetBoundingBox(surface.path);
+    Check(NSWidth(circleBounds) == NSHeight(circleBounds) && NSWidth(circleBounds) == input.palette.messageInputSendButtonSize,
+      @"message composer send surface is an exact circle");
     Check(NSEqualSizes(input.sendButton.image.size, iconSize), @"compact send button preserves the arrow icon size");
     Check(CGColorGetAlpha(input.layer.backgroundColor) == 0 && input.layer.borderWidth == 0,
       @"message composer leaves its native glass visible");

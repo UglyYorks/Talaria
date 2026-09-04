@@ -1,4 +1,5 @@
 #import "TLGlassButton.h"
+#import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
 @interface TLHoverIconButton ()
@@ -80,6 +81,7 @@
 @property (nonatomic, strong) NSLayoutConstraint *contentImageHeightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *contentLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *contentTrailingConstraint;
+@property (nonatomic, strong) CAShapeLayer *solidSurfaceLayer;
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
 @property (nonatomic, getter=isHovered) BOOL hovered;
 @end
@@ -267,14 +269,31 @@
 }
 
 - (void)applyGlassState {
-  if (self.hoverSurfaceOnly) { return; }
-  if (self.solidSurfaceColor) {
-    self.button.bordered = NO;
-    self.button.wantsLayer = YES;
-    self.button.layer.cornerRadius = MIN(NSWidth(self.button.bounds), NSHeight(self.button.bounds)) / 2.0;
-    self.button.layer.backgroundColor = TLCGColor(self.solidSurfaceColor);
+  if (self.hoverSurfaceOnly) {
+    self.solidSurfaceLayer.hidden = YES;
     return;
   }
+  if (self.solidSurfaceColor) {
+    self.button.bordered = NO;
+    self.wantsLayer = YES;
+    if (!self.solidSurfaceLayer) {
+      self.solidSurfaceLayer = [CAShapeLayer layer];
+      [self.layer insertSublayer:self.solidSurfaceLayer atIndex:0];
+    }
+    CGFloat diameter = MIN(NSWidth(self.bounds), NSHeight(self.bounds));
+    CGRect circleRect = CGRectMake(floor((NSWidth(self.bounds) - diameter) * 0.5),
+                                   floor((NSHeight(self.bounds) - diameter) * 0.5),
+                                   diameter,
+                                   diameter);
+    self.solidSurfaceLayer.frame = self.bounds;
+    CGPathRef circlePath = CGPathCreateWithEllipseInRect(circleRect, NULL);
+    self.solidSurfaceLayer.path = circlePath;
+    CGPathRelease(circlePath);
+    self.solidSurfaceLayer.fillColor = TLCGColor(self.solidSurfaceColor);
+    self.solidSurfaceLayer.hidden = NO;
+    return;
+  }
+  self.solidSurfaceLayer.hidden = YES;
   NSColor *tintColor = nil;
   if (self.enabled) {
     tintColor = self.hovered
