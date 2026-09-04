@@ -101,6 +101,11 @@ CGColorRef TLCGColor(NSColor *color) {
   self.tabIconSize = 18.0;
   self.tabIconGlyphSize = 16.0;
   self.tabFlareRadius = 8.0;
+  self.tabSelectionSlideDuration = 0.16;
+  self.tabReorderSlideDuration = 0.12;
+  self.tabLifecycleTransitionDuration = 0.20;
+  self.tabLifecycleCollapsedWidthRatio = 0.30;
+  self.tabLifecycleContentFadeDurationRatio = 0.30;
   self.tabSeparatorFadeDuration = 0.20;
   self.tabHoverFadeDuration = 0.20;
   self.historyRowHeight = 60.0;

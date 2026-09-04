@@ -2,11 +2,219 @@
 #import "TLTabIconView.h"
 #import <QuartzCore/QuartzCore.h>
 
+static const NSTimeInterval TLTabRemovalMaskLeadTime = 2.0 / 60.0;
+
 CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palette) {
   CGFloat flareOutset = MIN(palette.tabFlareRadius, width * 0.18);
   CGFloat tightening = MIN(palette.space2, flareOutset * 0.5);
   return flareOutset + tightening;
 }
+
+static NSBezierPath *TLChromeTabBackgroundPath(NSRect rect,
+                                               TLThemePalette *palette,
+                                               CGFloat requestedLeadingFlareOutset) {
+  CGFloat radius = MIN(palette.radiusMedium, NSHeight(rect) * 0.45);
+  CGFloat flareOutset = MIN(palette.tabFlareRadius, rect.size.width * 0.18);
+  CGFloat flareHeight = MIN(palette.tabFlareRadius, rect.size.height * 0.5);
+  CGFloat leadingFlareOutset = requestedLeadingFlareOutset >= 0.0
+    ? MIN(flareOutset, requestedLeadingFlareOutset)
+    : flareOutset;
+  CGFloat leadingFlareRadius = MIN(leadingFlareOutset, flareHeight);
+  CGFloat trailingFlareRadius = MIN(flareOutset, flareHeight);
+  CGFloat minX = NSMinX(rect);
+  CGFloat maxX = NSMaxX(rect);
+  CGFloat minY = NSMinY(rect);
+  CGFloat maxY = NSMaxY(rect);
+  CGFloat leftBodyX = minX + leadingFlareOutset;
+  CGFloat rightBodyX = maxX - flareOutset;
+  CGFloat leftFlareX = leftBodyX - leadingFlareRadius;
+  CGFloat rightFlareX = rightBodyX + trailingFlareRadius;
+
+  NSBezierPath *path = [NSBezierPath bezierPath];
+  [path moveToPoint:NSMakePoint(leftFlareX, minY)];
+  [path lineToPoint:NSMakePoint(rightFlareX, minY)];
+  [path appendBezierPathWithArcWithCenter:NSMakePoint(rightFlareX, minY + trailingFlareRadius)
+                                   radius:trailingFlareRadius
+                               startAngle:270.0
+                                 endAngle:180.0
+                                clockwise:YES];
+  [path lineToPoint:NSMakePoint(rightBodyX, maxY - radius)];
+  [path curveToPoint:NSMakePoint(rightBodyX - radius, maxY)
+       controlPoint1:NSMakePoint(rightBodyX, maxY - radius * 0.45)
+       controlPoint2:NSMakePoint(rightBodyX - radius * 0.45, maxY)];
+  [path lineToPoint:NSMakePoint(leftBodyX + radius, maxY)];
+  [path curveToPoint:NSMakePoint(leftBodyX, maxY - radius)
+       controlPoint1:NSMakePoint(leftBodyX + radius * 0.45, maxY)
+       controlPoint2:NSMakePoint(leftBodyX, maxY - radius * 0.45)];
+  [path lineToPoint:NSMakePoint(leftBodyX, minY + leadingFlareRadius)];
+  if (leadingFlareRadius > 0.0) {
+    [path appendBezierPathWithArcWithCenter:NSMakePoint(leftFlareX, minY + leadingFlareRadius)
+                                     radius:leadingFlareRadius
+                                 startAngle:0.0
+                                   endAngle:270.0
+                                  clockwise:YES];
+  } else {
+    [path lineToPoint:NSMakePoint(leftFlareX, minY)];
+  }
+  [path closePath];
+  return path;
+}
+
+static CGPathRef TLCreateCGPathFromBezierPath(NSBezierPath *bezierPath) CF_RETURNS_RETAINED {
+  CGMutablePathRef path = CGPathCreateMutable();
+  NSPoint points[3];
+  for (NSInteger index = 0; index < bezierPath.elementCount; index += 1) {
+    switch ([bezierPath elementAtIndex:index associatedPoints:points]) {
+      case NSBezierPathElementMoveTo:
+        CGPathMoveToPoint(path, nil, points[0].x, points[0].y);
+        break;
+      case NSBezierPathElementLineTo:
+        CGPathAddLineToPoint(path, nil, points[0].x, points[0].y);
+        break;
+      case NSBezierPathElementCurveTo:
+        CGPathAddCurveToPoint(path, nil,
+                              points[0].x, points[0].y,
+                              points[1].x, points[1].y,
+                              points[2].x, points[2].y);
+        break;
+      case NSBezierPathElementClosePath:
+        CGPathCloseSubpath(path);
+        break;
+      case NSBezierPathElementQuadraticCurveTo:
+        CGPathAddQuadCurveToPoint(path, nil,
+                                  points[0].x, points[0].y,
+                                  points[1].x, points[1].y);
+        break;
+    }
+  }
+  return path;
+}
+
+static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
+  CGMutablePathRef path = CGPathCreateMutable();
+  CGPathMoveToPoint(path, nil, NSMinX(rect), NSMinY(rect));
+  CGPathAddLineToPoint(path, nil, NSMaxX(rect), NSMinY(rect));
+  CGPathAddLineToPoint(path, nil, NSMaxX(rect), NSMaxY(rect));
+  CGPathAddLineToPoint(path, nil, NSMinX(rect), NSMaxY(rect));
+  CGPathCloseSubpath(path);
+  return path;
+}
+
+@interface TLChromeTabSelectionView ()
+@property (nonatomic, strong) CAShapeLayer *backgroundLayer;
+@property (nonatomic, readwrite) NSRect selectionFrame;
+@end
+
+@implementation TLChromeTabSelectionView
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+  self = [super initWithFrame:frameRect];
+  if (self) {
+    _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
+    _leadingFlareOutset = -1.0;
+    self.wantsLayer = YES;
+    _backgroundLayer = [CAShapeLayer layer];
+    [self.layer addSublayer:_backgroundLayer];
+    [self applyCurrentState];
+  }
+  return self;
+}
+
+- (BOOL)isFlipped {
+  return NO;
+}
+
+- (NSView *)hitTest:(NSPoint)point {
+  return nil;
+}
+
+- (void)setPalette:(TLThemePalette *)palette {
+  _palette = palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
+  [self applyCurrentState];
+}
+
+- (void)setLeadingFlareOutset:(CGFloat)leadingFlareOutset {
+  _leadingFlareOutset = leadingFlareOutset;
+  [self updateBackgroundPath];
+}
+
+- (void)applyCurrentState {
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.backgroundLayer.fillColor = TLCGColor(self.palette.tabBackground);
+  [CATransaction commit];
+  [self updateBackgroundPath];
+}
+
+- (void)layout {
+  [super layout];
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.backgroundLayer.frame = self.bounds;
+  [CATransaction commit];
+}
+
+- (CGPathRef)newBackgroundPathForSelectionFrame:(NSRect)selectionFrame
+                             leadingFlareOutset:(CGFloat)leadingFlareOutset CF_RETURNS_RETAINED {
+  NSRect rect = selectionFrame;
+  rect.size.height = MAX(self.palette.space0,
+                         NSHeight(rect) - self.palette.tabActiveHeightReduction);
+  return TLCreateCGPathFromBezierPath(TLChromeTabBackgroundPath(rect, self.palette, leadingFlareOutset));
+}
+
+- (void)updateBackgroundPath {
+  CGPathRef path = [self newBackgroundPathForSelectionFrame:self.selectionFrame
+                                         leadingFlareOutset:self.leadingFlareOutset];
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.backgroundLayer.path = path;
+  [CATransaction commit];
+  CGPathRelease(path);
+}
+
+- (void)setSelectionFrame:(NSRect)selectionFrame
+        leadingFlareOutset:(CGFloat)leadingFlareOutset
+                 animated:(BOOL)animated
+                fromFrame:(NSRect)startFrame
+                  duration:(NSTimeInterval)duration {
+  if (!animated && NSEqualRects(self.selectionFrame, selectionFrame) &&
+      [self.backgroundLayer animationForKey:@"tab-selection-slide"] != nil) {
+    return;
+  }
+
+  CAShapeLayer *visibleLayer = (CAShapeLayer *)(self.backgroundLayer.presentationLayer ?: self.backgroundLayer);
+  CGPathRef visiblePath = visibleLayer.path;
+  CGPathRef fallbackStartPath = [self newBackgroundPathForSelectionFrame:startFrame
+                                                       leadingFlareOutset:self.leadingFlareOutset];
+  CGPathRef targetPath = [self newBackgroundPathForSelectionFrame:selectionFrame
+                                                leadingFlareOutset:leadingFlareOutset];
+  BOOL usesTeleportedStart = !NSEqualRects(startFrame, self.selectionFrame);
+  CGPathRef sourcePath = usesTeleportedStart ? fallbackStartPath : (visiblePath ?: fallbackStartPath);
+  _selectionFrame = selectionFrame;
+  _leadingFlareOutset = leadingFlareOutset;
+
+  [self.backgroundLayer removeAnimationForKey:@"tab-selection-slide"];
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.backgroundLayer.path = targetPath;
+  [CATransaction commit];
+  if (!animated || duration <= 0.0 || CGPathEqualToPath(sourcePath, targetPath)) {
+    CGPathRelease(fallbackStartPath);
+    CGPathRelease(targetPath);
+    return;
+  }
+
+  CABasicAnimation *slide = [CABasicAnimation animationWithKeyPath:@"path"];
+  slide.fromValue = (__bridge id)sourcePath;
+  slide.toValue = (__bridge id)targetPath;
+  slide.duration = duration;
+  slide.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+  [self.backgroundLayer addAnimation:slide forKey:@"tab-selection-slide"];
+  CGPathRelease(fallbackStartPath);
+  CGPathRelease(targetPath);
+}
+
+@end
 
 @interface TLChromeTabTextFieldCell : NSTextFieldCell
 @end
@@ -207,6 +415,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @end
 
 @interface TLChromeTabView ()
+@property (nonatomic, strong) NSView *contentContainer;
 @property (nonatomic, strong) TLTabIconView *tabIconView;
 @property (nonatomic, strong) NSView *titleClipView;
 @property (nonatomic, strong) NSTextField *titleLabel;
@@ -229,6 +438,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @property (nonatomic) BOOL didDrag;
 @property (nonatomic, readwrite, getter=isHovered) BOOL hovered;
 @property (nonatomic, readwrite) CGFloat dragTranslationX;
+@property (nonatomic, readwrite) CGFloat reorderTranslationX;
 - (void)updateInactiveDecorationGeometry;
 - (void)updateInactiveDecorationVisibilityAnimated:(BOOL)animated;
 - (void)setOpacity:(CGFloat)opacity forLayer:(CALayer *)layer duration:(NSTimeInterval)duration animated:(BOOL)animated;
@@ -244,6 +454,8 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
     _icon = @"";
     _systemIconName = @"";
     _closeable = YES;
+    _drawsActiveBackground = YES;
+    _animatesDecorationChanges = YES;
     _leadingFlareOutset = -1.0;
     self.wantsLayer = YES;
     _inactiveHoverBackgroundLayer = [CALayer layer];
@@ -305,7 +517,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
   _active = active;
   self.layer.zPosition = active ? 1.0 : 0.0;
   [self applyCurrentState];
-  [self updateInactiveDecorationVisibilityAnimated:self.window != nil];
+  [self updateInactiveDecorationVisibilityAnimated:self.window != nil && self.animatesDecorationChanges];
 }
 
 - (void)setCloseable:(BOOL)closeable {
@@ -313,12 +525,17 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
   [self applyCurrentState];
 }
 
+- (void)setDrawsActiveBackground:(BOOL)drawsActiveBackground {
+  _drawsActiveBackground = drawsActiveBackground;
+  [self setNeedsDisplay:YES];
+}
+
 - (void)setShowsLeadingSeparator:(BOOL)showsLeadingSeparator {
   if (_showsLeadingSeparator == showsLeadingSeparator) {
     return;
   }
   _showsLeadingSeparator = showsLeadingSeparator;
-  [self updateInactiveDecorationVisibilityAnimated:self.window != nil];
+  [self updateInactiveDecorationVisibilityAnimated:self.window != nil && self.animatesDecorationChanges];
 }
 
 - (void)setShowsTrailingSeparator:(BOOL)showsTrailingSeparator {
@@ -326,7 +543,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
     return;
   }
   _showsTrailingSeparator = showsTrailingSeparator;
-  [self updateInactiveDecorationVisibilityAnimated:self.window != nil];
+  [self updateInactiveDecorationVisibilityAnimated:self.window != nil && self.animatesDecorationChanges];
 }
 
 - (void)setLeadingFlareOutset:(CGFloat)leadingFlareOutset {
@@ -340,10 +557,15 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
   [super setEnabled:enabled];
   self.closeButton.enabled = enabled && self.closeable;
   [self applyCurrentState];
-  [self updateInactiveDecorationVisibilityAnimated:self.window != nil];
+  [self updateInactiveDecorationVisibilityAnimated:self.window != nil && self.animatesDecorationChanges];
 }
 
 - (void)buildSubviews {
+  self.contentContainer = [[NSView alloc] init];
+  self.contentContainer.translatesAutoresizingMaskIntoConstraints = NO;
+  self.contentContainer.wantsLayer = YES;
+  self.contentContainer.layer.masksToBounds = YES;
+
   self.tabIconView = [[TLTabIconView alloc] init];
   self.tabIconView.translatesAutoresizingMaskIntoConstraints = NO;
   self.tabIconView.palette = self.palette;
@@ -371,10 +593,11 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
     self.closeButton.image = [self closeButtonImageWithLength:self.palette.space6];
   }
 
-  [self addSubview:self.tabIconView];
-  [self addSubview:self.titleClipView];
+  [self addSubview:self.contentContainer];
+  [self.contentContainer addSubview:self.tabIconView];
+  [self.contentContainer addSubview:self.titleClipView];
   [self.titleClipView addSubview:self.titleLabel];
-  [self addSubview:self.closeButton];
+  [self.contentContainer addSubview:self.closeButton];
 
   self.iconLeadingConstraint = [self.tabIconView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
                                                                                constant:self.palette.tabIconLeadingInset];
@@ -393,6 +616,11 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
                                                                                  constant:self.palette.space0];
 
   [NSLayoutConstraint activateConstraints:@[
+    [self.contentContainer.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+    [self.contentContainer.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+    [self.contentContainer.topAnchor constraintEqualToAnchor:self.topAnchor],
+    [self.contentContainer.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+
     self.iconLeadingConstraint,
     self.iconWidthConstraint,
     self.iconHeightConstraint,
@@ -543,7 +771,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
   }
   self.hovered = YES;
   [self applyCurrentState];
-  [self updateInactiveDecorationVisibilityAnimated:YES];
+  [self updateInactiveDecorationVisibilityAnimated:self.animatesDecorationChanges];
   [self.dragDelegate chromeTabViewHoverStateDidChange:self];
 }
 
@@ -553,7 +781,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
   }
   self.hovered = NO;
   [self applyCurrentState];
-  [self updateInactiveDecorationVisibilityAnimated:YES];
+  [self updateInactiveDecorationVisibilityAnimated:self.animatesDecorationChanges];
   [self.dragDelegate chromeTabViewHoverStateDidChange:self];
 }
 
@@ -600,7 +828,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 - (void)drawRect:(NSRect)dirtyRect {
   [super drawRect:dirtyRect];
 
-  if (!self.active) {
+  if (!self.active || !self.drawsActiveBackground) {
     return;
   }
 
@@ -705,49 +933,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 }
 
 - (NSBezierPath *)tabPathInRect:(NSRect)rect {
-  CGFloat radius = MIN(self.palette.radiusMedium, NSHeight(rect) * 0.45);
-  CGFloat flareOutset = MIN(self.palette.tabFlareRadius, rect.size.width * 0.18);
-  CGFloat flareHeight = MIN(self.palette.tabFlareRadius, rect.size.height * 0.5);
-  CGFloat leadingFlareOutset = self.leadingFlareOutset >= 0.0 ? MIN(flareOutset, self.leadingFlareOutset) : flareOutset;
-  CGFloat leadingFlareRadius = MIN(leadingFlareOutset, flareHeight);
-  CGFloat trailingFlareRadius = MIN(flareOutset, flareHeight);
-  CGFloat minX = NSMinX(rect);
-  CGFloat maxX = NSMaxX(rect);
-  CGFloat minY = NSMinY(rect);
-  CGFloat maxY = NSMaxY(rect);
-  CGFloat leftBodyX = minX + leadingFlareOutset;
-  CGFloat rightBodyX = maxX - flareOutset;
-  CGFloat leftFlareX = leftBodyX - leadingFlareRadius;
-  CGFloat rightFlareX = rightBodyX + trailingFlareRadius;
-
-  NSBezierPath *path = [NSBezierPath bezierPath];
-  [path moveToPoint:NSMakePoint(leftFlareX, minY)];
-  [path lineToPoint:NSMakePoint(rightFlareX, minY)];
-  [path appendBezierPathWithArcWithCenter:NSMakePoint(rightFlareX, minY + trailingFlareRadius)
-                                   radius:trailingFlareRadius
-                               startAngle:270.0
-                                 endAngle:180.0
-                                clockwise:YES];
-  [path lineToPoint:NSMakePoint(rightBodyX, maxY - radius)];
-  [path curveToPoint:NSMakePoint(rightBodyX - radius, maxY)
-       controlPoint1:NSMakePoint(rightBodyX, maxY - radius * 0.45)
-       controlPoint2:NSMakePoint(rightBodyX - radius * 0.45, maxY)];
-  [path lineToPoint:NSMakePoint(leftBodyX + radius, maxY)];
-  [path curveToPoint:NSMakePoint(leftBodyX, maxY - radius)
-       controlPoint1:NSMakePoint(leftBodyX + radius * 0.45, maxY)
-       controlPoint2:NSMakePoint(leftBodyX, maxY - radius * 0.45)];
-  [path lineToPoint:NSMakePoint(leftBodyX, minY + leadingFlareRadius)];
-  if (leadingFlareRadius > 0.0) {
-    [path appendBezierPathWithArcWithCenter:NSMakePoint(leftFlareX, minY + leadingFlareRadius)
-                                     radius:leadingFlareRadius
-                                 startAngle:0.0
-                                   endAngle:270.0
-                                  clockwise:YES];
-  } else {
-    [path lineToPoint:NSMakePoint(leftFlareX, minY)];
-  }
-  [path closePath];
-  return path;
+  return TLChromeTabBackgroundPath(rect, self.palette, self.leadingFlareOutset);
 }
 
 - (void)mouseDown:(NSEvent *)event {
@@ -758,6 +944,10 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
   self.mouseDownWindowPoint = event.locationInWindow;
   self.didDrag = NO;
   self.dragTranslationX = 0.0;
+  self.layer.zPosition = 2.0;
+  if (self.action) {
+    [NSApp sendAction:self.action to:self.target from:self];
+  }
   self.layer.zPosition = 2.0;
 }
 
@@ -794,9 +984,6 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
   }
 
   self.layer.zPosition = self.active ? 1.0 : 0.0;
-  if (self.action) {
-    [NSApp sendAction:self.action to:self.target from:self];
-  }
 }
 
 - (void)setDragTranslationX:(CGFloat)dragTranslationX {
@@ -805,10 +992,207 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 }
 
 - (void)updateDragTransform {
+  CGFloat translationX = self.dragTranslationX + self.reorderTranslationX;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  self.layer.transform = CATransform3DMakeTranslation(self.dragTranslationX, 0.0, 0.0);
+  self.layer.transform = CATransform3DMakeTranslation(translationX, 0.0, 0.0);
   [CATransaction commit];
+}
+
+- (void)setReorderTranslationX:(CGFloat)translationX animated:(BOOL)animated {
+  [self setReorderTranslationX:translationX animated:animated duration:self.palette.tabReorderSlideDuration];
+}
+
+- (void)setReorderTranslationX:(CGFloat)translationX
+                       animated:(BOOL)animated
+                       duration:(NSTimeInterval)duration {
+  if (fabs(_reorderTranslationX - translationX) < 0.001) {
+    if (!animated) {
+      [self.layer removeAnimationForKey:@"tab-reorder-slide"];
+    }
+    return;
+  }
+
+  CALayer *visibleLayer = self.layer.presentationLayer ?: self.layer;
+  CATransform3D visibleTransform = visibleLayer.transform;
+  _reorderTranslationX = translationX;
+  [self updateDragTransform];
+
+  BOOL shouldAnimate = animated && self.window && duration > 0.0 &&
+    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  if (!shouldAnimate) {
+    [self.layer removeAnimationForKey:@"tab-reorder-slide"];
+    return;
+  }
+
+  CABasicAnimation *slide = [CABasicAnimation animationWithKeyPath:@"transform"];
+  slide.fromValue = [NSValue valueWithCATransform3D:visibleTransform];
+  slide.toValue = [NSValue valueWithCATransform3D:self.layer.transform];
+  slide.duration = duration;
+  slide.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+  [self.layer addAnimation:slide forKey:@"tab-reorder-slide"];
+}
+
+- (void)animateRemovalWithDuration:(NSTimeInterval)duration
+                 targetMaskWidth:(CGFloat)targetMaskWidth
+                       completion:(dispatch_block_t)completion {
+  BOOL shouldAnimate = self.window && duration > 0.0 &&
+    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  if (!shouldAnimate) {
+    completion();
+    return;
+  }
+
+  CAShapeLayer *clipMask = [CAShapeLayer layer];
+  clipMask.frame = self.contentContainer.bounds;
+  CGPathRef fullPath = TLCreateTabLifecycleMaskPath(self.bounds);
+  CGFloat collapsedWidth = MIN(NSWidth(self.bounds), MAX(self.palette.space0, targetMaskWidth));
+  NSRect collapsedRect = NSMakeRect(NSMinX(self.bounds),
+                                    NSMinY(self.bounds),
+                                    collapsedWidth,
+                                    NSHeight(self.bounds));
+  CGPathRef collapsedPath = TLCreateTabLifecycleMaskPath(collapsedRect);
+  clipMask.path = collapsedPath;
+  self.contentContainer.layer.mask = clipMask;
+
+  CABasicAnimation *collapse = [CABasicAnimation animationWithKeyPath:@"path"];
+  collapse.fromValue = (__bridge id)fullPath;
+  collapse.toValue = (__bridge id)collapsedPath;
+  // AppKit begins the constraint animation slightly before Core Animation presents
+  // this explicit mask animation. Lead by two display frames so closing content
+  // never draws over the neighboring tab as the layout slot contracts.
+  collapse.duration = MAX(0.0, duration - TLTabRemovalMaskLeadTime);
+  collapse.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+  [clipMask addAnimation:collapse forKey:@"tab-removal-clip"];
+
+  NSArray<NSView *> *contentViews = @[self.tabIconView, self.titleClipView, self.closeButton];
+  NSTimeInterval fadeDuration = duration * self.palette.tabLifecycleContentFadeDurationRatio;
+  for (NSView *contentView in contentViews) {
+    contentView.wantsLayer = YES;
+    CGFloat visibleOpacity = (contentView.layer.presentationLayer ?: contentView.layer).opacity;
+    CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+    fade.fromValue = @(visibleOpacity);
+    fade.toValue = @0.0;
+    fade.duration = fadeDuration;
+    fade.beginTime = [contentView.layer convertTime:CACurrentMediaTime() fromLayer:nil] +
+      (duration - fadeDuration);
+    fade.fillMode = kCAFillModeBackwards;
+    fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [contentView.layer addAnimation:fade forKey:@"tab-removal-content-fade"];
+  }
+  CGPathRelease(fullPath);
+  CGPathRelease(collapsedPath);
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    self.contentContainer.layer.mask = nil;
+    completion();
+  });
+}
+
+- (void)prepareForInsertionAnimation {
+  [self layoutSubtreeIfNeeded];
+  CGFloat initialWidth = NSWidth(self.contentContainer.bounds) *
+    self.palette.tabLifecycleCollapsedWidthRatio;
+  NSRect initialRect = NSMakeRect(NSMinX(self.contentContainer.bounds),
+                                  NSMinY(self.contentContainer.bounds),
+                                  initialWidth,
+                                  NSHeight(self.contentContainer.bounds));
+  CGPathRef initialPath = TLCreateTabLifecycleMaskPath(initialRect);
+  CAShapeLayer *clipMask = [CAShapeLayer layer];
+  clipMask.frame = self.contentContainer.bounds;
+  clipMask.path = initialPath;
+
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.contentContainer.layer.mask = clipMask;
+  for (NSView *contentView in @[self.tabIconView, self.titleClipView, self.closeButton]) {
+    contentView.wantsLayer = YES;
+    contentView.layer.opacity = 0.0;
+  }
+  [CATransaction commit];
+  CGPathRelease(initialPath);
+}
+
+- (void)animateInsertionWithDuration:(NSTimeInterval)duration completion:(dispatch_block_t)completion {
+  BOOL shouldAnimate = self.window && duration > 0.0 &&
+    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  if (!shouldAnimate) {
+    self.contentContainer.layer.mask = nil;
+    for (NSView *contentView in @[self.tabIconView, self.titleClipView, self.closeButton]) {
+      contentView.layer.opacity = 1.0;
+    }
+    completion();
+    return;
+  }
+
+  CAShapeLayer *clipMask = [self.contentContainer.layer.mask isKindOfClass:CAShapeLayer.class]
+    ? (CAShapeLayer *)self.contentContainer.layer.mask
+    : [CAShapeLayer layer];
+  clipMask.frame = self.contentContainer.bounds;
+  CGPathRef fullPath = TLCreateTabLifecycleMaskPath(self.contentContainer.bounds);
+  CGFloat initialWidth = NSWidth(self.contentContainer.bounds) * self.palette.tabLifecycleCollapsedWidthRatio;
+  NSRect initialRect = NSMakeRect(NSMinX(self.contentContainer.bounds),
+                                  NSMinY(self.contentContainer.bounds),
+                                  initialWidth,
+                                  NSHeight(self.contentContainer.bounds));
+  CGPathRef initialPath = TLCreateTabLifecycleMaskPath(initialRect);
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  clipMask.path = fullPath;
+  self.contentContainer.layer.mask = clipMask;
+  [CATransaction commit];
+
+  CABasicAnimation *expansion = [CABasicAnimation animationWithKeyPath:@"path"];
+  expansion.fromValue = (__bridge id)initialPath;
+  expansion.toValue = (__bridge id)fullPath;
+  expansion.duration = duration;
+  expansion.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+  [clipMask addAnimation:expansion forKey:@"tab-insertion-clip"];
+
+  NSArray<NSView *> *contentViews = @[self.tabIconView, self.titleClipView, self.closeButton];
+  NSTimeInterval fadeDuration = duration * self.palette.tabLifecycleContentFadeDurationRatio;
+  for (NSView *contentView in contentViews) {
+    contentView.wantsLayer = YES;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    contentView.layer.opacity = 1.0;
+    [CATransaction commit];
+    CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+    fade.fromValue = @0.0;
+    fade.toValue = @1.0;
+    fade.duration = fadeDuration;
+    fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [contentView.layer addAnimation:fade forKey:@"tab-insertion-content-fade"];
+  }
+  CGPathRelease(fullPath);
+  CGPathRelease(initialPath);
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    self.contentContainer.layer.mask = nil;
+    completion();
+  });
+}
+
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+  menu.autoenablesItems = NO;
+
+  NSMenuItem *closeItem = [[NSMenuItem alloc] initWithTitle:@"Close"
+                                                     action:@selector(closeTab:)
+                                              keyEquivalent:@""];
+  closeItem.target = self;
+  closeItem.enabled = self.enabled && self.closeable;
+  [menu addItem:closeItem];
+
+  NSMenuItem *closeOtherTabsItem = [[NSMenuItem alloc] initWithTitle:@"Close Other Tabs"
+                                                              action:@selector(closeOtherTabs:)
+                                                       keyEquivalent:@""];
+  closeOtherTabsItem.target = self;
+  closeOtherTabsItem.enabled = self.enabled && self.canCloseOtherTabs;
+  [menu addItem:closeOtherTabsItem];
+  return menu;
 }
 
 - (void)closeTab:(id)sender {
@@ -816,6 +1200,10 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
     self.closeButton.tag = self.tag;
     [NSApp sendAction:self.closeAction to:self.target from:self.closeButton];
   }
+}
+
+- (void)closeOtherTabs:(id)sender {
+  [self.dragDelegate chromeTabViewDidRequestCloseOtherTabs:self];
 }
 
 @end
