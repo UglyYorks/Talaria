@@ -323,6 +323,10 @@ static void TestNativeMessageComposer(void) {
     Check([input.sendButton.solidSurfaceColor isEqual:input.palette.messageInputSendButtonSurface], @"message composer send button is white");
     Check([input.sendButton.disabledSolidSurfaceColor isEqual:input.palette.messageInputSendButtonDisabledSurface],
       @"message composer send button has a themed disabled surface");
+    if (input.palette.dark) {
+      Check([input.palette.messageInputSendButtonDisabledSurface isEqual:input.palette.gray600],
+        @"dark theme uses the darker disabled send surface");
+    }
     Check([input.sendButton.contentTintColor isEqual:input.palette.messageInputSendButtonText], @"message composer send icon has dark contrast");
     Check(NSWidth(input.sendButton.bounds) == input.palette.messageInputSendButtonSize &&
           NSHeight(input.sendButton.bounds) == input.palette.messageInputSendButtonSize,
@@ -346,6 +350,7 @@ static void TestNativeMessageComposer(void) {
     Check(CGColorGetAlpha(input.layer.backgroundColor) == 0 && input.layer.borderWidth == 0,
       @"message composer leaves its native glass visible");
   }
+  input.palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
   input.sendButton.enabled = NO;
   NSBitmapImageRep *preview = [input bitmapImageRepForCachingDisplayInRect:input.bounds];
   [input cacheDisplayInRect:input.bounds toBitmapImageRep:preview];
