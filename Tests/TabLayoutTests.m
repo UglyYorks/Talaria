@@ -2,6 +2,10 @@
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLChromeTabView.h"
 
+@interface TLChromeTabView (TabLayoutTesting)
+- (NSRect)inactiveHoverPillRectInRect:(NSRect)rect;
+@end
+
 static void AssertOffset(TLChromeTabView *tab, CGFloat expected, NSString *context) {
   NSLayoutConstraint *constraint = [tab valueForKey:@"iconCenterYConstraint"];
   if (fabs(constraint.constant - expected) > 0.001) {
@@ -91,6 +95,11 @@ static void TestInactiveFirstTabPadding(TLThemePalette *palette) {
   AssertClose(leading.constant,
               palette.tabIconLeadingInset - palette.tabFlareRadius,
               @"first inactive tab uses the same left content padding as the selected state");
+
+  NSRect hoverRect = [first inactiveHoverPillRectInRect:first.bounds];
+  AssertClose(NSMinX(hoverRect), palette.tabFlareRadius, @"inactive hover excludes the leading flare width");
+  AssertClose(NSMaxX(hoverRect), NSWidth(first.bounds) - palette.tabFlareRadius,
+              @"inactive hover excludes the trailing flare width");
 }
 
 int main(void) {

@@ -577,7 +577,7 @@
 }
 
 - (void)drawInactiveHoverPillInRect:(NSRect)rect {
-  NSRect pillRect = NSInsetRect(rect, self.palette.space2, self.palette.space2);
+  NSRect pillRect = [self inactiveHoverPillRectInRect:rect];
   if (NSWidth(pillRect) <= self.palette.space0 || NSHeight(pillRect) <= self.palette.space0) {
     return;
   }
@@ -588,6 +588,14 @@
                                                        yRadius:radius];
   [self.palette.secondaryActionSurface setFill];
   [path fill];
+}
+
+- (NSRect)inactiveHoverPillRectInRect:(NSRect)rect {
+  CGFloat flareOutset = MIN(self.palette.tabFlareRadius, NSWidth(rect) * 0.18);
+  return NSMakeRect(NSMinX(rect) + flareOutset,
+                    NSMinY(rect) + self.palette.space2,
+                    MAX(self.palette.space0, NSWidth(rect) - flareOutset * 2.0),
+                    MAX(self.palette.space0, NSHeight(rect) - self.palette.space2 * 2.0));
 }
 
 - (void)drawInactiveSeparatorsInRect:(NSRect)rect {
