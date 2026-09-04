@@ -148,8 +148,8 @@ static CGFloat TLTabFlareOverlapForWidth(CGFloat width, TLThemePalette *palette)
 
   CGFloat contentRadius = self.palette.space5;
   TLChromeTabView *firstTabView = self.tabViews.firstObject;
+  firstTabView.leadingFlareOutset = self.palette.space0;
   if (firstTabView.active && [self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
-    firstTabView.leadingFlareOutset = self.palette.space0;
     contentRadius = self.palette.space0;
   }
 
@@ -245,11 +245,11 @@ constrainedHorizontalTranslationForEvent:(NSEvent *)event
       contentRadius = MIN(self.palette.space5, distanceToEdge);
       draggedTabView.leadingFlareOutset = MIN(self.palette.tabFlareRadius, distanceToEdge);
     }
-  } else if (draggedTabView != firstTabView &&
-             firstTabView.active &&
-             [self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
+  } else if (draggedTabView != firstTabView) {
     firstTabView.leadingFlareOutset = self.palette.space0;
-    contentRadius = self.palette.space0;
+    if (firstTabView.active && [self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
+      contentRadius = self.palette.space0;
+    }
   }
 
   [self.delegate workspaceTabsController:self firstTabEdgeCornerRadiusDidChange:contentRadius];

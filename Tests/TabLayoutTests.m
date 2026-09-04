@@ -73,6 +73,26 @@ static void TestHoveredTabSeparators(TLThemePalette *palette) {
   }
 }
 
+static void TestInactiveFirstTabPadding(TLThemePalette *palette) {
+  NSStackView *stack = [[NSStackView alloc] init];
+  TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc] initWithTabStack:stack
+                                                                                       target:nil
+                                                                                     delegate:nil
+                                                                                      palette:palette];
+  TLChromeTabView *first = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, 200, palette.tabHeight)];
+  first.palette = palette;
+  first.active = NO;
+  TLChromeTabView *second = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, 200, palette.tabHeight)];
+  [controller setValue:[NSMutableArray arrayWithObjects:first, second, nil] forKey:@"tabViews"];
+
+  [controller updateEdgeAttachmentState];
+  NSLayoutConstraint *leading = [first valueForKey:@"iconLeadingConstraint"];
+  AssertClose(first.leadingFlareOutset, palette.space0, @"first inactive tab does not reserve an impossible leading flare");
+  AssertClose(leading.constant,
+              palette.tabIconLeadingInset - palette.tabFlareRadius,
+              @"first inactive tab uses the same left content padding as the selected state");
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -96,6 +116,7 @@ int main(void) {
       AssertOffset(tab, tab.palette.space0, @"System icon positioning is unchanged");
       TestSharedFlareSpace(tab.palette);
       TestHoveredTabSeparators(tab.palette);
+      TestInactiveFirstTabPadding(tab.palette);
 
       NSLayoutConstraint *leading = [tab valueForKey:@"iconLeadingConstraint"];
       tab.leadingFlareOutset = tab.palette.space0;
