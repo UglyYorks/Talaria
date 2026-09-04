@@ -12,6 +12,20 @@ static NSString *TLAgentOrchestratorTrim(NSString *value) {
   return [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
 }
 
+static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
+  NSMutableArray<NSString *> *parts = [NSMutableArray array];
+  for (TLChatMessage *message in messages) {
+    if ([message.role isEqualToString:TLRoleSystem] && message.content.length > 0) {
+      [parts addObject:message.content];
+    }
+  }
+  NSString *prompt = messages.lastObject.content ?: @"";
+  if (prompt.length > 0) {
+    [parts addObject:prompt];
+  }
+  return [parts componentsJoinedByString:@"\n\n"];
+}
+
 typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NSError *_Nullable error);
 
 @interface TLAgentOrchestrator ()
@@ -88,7 +102,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }
 
   if (agents.count > 0) {
-    return agents.firstObject;
+    return agents.lastObject;
   }
 
   return [self createAgentWithName:@"Default Agent" error:error];
@@ -182,6 +196,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
+                                  sessionID:(NSString *)sessionID
                                       token:(NSString *)token
                                       model:(NSString *)model
                                    messages:(NSArray<TLChatMessage *> *)messages
@@ -193,13 +208,42 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
       return;
     }
 
-    [self.agentClient streamChatWithAgent:agent
-                                requestID:requestID
-                                    token:token
-                                    model:model
-                                 messages:messages
-                                    delta:delta
-                               completion:completion];
+    if (sessionID.length > 0 &&
+        [self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:delta:completion:)]) {
+      [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
+                                               token:token model:model prompt:TLHermesInputFromMessages(messages)
+                                               delta:delta completion:completion];
+      return;
+    }
+    [self.agentClient streamChatWithAgent:agent requestID:requestID token:token model:model
+                                 messages:messages delta:delta completion:completion];
+  }];
+}
+
+- (void)createFreshHermesAgentWithProgress:(TLHermesInstallProgressHandler)progress
+                                completion:(TLAgentOperationCompletionHandler)completion {
+  NSError *createError = nil;
+  TLAgentRecord *agent = [self createAgentWithName:@"Hermes Agent" error:&createError];
+  if (!agent) {
+    [self completeAgentOperationWithAgent:nil error:createError completion:completion];
+    return;
+  }
+  [self startAgentWithID:agent.agentID completion:^(TLAgentRecord *runningAgent, NSError *startError) {
+    if (!runningAgent || startError) {
+      if (completion) completion(runningAgent, startError);
+      return;
+    }
+    if (![self.agentClient respondsToSelector:@selector(installHermesWithAgent:requestID:progress:completion:)]) {
+      if (completion) completion(runningAgent, TLAgentOrchestratorError(@"This VM runtime cannot install Hermes Agent."));
+      return;
+    }
+    NSString *requestID = NSUUID.UUID.UUIDString;
+    [self.agentClient installHermesWithAgent:runningAgent requestID:requestID
+                                    progress:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
+      if (progress && [deltaRequestID isEqualToString:requestID]) progress(text);
+    } completion:^(NSError *installError) {
+      if (completion) completion(runningAgent, installError);
+    }];
   }];
 }
 

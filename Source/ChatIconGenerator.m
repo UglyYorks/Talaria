@@ -138,6 +138,7 @@ NSString *TLExtractChatIcon(NSString *value) {
   NSMutableString *response = [NSMutableString string];
 
   [self.agentOrchestrator streamChatWithDefaultAgentRequestID:requestID
+                                                    sessionID:@""
                                                        token:trimmedToken
                                                        model:trimmedModel
                                                     messages:messages

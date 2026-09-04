@@ -25,6 +25,7 @@ mount_core_filesystems() {
   $BB ln -sf /proc/self/fd/0 /dev/stdin
   $BB ln -sf /proc/self/fd/1 /dev/stdout
   $BB ln -sf /proc/self/fd/2 /dev/stderr
+  $BB --install -s /usr/bin
 }
 
 load_base_modules() {
@@ -68,7 +69,11 @@ configure_network() {
     iface="${device##*/}"
     [ "$iface" = "lo" ] && continue
     $BB ip link set dev "$iface" up 2>/dev/null || true
-    $BB udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -q -n 2>/dev/null && return
+    if $BB udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -q -n; then
+      log "configured network on $iface"
+      return
+    fi
+    log "DHCP failed on $iface"
   done
 }
 

@@ -29,6 +29,20 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLOpenRouterModel *> *_Null
                                 token:(NSString *)token
                            completion:(TLAgentModelCatalogueHandler)completion;
 
+@optional
+- (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent
+                           requestID:(NSString *)requestID
+                           sessionID:(NSString *)sessionID
+                               token:(NSString *)token
+                               model:(NSString *)model
+                              prompt:(NSString *)prompt
+                               delta:(TLAgentStreamDeltaHandler)delta
+                          completion:(TLAgentStreamCompletionHandler)completion;
+- (void)installHermesWithAgent:(TLAgentRecord *)agent
+                     requestID:(NSString *)requestID
+                      progress:(TLAgentStreamDeltaHandler)progress
+                    completion:(TLAgentStreamCompletionHandler)completion;
+
 @end
 
 @interface TLBundledAgentClient : NSObject <TLAgentStreaming>

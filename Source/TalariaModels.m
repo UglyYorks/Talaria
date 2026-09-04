@@ -144,6 +144,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
     _title = @"New chat";
     _icon = @"";
     _model = [TLDefaultModelID copy];
+    _hermesSessionID = @"";
     _createdAt = @"";
     _updatedAt = @"";
   }
@@ -156,6 +157,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.title = self.title;
   copy.icon = self.icon;
   copy.model = self.model;
+  copy.hermesSessionID = self.hermesSessionID;
   copy.createdAt = self.createdAt;
   copy.updatedAt = self.updatedAt;
   return copy;
@@ -222,6 +224,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   settings.selectedModel = TLDefaultModelID;
   settings.supportingModel = TLDefaultSupportingModelID;
   settings.theme = TLThemePreferenceSystem;
+  settings.onboardingCompleted = NO;
   return settings;
 }
 
@@ -233,6 +236,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
     _selectedModel = [TLDefaultModelID copy];
     _supportingModel = [TLDefaultSupportingModelID copy];
     _theme = TLThemePreferenceSystem;
+    _onboardingCompleted = NO;
   }
   return self;
 }
@@ -244,6 +248,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.selectedModel = self.selectedModel;
   copy.supportingModel = self.supportingModel;
   copy.theme = self.theme;
+  copy.onboardingCompleted = self.onboardingCompleted;
   return copy;
 }
 
