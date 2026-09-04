@@ -76,6 +76,17 @@ static void TestHoveredTabSeparators(TLThemePalette *palette) {
     NSLog(@"FAIL leaving a tab does not restore its adjacent separators");
     exit(1);
   }
+
+  [controller setNewTabButtonHovered:YES];
+  if (right.showsTrailingSeparator) {
+    NSLog(@"FAIL new-tab hover keeps the final separator visible");
+    exit(1);
+  }
+  [controller setNewTabButtonHovered:NO];
+  if (!right.showsTrailingSeparator) {
+    NSLog(@"FAIL leaving the new-tab button does not restore the final separator");
+    exit(1);
+  }
 }
 
 static void TestInactiveFirstTabPadding(TLThemePalette *palette) {

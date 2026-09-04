@@ -21,6 +21,7 @@ typedef NS_ENUM(NSInteger, TLButtonSize) {
 @property (nonatomic) TLButtonStyle style;
 @property (nonatomic) TLButtonSize size;
 @property (nonatomic, getter=isEnabled) BOOL enabled;
+@property (nonatomic, copy, nullable) void (^hoverChanged)(BOOL hovered);
 
 @end
 

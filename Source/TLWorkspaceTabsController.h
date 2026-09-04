@@ -36,6 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
                         delegate:(nullable id<TLWorkspaceTabsControllerDelegate>)delegate
                          palette:(TLThemePalette *)palette;
 - (void)reloadTabs;
+- (void)setNewTabButtonHovered:(BOOL)hovered;
 - (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth;
 - (void)updateEdgeAttachmentState;
 - (void)setControlsEnabled:(BOOL)enabled disabledOpacity:(CGFloat)disabledOpacity;

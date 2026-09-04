@@ -75,12 +75,10 @@
 
 - (void)mouseEntered:(NSEvent *)event {
   self.hovered = YES;
-  [self applyCurrentState];
 }
 
 - (void)mouseExited:(NSEvent *)event {
   self.hovered = NO;
-  [self applyCurrentState];
 }
 
 - (void)viewDidMoveToWindow {
@@ -155,8 +153,32 @@
 }
 
 - (void)setEnabled:(BOOL)enabled {
+  BOOL wasEffectivelyHovered = self.enabled && self.hovered;
   _enabled = enabled;
   [self applyCurrentState];
+  BOOL effectivelyHovered = self.enabled && self.hovered;
+  if (wasEffectivelyHovered != effectivelyHovered && self.hoverChanged) {
+    self.hoverChanged(effectivelyHovered);
+  }
+}
+
+- (void)setHovered:(BOOL)hovered {
+  if (_hovered == hovered) {
+    return;
+  }
+
+  _hovered = hovered;
+  [self applyCurrentState];
+  if (self.hoverChanged) {
+    self.hoverChanged(self.enabled && hovered);
+  }
+}
+
+- (void)setHoverChanged:(void (^)(BOOL))hoverChanged {
+  _hoverChanged = [hoverChanged copy];
+  if (_hoverChanged) {
+    _hoverChanged(self.enabled && self.hovered);
+  }
 }
 
 - (void)setToolTip:(NSString *)toolTip {

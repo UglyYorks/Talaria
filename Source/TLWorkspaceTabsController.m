@@ -9,6 +9,7 @@
 @property (nonatomic, strong, nullable) TLWorkspaceTab *draggedTab;
 @property (nonatomic) NSUInteger draggedStartIndex;
 @property (nonatomic) NSUInteger draggedCurrentIndex;
+@property (nonatomic) BOOL newTabButtonHovered;
 
 @end
 
@@ -66,6 +67,15 @@ static CGFloat TLTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palet
   [self updateSeparatorVisibility];
 }
 
+- (void)setNewTabButtonHovered:(BOOL)hovered {
+  if (_newTabButtonHovered == hovered) {
+    return;
+  }
+
+  _newTabButtonHovered = hovered;
+  [self updateSeparatorVisibility];
+}
+
 - (TLChromeTabView *)workspaceTabViewForTab:(TLWorkspaceTab *)tab index:(NSUInteger)index tabs:(NSArray<TLWorkspaceTab *> *)tabs {
   BOOL active = [self.delegate workspaceTabsController:self isTabActive:tab];
   TLChromeTabView *tabView = [[TLChromeTabView alloc] init];
@@ -114,6 +124,7 @@ static CGFloat TLTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palet
       !previousHovered;
     tabView.showsTrailingSeparator = !tabView.active &&
       !hovered &&
+      !self.newTabButtonHovered &&
       index == self.tabViews.count - 1;
   }
 }
