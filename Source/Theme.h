@@ -226,6 +226,8 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat agentTileBadgeIconSize;
 @property (nonatomic) CGFloat agentTileBadgeInset;
 @property (nonatomic) CGFloat tabFlareRadius;
+@property (nonatomic) CGFloat tabSeparatorFadeDuration;
+@property (nonatomic) CGFloat tabHoverFadeDuration;
 @property (nonatomic) CGFloat historyRowHeight;
 @property (nonatomic) CGFloat historyRowSelectionHorizontalInset;
 @property (nonatomic) CGFloat historyRowSelectionVerticalInset;

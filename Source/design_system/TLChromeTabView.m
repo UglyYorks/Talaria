@@ -2,6 +2,12 @@
 #import "TLTabIconView.h"
 #import <QuartzCore/QuartzCore.h>
 
+CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palette) {
+  CGFloat flareOutset = MIN(palette.tabFlareRadius, width * 0.18);
+  CGFloat tightening = MIN(palette.space2, flareOutset * 0.5);
+  return flareOutset + tightening;
+}
+
 @interface TLChromeTabTextFieldCell : NSTextFieldCell
 @end
 
@@ -215,11 +221,17 @@
 @property (nonatomic, strong) NSLayoutConstraint *closeWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *closeHeightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *closeTrailingConstraint;
+@property (nonatomic, strong) CALayer *inactiveHoverBackgroundLayer;
+@property (nonatomic, strong) CALayer *leadingSeparatorLayer;
+@property (nonatomic, strong) CALayer *trailingSeparatorLayer;
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
 @property (nonatomic) NSPoint mouseDownWindowPoint;
 @property (nonatomic) BOOL didDrag;
 @property (nonatomic, readwrite, getter=isHovered) BOOL hovered;
 @property (nonatomic, readwrite) CGFloat dragTranslationX;
+- (void)updateInactiveDecorationGeometry;
+- (void)updateInactiveDecorationVisibilityAnimated:(BOOL)animated;
+- (void)setOpacity:(CGFloat)opacity forLayer:(CALayer *)layer duration:(NSTimeInterval)duration animated:(BOOL)animated;
 @end
 
 @implementation TLChromeTabView
@@ -234,8 +246,18 @@
     _closeable = YES;
     _leadingFlareOutset = -1.0;
     self.wantsLayer = YES;
+    _inactiveHoverBackgroundLayer = [CALayer layer];
+    _leadingSeparatorLayer = [CALayer layer];
+    _trailingSeparatorLayer = [CALayer layer];
+    _inactiveHoverBackgroundLayer.opacity = 0.0;
+    _leadingSeparatorLayer.opacity = 0.0;
+    _trailingSeparatorLayer.opacity = 0.0;
+    [self.layer addSublayer:_inactiveHoverBackgroundLayer];
+    [self.layer addSublayer:_leadingSeparatorLayer];
+    [self.layer addSublayer:_trailingSeparatorLayer];
     [self buildSubviews];
     [self applyCurrentState];
+    [self updateInactiveDecorationVisibilityAnimated:NO];
   }
   return self;
 }
@@ -256,6 +278,7 @@
 - (void)setPalette:(TLThemePalette *)palette {
   _palette = palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
   [self applyCurrentState];
+  [self updateInactiveDecorationVisibilityAnimated:NO];
 }
 
 - (void)setTitle:(NSString *)title {
@@ -282,6 +305,7 @@
   _active = active;
   self.layer.zPosition = active ? 1.0 : 0.0;
   [self applyCurrentState];
+  [self updateInactiveDecorationVisibilityAnimated:self.window != nil];
 }
 
 - (void)setCloseable:(BOOL)closeable {
@@ -290,13 +314,19 @@
 }
 
 - (void)setShowsLeadingSeparator:(BOOL)showsLeadingSeparator {
+  if (_showsLeadingSeparator == showsLeadingSeparator) {
+    return;
+  }
   _showsLeadingSeparator = showsLeadingSeparator;
-  [self setNeedsDisplay:YES];
+  [self updateInactiveDecorationVisibilityAnimated:self.window != nil];
 }
 
 - (void)setShowsTrailingSeparator:(BOOL)showsTrailingSeparator {
+  if (_showsTrailingSeparator == showsTrailingSeparator) {
+    return;
+  }
   _showsTrailingSeparator = showsTrailingSeparator;
-  [self setNeedsDisplay:YES];
+  [self updateInactiveDecorationVisibilityAnimated:self.window != nil];
 }
 
 - (void)setLeadingFlareOutset:(CGFloat)leadingFlareOutset {
@@ -310,6 +340,7 @@
   [super setEnabled:enabled];
   self.closeButton.enabled = enabled && self.closeable;
   [self applyCurrentState];
+  [self updateInactiveDecorationVisibilityAnimated:self.window != nil];
 }
 
 - (void)buildSubviews {
@@ -406,6 +437,7 @@
   [super layout];
   [self updateHorizontalContentInset];
   [self updateTitleFadeMask];
+  [self updateInactiveDecorationGeometry];
 }
 
 - (void)applyCurrentState {
@@ -449,6 +481,13 @@
   self.closeTrailingConstraint.constant = closeButtonVisible ? -self.palette.space8 : self.palette.space0;
 
   self.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.inactiveHoverBackgroundLayer.backgroundColor = TLCGColor(self.palette.secondaryActionSurface);
+  self.leadingSeparatorLayer.backgroundColor = TLCGColor(self.palette.tabBorder);
+  self.trailingSeparatorLayer.backgroundColor = TLCGColor(self.palette.tabBorder);
+  [CATransaction commit];
+  [self updateInactiveDecorationGeometry];
   [self setNeedsLayout:YES];
   [self setNeedsDisplay:YES];
   [self updateTitleFadeMask];
@@ -504,6 +543,7 @@
   }
   self.hovered = YES;
   [self applyCurrentState];
+  [self updateInactiveDecorationVisibilityAnimated:YES];
   [self.dragDelegate chromeTabViewHoverStateDidChange:self];
 }
 
@@ -513,6 +553,7 @@
   }
   self.hovered = NO;
   [self applyCurrentState];
+  [self updateInactiveDecorationVisibilityAnimated:YES];
   [self.dragDelegate chromeTabViewHoverStateDidChange:self];
 }
 
@@ -523,6 +564,7 @@
     [self.dragDelegate chromeTabViewHoverStateDidChange:self];
   }
   [self applyCurrentState];
+  [self updateInactiveDecorationVisibilityAnimated:NO];
 }
 
 - (void)updateTitleFadeMask {
@@ -559,11 +601,6 @@
   [super drawRect:dirtyRect];
 
   if (!self.active) {
-    if ([self shouldDrawInactiveHoverPill]) {
-      [self drawInactiveHoverPillInRect:self.bounds];
-    } else {
-      [self drawInactiveSeparatorsInRect:self.bounds];
-    }
     return;
   }
 
@@ -582,20 +619,6 @@
   return self.enabled && self.hovered;
 }
 
-- (void)drawInactiveHoverPillInRect:(NSRect)rect {
-  NSRect pillRect = [self inactiveHoverPillRectInRect:rect];
-  if (NSWidth(pillRect) <= self.palette.space0 || NSHeight(pillRect) <= self.palette.space0) {
-    return;
-  }
-
-  CGFloat radius = MIN(self.palette.tabFlareRadius, NSHeight(pillRect) * 0.5);
-  NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:pillRect
-                                                       xRadius:radius
-                                                       yRadius:radius];
-  [self.palette.secondaryActionSurface setFill];
-  [path fill];
-}
-
 - (NSRect)inactiveHoverPillRectInRect:(NSRect)rect {
   CGFloat flareOutset = MIN(self.palette.tabFlareRadius, NSWidth(rect) * 0.18);
   return NSMakeRect(NSMinX(rect) + flareOutset,
@@ -604,21 +627,81 @@
                     MAX(self.palette.space0, NSHeight(rect) - self.palette.space2 * 2.0));
 }
 
-- (void)drawInactiveSeparatorsInRect:(NSRect)rect {
-  if (!self.showsLeadingSeparator && !self.showsTrailingSeparator) {
-    return;
-  }
-
-  [self.palette.tabBorder setFill];
+- (void)updateInactiveDecorationGeometry {
+  NSRect rect = self.bounds;
+  NSRect pillRect = [self inactiveHoverPillRectInRect:rect];
   CGFloat width = self.palette.borderWidth;
   CGFloat insetY = self.palette.space5;
   CGFloat height = MAX(0.0, rect.size.height - insetY * 2.0);
-  if (self.showsLeadingSeparator) {
-    NSRectFill(NSMakeRect(NSMinX(rect), NSMinY(rect) + insetY, width, height));
+  CGFloat leadingCenterX = [self inactiveLeadingSeparatorCenterXInRect:rect];
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.inactiveHoverBackgroundLayer.frame = pillRect;
+  self.inactiveHoverBackgroundLayer.cornerRadius = MIN(self.palette.tabFlareRadius, NSHeight(pillRect) * 0.5);
+  self.inactiveHoverBackgroundLayer.masksToBounds = YES;
+  self.leadingSeparatorLayer.frame = NSMakeRect(leadingCenterX - width * 0.5,
+                                                NSMinY(rect) + insetY,
+                                                width,
+                                                height);
+  self.trailingSeparatorLayer.frame = NSMakeRect(NSMaxX(rect) - width,
+                                                 NSMinY(rect) + insetY,
+                                                 width,
+                                                 height);
+  [CATransaction commit];
+}
+
+- (CGFloat)inactiveLeadingSeparatorCenterXInRect:(NSRect)rect {
+  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(NSWidth(rect), self.palette);
+  return NSMinX(rect) + overlap * 0.5;
+}
+
+- (void)updateInactiveDecorationVisibilityAnimated:(BOOL)animated {
+  BOOL hoverVisible = !self.active && [self shouldDrawInactiveHoverPill];
+  BOOL separatorsVisible = !self.active && !hoverVisible;
+  [self setOpacity:hoverVisible ? 1.0 : 0.0
+           forLayer:self.inactiveHoverBackgroundLayer
+           duration:self.palette.tabHoverFadeDuration
+           animated:animated];
+  [self setOpacity:separatorsVisible && self.showsLeadingSeparator ? 1.0 : 0.0
+           forLayer:self.leadingSeparatorLayer
+           duration:self.palette.tabSeparatorFadeDuration
+           animated:animated];
+  [self setOpacity:separatorsVisible && self.showsTrailingSeparator ? 1.0 : 0.0
+           forLayer:self.trailingSeparatorLayer
+           duration:self.palette.tabSeparatorFadeDuration
+           animated:animated];
+}
+
+- (void)setOpacity:(CGFloat)opacity
+           forLayer:(CALayer *)layer
+           duration:(NSTimeInterval)duration
+           animated:(BOOL)animated {
+  CGFloat modelOpacity = layer.opacity;
+  CALayer *visibleLayer = layer.presentationLayer ?: layer;
+  CGFloat visibleOpacity = visibleLayer.opacity;
+  BOOL shouldAnimate = animated && self.window && duration > 0.0 &&
+    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  if (!shouldAnimate) {
+    [layer removeAnimationForKey:@"tab-decoration-fade"];
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    layer.opacity = opacity;
+    [CATransaction commit];
+    return;
   }
-  if (self.showsTrailingSeparator) {
-    NSRectFill(NSMakeRect(NSMaxX(rect) - width, NSMinY(rect) + insetY, width, height));
+  if (fabs(modelOpacity - opacity) < 0.001) {
+    return;
   }
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  layer.opacity = opacity;
+  [CATransaction commit];
+  CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+  fade.fromValue = @(visibleOpacity);
+  fade.toValue = @(opacity);
+  fade.duration = duration;
+  fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+  [layer addAnimation:fade forKey:@"tab-decoration-fade"];
 }
 
 - (NSBezierPath *)tabPathInRect:(NSRect)rect {

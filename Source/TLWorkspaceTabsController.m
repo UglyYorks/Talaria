@@ -15,12 +15,6 @@
 
 @implementation TLWorkspaceTabsController
 
-static CGFloat TLTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palette) {
-  CGFloat flareOutset = MIN(palette.tabFlareRadius, width * 0.18);
-  CGFloat tightening = MIN(palette.space2, flareOutset * 0.5);
-  return flareOutset + tightening;
-}
-
 - (instancetype)initWithTabStack:(NSStackView *)tabStack
                           target:(id)target
                         delegate:(id<TLWorkspaceTabsControllerDelegate>)delegate
@@ -33,7 +27,7 @@ static CGFloat TLTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palet
     _palette = palette;
     _tabViews = [NSMutableArray array];
     _tabWidthConstraints = [NSMutableArray array];
-    _tabStack.spacing = -TLTabInterTabOverlapForWidth(palette.tabMaxWidth, palette);
+    _tabStack.spacing = -TLChromeTabInterTabOverlapForWidth(palette.tabMaxWidth, palette);
     _draggedStartIndex = NSNotFound;
     _draggedCurrentIndex = NSNotFound;
   }
@@ -140,14 +134,14 @@ static CGFloat TLTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palet
 
   CGFloat tabCount = (CGFloat)self.tabWidthConstraints.count;
   CGFloat sharedBoundaryCount = MAX(self.palette.space0, tabCount - 1.0);
-  CGFloat maximumOverlap = TLTabInterTabOverlapForWidth(self.palette.tabMaxWidth, self.palette);
+  CGFloat maximumOverlap = TLChromeTabInterTabOverlapForWidth(self.palette.tabMaxWidth, self.palette);
   CGFloat equalWidth = (availableWidth + sharedBoundaryCount * maximumOverlap) / tabCount;
-  CGFloat overlap = TLTabInterTabOverlapForWidth(equalWidth, self.palette);
+  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(equalWidth, self.palette);
   if (overlap < maximumOverlap) {
     equalWidth = availableWidth / (tabCount - 0.27 * sharedBoundaryCount);
   }
   equalWidth = MIN(self.palette.tabMaxWidth, MAX(self.palette.borderWidth, equalWidth));
-  overlap = TLTabInterTabOverlapForWidth(equalWidth, self.palette);
+  overlap = TLChromeTabInterTabOverlapForWidth(equalWidth, self.palette);
   self.tabStack.spacing = -overlap;
   for (NSLayoutConstraint *constraint in self.tabWidthConstraints) {
     constraint.constant = equalWidth;
