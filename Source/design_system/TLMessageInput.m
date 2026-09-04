@@ -73,6 +73,7 @@
   self = [super initWithFrame:frameRect];
   if (self) {
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
+    _sendButtonSize = _palette.composerButtonHeight - (_palette.space3 * 2.0);
     _maximumExpandedHeight = _palette.messageInputMaxHeight;
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.wantsLayer = YES;
@@ -137,8 +138,8 @@
   [self.contentView addSubview:self.placeholderLabel];
   [self.contentView addSubview:self.sendButton];
 
-  self.sendButtonWidthConstraint = [self.sendButton.widthAnchor constraintEqualToConstant:self.palette.composerButtonHeight - (self.palette.space3 * 2.0)];
-  self.sendButtonHeightConstraint = [self.sendButton.heightAnchor constraintEqualToConstant:self.palette.composerButtonHeight - (self.palette.space3 * 2.0)];
+  self.sendButtonWidthConstraint = [self.sendButton.widthAnchor constraintEqualToConstant:self.sendButtonSize];
+  self.sendButtonHeightConstraint = [self.sendButton.heightAnchor constraintEqualToConstant:self.sendButtonSize];
   self.placeholderLeadingConstraint = [self.placeholderLabel.leadingAnchor constraintEqualToAnchor:self.textScrollView.leadingAnchor
                                                                                           constant:self.palette.space3];
   self.textLeadingConstraint = [self.textScrollView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:self.palette.space6];
@@ -191,10 +192,17 @@
   self.sendButton.contentTintColor = self.palette.labelText;
   self.maximumExpandedHeight = self.palette.messageInputMaxHeight;
   self.heightConstraint.constant = MAX(self.palette.composerButtonHeight, self.heightConstraint.constant);
-  self.sendButtonWidthConstraint.constant = self.palette.composerButtonHeight - (self.palette.space3 * 2.0);
-  self.sendButtonHeightConstraint.constant = self.palette.composerButtonHeight - (self.palette.space3 * 2.0);
+  self.sendButtonWidthConstraint.constant = self.sendButtonSize;
+  self.sendButtonHeightConstraint.constant = self.sendButtonSize;
   self.placeholderLeadingConstraint.constant = self.palette.space3;
   [self updateTextVerticalInsetForHeight:self.heightConstraint.constant textHeight:self.palette.bodyFont.ascender - self.palette.bodyFont.descender];
+}
+
+- (void)setSendButtonSize:(CGFloat)sendButtonSize {
+  _sendButtonSize = sendButtonSize;
+  self.sendButtonWidthConstraint.constant = sendButtonSize;
+  self.sendButtonHeightConstraint.constant = sendButtonSize;
+  [self setNeedsLayout:YES];
 }
 
 - (void)setBackgroundView:(NSView *)backgroundView {

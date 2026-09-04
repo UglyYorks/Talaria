@@ -106,6 +106,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.historyRowSelectionVerticalInset = 5.0;
   self.composerMinHeight = 76.0;
   self.composerButtonHeight = 46.0;
+  self.messageInputSendButtonSize = 32.0;
   self.messageInputMaxHeight = 168.0;
   self.browserBackdropHeight = 75.0;
   self.browserToolbarButtonSize = 28.0;

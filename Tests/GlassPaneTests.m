@@ -312,12 +312,19 @@ static void TestNativeMessageComposer(void) {
   [window.contentView layoutSubtreeIfNeeded];
   Check([input.backgroundView isKindOfClass:TLGlassPaneView.class], @"message composer uses the native browser glass");
   TLHoverIconButton *send = [input.sendButton valueForKey:@"button"];
-  Check(!send.hoverSurfaceOnly && send.bordered, @"message composer keeps its standalone send button");
+  Check(!send.hoverSurfaceOnly, @"message composer keeps its standalone send button");
+  NSSize iconSize = input.sendButton.image.size;
   for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
     input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
     TLGlassPaneView *glass = (TLGlassPaneView *)input.backgroundView;
     Check(glass.palette == input.palette, @"message composer reapplies its theme to native glass");
     Check(glass.cornerRadius == input.palette.messageInputCornerRadius, @"message composer uses the browser pill radius");
+    Check([input.sendButton.solidSurfaceColor isEqual:input.palette.messageInputSendButtonSurface], @"message composer send button is white");
+    Check([input.sendButton.contentTintColor isEqual:input.palette.messageInputSendButtonText], @"message composer send icon has dark contrast");
+    Check(NSWidth(input.sendButton.bounds) == input.palette.messageInputSendButtonSize &&
+          NSHeight(input.sendButton.bounds) == input.palette.messageInputSendButtonSize,
+      @"message composer uses the compact send button size");
+    Check(NSEqualSizes(input.sendButton.image.size, iconSize), @"compact send button preserves the arrow icon size");
     Check(CGColorGetAlpha(input.layer.backgroundColor) == 0 && input.layer.borderWidth == 0,
       @"message composer leaves its native glass visible");
   }

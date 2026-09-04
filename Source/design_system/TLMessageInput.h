@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong, readonly) NSTextView *textView;
 @property (nonatomic, strong, readonly) TLGlassButton *sendButton;
+@property (nonatomic) CGFloat sendButtonSize;
 @property (nonatomic) CGFloat maximumExpandedHeight;
 @property (nonatomic) BOOL selectsAllOnFocus;
 @property (nonatomic, strong, nullable) NSView *backgroundView;

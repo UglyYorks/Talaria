@@ -18,6 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong, nullable) NSColor *contentTintColor;
 @property (nonatomic, strong, nullable) NSColor *glassTintColor;
 @property (nonatomic, strong, nullable) NSColor *glassHoverTintColor;
+@property (nonatomic, strong, nullable) NSColor *solidSurfaceColor;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, getter=isEnabled) BOOL enabled;
 @property (nonatomic) BOOL usesGlassEffect;

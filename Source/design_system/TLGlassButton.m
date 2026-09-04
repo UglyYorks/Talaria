@@ -268,6 +268,13 @@
 
 - (void)applyGlassState {
   if (self.hoverSurfaceOnly) { return; }
+  if (self.solidSurfaceColor) {
+    self.button.bordered = NO;
+    self.button.wantsLayer = YES;
+    self.button.layer.cornerRadius = MIN(NSWidth(self.button.bounds), NSHeight(self.button.bounds)) / 2.0;
+    self.button.layer.backgroundColor = TLCGColor(self.solidSurfaceColor);
+    return;
+  }
   NSColor *tintColor = nil;
   if (self.enabled) {
     tintColor = self.hovered
@@ -396,6 +403,11 @@
 
 - (void)setGlassHoverTintColor:(NSColor *)glassHoverTintColor {
   _glassHoverTintColor = glassHoverTintColor;
+  [self applyGlassState];
+}
+
+- (void)setSolidSurfaceColor:(NSColor *)solidSurfaceColor {
+  _solidSurfaceColor = solidSurfaceColor;
   [self applyGlassState];
 }
 
