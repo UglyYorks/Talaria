@@ -78,6 +78,7 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.slashCommandItemHighlightedText = palette.appText;
   palette.messageInputPlaceholderText = TLColorWithAlpha(palette.gray500, 0.58);
   palette.messageInputSendButtonSurface = palette.white;
+  palette.messageInputSendButtonDisabledSurface = palette.gray300;
   palette.messageInputSendButtonText = palette.gray950;
   palette.primaryActionSurface = palette.gray800;
   palette.primaryActionText = palette.white;

@@ -321,6 +321,8 @@ static void TestNativeMessageComposer(void) {
     Check(glass.palette == input.palette, @"message composer reapplies its theme to native glass");
     Check(glass.cornerRadius == input.palette.messageInputCornerRadius, @"message composer uses the browser pill radius");
     Check([input.sendButton.solidSurfaceColor isEqual:input.palette.messageInputSendButtonSurface], @"message composer send button is white");
+    Check([input.sendButton.disabledSolidSurfaceColor isEqual:input.palette.messageInputSendButtonDisabledSurface],
+      @"message composer send button has a themed disabled surface");
     Check([input.sendButton.contentTintColor isEqual:input.palette.messageInputSendButtonText], @"message composer send icon has dark contrast");
     Check(NSWidth(input.sendButton.bounds) == input.palette.messageInputSendButtonSize &&
           NSHeight(input.sendButton.bounds) == input.palette.messageInputSendButtonSize,
@@ -334,10 +336,17 @@ static void TestNativeMessageComposer(void) {
     CGRect circleBounds = CGPathGetBoundingBox(surface.path);
     Check(NSWidth(circleBounds) == NSHeight(circleBounds) && NSWidth(circleBounds) == input.palette.messageInputSendButtonSize,
       @"message composer send surface is an exact circle");
+    input.sendButton.enabled = NO;
+    Check(CGColorEqualToColor(surface.fillColor, TLCGColor(input.palette.messageInputSendButtonDisabledSurface)),
+      @"message composer send surface turns grey when disabled");
+    input.sendButton.enabled = YES;
+    Check(CGColorEqualToColor(surface.fillColor, TLCGColor(input.palette.messageInputSendButtonSurface)),
+      @"message composer send surface returns to white when enabled");
     Check(NSEqualSizes(input.sendButton.image.size, iconSize), @"compact send button preserves the arrow icon size");
     Check(CGColorGetAlpha(input.layer.backgroundColor) == 0 && input.layer.borderWidth == 0,
       @"message composer leaves its native glass visible");
   }
+  input.sendButton.enabled = NO;
   NSBitmapImageRep *preview = [input bitmapImageRepForCachingDisplayInRect:input.bounds];
   [input cacheDisplayInRect:input.bounds toBitmapImageRep:preview];
   [[preview representationUsingType:NSBitmapImageFileTypePNG properties:@{}]

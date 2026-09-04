@@ -116,6 +116,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic, strong) NSColor *slashCommandItemHighlightedText;
 @property (nonatomic, strong) NSColor *messageInputPlaceholderText;
 @property (nonatomic, strong) NSColor *messageInputSendButtonSurface;
+@property (nonatomic, strong) NSColor *messageInputSendButtonDisabledSurface;
 @property (nonatomic, strong) NSColor *messageInputSendButtonText;
 @property (nonatomic, strong) NSColor *primaryActionSurface;
 @property (nonatomic, strong) NSColor *primaryActionText;

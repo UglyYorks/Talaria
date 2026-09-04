@@ -2407,6 +2407,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   self.sendButtonSize = self.palette.messageInputSendButtonSize;
   self.sendButtonInset = self.palette.space4;
   self.sendButton.solidSurfaceColor = self.palette.messageInputSendButtonSurface;
+  self.sendButton.disabledSolidSurfaceColor = self.palette.messageInputSendButtonDisabledSurface;
   self.sendButton.contentTintColor = self.palette.messageInputSendButtonText;
 }
 

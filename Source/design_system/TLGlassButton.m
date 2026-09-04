@@ -289,7 +289,10 @@
     CGPathRef circlePath = CGPathCreateWithEllipseInRect(circleRect, NULL);
     self.solidSurfaceLayer.path = circlePath;
     CGPathRelease(circlePath);
-    self.solidSurfaceLayer.fillColor = TLCGColor(self.solidSurfaceColor);
+    NSColor *surfaceColor = !self.enabled && self.disabledSolidSurfaceColor
+      ? self.disabledSolidSurfaceColor
+      : self.solidSurfaceColor;
+    self.solidSurfaceLayer.fillColor = TLCGColor(surfaceColor);
     self.solidSurfaceLayer.hidden = NO;
     return;
   }
@@ -427,6 +430,11 @@
 
 - (void)setSolidSurfaceColor:(NSColor *)solidSurfaceColor {
   _solidSurfaceColor = solidSurfaceColor;
+  [self applyGlassState];
+}
+
+- (void)setDisabledSolidSurfaceColor:(NSColor *)disabledSolidSurfaceColor {
+  _disabledSolidSurfaceColor = disabledSolidSurfaceColor;
   [self applyGlassState];
 }
 
