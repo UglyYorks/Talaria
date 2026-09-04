@@ -14,6 +14,10 @@
 
 @implementation TLWorkspaceTabsController
 
+static CGFloat TLTabFlareOverlapForWidth(CGFloat width, TLThemePalette *palette) {
+  return MIN(palette.tabFlareRadius, width * 0.18);
+}
+
 - (instancetype)initWithTabStack:(NSStackView *)tabStack
                           target:(id)target
                         delegate:(id<TLWorkspaceTabsControllerDelegate>)delegate
@@ -26,6 +30,7 @@
     _palette = palette;
     _tabViews = [NSMutableArray array];
     _tabWidthConstraints = [NSMutableArray array];
+    _tabStack.spacing = -TLTabFlareOverlapForWidth(palette.tabMaxWidth, palette);
     _draggedStartIndex = NSNotFound;
     _draggedCurrentIndex = NSNotFound;
   }
@@ -101,8 +106,17 @@
     return;
   }
 
-  CGFloat equalWidth = floor(availableWidth / (CGFloat)self.tabWidthConstraints.count);
+  CGFloat tabCount = (CGFloat)self.tabWidthConstraints.count;
+  CGFloat sharedBoundaryCount = MAX(self.palette.space0, tabCount - 1.0);
+  CGFloat maximumOverlap = TLTabFlareOverlapForWidth(self.palette.tabMaxWidth, self.palette);
+  CGFloat equalWidth = (availableWidth + sharedBoundaryCount * maximumOverlap) / tabCount;
+  CGFloat overlap = TLTabFlareOverlapForWidth(equalWidth, self.palette);
+  if (overlap < maximumOverlap) {
+    equalWidth = availableWidth / (tabCount - 0.18 * sharedBoundaryCount);
+  }
   equalWidth = MIN(self.palette.tabMaxWidth, MAX(self.palette.borderWidth, equalWidth));
+  overlap = TLTabFlareOverlapForWidth(equalWidth, self.palette);
+  self.tabStack.spacing = -overlap;
   for (NSLayoutConstraint *constraint in self.tabWidthConstraints) {
     constraint.constant = equalWidth;
   }

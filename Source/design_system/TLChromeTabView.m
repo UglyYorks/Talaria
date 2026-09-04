@@ -280,6 +280,7 @@
 
 - (void)setActive:(BOOL)active {
   _active = active;
+  self.layer.zPosition = active ? 1.0 : 0.0;
   [self applyCurrentState];
 }
 
@@ -636,7 +637,7 @@
   self.mouseDownWindowPoint = event.locationInWindow;
   self.didDrag = NO;
   self.dragTranslationX = 0.0;
-  self.layer.zPosition = 1.0;
+  self.layer.zPosition = 2.0;
 }
 
 - (void)mouseDragged:(NSEvent *)event {
@@ -667,11 +668,11 @@
   if (self.didDrag) {
     [self.dragDelegate chromeTabViewDidEndDragging:self];
     self.dragTranslationX = 0.0;
-    self.layer.zPosition = 0.0;
+    self.layer.zPosition = self.active ? 1.0 : 0.0;
     return;
   }
 
-  self.layer.zPosition = 0.0;
+  self.layer.zPosition = self.active ? 1.0 : 0.0;
   if (self.action) {
     [NSApp sendAction:self.action to:self.target from:self];
   }

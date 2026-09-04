@@ -217,7 +217,7 @@ $(NOTCH_VIEW_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedCo
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -o "$@"
 
-$(TAB_LAYOUT_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/TLTabIconView.m Source/design_system/TLChromeTabView.m Tests/TabLayoutTests.m
+$(TAB_LAYOUT_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/WorkspaceState.m Source/design_system/TLTabIconView.m Source/design_system/TLChromeTabView.m Source/TLWorkspaceTabsController.m Tests/TabLayoutTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -o "$@"
 
