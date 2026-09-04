@@ -9,10 +9,17 @@
 @property (nonatomic, strong, nullable) TLWorkspaceTab *draggedTab;
 @property (nonatomic) NSUInteger draggedStartIndex;
 @property (nonatomic) NSUInteger draggedCurrentIndex;
+@property (nonatomic) BOOL newTabButtonHovered;
 
 @end
 
 @implementation TLWorkspaceTabsController
+
+static CGFloat TLTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palette) {
+  CGFloat flareOutset = MIN(palette.tabFlareRadius, width * 0.18);
+  CGFloat tightening = MIN(palette.space2, flareOutset * 0.5);
+  return flareOutset + tightening;
+}
 
 - (instancetype)initWithTabStack:(NSStackView *)tabStack
                           target:(id)target
@@ -26,6 +33,7 @@
     _palette = palette;
     _tabViews = [NSMutableArray array];
     _tabWidthConstraints = [NSMutableArray array];
+    _tabStack.spacing = -TLTabInterTabOverlapForWidth(palette.tabMaxWidth, palette);
     _draggedStartIndex = NSNotFound;
     _draggedCurrentIndex = NSNotFound;
   }
@@ -47,6 +55,7 @@
   for (NSUInteger index = 0; index < tabs.count; index += 1) {
     [self.tabStack addArrangedSubview:[self workspaceTabViewForTab:tabs[index] index:index tabs:tabs]];
   }
+  [self updateSeparatorVisibility];
   [self updateEdgeAttachmentState];
 }
 
@@ -55,12 +64,20 @@
     tabView.enabled = enabled;
     tabView.alphaValue = enabled ? 1.0 : disabledOpacity;
   }
+  [self updateSeparatorVisibility];
+}
+
+- (void)setNewTabButtonHovered:(BOOL)hovered {
+  if (_newTabButtonHovered == hovered) {
+    return;
+  }
+
+  _newTabButtonHovered = hovered;
+  [self updateSeparatorVisibility];
 }
 
 - (TLChromeTabView *)workspaceTabViewForTab:(TLWorkspaceTab *)tab index:(NSUInteger)index tabs:(NSArray<TLWorkspaceTab *> *)tabs {
   BOOL active = [self.delegate workspaceTabsController:self isTabActive:tab];
-  BOOL previousActive = index > 0 && [self.delegate workspaceTabsController:self isTabActive:tabs[index - 1]];
-  BOOL last = index == tabs.count - 1;
   TLChromeTabView *tabView = [[TLChromeTabView alloc] init];
   tabView.translatesAutoresizingMaskIntoConstraints = NO;
   tabView.palette = self.palette;
@@ -75,8 +92,6 @@
   tabView.closeAction = [self.delegate workspaceTabsController:self closeActionForTab:tab];
   tabView.closeable = tab.closeable;
   tabView.active = active;
-  tabView.showsLeadingSeparator = !active && index > 0 && !previousActive;
-  tabView.showsTrailingSeparator = !active && last;
   tabView.dragDelegate = self;
   tabView.representedObject = [tab copy];
   [tabView setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
@@ -96,13 +111,44 @@
   return tabView;
 }
 
+- (void)updateSeparatorVisibility {
+  for (NSUInteger index = 0; index < self.tabViews.count; index += 1) {
+    TLChromeTabView *tabView = self.tabViews[index];
+    BOOL hovered = tabView.enabled && tabView.isHovered;
+    TLChromeTabView *previousTabView = index > 0 ? self.tabViews[index - 1] : nil;
+    BOOL previousHovered = previousTabView.enabled && previousTabView.isHovered;
+    tabView.showsLeadingSeparator = !tabView.active &&
+      !hovered &&
+      index > 0 &&
+      !previousTabView.active &&
+      !previousHovered;
+    tabView.showsTrailingSeparator = !tabView.active &&
+      !hovered &&
+      !self.newTabButtonHovered &&
+      index == self.tabViews.count - 1;
+  }
+}
+
+- (void)chromeTabViewHoverStateDidChange:(TLChromeTabView *)tabView {
+  [self updateSeparatorVisibility];
+}
+
 - (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth {
   if (self.tabWidthConstraints.count == 0 || availableWidth <= self.palette.space0) {
     return;
   }
 
-  CGFloat equalWidth = floor(availableWidth / (CGFloat)self.tabWidthConstraints.count);
+  CGFloat tabCount = (CGFloat)self.tabWidthConstraints.count;
+  CGFloat sharedBoundaryCount = MAX(self.palette.space0, tabCount - 1.0);
+  CGFloat maximumOverlap = TLTabInterTabOverlapForWidth(self.palette.tabMaxWidth, self.palette);
+  CGFloat equalWidth = (availableWidth + sharedBoundaryCount * maximumOverlap) / tabCount;
+  CGFloat overlap = TLTabInterTabOverlapForWidth(equalWidth, self.palette);
+  if (overlap < maximumOverlap) {
+    equalWidth = availableWidth / (tabCount - 0.27 * sharedBoundaryCount);
+  }
   equalWidth = MIN(self.palette.tabMaxWidth, MAX(self.palette.borderWidth, equalWidth));
+  overlap = TLTabInterTabOverlapForWidth(equalWidth, self.palette);
+  self.tabStack.spacing = -overlap;
   for (NSLayoutConstraint *constraint in self.tabWidthConstraints) {
     constraint.constant = equalWidth;
   }
@@ -115,8 +161,8 @@
 
   CGFloat contentRadius = self.palette.space5;
   TLChromeTabView *firstTabView = self.tabViews.firstObject;
+  firstTabView.leadingFlareOutset = self.palette.space0;
   if (firstTabView.active && [self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
-    firstTabView.leadingFlareOutset = self.palette.space0;
     contentRadius = self.palette.space0;
   }
 
@@ -212,11 +258,11 @@ constrainedHorizontalTranslationForEvent:(NSEvent *)event
       contentRadius = MIN(self.palette.space5, distanceToEdge);
       draggedTabView.leadingFlareOutset = MIN(self.palette.tabFlareRadius, distanceToEdge);
     }
-  } else if (draggedTabView != firstTabView &&
-             firstTabView.active &&
-             [self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
+  } else if (draggedTabView != firstTabView) {
     firstTabView.leadingFlareOutset = self.palette.space0;
-    contentRadius = self.palette.space0;
+    if (firstTabView.active && [self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
+      contentRadius = self.palette.space0;
+    }
   }
 
   [self.delegate workspaceTabsController:self firstTabEdgeCornerRadiusDidChange:contentRadius];

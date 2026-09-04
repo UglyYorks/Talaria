@@ -5099,6 +5099,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   button.action = @selector(startNewChatFromButton:);
   button.image = [self symbolImageNamed:@"plus" accessibilityDescription:@"New chat"];
   button.toolTip = @"New chat";
+  __weak typeof(self) weakSelf = self;
+  button.hoverChanged = ^(BOOL hovered) {
+    [weakSelf.workspaceTabsController setNewTabButtonHovered:hovered];
+  };
   return button;
 }
 

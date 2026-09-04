@@ -218,7 +218,7 @@
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
 @property (nonatomic) NSPoint mouseDownWindowPoint;
 @property (nonatomic) BOOL didDrag;
-@property (nonatomic) BOOL hovered;
+@property (nonatomic, readwrite, getter=isHovered) BOOL hovered;
 @property (nonatomic, readwrite) CGFloat dragTranslationX;
 @end
 
@@ -280,6 +280,7 @@
 
 - (void)setActive:(BOOL)active {
   _active = active;
+  self.layer.zPosition = active ? 1.0 : 0.0;
   [self applyCurrentState];
 }
 
@@ -300,6 +301,8 @@
 
 - (void)setLeadingFlareOutset:(CGFloat)leadingFlareOutset {
   _leadingFlareOutset = leadingFlareOutset;
+  [self updateHorizontalContentInset];
+  [self setNeedsLayout:YES];
   [self setNeedsDisplay:YES];
 }
 
@@ -401,6 +404,7 @@
 
 - (void)layout {
   [super layout];
+  [self updateHorizontalContentInset];
   [self updateTitleFadeMask];
 }
 
@@ -421,7 +425,7 @@
   self.tabIconView.icon = hasEmojiIcon ? self.icon : @"";
   self.tabIconView.systemIconName = hasSystemIcon ? self.systemIconName : @"";
   self.tabIconView.contentTintColor = foreground;
-  self.iconLeadingConstraint.constant = self.palette.tabIconLeadingInset;
+  [self updateHorizontalContentInset];
   self.iconWidthConstraint.constant = self.tabIconView.hasIcon ? self.palette.tabIconSize : self.palette.space0;
   self.iconHeightConstraint.constant = self.tabIconView.hasIcon ? self.palette.tabIconSize : self.palette.space0;
   self.iconCenterYConstraint.constant = [self tabIconContainerVerticalOffset];
@@ -469,6 +473,18 @@
   return self.image || self.systemIconName.length > 0 ? self.palette.space0 : self.palette.space2;
 }
 
+- (void)updateHorizontalContentInset {
+  CGFloat width = NSWidth(self.bounds);
+  CGFloat defaultFlareOutset = width > self.palette.space0
+    ? MIN(self.palette.tabFlareRadius, width * 0.18)
+    : self.palette.tabFlareRadius;
+  CGFloat effectiveFlareOutset = self.leadingFlareOutset >= self.palette.space0
+    ? MIN(defaultFlareOutset, self.leadingFlareOutset)
+    : defaultFlareOutset;
+  self.iconLeadingConstraint.constant = self.palette.tabIconLeadingInset -
+    (defaultFlareOutset - effectiveFlareOutset);
+}
+
 - (void)updateTrackingAreas {
   [super updateTrackingAreas];
   if (self.trackingArea) {
@@ -483,19 +499,28 @@
 }
 
 - (void)mouseEntered:(NSEvent *)event {
+  if (self.hovered) {
+    return;
+  }
   self.hovered = YES;
   [self applyCurrentState];
+  [self.dragDelegate chromeTabViewHoverStateDidChange:self];
 }
 
 - (void)mouseExited:(NSEvent *)event {
+  if (!self.hovered) {
+    return;
+  }
   self.hovered = NO;
   [self applyCurrentState];
+  [self.dragDelegate chromeTabViewHoverStateDidChange:self];
 }
 
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
-  if (!self.window) {
+  if (!self.window && self.hovered) {
     self.hovered = NO;
+    [self.dragDelegate chromeTabViewHoverStateDidChange:self];
   }
   [self applyCurrentState];
 }
@@ -542,9 +567,15 @@
     return;
   }
 
-  NSBezierPath *path = [self tabPathInRect:self.bounds];
+  NSBezierPath *path = [self tabPathInRect:[self activeTabRectInRect:self.bounds]];
   [self.palette.tabBackground setFill];
   [path fill];
+}
+
+- (NSRect)activeTabRectInRect:(NSRect)rect {
+  rect.size.height = MAX(self.palette.space0,
+                         NSHeight(rect) - self.palette.tabActiveHeightReduction);
+  return rect;
 }
 
 - (BOOL)shouldDrawInactiveHoverPill {
@@ -552,7 +583,7 @@
 }
 
 - (void)drawInactiveHoverPillInRect:(NSRect)rect {
-  NSRect pillRect = NSInsetRect(rect, self.palette.space2, self.palette.space2);
+  NSRect pillRect = [self inactiveHoverPillRectInRect:rect];
   if (NSWidth(pillRect) <= self.palette.space0 || NSHeight(pillRect) <= self.palette.space0) {
     return;
   }
@@ -563,6 +594,14 @@
                                                        yRadius:radius];
   [self.palette.secondaryActionSurface setFill];
   [path fill];
+}
+
+- (NSRect)inactiveHoverPillRectInRect:(NSRect)rect {
+  CGFloat flareOutset = MIN(self.palette.tabFlareRadius, NSWidth(rect) * 0.18);
+  return NSMakeRect(NSMinX(rect) + flareOutset,
+                    NSMinY(rect) + self.palette.space2,
+                    MAX(self.palette.space0, NSWidth(rect) - flareOutset * 2.0),
+                    MAX(self.palette.space0, NSHeight(rect) - self.palette.space2 * 2.0));
 }
 
 - (void)drawInactiveSeparatorsInRect:(NSRect)rect {
@@ -636,7 +675,7 @@
   self.mouseDownWindowPoint = event.locationInWindow;
   self.didDrag = NO;
   self.dragTranslationX = 0.0;
-  self.layer.zPosition = 1.0;
+  self.layer.zPosition = 2.0;
 }
 
 - (void)mouseDragged:(NSEvent *)event {
@@ -667,11 +706,11 @@
   if (self.didDrag) {
     [self.dragDelegate chromeTabViewDidEndDragging:self];
     self.dragTranslationX = 0.0;
-    self.layer.zPosition = 0.0;
+    self.layer.zPosition = self.active ? 1.0 : 0.0;
     return;
   }
 
-  self.layer.zPosition = 0.0;
+  self.layer.zPosition = self.active ? 1.0 : 0.0;
   if (self.action) {
     [NSApp sendAction:self.action to:self.target from:self];
   }
