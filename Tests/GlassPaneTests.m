@@ -298,6 +298,36 @@ static void TestBrowserComposer(void) {
   [window close];
 }
 
+static void TestNativeMessageComposer(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 100)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  [window.contentView addSubview:input];
+  [NSLayoutConstraint activateConstraints:@[
+    [input.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor constant:30],
+    [input.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor constant:-30],
+    [input.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor constant:20],
+  ]];
+  [window.contentView layoutSubtreeIfNeeded];
+  Check([input.backgroundView isKindOfClass:TLGlassPaneView.class], @"message composer uses the native browser glass");
+  TLHoverIconButton *send = [input.sendButton valueForKey:@"button"];
+  Check(send.hoverSurfaceOnly && !send.bordered, @"message composer matches the browser send control");
+  for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    TLGlassPaneView *glass = (TLGlassPaneView *)input.backgroundView;
+    Check(glass.palette == input.palette, @"message composer reapplies its theme to native glass");
+    Check(glass.cornerRadius == input.palette.messageInputCornerRadius, @"message composer uses the browser pill radius");
+    Check(CGColorGetAlpha(input.layer.backgroundColor) == 0 && input.layer.borderWidth == 0,
+      @"message composer leaves its native glass visible");
+  }
+  NSBitmapImageRep *preview = [input bitmapImageRepForCachingDisplayInRect:input.bounds];
+  [input cacheDisplayInRect:input.bounds toBitmapImageRep:preview];
+  [[preview representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+    writeToFile:@"/tmp/talaria-native-message-composer.png" atomically:YES];
+  [window close];
+}
+
 static void RunFor(NSTimeInterval duration) {
   [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:duration]];
 }
@@ -411,6 +441,7 @@ int main(void) {
     }
     TestURLSuggestions();
     TestBrowserChatPane();
+    TestNativeMessageComposer();
     TestBrowserComposer();
     TestBrowserHeightAnimation();
     TestCommandDescriptions();

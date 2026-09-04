@@ -2384,13 +2384,36 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 - (void)updateToolbarImages;
 @end
 
-@implementation TLBrowserAddressInput
+@implementation TLGlassMessageInput
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   if (self) {
     self.backgroundView = [[TLGlassPaneView alloc] init];
     self.sendButton.hoverSurfaceOnly = YES;
+    [self applyGlassPalette];
+  }
+  return self;
+}
+
+- (void)setPalette:(TLThemePalette *)palette {
+  [super setPalette:palette];
+  [self applyGlassPalette];
+}
+
+- (void)applyGlassPalette {
+  TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
+  glass.palette = self.palette;
+  glass.cornerRadius = self.palette.messageInputCornerRadius;
+}
+
+@end
+
+@implementation TLBrowserAddressInput
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+  self = [super initWithFrame:frameRect];
+  if (self) {
     _backButton = [self toolbarButtonWithToolTip:@"Back"];
     _forwardButton = [self toolbarButtonWithToolTip:@"Forward"];
     _reloadButton = [self toolbarButtonWithToolTip:@"Reload"];
