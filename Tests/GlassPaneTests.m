@@ -316,6 +316,7 @@ static void TestNativeMessageComposer(void) {
   NSSize iconSize = input.sendButton.image.size;
   for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
     input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [window.contentView layoutSubtreeIfNeeded];
     TLGlassPaneView *glass = (TLGlassPaneView *)input.backgroundView;
     Check(glass.palette == input.palette, @"message composer reapplies its theme to native glass");
     Check(glass.cornerRadius == input.palette.messageInputCornerRadius, @"message composer uses the browser pill radius");
@@ -324,6 +325,11 @@ static void TestNativeMessageComposer(void) {
     Check(NSWidth(input.sendButton.bounds) == input.palette.messageInputSendButtonSize &&
           NSHeight(input.sendButton.bounds) == input.palette.messageInputSendButtonSize,
       @"message composer uses the compact send button size");
+    CGFloat topMargin = NSHeight(input.bounds) - NSMaxY(input.sendButton.frame);
+    CGFloat rightMargin = NSWidth(input.bounds) - NSMaxX(input.sendButton.frame);
+    CGFloat bottomMargin = NSMinY(input.sendButton.frame);
+    Check(topMargin == rightMargin && rightMargin == bottomMargin,
+      @"single-line composer keeps equal top, right, and bottom send button margins");
     CAShapeLayer *surface = [input.sendButton valueForKey:@"solidSurfaceLayer"];
     CGRect circleBounds = CGPathGetBoundingBox(surface.path);
     Check(NSWidth(circleBounds) == NSHeight(circleBounds) && NSWidth(circleBounds) == input.palette.messageInputSendButtonSize,

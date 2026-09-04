@@ -61,6 +61,8 @@
 @property (nonatomic, strong) NSLayoutConstraint *heightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sendButtonWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sendButtonHeightConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *sendButtonTrailingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *sendButtonBottomConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *placeholderLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *textLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *textTrailingConstraint;
@@ -74,6 +76,7 @@
   if (self) {
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _sendButtonSize = _palette.composerButtonHeight - (_palette.space3 * 2.0);
+    _sendButtonInset = _palette.space3;
     _maximumExpandedHeight = _palette.messageInputMaxHeight;
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.wantsLayer = YES;
@@ -140,6 +143,10 @@
 
   self.sendButtonWidthConstraint = [self.sendButton.widthAnchor constraintEqualToConstant:self.sendButtonSize];
   self.sendButtonHeightConstraint = [self.sendButton.heightAnchor constraintEqualToConstant:self.sendButtonSize];
+  self.sendButtonTrailingConstraint = [self.sendButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor
+                                                                                   constant:-self.sendButtonInset];
+  self.sendButtonBottomConstraint = [self.sendButton.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor
+                                                                               constant:-self.sendButtonInset];
   self.placeholderLeadingConstraint = [self.placeholderLabel.leadingAnchor constraintEqualToAnchor:self.textScrollView.leadingAnchor
                                                                                           constant:self.palette.space3];
   self.textLeadingConstraint = [self.textScrollView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:self.palette.space6];
@@ -153,8 +160,8 @@
     self.placeholderLeadingConstraint,
     [self.placeholderLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.textScrollView.trailingAnchor constant:-self.palette.space3],
     [self.placeholderLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-    [self.sendButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-self.palette.space3],
-    [self.sendButton.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-self.palette.space3],
+    self.sendButtonTrailingConstraint,
+    self.sendButtonBottomConstraint,
     self.sendButtonWidthConstraint,
     self.sendButtonHeightConstraint,
   ]];
@@ -194,6 +201,8 @@
   self.heightConstraint.constant = MAX(self.palette.composerButtonHeight, self.heightConstraint.constant);
   self.sendButtonWidthConstraint.constant = self.sendButtonSize;
   self.sendButtonHeightConstraint.constant = self.sendButtonSize;
+  self.sendButtonTrailingConstraint.constant = -self.sendButtonInset;
+  self.sendButtonBottomConstraint.constant = -self.sendButtonInset;
   self.placeholderLeadingConstraint.constant = self.palette.space3;
   [self updateTextVerticalInsetForHeight:self.heightConstraint.constant textHeight:self.palette.bodyFont.ascender - self.palette.bodyFont.descender];
 }
@@ -202,6 +211,13 @@
   _sendButtonSize = sendButtonSize;
   self.sendButtonWidthConstraint.constant = sendButtonSize;
   self.sendButtonHeightConstraint.constant = sendButtonSize;
+  [self setNeedsLayout:YES];
+}
+
+- (void)setSendButtonInset:(CGFloat)sendButtonInset {
+  _sendButtonInset = sendButtonInset;
+  self.sendButtonTrailingConstraint.constant = -sendButtonInset;
+  self.sendButtonBottomConstraint.constant = -sendButtonInset;
   [self setNeedsLayout:YES];
 }
 

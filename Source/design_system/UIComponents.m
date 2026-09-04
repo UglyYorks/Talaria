@@ -2405,6 +2405,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   glass.palette = self.palette;
   glass.cornerRadius = self.palette.messageInputCornerRadius;
   self.sendButtonSize = self.palette.messageInputSendButtonSize;
+  self.sendButtonInset = self.palette.space4;
   self.sendButton.solidSurfaceColor = self.palette.messageInputSendButtonSurface;
   self.sendButton.contentTintColor = self.palette.messageInputSendButtonText;
 }
@@ -2482,6 +2483,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   self.responseCountLabel.font = self.palette.smallFont;
   self.responseCountLabel.textColor = self.palette.controlText;
   self.sendButtonSize = self.palette.composerButtonHeight - (self.palette.space3 * 2.0);
+  self.sendButtonInset = self.palette.space3;
   self.sendButton.contentTintColor = self.palette.labelText;
   for (NSLayoutConstraint *constraint in self.buttonSizeConstraints) {
     constraint.constant = self.palette.browserToolbarButtonSize;
