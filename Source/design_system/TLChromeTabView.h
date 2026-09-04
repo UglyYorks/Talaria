@@ -3,6 +3,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palette);
+
 @class TLChromeTabView;
 
 @protocol TLChromeTabViewDelegate <NSObject>

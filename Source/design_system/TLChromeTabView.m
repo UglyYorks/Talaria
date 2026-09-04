@@ -2,6 +2,12 @@
 #import "TLTabIconView.h"
 #import <QuartzCore/QuartzCore.h>
 
+CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palette) {
+  CGFloat flareOutset = MIN(palette.tabFlareRadius, width * 0.18);
+  CGFloat tightening = MIN(palette.space2, flareOutset * 0.5);
+  return flareOutset + tightening;
+}
+
 @interface TLChromeTabTextFieldCell : NSTextFieldCell
 @end
 
@@ -614,11 +620,17 @@
   CGFloat insetY = self.palette.space5;
   CGFloat height = MAX(0.0, rect.size.height - insetY * 2.0);
   if (self.showsLeadingSeparator) {
-    NSRectFill(NSMakeRect(NSMinX(rect), NSMinY(rect) + insetY, width, height));
+    CGFloat centerX = [self inactiveLeadingSeparatorCenterXInRect:rect];
+    NSRectFill(NSMakeRect(centerX - width * 0.5, NSMinY(rect) + insetY, width, height));
   }
   if (self.showsTrailingSeparator) {
     NSRectFill(NSMakeRect(NSMaxX(rect) - width, NSMinY(rect) + insetY, width, height));
   }
+}
+
+- (CGFloat)inactiveLeadingSeparatorCenterXInRect:(NSRect)rect {
+  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(NSWidth(rect), self.palette);
+  return NSMinX(rect) + overlap * 0.5;
 }
 
 - (NSBezierPath *)tabPathInRect:(NSRect)rect {

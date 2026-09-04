@@ -5,6 +5,7 @@
 @interface TLChromeTabView (TabLayoutTesting)
 - (NSRect)activeTabRectInRect:(NSRect)rect;
 - (NSRect)inactiveHoverPillRectInRect:(NSRect)rect;
+- (CGFloat)inactiveLeadingSeparatorCenterXInRect:(NSRect)rect;
 @end
 
 static void AssertOffset(TLChromeTabView *tab, CGFloat expected, NSString *context) {
@@ -114,6 +115,42 @@ static void TestInactiveFirstTabPadding(TLThemePalette *palette) {
               @"inactive hover excludes the trailing flare width");
 }
 
+static void TestInactiveSeparatorCentering(TLThemePalette *palette) {
+  CGFloat width = palette.tabMaxWidth;
+  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(width, palette);
+  CGFloat flareOutset = MIN(palette.tabFlareRadius, width * 0.18);
+  TLChromeTabView *right = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, width, palette.tabHeight)];
+  right.palette = palette;
+
+  CGFloat leftHandleTrailingX = width - flareOutset;
+  CGFloat rightFrameX = width - overlap;
+  CGFloat rightHandleLeadingX = rightFrameX + flareOutset;
+  CGFloat expectedWorldCenterX = (leftHandleTrailingX + rightHandleLeadingX) * 0.5;
+  CGFloat actualWorldCenterX = rightFrameX + [right inactiveLeadingSeparatorCenterXInRect:right.bounds];
+  AssertClose(actualWorldCenterX, expectedWorldCenterX,
+              @"inactive separator is centered between neighboring tab handles");
+
+  if (palette.dark) {
+    TLChromeTabView *left = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, width, palette.tabHeight)];
+    left.palette = palette;
+    left.icon = @"\U0001F41F";
+    left.title = @"First tab";
+    right.frame = NSMakeRect(rightFrameX, 0, width, palette.tabHeight);
+    right.icon = @"\U0001F4AC";
+    right.title = @"Second tab";
+    right.showsLeadingSeparator = YES;
+    NSView *strip = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width * 2.0 - overlap, palette.tabHeight)];
+    strip.wantsLayer = YES;
+    strip.layer.backgroundColor = TLCGColor(palette.sidebarSurface);
+    [strip addSubview:left];
+    [strip addSubview:right];
+    NSBitmapImageRep *preview = [strip bitmapImageRepForCachingDisplayInRect:strip.bounds];
+    [strip cacheDisplayInRect:strip.bounds toBitmapImageRep:preview];
+    [[preview representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:@"/tmp/talaria-centered-tab-separator.png" atomically:YES];
+  }
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -143,6 +180,7 @@ int main(void) {
       TestSharedFlareSpace(tab.palette);
       TestHoveredTabSeparators(tab.palette);
       TestInactiveFirstTabPadding(tab.palette);
+      TestInactiveSeparatorCentering(tab.palette);
 
       NSLayoutConstraint *leading = [tab valueForKey:@"iconLeadingConstraint"];
       tab.leadingFlareOutset = tab.palette.space0;
