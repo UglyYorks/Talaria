@@ -8,6 +8,8 @@
   <string>Talaria</string>
   <key>CFBundleExecutable</key>
   <string>Talaria</string>
+  <key>CFBundleIconFile</key>
+  <string>Talaria.icns</string>
   <key>CFBundleIdentifier</key>
   <string>com.talaria.chat</string>
   <key>CFBundleInfoDictionaryVersion</key>

@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import secrets
 import socket
 import subprocess
 import sys
@@ -21,6 +22,8 @@ HERMES_API_URL = "http://127.0.0.1:8642"
 HERMES_API_KEY = "talaria-vsock-only"
 _gateway_process = None
 _gateway_lock = threading.Lock()
+_shell_directories = {}
+_shell_lock = threading.Lock()
 
 
 def trim(value):
@@ -134,6 +137,61 @@ def install_hermes(request, output=None):
         error(f"Hermes Agent installation failed with exit code {return_code}.", output)
         return
     progress(request_id, "Hermes Agent is ready.\n", output)
+    emit({"type": "complete"}, output)
+
+
+def run_shell_command(request, output=None):
+    request_id = trim(request.get("request_id"))
+    session_id = trim(request.get("session_id"))
+    command = trim(request.get("command"))
+    if not request_id or not session_id or not command:
+        error("Shell session, request ID, and command are required.", output)
+        return
+
+    default_directory = "/workspace" if Path("/workspace").is_dir() else "/"
+    with _shell_lock:
+        working_directory = _shell_directories.get(session_id, default_directory)
+    if not Path(working_directory).is_dir():
+        working_directory = default_directory
+
+    marker = f"__TALARIA_CWD_{secrets.token_hex(12)}__"
+    script = f"{command}\nprintf '\\n{marker}%s\\n' \"$PWD\"\n"
+    environment = os.environ.copy()
+    environment.update({
+        "HOME": "/workspace",
+        "PATH": "/workspace/.local/bin:/workspace/.hermes/bin:" + environment.get("PATH", ""),
+        "TERM": "xterm-256color",
+    })
+    process = subprocess.Popen(
+        ["/bin/bash", "-c", script],
+        cwd=working_directory,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        command_output, _ = process.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        command_output, _ = process.communicate()
+        if command_output:
+            emit({"type": "delta", "request_id": request_id, "kind": "content", "text": command_output}, output)
+        error("Command exceeded the 60 second debug terminal limit.", output)
+        return
+
+    marker_index = command_output.rfind("\n" + marker)
+    if marker_index >= 0:
+        visible_output = command_output[:marker_index]
+        directory_text = command_output[marker_index + len(marker) + 1:].splitlines()
+        if directory_text and Path(directory_text[0]).is_dir():
+            with _shell_lock:
+                _shell_directories[session_id] = directory_text[0]
+    else:
+        visible_output = command_output
+
+    if visible_output:
+        emit({"type": "delta", "request_id": request_id, "kind": "content", "text": visible_output}, output)
     emit({"type": "complete"}, output)
 
 
@@ -443,6 +501,9 @@ def stream_chat(request, output=None):
 
 def handle_request(request, output=None):
     operation = request.get("operation")
+    if operation == "shell_command":
+        run_shell_command(request, output)
+        return 0
     if operation == "install_hermes":
         install_hermes(request, output)
         return 0

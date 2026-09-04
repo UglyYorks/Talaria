@@ -291,6 +291,22 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                        delta:progress streamCompletion:completion modelCompletion:nil];
 }
 
+- (void)runShellCommandWithAgent:(TLAgentRecord *)agent
+                       requestID:(NSString *)requestID
+                       sessionID:(NSString *)sessionID
+                         command:(NSString *)command
+                          output:(TLAgentStreamDeltaHandler)output
+                      completion:(TLAgentStreamCompletionHandler)completion {
+  NSDictionary *payload = @{
+    @"operation": @"shell_command",
+    @"request_id": requestID ?: @"",
+    @"session_id": sessionID ?: @"",
+    @"command": command ?: @"",
+  };
+  [self startWorkerWithAgent:agent payload:payload operation:@"shell_command"
+                       delta:output streamCompletion:completion modelCompletion:nil];
+}
+
 - (void)streamChatWithAgent:(TLAgentRecord *)agent
                   requestID:(NSString *)requestID
                       token:(NSString *)token

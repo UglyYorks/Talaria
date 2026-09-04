@@ -28,6 +28,8 @@ static NSUInteger TLFailureCount = 0;
 @property (nonatomic, copy) NSString *capturedToken;
 @property (nonatomic, copy) NSString *capturedModel;
 @property (nonatomic, copy) NSString *capturedSessionID;
+@property (nonatomic, copy) NSString *capturedShellSessionID;
+@property (nonatomic, copy) NSString *capturedShellCommand;
 @property (nonatomic, copy) NSString *contentDelta;
 @property (nonatomic, copy) NSString *thinkingDelta;
 @property (nonatomic, strong, nullable) NSError *streamError;
@@ -92,6 +94,19 @@ static NSUInteger TLFailureCount = 0;
   }
   delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
+  completion(nil);
+}
+
+- (void)runShellCommandWithAgent:(TLAgentRecord *)agent
+                       requestID:(NSString *)requestID
+                       sessionID:(NSString *)sessionID
+                         command:(NSString *)command
+                          output:(TLAgentStreamDeltaHandler)output
+                      completion:(TLAgentStreamCompletionHandler)completion {
+  self.capturedAgent = [agent copy];
+  self.capturedShellSessionID = sessionID;
+  self.capturedShellCommand = command;
+  output(requestID, TLAgentStreamDeltaKindContent, @"/workspace\n");
   completion(nil);
 }
 
@@ -553,6 +568,16 @@ static void TestAgentOrchestrator(void) {
   TLAssertEqualObjects([database agentWithID:agent.agentID error:&error].status,
                        TLAgentStatusRunning,
                        @"persists auto-started agent status");
+  __block NSString *shellOutput = @"";
+  __block NSError *shellError = nil;
+  [orchestrator runShellCommandWithDefaultAgentSessionID:@"debug-session"
+                                                 command:@"pwd"
+                                                  output:^(NSString *text) { shellOutput = [shellOutput stringByAppendingString:text]; }
+                                              completion:^(NSError *commandError) { shellError = commandError; }];
+  TLAssertTrue(shellError == nil, @"runs a debug shell command through the active VM");
+  TLAssertEqualObjects(client.capturedShellSessionID, @"debug-session", @"keeps the debug shell session stable");
+  TLAssertEqualObjects(client.capturedShellCommand, @"pwd", @"passes the debug command to the VM");
+  TLAssertEqualObjects(shellOutput, @"/workspace\n", @"returns VM shell output");
   TLAssertTrue([orchestrator deleteAgentWithID:agent.agentID error:&error], @"orchestrator deletes agents");
   TLAssertTrue(![NSFileManager.defaultManager fileExistsAtPath:agent.vmDirectory], @"orchestrator removes VM storage");
 

@@ -15,6 +15,7 @@
 #import "TLMainWindow.h"
 #import "TLOnboardingDemoWindowController.h"
 #import "TLHermesOnboardingWindowController.h"
+#import "TLVMDebugTerminalWindowController.h"
 #import "TLWorkspaceTabsController.h"
 #import "UIComponents.h"
 #import "WorkspaceState.h"
@@ -118,6 +119,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong, nullable) TLWorkspaceTab *settingsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *agentsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *notesTab;
+@property (nonatomic, strong, nullable) TLWorkspaceTab *debugTab;
 @property (nonatomic, strong) TLChatRecord *activeChat;
 @property (nonatomic) NSInteger nextBrowserTabID;
 @property (nonatomic) NSInteger nextDraftChatID;
@@ -210,6 +212,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListBottomConstraint;
 @property (nonatomic, strong) TLOnboardingDemoWindowController *onboardingDemoWindowController;
 @property (nonatomic, strong) TLHermesOnboardingWindowController *hermesOnboardingWindowController;
+@property (nonatomic, strong) TLVMDebugTerminalWindowController *debugTerminalWindowController;
 @property (nonatomic, strong, nullable) TLASCIIPlanetScreensaverView *screensaverView;
 @property (nonatomic) NSRect mainWindowFrameBeforeOnboarding;
 @property (nonatomic) BOOL hasMainWindowFrameBeforeOnboarding;
@@ -1592,6 +1595,18 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
           [self addWorkspaceContentView:runtime.contentView];
         }
         break;
+      case TLWorkspaceTabKindDebug:
+        self.debugTab = tab;
+        if (!runtime) {
+          runtime = [TLWorkspaceTabRuntime runtimeWithContentView:[self buildDebugTabContent]
+                                                       openAction:@selector(openDebugTab:)
+                                                      closeAction:@selector(closeDebugTab:)];
+          [self setRuntime:runtime forTab:tab];
+        }
+        if (runtime.contentView) {
+          [self addWorkspaceContentView:runtime.contentView];
+        }
+        break;
       case TLWorkspaceTabKindBrowser:
         if (runtime.contentView) {
           [self addWorkspaceContentView:runtime.contentView];
@@ -1621,6 +1636,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self showAgents:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindNotes) {
     [self showNotes:self];
+  } else if (snapshot.activeTabKind == TLWorkspaceTabKindDebug) {
+    [self showDebug:self];
   }
 
   [self updateWorkspaceMode];
@@ -1767,6 +1784,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   agentsItem.target = self;
   agentsItem.image = [self symbolImageNamed:@"cpu" accessibilityDescription:@"Agents"];
   [menu addItem:agentsItem];
+
+  NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:@"Debug"
+                                                     action:@selector(showDebug:)
+                                              keyEquivalent:@""];
+  debugItem.target = self;
+  debugItem.image = [self symbolImageNamed:@"terminal" accessibilityDescription:@"Debug"];
+  [menu addItem:debugItem];
 
   NSMenuItem *settingsItem = [[NSMenuItem alloc] initWithTitle:@"Settings"
                                                         action:@selector(showSettings:)
@@ -3200,6 +3224,72 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self updateControlStates];
 }
 
+- (void)showDebug:(id)sender {
+  if (self.isSending || self.widgetbookMode) {
+    return;
+  }
+
+  if (!self.debugTab) {
+    NSView *contentView = [self buildDebugTabContent];
+    self.debugTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindDebug
+                                          tabID:0
+                                          title:@"Debug"
+                                        toolTip:@"Debug"
+                                            URL:nil
+                                      closeable:YES];
+    [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:contentView
+                                                        openAction:@selector(openDebugTab:)
+                                                       closeAction:@selector(closeDebugTab:)]
+              forTab:self.debugTab];
+    [self addWorkspaceContentView:contentView];
+    [self.appStateManager addWorkspaceTab:self.debugTab activate:NO];
+  }
+
+  [self activateTabKind:TLWorkspaceTabKindDebug tabID:self.debugTab.tabID];
+  [self updateWorkspaceMode];
+  [self reloadWorkspaceTabs];
+  [self updateControlStates];
+}
+
+- (void)openDebugTab:(id)sender {
+  if (self.isSending || self.widgetbookMode || !self.debugTab) {
+    return;
+  }
+  [self activateTabKind:TLWorkspaceTabKindDebug tabID:self.debugTab.tabID];
+  [self updateWorkspaceMode];
+  [self reloadWorkspaceTabs];
+  [self updateControlStates];
+}
+
+- (void)closeDebugTab:(id)sender {
+  if (!self.debugTab) {
+    return;
+  }
+  if ([self closeWindowIfOnlyWorkspaceTab:self.debugTab]) {
+    return;
+  }
+
+  BOOL closingActiveTab = [self isWorkspaceTabActive:self.debugTab];
+  [self.appStateManager removeWorkspaceTabWithKind:self.debugTab.kind tabID:self.debugTab.tabID];
+  [[self contentViewForTab:self.debugTab] removeFromSuperview];
+  [self removeRuntimeForKind:self.debugTab.kind tabID:self.debugTab.tabID];
+  self.debugTab = nil;
+  if (closingActiveTab) {
+    [self activateDefaultTab];
+  }
+  [self updateWorkspaceMode];
+  [self reloadWorkspaceTabs];
+  [self updateControlStates];
+}
+
+- (void)openDebugTerminal:(id)sender {
+  if (!self.debugTerminalWindowController) {
+    self.debugTerminalWindowController = [[TLVMDebugTerminalWindowController alloc]
+      initWithPalette:self.palette agentOrchestrator:self.agentOrchestrator];
+  }
+  [self.debugTerminalWindowController showFromWindow:self.window];
+}
+
 - (void)showNotes:(id)sender {
   if (self.isSending || self.widgetbookMode) {
     return;
@@ -3756,6 +3846,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   nextContentView.hidden = ![self isWorkspaceTabActive:self.notesTab];
 }
 
+- (void)rebuildDebugTabContentForCurrentPalette {
+  if (!self.debugTab) {
+    return;
+  }
+  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:self.debugTab];
+  if (!runtime) {
+    return;
+  }
+  NSView *previousContentView = runtime.contentView;
+  NSView *nextContentView = [self buildDebugTabContent];
+  runtime.contentView = nextContentView;
+  [previousContentView removeFromSuperview];
+  [self addWorkspaceContentView:nextContentView];
+  nextContentView.hidden = ![self isWorkspaceTabActive:self.debugTab];
+}
+
 - (CGFloat)notesMessageInputWidthForArticleWidth:(CGFloat)articleWidth {
   CGFloat availableWidth = articleWidth > self.palette.space0
     ? articleWidth - (self.palette.space11 * 2.0)
@@ -3810,6 +3916,78 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.notesMessageInput recalculateHeight];
   [self updateNotesPromptControlState];
   [self sendMessage:sender];
+}
+
+- (NSView *)buildDebugTabContent {
+  TLThemePalette *palette = self.palette;
+  TLTokenView *content = [[TLTokenView alloc] init];
+  content.translatesAutoresizingMaskIntoConstraints = NO;
+  content.fillColor = palette.tabBackground;
+
+  NSTextField *titleLabel = [self labelWithString:@"Debug" font:palette.titleFont color:palette.appText];
+  NSTextField *subtitleLabel = [self labelWithString:@"Inspect the active agent VM from a private shell session."
+                                                font:palette.bodyFont
+                                               color:palette.textMuted];
+  NSTextField *terminalLabel = [self labelWithString:@"VM terminal" font:palette.labelFont color:palette.labelText];
+  NSTextField *terminalDescription = [self labelWithString:@"Open a terminal window for commands such as pwd, ls, cd, and cat. Commands run inside the VM, not on your Mac."
+                                                     font:palette.bodyFont
+                                                    color:palette.textMuted];
+  terminalDescription.maximumNumberOfLines = 0;
+  terminalDescription.lineBreakMode = NSLineBreakByWordWrapping;
+
+  NSButton *openButton = [NSButton buttonWithTitle:@"Open VM terminal" target:self action:@selector(openDebugTerminal:)];
+  openButton.translatesAutoresizingMaskIntoConstraints = NO;
+  openButton.bezelStyle = NSBezelStyleRounded;
+  openButton.controlSize = NSControlSizeLarge;
+  openButton.font = palette.labelFont;
+  openButton.bezelColor = palette.primaryActionSurface;
+  openButton.contentTintColor = palette.primaryActionText;
+
+  NSButton *closeButton = [NSButton buttonWithTitle:@"Close" target:self action:@selector(closeDebugTab:)];
+  closeButton.translatesAutoresizingMaskIntoConstraints = NO;
+  closeButton.bezelStyle = NSBezelStyleRounded;
+  closeButton.controlSize = NSControlSizeLarge;
+  closeButton.font = palette.labelFont;
+  closeButton.bezelColor = palette.secondaryActionSurface;
+  closeButton.contentTintColor = palette.secondaryActionText;
+
+  TLTokenView *card = [[TLTokenView alloc] init];
+  card.translatesAutoresizingMaskIntoConstraints = NO;
+  card.fillColor = palette.controlSurface;
+  card.cornerRadius = palette.radiusMedium;
+  for (NSView *view in @[terminalLabel, terminalDescription, openButton]) {
+    [card addSubview:view];
+  }
+  for (NSView *view in @[titleLabel, subtitleLabel, closeButton, card]) {
+    [content addSubview:view];
+  }
+
+  [NSLayoutConstraint activateConstraints:@[
+    [titleLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:palette.space12],
+    [titleLabel.topAnchor constraintEqualToAnchor:content.topAnchor constant:palette.space11],
+    [closeButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
+    [closeButton.centerYAnchor constraintEqualToAnchor:titleLabel.centerYAnchor],
+    [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
+    [closeButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
+    [subtitleLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+    [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:closeButton.leadingAnchor constant:-palette.space8],
+    [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:palette.space2],
+    [card.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+    [card.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
+    [card.topAnchor constraintEqualToAnchor:subtitleLabel.bottomAnchor constant:palette.space10],
+    [terminalLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:palette.space8],
+    [terminalLabel.topAnchor constraintEqualToAnchor:card.topAnchor constant:palette.space8],
+    [terminalDescription.leadingAnchor constraintEqualToAnchor:terminalLabel.leadingAnchor],
+    [terminalDescription.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-palette.space8],
+    [terminalDescription.topAnchor constraintEqualToAnchor:terminalLabel.bottomAnchor constant:palette.space3],
+    [openButton.leadingAnchor constraintEqualToAnchor:terminalLabel.leadingAnchor],
+    [openButton.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-palette.space8],
+    [openButton.topAnchor constraintEqualToAnchor:terminalDescription.bottomAnchor constant:palette.space6],
+    [openButton.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-palette.space8],
+    [openButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
+    [openButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
+  ]];
+  return content;
 }
 
 - (NSView *)buildAgentsTabContent {
@@ -6185,6 +6363,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return @"cpu";
     case TLWorkspaceTabKindNotes:
       return @"doc.text";
+    case TLWorkspaceTabKindDebug:
+      return @"terminal";
     case TLWorkspaceTabKindChat:
     case TLWorkspaceTabKindBrowser:
       return @"";
@@ -6286,6 +6466,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindNotes &&
         self.notesTab &&
         self.appStateManager.snapshot.activeTabID == self.notesTab.tabID;
+    case TLWorkspaceTabKindDebug:
+      return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindDebug &&
+        self.debugTab &&
+        self.appStateManager.snapshot.activeTabID == self.debugTab.tabID;
   }
 }
 
@@ -6300,6 +6484,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self contentViewForTab:self.settingsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindSettings);
   [self contentViewForTab:self.agentsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindAgents);
   [self contentViewForTab:self.notesTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindNotes);
+  [self contentViewForTab:self.debugTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindDebug);
 
   for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
     [self contentViewForTab:tab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindBrowser && snapshot.activeTabID == tab.tabID);
@@ -6439,6 +6624,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self.agentsView setNeedsDisplay:YES];
   }
   [self rebuildNotesTabContentForCurrentPalette];
+  [self rebuildDebugTabContentForCurrentPalette];
+  [self.debugTerminalWindowController updatePalette:self.palette];
   self.agentsTableView.backgroundColor = self.palette.tabBackground;
   if (self.createAgentButton) {
     [self styleButton:self.createAgentButton background:self.palette.primaryActionSurface foreground:self.palette.primaryActionText];
