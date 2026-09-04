@@ -34,6 +34,10 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                                  completion:(TLAgentStreamCompletionHandler)completion;
 - (void)createFreshHermesAgentWithProgress:(TLHermesInstallProgressHandler)progress
                                 completion:(TLAgentOperationCompletionHandler)completion;
+- (void)runShellCommandWithDefaultAgentSessionID:(NSString *)sessionID
+                                         command:(NSString *)command
+                                          output:(void (^)(NSString *text))output
+                                      completion:(TLAgentStreamCompletionHandler)completion;
 - (void)fetchModelCatalogueWithToken:(NSString *)token
                            completion:(TLAgentModelCatalogueHandler)completion;
 

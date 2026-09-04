@@ -247,6 +247,30 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }];
 }
 
+- (void)runShellCommandWithDefaultAgentSessionID:(NSString *)sessionID
+                                         command:(NSString *)command
+                                          output:(void (^)(NSString *text))output
+                                      completion:(TLAgentStreamCompletionHandler)completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *agentError) {
+    if (!agent) {
+      if (completion) completion(agentError ?: TLAgentOrchestratorError(@"Could not open an agent VM."));
+      return;
+    }
+    if (![self.agentClient respondsToSelector:@selector(runShellCommandWithAgent:requestID:sessionID:command:output:completion:)]) {
+      if (completion) completion(TLAgentOrchestratorError(@"This VM runtime does not support debug terminal commands."));
+      return;
+    }
+    NSString *requestID = NSUUID.UUID.UUIDString;
+    [self.agentClient runShellCommandWithAgent:agent
+                                     requestID:requestID
+                                     sessionID:sessionID
+                                       command:command
+                                        output:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
+      if (kind == TLAgentStreamDeltaKindContent && output) output(text);
+    } completion:completion];
+  }];
+}
+
 - (void)fetchModelCatalogueWithToken:(NSString *)token completion:(TLAgentModelCatalogueHandler)completion {
   [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *agentError) {
     if (!agent) {

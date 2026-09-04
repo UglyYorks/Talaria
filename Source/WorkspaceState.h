@@ -9,6 +9,7 @@ typedef NS_ENUM(NSInteger, TLWorkspaceTabKind) {
   TLWorkspaceTabKindSettings,
   TLWorkspaceTabKindAgents,
   TLWorkspaceTabKindNotes,
+  TLWorkspaceTabKindDebug,
 };
 
 @interface TLWorkspaceTab : NSObject <NSCopying>

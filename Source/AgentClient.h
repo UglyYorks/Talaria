@@ -42,6 +42,12 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLOpenRouterModel *> *_Null
                      requestID:(NSString *)requestID
                       progress:(TLAgentStreamDeltaHandler)progress
                     completion:(TLAgentStreamCompletionHandler)completion;
+- (void)runShellCommandWithAgent:(TLAgentRecord *)agent
+                       requestID:(NSString *)requestID
+                       sessionID:(NSString *)sessionID
+                         command:(NSString *)command
+                          output:(TLAgentStreamDeltaHandler)output
+                      completion:(TLAgentStreamCompletionHandler)completion;
 
 @end
 

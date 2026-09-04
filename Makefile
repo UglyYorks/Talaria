@@ -35,6 +35,7 @@ MARKDOWN_IT := Vendor/markdown-it/markdown-it.min.js
 READABILITY_FILES := Vendor/readability/Readability.js Vendor/readability/LICENSE.md
 SIDEBAR_PLANET := assets/sidebar-planet.png
 AGENT_CARD_IMAGE := assets/agent-card.png
+APP_ICON := assets/Talaria.icns
 INBOX_ICON_FILES := $(wildcard assets/inbox-icons/*.svg)
 BOOKMARK_ICON_FILES := $(wildcard assets/browser-bookmarks/*.png)
 HELPER_EXECUTABLE_NAME := $(APP_NAME)Helper
@@ -69,13 +70,14 @@ all: build
 
 build: $(APP_BUILD_STAMP)
 
-$(APP_BUILD_STAMP): Makefile $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(AGENT_CARD_IMAGE) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
+$(APP_BUILD_STAMP): Makefile $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(AGENT_CARD_IMAGE) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources" "$(APP_BUNDLE)/Contents/Frameworks"
 	xcrun clang++ $(APP_OBJECTS) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(APP_EXECUTABLE)"
 	cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
 	cp "$(SIDEBAR_PLANET)" "$(APP_BUNDLE)/Contents/Resources/sidebar-planet.png"
 	cp "$(AGENT_CARD_IMAGE)" "$(APP_BUNDLE)/Contents/Resources/agent-card.png"
+	cp "$(APP_ICON)" "$(APP_BUNDLE)/Contents/Resources/Talaria.icns"
 	ditto "assets/inbox-icons" "$(APP_BUNDLE)/Contents/Resources/inbox-icons"
 	ditto "assets/browser-bookmarks" "$(APP_BUNDLE)/Contents/Resources/browser-bookmarks"
 	cp "$(MARKDOWN_IT)" "$(APP_BUNDLE)/Contents/Resources/markdown-it.min.js"
