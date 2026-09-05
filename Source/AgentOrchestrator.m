@@ -27,6 +27,8 @@ static NSString *TLAgentOrchestratorTrim(NSString *value) {
 }
 
 static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
+  NSString *rawInput = messages.lastObject.content ?: @"";
+  if ([rawInput hasPrefix:@"/"]) { return rawInput; }
   NSMutableArray<NSString *> *parts = [NSMutableArray array];
   for (TLChatMessage *message in messages) {
     if ([message.role isEqualToString:TLRoleSystem] && message.content.length > 0) {
@@ -38,6 +40,14 @@ static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
     [parts addObject:prompt];
   }
   return [parts componentsJoinedByString:@"\n\n"];
+}
+
+static NSURL *TLHermesCommandCacheURL(TLAgentRecord *agent) {
+  return [NSURL fileURLWithPath:[agent.vmDirectory stringByAppendingPathComponent:@"hermes-commands-cache.json"]];
+}
+
+static BOOL TLValidHermesCatalogue(id catalogue) {
+  return [catalogue isKindOfClass:NSDictionary.class] && [catalogue[@"pairs"] isKindOfClass:NSArray.class];
 }
 
 typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NSError *_Nullable error);
@@ -77,6 +87,34 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 
 - (BOOL)isVirtualizationSupported {
   return self.vmService.virtualizationSupported;
+}
+
+// Hermes is installed in the persistent workspace shared with the VM. Inspect
+// directory entries rather than following Linux symlinks on the macOS host.
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent {
+  NSString *workspace = [agent.vmDirectory stringByAppendingPathComponent:@"workspace"];
+  for (NSString *relative in @[@".hermes/hermes-agent/venv/bin/hermes", @".local/bin/hermes"]) {
+    NSString *path = [workspace stringByAppendingPathComponent:relative];
+    NSString *type = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileType];
+    if ([type isEqualToString:NSFileTypeRegular] || [type isEqualToString:NSFileTypeSymbolicLink]) return YES;
+  }
+  return NO;
+}
+
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent {
+  return agent && [self.vmService isAgentRunning:agent];
+}
+
+- (NSString *)displayStatusForAgent:(TLAgentRecord *)agent {
+  if ([self isInitializingAgentWithID:agent.agentID]) return @"Installing Hermes…";
+  if ([agent.status isEqualToString:TLAgentStatusStarting]) return @"Starting VM…";
+  if ([agent.status isEqualToString:TLAgentStatusStopping]) return @"Stopping VM…";
+  NSString *vm = [self isVMRunningForAgent:agent] ? @"VM running" : @"VM stopped";
+  if ([agent.status isEqualToString:TLAgentStatusError]) return [vm stringByAppendingString:@" · Error"];
+  if (![self hasHermesInstallationForAgent:agent]) {
+    return [self isVMRunningForAgent:agent] ? @"VM is running, but setup is required" : @"VM is stopped; setup is required";
+  }
+  return [self isVMRunningForAgent:agent] ? @"Running" : @"Stopped";
 }
 
 - (NSArray<TLAgentRecord *> *)listAgents:(NSError **)error {
@@ -281,15 +319,38 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
       return;
     }
 
-    if (sessionID.length > 0 &&
-        [self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:delta:completion:)]) {
-      [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
-                                               token:token model:model prompt:TLHermesInputFromMessages(messages)
-                                               delta:delta completion:completion];
+    if (sessionID.length == 0) {
+      [self completeStreamWithError:TLAgentOrchestratorError(@"A Hermes session is required for conversation turns.") completion:completion];
       return;
     }
-    [self.agentClient streamChatWithAgent:agent requestID:requestID token:token model:model
-                                 messages:messages delta:delta completion:completion];
+    if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:delta:completion:)]) {
+      [self completeStreamWithError:TLAgentOrchestratorError(@"The Hermes TUI gateway is required. Update the agent runtime.") completion:completion];
+      return;
+    }
+    [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
+                                             token:token model:model prompt:TLHermesInputFromMessages(messages)
+                                             delta:delta completion:completion];
+  }];
+}
+
+- (void)generateTextWithDefaultAgentRequestID:(NSString *)requestID
+                                       token:(NSString *)token
+                                       model:(NSString *)model
+                                instructions:(NSString *)instructions
+                                       input:(NSString *)input
+                                       delta:(TLAgentStreamDeltaHandler)delta
+                                  completion:(TLAgentStreamCompletionHandler)completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) {
+      [self completeStreamWithError:error ?: TLAgentOrchestratorError(@"Could not open an agent VM.") completion:completion];
+      return;
+    }
+    if (![self.agentClient respondsToSelector:@selector(generateHermesTextWithAgent:requestID:token:model:instructions:input:delta:completion:)]) {
+      [self completeStreamWithError:TLAgentOrchestratorError(@"The Hermes TUI gateway is required for supporting-model tasks.") completion:completion];
+      return;
+    }
+    [self.agentClient generateHermesTextWithAgent:agent requestID:requestID token:token model:model
+                                   instructions:instructions input:input delta:delta completion:completion];
   }];
 }
 
@@ -361,6 +422,43 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
                                         output:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
       if (kind == TLAgentStreamDeltaKindContent && output) output(text);
     } completion:completion];
+  }];
+}
+
+- (NSDictionary *)cachedHermesCommands {
+  // The file belongs to one agent, so reinstalling/deleting it cannot leak another
+  // installation's skills or custom commands into the picker. Cache only metadata.
+  NSArray<TLAgentRecord *> *agents = [self.database listAgents:nil];
+  TLAgentRecord *agent = [self.database agentWithID:self.database.currentAgentID error:nil] ?: agents.lastObject;
+  if (!agent) return nil;
+  NSData *data = [NSData dataWithContentsOfURL:TLHermesCommandCacheURL(agent)];
+  if (!data) return nil;
+  id saved = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if (![saved isKindOfClass:NSDictionary.class] || ![saved[@"version"] isEqual:@1] ||
+      !TLValidHermesCatalogue(saved[@"catalogue"])) return nil;
+  return saved[@"catalogue"];
+}
+
+- (void)fetchHermesCommandsWithToken:(NSString *)token
+                               model:(NSString *)model
+                          completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(fetchHermesCommandsWithAgent:token:model:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to discover Hermes commands."));
+      return;
+    }
+    [self.agentClient fetchHermesCommandsWithAgent:agent token:token model:model completion:^(NSDictionary *catalogue, NSError *fetchError) {
+      if (!fetchError && !TLValidHermesCatalogue(catalogue)) {
+        fetchError = TLAgentOrchestratorError(@"Hermes returned an invalid command catalogue.");
+      }
+      if (!fetchError) {
+        NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"version": @1, @"catalogue": catalogue} options:0 error:nil];
+        // A cache write failure must not discard a successful live discovery.
+        [data writeToURL:TLHermesCommandCacheURL(agent) options:NSDataWritingAtomic error:nil];
+      }
+      completion(fetchError ? nil : catalogue, fetchError);
+    }];
   }];
 }
 

@@ -2,6 +2,52 @@
 
 @implementation TLInputSuggestions
 
+// Hermes owns names, aliases, descriptions, argument modes, and skill discovery.
++ (NSArray<NSDictionary<NSString *, NSString *> *> *)hermesCommandsFromCatalogue:(NSDictionary *)catalogue {
+  NSMutableArray *rows = [NSMutableArray array];
+  NSMutableDictionary *byName = [NSMutableDictionary dictionary];
+  NSDictionary *metadata = [catalogue[@"commands"] isKindOfClass:NSDictionary.class] ? catalogue[@"commands"] : @{};
+  NSArray *pairs = [catalogue[@"pairs"] isKindOfClass:NSArray.class] ? catalogue[@"pairs"] : @[];
+  for (id pair in pairs) {
+    if (![pair isKindOfClass:NSArray.class] || [pair count] < 2 ||
+        ![pair[0] isKindOfClass:NSString.class] || ![pair[1] isKindOfClass:NSString.class]) continue;
+    NSString *name = pair[0];
+    if (![name hasPrefix:@"/"] || name.length < 2 || byName[name] ||
+        [name rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) continue;
+    NSDictionary *meta = [metadata[name] isKindOfClass:NSDictionary.class] ? metadata[name] : @{};
+    NSString *argumentMode = [meta[@"argument_mode"] isKindOfClass:NSString.class] ? meta[@"argument_mode"] : @"";
+    NSDictionary *row = @{@"kind": @"hermes", @"command": name, @"description": pair[1],
+                          @"title": pair[1], @"icon": @"terminal", @"argument_mode": argumentMode};
+    [rows addObject:row];
+    byName[name] = row;
+  }
+  NSDictionary *aliases = [catalogue[@"canon"] isKindOfClass:NSDictionary.class] ? catalogue[@"canon"] : @{};
+  for (id alias in [[aliases allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+    id canonical = aliases[alias];
+    if (![alias isKindOfClass:NSString.class] || ![canonical isKindOfClass:NSString.class] ||
+        ![alias hasPrefix:@"/"] || byName[alias] || !byName[canonical]) continue;
+    NSMutableDictionary *row = [byName[canonical] mutableCopy];
+    row[@"command"] = alias;
+    [rows addObject:row];
+    byName[alias] = row;
+  }
+  return rows;
+}
+
++ (NSArray<NSDictionary<NSString *, NSString *> *> *)slashCommandsForInput:(NSString *)input commands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {
+  NSString *text = [input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (![text hasPrefix:@"/"] ||
+      [input hasSuffix:@" "] || [input hasSuffix:@"\t"] ||
+      [text rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) return @[];
+  NSMutableArray *matches = [NSMutableArray array];
+  for (NSDictionary *command in commands) {
+    NSString *name = [command[@"command"] lowercaseString];
+    if ([name isEqualToString:text.lowercaseString]) [matches insertObject:command atIndex:0];
+    else if ([name hasPrefix:text.lowercaseString]) [matches addObject:command];
+  }
+  return matches;
+}
+
 + (nullable NSURLComponents *)componentsForInput:(NSString *)input {
   if (input.length == 0 || [input rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) {
     return nil;

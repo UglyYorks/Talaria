@@ -737,13 +737,13 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
 }
 
 - (void)applyCurrentState {
-  BOOL highlighted = self.enabled && (self.isHovered || self.isSelected);
+  BOOL highlighted = self.enabled && (self.isSelected || (!self.selectionManagedExternally && self.isHovered));
   self.layer.backgroundColor = TLCGColor(highlighted
     ? self.palette.slashCommandItemHighlightedSurface
     : self.palette.slashCommandItemSurface);
   self.layer.cornerRadius = self.palette.slashCommandListCornerRadius;
   self.layer.masksToBounds = YES;
-  self.commandLabel.font = self.palette.bodyFont;
+  self.commandLabel.font = self.palette.suggestionCommandFont;
   self.descriptionLabel.font = self.palette.bodyFont;
   self.descriptionLabel.textColor = self.palette.textMuted;
   self.descriptionLeadingConstraint.constant = self.commandDescription.length ? self.palette.space6 : self.palette.space0;
@@ -2406,10 +2406,19 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   [self applyGlassPalette];
 }
 
+- (void)setUsesChatBackdrop:(BOOL)usesChatBackdrop {
+  _usesChatBackdrop = usesChatBackdrop;
+  [self applyGlassPalette];
+}
+
 - (void)applyGlassPalette {
   TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
   glass.palette = self.palette;
   glass.cornerRadius = self.palette.messageInputCornerRadius;
+  glass.wantsLayer = YES;
+  glass.layer.cornerRadius = self.palette.messageInputCornerRadius;
+  glass.layer.masksToBounds = YES;
+  glass.layer.backgroundColor = TLCGColor(self.usesChatBackdrop ? self.palette.chatInputBackdrop : self.palette.transparentSurface);
   self.sendButtonSize = self.palette.messageInputSendButtonSize;
   self.sendButtonInset = self.palette.space4;
   self.sendButton.solidSurfaceColor = self.palette.messageInputSendButtonSurface;

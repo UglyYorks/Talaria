@@ -88,7 +88,7 @@ mount_workspace
 
 log "starting Python agent service on vsock port $AGENT_PORT"
 while true; do
-  /usr/bin/python3 /opt/talaria/openrouter_agent.py --serve-vsock "$AGENT_PORT"
+  /usr/bin/python3 /opt/talaria/talaria_agent.py --serve-vsock "$AGENT_PORT"
   log "Python agent service exited; restarting"
   $BB sleep 1
 done

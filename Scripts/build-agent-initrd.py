@@ -311,7 +311,8 @@ def main():
             extract_apk(apk_path, overlay)
 
         normalize_usr_merge(overlay)
-        install_file(args.agent_script, overlay / "opt/talaria/openrouter_agent.py", 0o644)
+        for module in args.agent_script.parent.glob("*.py"):
+            install_file(module, overlay / "opt/talaria" / module.name, 0o644)
         install_file(args.init_script, overlay / "talaria-init", 0o755)
         install_file(args.modloop, overlay / "modloop-virt", 0o644)
         write_text(overlay / "etc/hosts", "127.0.0.1 localhost\n::1 localhost\n")

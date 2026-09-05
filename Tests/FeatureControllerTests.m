@@ -1,3 +1,6 @@
+#import "design_system/TLInputSuggestionPanelView.h"
+#import "design_system/TLInputSuggestionListView.h"
+#import "design_system/TLMessageInput.h"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import "TLBrowserTabController.h"
@@ -219,6 +222,7 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (void)updateWorkspaceMode;
 - (void)updateControlStates;
 - (void)startNewChatWithModel:(NSString *)model focus:(BOOL)focus;
+- (void)sendMessage:(id)sender allowAutomaticRouting:(BOOL)allowAutomaticRouting;
 - (void)workspaceTabsController:(nullable TLWorkspaceTabsController *)controller
                        moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index;
 @end
@@ -270,6 +274,17 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
   [controller updateControlStates];
   Check(prompt.editable && !send.enabled, @"draft editing stays available but concurrent sends remain blocked");
   Check([[controller valueForKey:@"isSending"] boolValue], @"navigation does not cancel the turn");
+  [controller setValue:@42 forKey:@"sendingChatID"];
+  prompt.string = @"/stop";
+  [controller updateControlStates];
+  Check(!send.enabled, @"slash controls stay disabled in a different conversation during a turn");
+  [controller sendMessage:nil allowAutomaticRouting:YES];
+  Check([prompt.string isEqualToString:@"/stop"], @"keyboard submission cannot route slash control to another chat");
+  TLChatRecord *origin = [[TLChatRecord alloc] init];
+  origin.chatID = 42;
+  [controller setValue:origin forKey:@"activeChat"];
+  [controller updateControlStates];
+  Check(send.enabled, @"returning to the running conversation enables slash controls");
 }
 
 /// Exercise the real state subscriptions and drag delegate without constructing app services or UI.
@@ -400,9 +415,9 @@ static void TestSettingsThemeAndLateCatalogue(void) {
   TLModelPickerView *picker = [controller valueForKey:@"mainModelPicker"];
   NSSearchField *search = [picker valueForKey:@"searchField"];
   NSPopUpButton *theme = [controller valueForKey:@"themePopup"];
-  NSMutableArray<TLOpenRouterModel *> *models = [NSMutableArray array];
+  NSMutableArray<TLAgentModel *> *models = [NSMutableArray array];
   for (NSUInteger index = 0; index < 40; index += 1) {
-    TLOpenRouterModel *model = [[TLOpenRouterModel alloc] init];
+    TLAgentModel *model = [[TLAgentModel alloc] init];
     model.modelID = [NSString stringWithFormat:@"test/model-%lu", (unsigned long)index];
     model.name = model.modelID;
     [models addObject:model];
@@ -807,6 +822,225 @@ static void TestAgentFolderEditing(void) {
   [controller.window close];
 }
 
+@interface TalariaWindowController (SuggestionTypingTests)
+- (NSView *)buildSlashCommandListView;
+- (void)textDidChange:(NSNotification *)notification;
+- (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)selector;
+@end
+
+@interface TLTypingPickerController : TalariaWindowController
+@property (nonatomic) NSUInteger refreshCount;
+@property (nonatomic) NSUInteger layoutCount;
+@end
+@implementation TLTypingPickerController
+- (void)updateControlStates { self.layoutCount++; }
+- (void)updateMessageScrollInsets { self.layoutCount++; }
+- (BOOL)isChatWorkspaceActive { return YES; }
+- (void)refreshHermesCommandsIfNeeded { self.refreshCount++; }
+@end
+
+static void DrainSuggestionTimer(void) {
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.06];
+  while (deadline.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runUntilDate:deadline];
+}
+
+static void TestSuggestionTypingAndVirtualization(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500, 600)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLTypingPickerController *controller = [[TLTypingPickerController alloc] initWithWindow:window];
+  TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  [controller setValue:palette forKey:@"palette"];
+  [controller setValue:window.contentView forKey:@"rootView"];
+  TLMessageInput *input = [[TLMessageInput alloc] initWithFrame:NSMakeRect(0, 0, 500, 60)];
+  input.translatesAutoresizingMaskIntoConstraints = YES;
+  [window.contentView addSubview:input];
+  [controller setValue:input forKey:@"messageInput"];
+  [controller setValue:input.textView forKey:@"promptTextView"];
+  NSView *pane = [controller buildSlashCommandListView];
+  [window.contentView addSubview:pane];
+  [NSLayoutConstraint activateConstraints:@[
+    [controller valueForKey:@"slashCommandListWidthConstraint"], [controller valueForKey:@"slashCommandListHeightConstraint"],
+    [pane.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [pane.topAnchor constraintEqualToAnchor:window.contentView.topAnchor]]];
+  NSMutableArray *commands = [NSMutableArray array];
+  for (NSUInteger i = 0; i < 5000; i++) {
+    [commands addObject:@{@"kind": @"hermes", @"command": [NSString stringWithFormat:@"/command%lu", (unsigned long)i],
+                         @"description": @"Dynamic Hermes command", @"title": @"Command", @"icon": @"terminal"}];
+  }
+  [commands addObject:@{@"kind": @"hermes", @"command": @"/model", @"description": @"Choose model", @"icon": @"terminal"}];
+  [controller setValue:commands forKey:@"hermesCommands"];
+  input.textView.string = @"/";
+  NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
+  [controller textDidChange:nil];
+  NSLog(@"Slash typing callback with %lu commands: %.3f ms", (unsigned long)commands.count,
+    (NSProcessInfo.processInfo.systemUptime - start) * 1000);
+  Check(controller.refreshCount == 0 && pane.hidden && controller.layoutCount == 0,
+        @"typing returns before command lookup, view creation, or forced workspace layout");
+  Check([input.textView.string isEqualToString:@"/"], @"slash is already in the composer while suggestions are pending");
+  DrainSuggestionTimer();
+  Check(controller.refreshCount == 1 && !pane.hidden, @"suggestions appear after the input event");
+  TLInputSuggestionListView *list = [controller valueForKey:@"slashCommandScrollView"];
+  NSTableView *table = [list valueForKey:@"table"];
+  TLInputSuggestionListView *widthProbe = [[TLInputSuggestionListView alloc] init];
+  widthProbe.suggestions = @[@{@"command": @"Open river.ai"}, @{@"command": @"Send message"}];
+  CGFloat compactWidth = [widthProbe preferredWidthWithMaximum:700];
+  Check(compactWidth > 0 && compactWidth < 300, @"short suggestions hug their contents");
+  widthProbe.suggestions = @[@{@"command": @"Open river.ai", @"description": @"A description that needs additional room"}];
+  Check([widthProbe preferredWidthWithMaximum:700] > compactWidth, @"descriptions contribute to preferred width");
+  Check([widthProbe preferredWidthWithMaximum:100] == 100, @"content width stays within the available maximum");
+
+  for (NSNumber *width in @[@200, @500]) {
+    input.frame = NSMakeRect(0, 0, width.doubleValue, 60);
+    [controller textDidChange:nil];
+    DrainSuggestionTimer();
+    [window.contentView layoutSubtreeIfNeeded];
+    Check(table.numberOfRows == (NSInteger)commands.count, @"large catalogue remains complete");
+    Check(list.scrollingEnabled && list.hasVerticalScroller, @"long catalogue scrolls after reaching the viewport limit");
+    Check(NSWidth(pane.frame) <= width.doubleValue, [NSString stringWithFormat:@"suggestions fit composers: requested %@, input %.0f, pane %.0f", width, NSWidth(input.bounds), NSWidth(pane.frame)]);
+    __block NSUInteger materialized = 0;
+    [table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger index) { materialized++; }];
+    Check(materialized > 0 && materialized < 30, @"only viewport rows are materialized, independent of catalogue size");
+    list.selectedIndex = commands.count - 1;
+    [window.contentView layoutSubtreeIfNeeded];
+    Check(NSIntersectsRect(table.visibleRect, [table rectOfRow:commands.count - 1]), @"keyboard selection reaches commands beyond the viewport");
+    TLSlashCommandItemView *last = [table viewAtColumn:0 row:commands.count - 1 makeIfNecessary:NO];
+    Check(last.selected && [last.command isEqualToString:@"/model"], @"reused row reflects selection and current command");
+  }
+  list.selectedIndex = 0;
+  [window.contentView layoutSubtreeIfNeeded];
+  TLSlashCommandItemView *pointerRow = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
+  NSPoint pointerPoint = [table convertPoint:NSMakePoint(NSMidX(table.bounds), NSMidY([table rectOfRow:1])) toView:nil];
+  NSEvent *move = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:pointerPoint modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
+  [list mouseMoved:move];
+  Check(list.selectedIndex == 1 && [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == 1, @"mouse selection updates the keyboard navigation index");
+  [controller textView:input.textView doCommandBySelector:@selector(moveDown:)];
+  [pointerRow mouseEntered:move];
+  Check(list.selectedIndex == 2 && !pointerRow.selected, @"stationary hover cannot override the latest keyboard selection");
+  Check(CGColorEqualToColor(pointerRow.layer.backgroundColor, TLCGColor(list.palette.slashCommandItemSurface)), @"hovered row does not retain a second highlight");
+  [list mouseMoved:move];
+  Check(list.selectedIndex == 1 && pointerRow.selected, @"actual mouse movement takes selection back from keyboard");
+  __block NSUInteger selectedRows = 0;
+  [table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger index) {
+    TLSlashCommandItemView *cell = [table viewAtColumn:0 row:index makeIfNecessary:NO];
+    if (cell.selected) selectedRows++;
+  }];
+  Check(selectedRows == 1, @"only one materialized suggestion is selected");
+  NSUInteger previous = controller.refreshCount;
+  input.textView.string = @"/co"; [controller textDidChange:nil];
+  input.textView.string = @"/mod"; [controller textDidChange:nil];
+  Check(controller.refreshCount == previous, @"rapid edits do not synchronously rebuild suggestions");
+  DrainSuggestionTimer();
+  Check(controller.refreshCount == previous + 1 && list.suggestions.count == 1, @"rapid edits coalesce to the latest prompt");
+  input.textView.string = @"/mo"; [controller textDidChange:nil];
+  Check([controller textView:input.textView doCommandBySelector:@selector(insertTab:)], @"Tab resolves a pending suggestion update");
+  Check([input.textView.string isEqualToString:@"/model "], @"Tab uses current input rather than stale rows");
+  input.textView.string = @"/"; [controller textDidChange:nil];
+  previous = controller.refreshCount;
+  Check([controller textView:input.textView doCommandBySelector:@selector(cancelOperation:)], @"Escape cancels a pending picker");
+  DrainSuggestionTimer();
+  Check(pane.hidden && controller.refreshCount == previous, @"cancelled updates cannot reopen the picker");
+  pane.hidden = NO;
+  ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListWidthConstraint"]).constant = 200;
+  ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListHeightConstraint"]).constant = 100;
+  list.suggestions = @[@{@"kind": @"status", @"command": @"Loading"}, @{@"kind": @"hermes", @"command": @"/help"}];
+  Check(![list isSuggestionEnabledAtIndex:0] && [list isSuggestionEnabledAtIndex:1], @"status is inert and commands remain actionable");
+  __block NSUInteger activated = NSNotFound;
+  list.activationHandler = ^(NSUInteger index) { activated = index; };
+  [window.contentView layoutSubtreeIfNeeded];
+  TLSlashCommandItemView *retry = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
+  [retry sendAction:retry.action to:retry.target];
+  Check(activated == 1, @"reused mouse targets activate the current row");
+  list.suggestions = @[@{@"kind": @"status", @"command": @"Hermes is not installed"}];
+  ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListHeightConstraint"]).constant = palette.slashCommandRowHeight + palette.space2 * 2;
+  [window.contentView layoutSubtreeIfNeeded];
+  NSTableCellView *single = [table viewAtColumn:0 row:0 makeIfNecessary:YES];
+  [single layoutSubtreeIfNeeded];
+  NSTextField *label = single.textField;
+  Check([single isKindOfClass:NSTableCellView.class] && !label.selectable && !label.editable, @"errors use plain non-selectable text, not command controls");
+  list.selectedIndex = 0;
+  Check(list.selectedIndex == -1, @"status text cannot be selected by keyboard");
+  NSRect labelRect = [label convertRect:label.bounds toView:list.contentView];
+  Check(NSMinY(labelRect) >= NSMinY(list.contentView.bounds) && NSMaxY(labelRect) <= NSMaxY(list.contentView.bounds),
+        [NSString stringWithFormat:@"single row fits: label %@ clip %@ cell %@ table %@ row %@", NSStringFromRect(labelRect), NSStringFromRect(list.contentView.bounds), NSStringFromRect(single.frame), NSStringFromRect(table.frame), NSStringFromRect([table rectOfRow:0])]);
+  list.palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
+  Check([label.textColor isEqual:list.palette.textMuted], @"theme changes update status text");
+  [controller setValue:@[] forKey:@"hermesCommands"];
+  [controller setValue:@"Hermes is not installed" forKey:@"hermesCommandsError"];
+  input.textView.string = @"/";
+  [controller textDidChange:nil];
+  DrainSuggestionTimer();
+  Check(list.suggestions.count == 1 && [list.suggestions[0][@"kind"] isEqualToString:@"status"], @"discovery failures render as status text");
+  Check(![controller textView:input.textView doCommandBySelector:@selector(moveDown:)] &&
+        [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == -1,
+        @"arrow keys cannot select the error message");
+  Check(!list.scrollingEnabled && !list.hasVerticalScroller, @"one error message has no scrollbar");
+  Check([pane isKindOfClass:TLInputSuggestionPanelView.class] && ![pane isKindOfClass:TLGlassPaneView.class], @"suggestions use background blur without glass treatment");
+  TLInputSuggestionPanelView *backdrop = (TLInputSuggestionPanelView *)pane;
+  Check(backdrop.blendingMode == NSVisualEffectBlendingModeWithinWindow, @"suggestions blur the content behind them");
+  for (NSNumber *preference in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    TLThemePalette *theme = [TLThemePalette paletteForPreference:preference.integerValue];
+    backdrop.palette = theme;
+    NSColor *tint = [theme.suggestionBackdropTint colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    NSColor *expected = [theme.tabBackground colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    Check(fabs(tint.redComponent - expected.redComponent) < 0.01 && fabs(tint.greenComponent - expected.greenComponent) < 0.01 &&
+          fabs(tint.blueComponent - expected.blueComponent) < 0.01 && tint.alphaComponent > 0 && tint.alphaComponent < 1,
+          @"backdrop tint matches the chat background with reduced opacity in both themes");
+  }
+  [controller setValue:nil forKey:@"hermesCommandsError"];
+  for (NSUInteger count = 1; count <= 9; count++) {
+    [controller setValue:[commands subarrayWithRange:NSMakeRange(0, count)] forKey:@"hermesCommands"];
+    [controller textDidChange:nil];
+    DrainSuggestionTimer();
+    [window.contentView layoutSubtreeIfNeeded];
+    BOOL overflow = list.contentHeight > NSHeight(list.contentView.bounds) + 0.5;
+    Check(list.hasVerticalScroller == overflow && list.scrollingEnabled == overflow, @"scrolling only appears when content exceeds the available height");
+    if (!overflow) Check(NSHeight(list.contentView.bounds) >= list.contentHeight, @"short lists fit all rows without scrolling");
+  }
+  [window close];
+}
+
+@interface TalariaWindowController (AgentRepairTests)
+- (TLAgentRecord *)selectedAgent;
+- (void)updateAgentControlStates;
+- (void)startSelectedAgent:(id)sender;
+- (void)initializeAgentWithID:(NSInteger)agentID;
+@end
+@interface TLRepairController : TalariaWindowController
+@property(nonatomic, strong) TLAgentRecord *testAgent;
+@property(nonatomic) NSInteger repairAgentID;
+@end
+@implementation TLRepairController
+- (TLAgentRecord *)selectedAgent { return self.testAgent; }
+- (void)initializeAgentWithID:(NSInteger)agentID { self.repairAgentID = agentID; }
+@end
+@interface TLRepairOrchestrator : NSObject
+@end
+@implementation TLRepairOrchestrator
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent { return YES; }
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent { return NO; }
+@end
+static void TestRunningAgentRepairAction(void) {
+  TLRepairController *controller = [[TLRepairController alloc] initWithWindow:nil];
+  controller.testAgent = [[TLAgentRecord alloc] init];
+  controller.testAgent.agentID = 42;
+  controller.testAgent.status = TLAgentStatusRunning;
+  [controller setValue:[[TLRepairOrchestrator alloc] init] forKey:@"agentOrchestrator"];
+  [controller setValue:[[TLWorkspaceTab alloc] init] forKey:@"agentsTab"];
+  NSButton *start = [[NSButton alloc] init];
+  NSButton *stop = [[NSButton alloc] init];
+  [controller setValue:start forKey:@"startAgentButton"];
+  [controller setValue:stop forKey:@"stopAgentButton"];
+  [controller updateAgentControlStates];
+  Check(start.enabled && [start.title isEqualToString:@"Install Hermes"], @"missing Hermes can be installed while the VM is running");
+  Check(stop.enabled, @"running VM can still be stopped before setup");
+  [controller startSelectedAgent:nil];
+  Check(controller.repairAgentID == 42, @"repair targets the selected existing agent");
+  controller.testAgent.status = TLAgentStatusInitializing;
+  [controller updateAgentControlStates];
+  Check(!start.enabled && !stop.enabled, @"setup disables duplicate install and stop actions");
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -816,6 +1050,8 @@ int main(void) {
     TestAgentFolderEditing();
     TestAgentSettingsForm();
     TestRealSidebarAgents();
+    TestSuggestionTypingAndVirtualization();
+    TestRunningAgentRepairAction();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();
