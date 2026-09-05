@@ -81,9 +81,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     _removingTabViews = [NSMutableArray array];
     _removalTransitions = [NSMutableArray array];
     _selectionView = [[TLChromeTabSelectionView alloc] init];
-    // Inactive tabs (including their separators) sit at 0, selected content at 1,
-    // and dragged content at 2. The slab covers separators as it passes them.
-    _selectionView.layer.zPosition = 0.5;
+    // Keep click-to-select motion below tabs and separators. Only dragging
+    // raises the slab above neighboring content, below the dragged tab itself.
+    _selectionView.layer.zPosition = -1.0;
     _selectionView.hidden = YES;
     [_tabStack addSubview:_selectionView positioned:NSWindowBelow relativeTo:nil];
     _tabStack.spacing = -TLChromeTabInterTabOverlapForWidth(palette.tabMaxWidth, palette);
@@ -698,6 +698,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   [self resetReorderGap];
   [self resetDragEdgeGeometry];
   [self.tabStack addSubview:self.selectionView positioned:NSWindowBelow relativeTo:nil];
+  self.selectionView.layer.zPosition = -1.0;
   self.draggedTab = nil;
   self.draggedStartIndex = NSNotFound;
   self.draggedCurrentIndex = NSNotFound;
@@ -761,6 +762,7 @@ constrainedHorizontalTranslationForEvent:(NSEvent *)event
 - (void)promoteSelectionAndDraggedTabView:(TLChromeTabView *)draggedTabView {
   [self.tabStack addSubview:self.selectionView positioned:NSWindowAbove relativeTo:nil];
   [self.tabStack addSubview:draggedTabView positioned:NSWindowAbove relativeTo:self.selectionView];
+  self.selectionView.layer.zPosition = 1.5;
   draggedTabView.layer.zPosition = 2.0;
 }
 

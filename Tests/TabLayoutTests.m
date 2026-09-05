@@ -575,6 +575,11 @@ static void TestDraggedTabOpensInsertionGap(TLThemePalette *palette) {
     exit(1);
   }
   AssertClose(tabs[0].reorderTranslationX, 0.0, @"tab before the source stays in place");
+  if (selectionView.layer.zPosition <= tabs[2].layer.zPosition ||
+      selectionView.layer.zPosition >= draggedTab.layer.zPosition) {
+    NSLog(@"FAIL dragged background must cover neighboring tabs beneath dragged content");
+    exit(1);
+  }
   AssertClose(tabs[2].reorderTranslationX, -100.0, @"first crossed tab shifts into the open slot");
   AssertClose(tabs[3].reorderTranslationX, -100.0, @"second crossed tab shifts to leave a drop gap");
   if (!tabs[2].showsLeadingSeparator) {
@@ -594,6 +599,10 @@ static void TestDraggedTabOpensInsertionGap(TLThemePalette *palette) {
   }
 
   [controller chromeTabViewDidEndDragging:draggedTab];
+  if (selectionView.layer.zPosition >= tabs[2].layer.zPosition) {
+    NSLog(@"FAIL dropping must restore the background below tabs and separators");
+    exit(1);
+  }
   if ([stack.subviews indexOfObjectIdenticalTo:selectionView] != 0) {
     NSLog(@"FAIL selection slab does not return beneath tabs after dropping");
     exit(1);
@@ -845,9 +854,9 @@ static void TestLongSelectionJumpStartsNearDestination(TLThemePalette *palette) 
 
   [controller performPendingSelectionAnimation];
   TLChromeTabSelectionView *selectionView = [controller valueForKey:@"selectionView"];
-  if (selectionView.layer.zPosition <= tabs[2].layer.zPosition ||
+  if (selectionView.layer.zPosition >= tabs[2].layer.zPosition ||
       selectionView.layer.zPosition >= tabs.lastObject.layer.zPosition) {
-    NSLog(@"FAIL selection background must cover inactive separators beneath selected content");
+    NSLog(@"FAIL click-to-select background must stay below tabs and separators");
     exit(1);
   }
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
