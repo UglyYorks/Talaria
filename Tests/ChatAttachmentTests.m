@@ -6,6 +6,17 @@
 #import "design_system/TLMessageInput.h"
 #import "design_system/TLTransitionCoordinator.h"
 
+@interface TLMessageInput (AttachmentPickerTesting)
+- (void)completeAttachmentSelection:(NSOpenPanel *)panel response:(NSModalResponse)response;
+@end
+@interface TLAttachmentTestPanel : NSObject
+@property (nonatomic, copy) NSArray<NSURL *> *URLs;
+@property (nonatomic) BOOL orderedOut;
+@end
+@implementation TLAttachmentTestPanel
+- (void)orderOut:(id)sender { self.orderedOut = YES; }
+@end
+
 static void Check(BOOL condition, NSString *message) {
   if (!condition) { NSLog(@"FAIL: %@", message); exit(1); }
 }
@@ -313,6 +324,45 @@ static void TestAttachmentReconciliationAndAnimation(void) {
   Check(stack.arrangedSubviews.count == 1 && [input.attachmentURLs isEqualToArray:@[c]], @"draft replacement cancels old lifecycle work without stale pills");
 }
 
+static void TestAttachmentPickerAppearance(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 200)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLMessageInput *input = [[TLMessageInput alloc] init];
+  [window.contentView addSubview:input];
+  [NSLayoutConstraint activateConstraints:@[[input.widthAnchor constraintEqualToConstant:600],
+    [input.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [input.topAnchor constraintEqualToAnchor:window.contentView.topAnchor]]];
+  input.attachmentsEnabled = YES;
+  __block NSTimeInterval now = 0;
+  TLTransitionCoordinator *transitions = [[TLTransitionCoordinator alloc] initWithClock:^NSTimeInterval { return now; } automaticallyAdvances:NO];
+  [input setValue:transitions forKey:@"attachmentTransitions"];
+  // Simulate controller work that takes longer than the entire entry animation.
+  input.attachmentsChangeHandler = ^{ now += 1; };
+  TLAttachmentTestPanel *panel = [[TLAttachmentTestPanel alloc] init];
+  panel.URLs = @[[NSURL fileURLWithPath:@"/tmp/Selected from picker.pdf"]];
+  [input completeAttachmentSelection:(NSOpenPanel *)panel response:NSModalResponseOK];
+  Check(panel.orderedOut && input.attachmentURLs.count == 0, @"picker is hidden before files are added on the next main-loop turn");
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while (!input.attachmentURLs.count && deadline.timeIntervalSinceNow > 0)
+    [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  Check(input.attachmentURLs.count == 1, @"picker selection reaches the composer");
+  NSStackView *stack = [input valueForKey:@"attachmentStack"];
+  NSView *chip = stack.arrangedSubviews.firstObject;
+  [transitions advance];
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    Check([[chip valueForKey:@"revealProgress"] doubleValue] == 0, @"controller work does not consume the appearance animation");
+    now += input.palette.tabLifecycleTransitionDuration / 2;
+    [transitions advance];
+    CGFloat progress = [[chip valueForKey:@"revealProgress"] doubleValue];
+    Check(progress > 0 && progress < 1, @"picker addition has a visible intermediate reveal frame");
+  }
+  [transitions finishAllTransitions];
+  TLHoverIconButton *close = [chip valueForKey:@"closeButton"];
+  Check(close.idleSurfaceColor == nil && close.hoverSurfaceOnly, @"remove button has a transparent idle state and retains hover feedback");
+  [window close];
+}
+
 static void TestSystemAttachmentThumbnails(void) {
   NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
   [NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:nil error:nil];
@@ -381,6 +431,6 @@ static void TestSystemAttachmentThumbnails(void) {
 }
 
 int main(void) {
-  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestStorageAndPersistence(); TestComposer(); TestAttachmentReconciliationAndAnimation(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
+  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestStorageAndPersistence(); TestComposer(); TestAttachmentReconciliationAndAnimation(); TestAttachmentPickerAppearance(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
   return 0;
 }

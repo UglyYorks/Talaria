@@ -191,7 +191,7 @@
   self.closeButton.palette = palette;
   self.closeButton.contentTintColor = palette.controlText;
   self.closeButton.layer.borderWidth = palette.space0;
-  self.closeButton.idleSurfaceColor = palette.appContentBackground;
+  self.closeButton.idleSurfaceColor = nil;
   self.closeButton.font = [NSFont systemFontOfSize:palette.space2 * 2];
   ((TLAttachmentCloseButtonCell *)self.closeButton.cell).strokeWidth = palette.borderWidth;
   self.closeButton.needsDisplay = YES;
@@ -729,6 +729,12 @@
   [self applyAttachmentPalette];
   [self recalculateHeight];
   [self layoutSubtreeIfNeeded];
+  // Controller callbacks can do substantial layout work. Finish that before
+  // starting the clock so the first presented frame is still collapsed.
+  if (self.attachmentsChangeHandler) self.attachmentsChangeHandler();
+  if (![_attachmentURLs isEqualToArray:next]) return;
+  [self.window.contentView layoutSubtreeIfNeeded];
+  [self.window displayIfNeeded];
   for (TLAttachmentChipView *chip in entering) [self transitionAttachment:chip visible:YES animated:animated];
   for (TLAttachmentChipView *chip in unmatched) {
     if (!animated || ![self.attachmentTransitions hasTransitionForKey:chip.transitionKey])
@@ -742,7 +748,6 @@
   }
   for (TLAttachmentChipView *chip in active) chip.closingTransition = NO;
   if (!animated) [self.attachmentTransitions finishAllTransitions];
-  if (self.attachmentsChangeHandler) self.attachmentsChangeHandler();
 }
 
 - (void)addAttachmentURLs:(NSArray<NSURL *> *)URLs {
@@ -767,8 +772,20 @@
   panel.allowsMultipleSelection = YES;
   panel.prompt = @"Attach";
   [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
-    if (result == NSModalResponseOK) [self addAttachmentURLs:panel.URLs];
+    [self completeAttachmentSelection:panel response:result];
   }];
+}
+
+- (void)completeAttachmentSelection:(NSOpenPanel *)panel response:(NSModalResponse)response {
+  NSArray<NSURL *> *URLs = response == NSModalResponseOK ? panel.URLs.copy : @[];
+  // The sheet completion can run while the picker is still on screen. Hide it
+  // and leave its completion stack before beginning the pill reveal.
+  [panel orderOut:nil];
+  if (!URLs.count) return;
+  __weak typeof(self) weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [weakSelf addAttachmentURLs:URLs];
+  });
 }
 
 - (BOOL)receiveAttachmentPasteboard:(NSPasteboard *)pasteboard {
