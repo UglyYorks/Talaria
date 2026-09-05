@@ -608,6 +608,9 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.titleClipHeightConstraint = [self.titleClipView.heightAnchor constraintEqualToConstant:self.palette.tabHeight];
   self.titleClipTrailingConstraint = [self.titleClipView.trailingAnchor constraintEqualToAnchor:self.closeButton.leadingAnchor
                                                                                        constant:self.palette.space0];
+  // The icon/title/close chain must not impose a minimum tab or window width.
+  // Prefer clipping content over breaking the tab controller's assigned width.
+  self.titleClipTrailingConstraint.priority = NSLayoutPriorityDefaultHigh - 1;
   self.closeWidthConstraint = [self.closeButton.widthAnchor constraintEqualToConstant:[self closeButtonLength]];
   self.closeHeightConstraint = [self.closeButton.heightAnchor constraintEqualToConstant:[self closeButtonLength]];
   self.closeTrailingConstraint = [self.closeButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor

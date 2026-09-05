@@ -366,6 +366,65 @@ static void TestClosingActiveTabAnimatesToFallback(TLThemePalette *palette) {
   [controller performPendingSelectionAnimation];
 }
 
+static void TestManyTabsFitWithoutExpandingWindow(TLThemePalette *palette) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, palette.tabHeight)
+    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  NSStackView *stack = [[NSStackView alloc] init];
+  stack.translatesAutoresizingMaskIntoConstraints = NO;
+  stack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  [window.contentView addSubview:stack];
+  [NSLayoutConstraint activateConstraints:@[
+    [stack.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [stack.trailingAnchor constraintLessThanOrEqualToAnchor:window.contentView.trailingAnchor],
+    [stack.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [stack.heightAnchor constraintEqualToConstant:palette.tabHeight],
+  ]];
+  TLTabContextMenuHarness *harness = [[TLTabContextMenuHarness alloc] init];
+  TLTransitionCoordinator *timeline = [[TLTransitionCoordinator alloc]
+    initWithClock:^NSTimeInterval { return 0; } automaticallyAdvances:NO];
+  TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc]
+    initWithTabStack:stack target:harness delegate:(id)harness palette:palette transitionCoordinator:timeline];
+  [controller updateTabWidthsForAvailableWidth:400];
+  NSMutableArray *models = [NSMutableArray array];
+  NSSize originalWindowSize = window.frame.size;
+  for (NSInteger index = 1; index <= 40; index++) {
+    [models addObject:[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:index
+      title:@"A long tab title that must be clipped" toolTip:@"" URL:nil closeable:YES]];
+    harness.tabs = models.copy;
+    harness.activeTabID = index;
+    [controller reloadTabs];
+    if (NSWidth(stack.frame) > 400.001) {
+      NSLog(@"FAIL insertion briefly expands the strip before its width update"); exit(1);
+    }
+    [controller updateTabWidthsForAvailableWidth:400];
+    [timeline finishAllTransitions];
+    [window.contentView layoutSubtreeIfNeeded];
+    if (window.contentView.fittingSize.width > 400.001 || NSWidth(stack.frame) > 400.001) {
+      NSLog(@"FAIL %ld tabs impose an oversized strip: fitting %@ actual %@", (long)index,
+        NSStringFromSize(window.contentView.fittingSize), NSStringFromRect(stack.frame)); exit(1);
+    }
+    AssertClose(NSWidth(window.frame), originalWindowSize.width, @"adding tabs cannot widen the window");
+  }
+  NSArray<TLChromeTabView *> *views = [controller valueForKey:@"tabViews"];
+  if (NSWidth(views.lastObject.frame) >= palette.tabMinWidth) {
+    NSLog(@"FAIL crowded tab handlers must shrink below their preferred width"); exit(1);
+  }
+  for (TLChromeTabView *view in views) {
+    view.icon = @"\U0001F41F";
+    [view setValue:@YES forKey:@"hovered"];
+    view.title = @"Crowded tab with an icon and close button";
+  }
+  [controller updateTabWidthsForAvailableWidth:200];
+  [window.contentView layoutSubtreeIfNeeded];
+  if (NSWidth(stack.frame) > 200.001) {
+    NSLog(@"FAIL icon and close controls prevent crowded tabs from shrinking"); exit(1);
+  }
+  [controller updateTabWidthsForAvailableWidth:0];
+  AssertClose(NSWidth(stack.frame), 0, @"no available width collapses the strip instead of expanding the window");
+  [window close];
+}
+
 static void TestClosePreservesWidthsUntilPointerLeaves(TLThemePalette *palette) {
   TLTabPointerWindow *window = [[TLTabPointerWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, palette.tabHeight)
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
@@ -991,6 +1050,7 @@ int main(void) {
       TestClosingActiveTabAnimatesToFallback(tab.palette);
       TestTabRemovalUsesClipMaskAndClosesLayoutGap(tab.palette);
       TestClosePreservesWidthsUntilPointerLeaves(tab.palette);
+      TestManyTabsFitWithoutExpandingWindow(tab.palette);
       TestDraggedTabOpensInsertionGap(tab.palette);
       TestInactiveFirstTabPadding(tab.palette);
       TestInactiveSeparatorCentering(tab.palette);

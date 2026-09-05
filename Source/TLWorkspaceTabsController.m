@@ -48,6 +48,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 @property (nonatomic) BOOL newTabButtonHovered;
 @property (nonatomic) CGFloat preservedTabWidth;
 @property (nonatomic) CGFloat latestAvailableWidth;
+@property (nonatomic) BOOL hasAvailableWidth;
 @property (nonatomic, strong) NSTrackingArea *widthPreservationTrackingArea;
 @property (nonatomic, weak) NSView *widthPreservationHost;
 
@@ -226,6 +227,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     if ([arranged containsObject:view]) [self.tabStack removeArrangedSubview:view];
     [self.tabStack insertArrangedSubview:view atIndex:index];
   }
+  // Fit additions before any lifecycle layout can propagate their default
+  // widths up to the window's fitting size.
+  if (hasInsertion && self.hasAvailableWidth) [self applyTabWidthsForAvailableWidth:self.latestAvailableWidth];
   [self animateLifecycleWithRemovedTransitions:newRemovalTransitions
                              insertedTabViews:insertedTabViews
                                 previousFrames:previousFrames];
@@ -582,12 +586,12 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   [self updateTabWidthsForAvailableWidth:self.latestAvailableWidth];
 }
 
-- (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth {
+- (BOOL)applyTabWidthsForAvailableWidth:(CGFloat)availableWidth {
+  self.hasAvailableWidth = YES;
   self.latestAvailableWidth = availableWidth;
   if (self.preservedTabWidth > 0 && ![self isPointerInsidePreservedTabArea]) [self clearPreservedTabWidth];
-  if (self.tabWidthConstraints.count == 0 || availableWidth <= self.palette.space0) {
-    return;
-  }
+  if (self.tabWidthConstraints.count == 0) return NO;
+  availableWidth = MAX(self.palette.space0, availableWidth);
 
   CGFloat tabCount = (CGFloat)self.tabWidthConstraints.count;
   CGFloat sharedBoundaryCount = MAX(self.palette.space0, tabCount - 1.0);
@@ -597,7 +601,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   if (overlap < maximumOverlap) {
     equalWidth = availableWidth / (tabCount - 0.27 * sharedBoundaryCount);
   }
-  equalWidth = MIN(self.palette.tabMaxWidth, MAX(self.palette.borderWidth, equalWidth));
+  equalWidth = MIN(self.palette.tabMaxWidth, MAX(self.palette.space0, equalWidth));
   // A smaller window may still compress tabs, but closing tabs cannot grow them.
   if (self.preservedTabWidth > 0) equalWidth = MIN(equalWidth, self.preservedTabWidth);
   overlap = TLChromeTabInterTabOverlapForWidth(equalWidth, self.palette);
@@ -605,6 +609,11 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   for (NSLayoutConstraint *constraint in self.tabWidthConstraints) {
     constraint.constant = equalWidth;
   }
+  return YES;
+}
+
+- (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth {
+  if (![self applyTabWidthsForAvailableWidth:availableWidth]) return;
   [self.tabStack invalidateIntrinsicContentSize];
   [self.tabStack setNeedsLayout:YES];
   [self.tabStack layoutSubtreeIfNeeded];
