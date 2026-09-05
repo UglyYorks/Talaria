@@ -1,6 +1,9 @@
 #import "Theme.h"
 #import "design_system/ThemeColorScheme.h"
 
+// Shared tab/+ animation timing: 1.0 = normal, 10.0 = 10x slower for inspection.
+static const CGFloat TLTabAnimationDurationMultiplier = 1.0;
+
 NSColor *TLColorFromHex(NSUInteger hexValue) {
   CGFloat red = ((hexValue >> 16) & 0xff) / 255.0;
   CGFloat green = ((hexValue >> 8) & 0xff) / 255.0;
@@ -95,14 +98,31 @@ CGColorRef TLCGColor(NSColor *color) {
   self.sidebarTileSystemIconSize = 16.0;
   self.sidebarAccessoryIconOpacity = 0.32;
   self.tabHeight = 36.0;
-  self.tabActiveHeightReduction = 2.0;
+  self.compactButtonSurfaceSize = 25.0;
+  self.compactButtonSurfaceOffsetX = -2.0;
+  self.compactButtonCornerRadius = 6.0;
+  self.tabActiveHeightReduction = 1.0;
+  self.tabContentVerticalOffset = 1.0;
   self.tabMinWidth = 112.0;
   self.tabMaxWidth = 160.0;
   self.tabIconSize = 18.0;
   self.tabIconGlyphSize = 16.0;
   self.tabFlareRadius = 8.0;
-  self.tabSeparatorFadeDuration = 0.20;
-  self.tabHoverFadeDuration = 0.20;
+  self.tabActiveFlareRadius = self.tabFlareRadius * 1.2;
+  self.tabSelectionSlideDuration = 0.32 * TLTabAnimationDurationMultiplier;
+  self.tabNeighborSelectionSlideDuration = 0.24 * TLTabAnimationDurationMultiplier;
+  self.tabTeleportSelectionSlideDuration = 0.28 * TLTabAnimationDurationMultiplier;
+  self.tabMetadataTransitionDuration = 0.60 * TLTabAnimationDurationMultiplier;
+  self.tabSelectionLongJumpDistanceMultiplier = 1.3;
+  self.tabReorderSlideDuration = 0.24 * TLTabAnimationDurationMultiplier;
+  self.tabLifecycleTransitionDuration = 0.27 * TLTabAnimationDurationMultiplier;
+  self.tabClosingTransitionDuration = 0.20 * TLTabAnimationDurationMultiplier;
+  self.tabLifecycleCollapsedWidthRatio = 0.30;
+  self.tabLifecycleContentFadeDurationRatio = 0.30;
+  self.tabInsertionFadeStartProgress = 0.25;
+  self.tabInsertionFadeEndProgress = 0.85;
+  self.tabSeparatorFadeDuration = 0.20 * TLTabAnimationDurationMultiplier;
+  self.tabHoverFadeDuration = 0.20 * TLTabAnimationDurationMultiplier;
   self.historyRowHeight = 60.0;
   self.historyRowSelectionHorizontalInset = 9.0;
   self.historyRowSelectionVerticalInset = 5.0;
@@ -140,6 +160,10 @@ CGColorRef TLCGColor(NSColor *color) {
   self.brandMarkCrossInset = 7.0;
   self.focusRingSize = 3.0;
   self.borderWidth = 1.0;
+  self.workspaceOutlineOpacity = 1.0 / 3.0;
+  self.workspaceShadowRadius = 3.0;
+  self.workspaceShadowOffsetY = -1.0;
+  self.workspaceShadowOpacity = 1.0;
   self.radiusMedium = 8.0;
   self.slashCommandListCornerRadius = self.radiusMedium;
   self.radiusPill = 999.0;
@@ -209,6 +233,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.tabEmojiVerticalOffset = self.space2;
   self.tabIconLeadingInset = self.space5 + self.space5;
   self.tabIconTextSpacing = self.space4;
+  self.tabInterTabTightening = 4.0;
   self.menuActionIconTextSpacing = self.space4;
   self.menuActionIconUpwardOffset = -1.0;
   self.agentSharedIconDownwardOffset = 1.0;

@@ -1,7 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "design_system/UIComponents.h"
 #import "InputSuggestions.h"
-#import "WorkspaceTabRuntime.h"
+#import "TLBrowserHeightTransition.h"
 #import "ChromiumRunLoop.h"
 #import "design_system/TLBrowserChatPane.h"
 #import "BrowserPageContext.h"
@@ -375,9 +375,7 @@ static void TestBrowserHeightAnimation(void) {
     [host.topAnchor constraintEqualToAnchor:content.topAnchor], bottom,
   ]];
   [content layoutSubtreeIfNeeded];
-  TLWorkspaceTabRuntime *runtime = [TLWorkspaceTabRuntime runtimeWithContentView:content openAction:@selector(activate:) closeAction:@selector(activate:)];
-  runtime.browserHostView = host;
-  runtime.browserHostBottomConstraint = bottom;
+  TLBrowserHeightTransition *runtime = [[TLBrowserHeightTransition alloc] initWithContentView:content bottomConstraint:bottom];
   [runtime setBrowserBottomInset:-100 duration:0.4 overshoot:0.04];
   Check(bottom.constant == 0, @"resize does not jump immediately to destination");
   RunFor(0.10);

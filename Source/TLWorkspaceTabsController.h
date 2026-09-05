@@ -1,10 +1,12 @@
 #import <AppKit/AppKit.h>
 #import "Theme.h"
 #import "WorkspaceState.h"
+#import "design_system/TLTransitionCoordinator.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class TLWorkspaceTabsController;
+@class TLChromeTabSelectionView;
 
 @protocol TLWorkspaceTabsControllerDelegate <NSObject>
 
@@ -30,11 +32,21 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, weak, nullable) id target;
 @property (nonatomic, weak, nullable) id<TLWorkspaceTabsControllerDelegate> delegate;
+@property (nonatomic, strong, readonly) TLTransitionCoordinator *transitionCoordinator;
+@property (nonatomic, strong, readonly) TLChromeTabSelectionView *selectionView;
+// tabStack.trailing = newTabButton.leading + constant; animated with insertion.
+@property (nonatomic, strong, nullable) NSLayoutConstraint *createTabButtonSpacingConstraint;
+@property (nonatomic, copy, nullable) void (^animationActivityChanged)(BOOL animating);
 
 - (instancetype)initWithTabStack:(NSStackView *)tabStack
                           target:(nullable id)target
                         delegate:(nullable id<TLWorkspaceTabsControllerDelegate>)delegate
-                         palette:(TLThemePalette *)palette;
+                          palette:(TLThemePalette *)palette;
+- (instancetype)initWithTabStack:(NSStackView *)tabStack
+                          target:(nullable id)target
+                        delegate:(nullable id<TLWorkspaceTabsControllerDelegate>)delegate
+                         palette:(TLThemePalette *)palette
+           transitionCoordinator:(TLTransitionCoordinator *)transitionCoordinator;
 - (void)reloadTabs;
 - (void)setNewTabButtonHovered:(BOOL)hovered;
 - (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth;

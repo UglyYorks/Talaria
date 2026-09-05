@@ -154,6 +154,8 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLAppStateObserver *> *observers;
 @property (nonatomic, assign) NSUInteger nextObserverToken;
 @property (nonatomic, assign) NSUInteger nextSignalSequence;
+@property (nonatomic, strong) NSMutableArray<TLAppStateSnapshot *> *pendingNotifications;
+@property (nonatomic) BOOL deliveringNotifications;
 
 - (void)removeObserverWithToken:(NSUInteger)token;
 
@@ -193,6 +195,7 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
     _observers = [NSMutableDictionary dictionary];
     _nextObserverToken = 1;
     _nextSignalSequence = 1;
+    _pendingNotifications = [NSMutableArray array];
 
     TLMutableAppState *initialState = [[TLMutableAppState alloc] init];
     initialState.activeTabKind = TLWorkspaceTabKindChat;
@@ -310,6 +313,13 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
     return;
   }
   TLWorkspaceTab *storedTab = [tab copy];
+  TLWorkspaceTab *existing = [self workspaceTabWithKind:tab.kind tabID:tab.tabID];
+  if (existing) storedTab.presentationIdentity = existing.presentationIdentity;
+  BOOL sameMetadata = existing && [existing.title isEqual:tab.title] &&
+    [existing.toolTip isEqual:tab.toolTip] && existing.closeable == tab.closeable &&
+    (existing.URL == tab.URL || [existing.URL isEqual:tab.URL]);
+  BOOL alreadyActive = self.snapshot.activeTabKind == tab.kind && self.snapshot.activeTabID == tab.tabID;
+  if (sameMetadata && (!activate || alreadyActive)) return;
 
   [self setState:^(TLMutableAppState *draft) {
     NSUInteger index = TLIndexOfWorkspaceTabInTabs(storedTab.kind, storedTab.tabID, draft.workspaceTabs);
@@ -339,6 +349,8 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
     [self upsertWorkspaceTab:storedReplacementTab activate:activate];
     return;
   }
+  storedReplacementTab.presentationIdentity = previousTab.presentationIdentity ?:
+    [NSString stringWithFormat:@"%ld:%ld", (long)previousTab.kind, (long)previousTab.tabID];
 
   [self setState:^(TLMutableAppState *draft) {
     NSUInteger index = TLIndexOfWorkspaceTabInTabs(kind, tabID, draft.workspaceTabs);
@@ -372,6 +384,12 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
     NSUInteger index = TLIndexOfWorkspaceTabInTabs(kind, tabID, draft.workspaceTabs);
     if (index != NSNotFound) {
       [draft.workspaceTabs removeObjectAtIndex:index];
+      if (draft.activeTabKind == kind && draft.activeTabID == tabID) {
+        TLWorkspaceTab *fallback = draft.workspaceTabs.count > 0
+          ? draft.workspaceTabs[MIN(index, draft.workspaceTabs.count - 1)] : nil;
+        draft.activeTabKind = fallback ? fallback.kind : TLWorkspaceTabKindChat;
+        draft.activeTabID = fallback ? fallback.tabID : 0;
+      }
     }
   } signal:TLAppSignalWorkspaceTabRemoved payload:[self payloadForTab:tab extra:nil]];
 }
@@ -426,25 +444,27 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
 }
 
 - (void)notifyObserversWithSignal:(TLAppSignal *)signal {
-  NSArray<TLAppStateObserver *> *observers = self.observers.allValues;
-  for (TLAppStateObserver *observer in observers) {
-    if (observer.signalHandler && [observer.signalName isEqualToString:signal.name]) {
-      observer.signalHandler(signal, self.snapshot);
+  [self.pendingNotifications addObject:self.snapshot];
+  if (self.deliveringNotifications) return;
+  self.deliveringNotifications = YES;
+  // Reentrant mutations enqueue their own immutable snapshot. Every observer of
+  // this revision sees the same state, before delivery of the next revision.
+  while (self.pendingNotifications.count > 0) {
+    TLAppStateSnapshot *snapshot = self.pendingNotifications.firstObject;
+    [self.pendingNotifications removeObjectAtIndex:0];
+    TLAppSignal *currentSignal = snapshot.lastSignal;
+    for (TLAppStateObserver *observer in self.observers.allValues) {
+      if (observer.signalHandler && [observer.signalName isEqualToString:currentSignal.name]) {
+        observer.signalHandler(currentSignal, snapshot);
+      }
+      if (!observer.selector || !observer.changeHandler) continue;
+      id nextValue = observer.selector(snapshot);
+      if (observer.selectedValue == nextValue || [observer.selectedValue isEqual:nextValue]) continue;
+      observer.selectedValue = nextValue;
+      observer.changeHandler(nextValue, snapshot, currentSignal);
     }
-
-    if (!observer.selector || !observer.changeHandler) {
-      continue;
-    }
-
-    id nextValue = observer.selector(self.snapshot);
-    BOOL changed = observer.selectedValue != nextValue && ![observer.selectedValue isEqual:nextValue];
-    if (!changed) {
-      continue;
-    }
-
-    observer.selectedValue = nextValue;
-    observer.changeHandler(nextValue, self.snapshot, signal);
   }
+  self.deliveringNotifications = NO;
 }
 
 - (TLWorkspaceTab *)workspaceTabWithKind:(TLWorkspaceTabKind)kind

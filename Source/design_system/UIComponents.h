@@ -14,6 +14,7 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 };
 
 @interface TLTokenView : NSView
+- (CGPathRef)newOutlinePath CF_RETURNS_RETAINED;
 @property (nonatomic, strong) NSColor *fillColor;
 @property (nonatomic, strong) NSColor *borderColor;
 @property (nonatomic) CGFloat borderWidth;

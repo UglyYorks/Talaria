@@ -1,6 +1,8 @@
 #import "AssistantTurnRunner.h"
 
-typedef void (^TLBrowserPageReader)(void (^completion)(NSDictionary *page, NSError *error));
+NS_ASSUME_NONNULL_BEGIN
+
+typedef void (^TLBrowserPageReader)(void (^completion)(NSDictionary *_Nullable page, NSError *_Nullable error));
 
 @interface TLBrowserConversation : NSObject
 @property (nonatomic, readonly) BOOL busy;
@@ -8,8 +10,11 @@ typedef void (^TLBrowserPageReader)(void (^completion)(NSDictionary *page, NSErr
 @property (nonatomic, readonly) NSUInteger responseCount;
 @property (nonatomic, copy, readonly) NSString *markdown;
 @property (nonatomic, copy, readonly) NSString *title;
+@property (nonatomic, strong, readonly, nullable) TLAssistantTurnResult *lastTurnResult;
 @property (nonatomic) BOOL minimized;
-@property (nonatomic, copy) void (^changeHandler)(void);
+@property (nonatomic, copy, nullable) void (^changeHandler)(void);
 - (instancetype)initWithDatabase:(TLDatabase *)database orchestrator:(TLAgentOrchestrator *)orchestrator;
-- (BOOL)sendPrompt:(NSString *)prompt token:(NSString *)token model:(NSString *)model pageReader:(TLBrowserPageReader)reader;
+- (BOOL)sendPrompt:(NSString *)prompt token:(NSString *)token model:(NSString *)model pageReader:(nullable TLBrowserPageReader)reader;
 @end
+
+NS_ASSUME_NONNULL_END

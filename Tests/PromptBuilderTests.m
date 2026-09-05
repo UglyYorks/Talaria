@@ -22,6 +22,28 @@ NSArray<TLOpenRouterModel *> *TLParseOpenRouterModelsResponse(NSData *data, NSEr
 
 static NSUInteger TLFailureCount = 0;
 
+@interface TLFakeTestCredentialStore : NSObject <TLCredentialStore>
+@property NSMutableDictionary<NSString *, NSString *> *credentials;
+@end
+
+@implementation TLFakeTestCredentialStore
+- (instancetype)init {
+  if ((self = [super init])) _credentials = [NSMutableDictionary dictionary];
+  return self;
+}
+- (NSString *)credentialForAccount:(NSString *)account error:(NSError **)error {
+  return self.credentials[account];
+}
+- (BOOL)setCredential:(NSString *)credential forAccount:(NSString *)account error:(NSError **)error {
+  self.credentials[account] = credential;
+  return YES;
+}
+- (BOOL)removeCredentialForAccount:(NSString *)account error:(NSError **)error {
+  [self.credentials removeObjectForKey:account];
+  return YES;
+}
+@end
+
 @interface TLFakeAgentClient : NSObject <TLAgentStreaming>
 @property (nonatomic, strong) TLAgentRecord *capturedAgent;
 @property (nonatomic, copy) NSArray<TLChatMessage *> *capturedMessages;
@@ -347,7 +369,7 @@ static void TestOpenRouterModelParsing(void) {
 static void TestDatabasePersistence(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaTests");
   NSError *error = nil;
-  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:&error];
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
   TLAssertTrue(database != nil && error == nil, @"creates a migrated database");
 
   TLAppSettings *settings = [database appSettings:&error];
@@ -463,7 +485,7 @@ static void TestDatabasePersistence(void) {
 static void TestMessageDeletion(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaMessageDeletionTests");
   NSError *error = nil;
-  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:&error];
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
   TLChatRecord *chat = [database createChatWithModel:@"test-model" error:&error];
   TLChatRecord *otherChat = [database createChatWithModel:@"test-model" error:&error];
   TLStoredChatMessage *first = [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Same text" thinking:nil]
@@ -488,7 +510,7 @@ static void TestMessageDeletion(void) {
   TLAssertTrue([database deleteMessageWithID:reply.messageID chatID:chat.chatID error:&error], @"deletes assistant message");
 
   database = nil;
-  database = [[TLDatabase alloc] initWithURL:url error:&error];
+  database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
   loaded = [database chatWithID:chat.chatID error:&error];
   TLAssertTrue(loaded.messages.count == 1 && loaded.messages[0].messageID == second.messageID,
                @"message deletion persists after reopening database");
@@ -509,7 +531,7 @@ static void TestChatIconGenerator(void) {
   NSURL *agentsURL = TLTemporaryDirectoryURL(@"TalariaChatIconAgentVMs");
   NSURL *runtimeURL = TLTemporaryDirectoryURL(@"TalariaChatIconAgentRuntime");
   NSError *error = nil;
-  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:&error];
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
   TLFakeAgentClient *client = [[TLFakeAgentClient alloc] init];
   client.contentDelta = @"\U0001F52D\n";
   TLFakeAgentVMService *vmService = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:agentsURL runtimeBundleURL:runtimeURL];
@@ -546,7 +568,7 @@ static void TestAgentOrchestrator(void) {
   NSURL *agentsURL = TLTemporaryDirectoryURL(@"TalariaAgentVMs");
   NSURL *runtimeURL = TLTemporaryDirectoryURL(@"TalariaAgentRuntime");
   NSError *error = nil;
-  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:&error];
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
   TLFakeAgentClient *client = [[TLFakeAgentClient alloc] init];
   TLFakeAgentVMService *vmService = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:agentsURL runtimeBundleURL:runtimeURL];
   TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database
@@ -588,7 +610,7 @@ static void TestAgentOrchestrator(void) {
 
 static void TestBrowserConversation(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaBrowserChatTests");
-  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:nil];
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:nil];
   TLFakeAgentClient *client = [[TLFakeAgentClient alloc] init];
   TLFakeAgentVMService *vm = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:TLTemporaryDirectoryURL(@"BrowserAgents")
     runtimeBundleURL:TLTemporaryDirectoryURL(@"BrowserRuntime")];
@@ -630,6 +652,10 @@ static void TestBrowserConversation(void) {
   client.streamError = [NSError errorWithDomain:@"test" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Offline"}];
   [conversation sendPrompt:@"Retry" token:@"token" model:@"test/model" pageReader:^(void (^completion)(NSDictionary *, NSError *)) { completion(@{}, nil); }];
   TLAssertTrue(!conversation.busy && conversation.responseCount == 2, @"provider error is not counted as an AI response");
+  TLAssertTrue(conversation.lastTurnResult.generationStatus == TLAssistantTurnGenerationStatusFailed &&
+               conversation.lastTurnResult.generationError == client.streamError,
+               @"browser conversation exposes the terminal generation failure");
+  TLAssertTrue([conversation.markdown containsString:@"Request failed: Offline"], @"browser conversation renders request errors separately");
   NSString *huge = [@"line\n" stringByPaddingToLength:100000 withString:@"line\n" startingAtIndex:0];
   NSString *context = TLBrowserPageContext(@{@"text":huge});
   TLAssertTrue(context.length < 40000 && [context containsString:@"untrusted reference material"], @"page context has a bounded size and retains safety instructions");
@@ -640,7 +666,7 @@ static void TestAssistantTurnRunner(void) {
   NSURL *agentsURL = TLTemporaryDirectoryURL(@"TalariaAssistantAgentVMs");
   NSURL *runtimeURL = TLTemporaryDirectoryURL(@"TalariaAssistantAgentRuntime");
   NSError *error = nil;
-  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:&error];
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
   TLChatRecord *chat = [database createChatWithModel:@"openai/gpt-4" error:&error];
   TLFakeAgentClient *client = [[TLFakeAgentClient alloc] init];
   TLFakeAgentVMService *vmService = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:agentsURL runtimeBundleURL:runtimeURL];
@@ -652,7 +678,7 @@ static void TestAssistantTurnRunner(void) {
 
   __block NSUInteger updateCount = 0;
   __block BOOL completed = NO;
-  __block NSError *completionError = nil;
+  __block TLAssistantTurnResult *completionResult = nil;
   NSError *startError = nil;
   BOOL started = [runner startTurnWithChat:chat
                                      token:@"  token  "
@@ -661,13 +687,15 @@ static void TestAssistantTurnRunner(void) {
                                 nextPrompt:@"  hello  "
                              updateHandler:^{
     updateCount += 1;
-  } completionHandler:^(NSError *turnError) {
+  } completionHandler:^(TLAssistantTurnResult *result) {
     completed = YES;
-    completionError = turnError;
+    completionResult = result;
   } error:&startError];
 
   TLAssertTrue(started && startError == nil, @"starts assistant turn");
-  TLAssertTrue(completed && completionError == nil, @"completes assistant turn");
+  TLAssertTrue(completed && completionResult.generationStatus == TLAssistantTurnGenerationStatusSucceeded &&
+               completionResult.persistenceStatus == TLAssistantTurnPersistenceStatusSucceeded,
+               @"completes assistant turn with explicit generation and persistence success");
   TLAssertTrue(!runner.running, @"clears running state after completion");
   TLAssertTrue(updateCount > 0, @"reports assistant turn updates");
   TLAssertTrue(client.capturedAgent.agentID > 0, @"streams through a persisted agent");
@@ -712,11 +740,17 @@ static void TestAssistantTurnRunner(void) {
   TLAssertTrue(validationMessages.count == 0, @"does not mutate messages after validation failure");
 
   client.streamError = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Offline"}];
+  NSUInteger previousMessageCount = messages.count;
   [runner startTurnWithChat:chat token:@"token" model:@"test-model" messages:messages nextPrompt:@"Retry"
-              updateHandler:nil completionHandler:nil error:&error];
-  TLAssertTrue([messages.lastObject isKindOfClass:TLStoredChatMessage.class] &&
-               ((TLStoredChatMessage *)messages.lastObject).messageID > 0,
-               @"failed assistant responses retain persisted identity for deletion");
+              updateHandler:nil completionHandler:^(TLAssistantTurnResult *result) { completionResult = result; } error:&error];
+  TLAssertTrue(completionResult.generationStatus == TLAssistantTurnGenerationStatusFailed &&
+               completionResult.generationError == client.streamError && !completionResult.assistantMessage,
+               @"failed request reports its error without a fabricated assistant response");
+  TLAssertTrue(messages.count == previousMessageCount + 1 && [messages.lastObject.role isEqualToString:TLRoleUser],
+               @"failed request removes its empty assistant placeholder and keeps the prompt");
+  loadedChat = [database chatWithID:chat.chatID error:&error];
+  TLAssertTrue(loadedChat.messages.count == messages.count && [loadedChat.messages.lastObject.content isEqualToString:@"Retry"],
+               @"request errors are not persisted into model conversation history");
 
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
   [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];

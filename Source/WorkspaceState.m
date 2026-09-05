@@ -22,6 +22,7 @@
   TLWorkspaceTab *copy = [[[self class] allocWithZone:zone] init];
   copy.kind = self.kind;
   copy.tabID = self.tabID;
+  copy.presentationIdentity = self.presentationIdentity;
   copy.URL = self.URL;
   copy.title = self.title;
   copy.toolTip = self.toolTip;

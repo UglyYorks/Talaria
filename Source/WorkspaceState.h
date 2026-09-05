@@ -16,6 +16,8 @@ typedef NS_ENUM(NSInteger, TLWorkspaceTabKind) {
 
 @property (nonatomic) TLWorkspaceTabKind kind;
 @property (nonatomic) NSInteger tabID;
+// Preserves the visual tab when a draft receives a persistent database ID.
+@property (nonatomic, copy, nullable) NSString *presentationIdentity;
 @property (nonatomic, strong, nullable) NSURL *URL;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *toolTip;

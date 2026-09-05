@@ -3,21 +3,23 @@
 #import "AppStateManager.h"
 #import "AssistantTurnRunner.h"
 #import "ChatIconGenerator.h"
-#import "ChromiumBrowserController.h"
 #import "MarkdownRenderer.h"
-#import "BrowserConversation.h"
-#import "design_system/TLBrowserChatPane.h"
-#import "ModelPickerView.h"
 #import "NotchOverlayController.h"
 #import "InputSuggestions.h"
 #import "Theme.h"
 #import "TLHistoryPanelController.h"
+#import "TLBrowserTabController.h"
+#import "TLSettingsTabController.h"
+#import "TLNotesTabController.h"
 #import "TLMainWindow.h"
 #import "TLOnboardingDemoWindowController.h"
 #import "TLHermesOnboardingWindowController.h"
 #import "TLVMDebugTerminalWindowController.h"
 #import "TLWorkspaceTabsController.h"
 #import "UIComponents.h"
+#import "design_system/TLWorkspaceOutlineView.h"
+#import "design_system/TLTransitionCoordinator.h"
+#import "design_system/TLChromeTabView.h"
 #import "WorkspaceState.h"
 #import "WorkspaceTabRuntime.h"
 #import "Widgetbook.h"
@@ -27,7 +29,6 @@
 #import "design_system/TLMessageInput.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
-#import <objc/runtime.h>
 
 static void *TLEffectiveAppearanceObservationContext = &TLEffectiveAppearanceObservationContext;
 
@@ -127,6 +128,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageRowViews;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSString *> *messageRowSignatures;
 @property (nonatomic) BOOL isSending;
+@property (nonatomic) NSInteger sendingChatID;
+@property (nonatomic, strong) NSMutableArray<TLChatMessage *> *sendingMessages;
 @property (nonatomic) BOOL isLoading;
 @property (nonatomic) BOOL widgetbookMode;
 @property (nonatomic, copy) NSString *errorMessage;
@@ -140,10 +143,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) TLMessageInput *messageInput;
 @property (nonatomic, strong) TLTokenView *contentShadowView;
 @property (nonatomic, strong) TLTokenView *contentHost;
+@property (nonatomic, strong) TLWorkspaceOutlineView *workspaceOutline;
+@property (nonatomic, strong) TLTransitionCoordinator *sidebarTransitions;
 @property (nonatomic, strong) NSView *chatWorkspace;
 @property (nonatomic, strong) NSLayoutConstraint *messageInputWidthConstraint;
 @property (nonatomic, strong) NSStackView *tabStack;
 @property (nonatomic, strong) TLWorkspaceTabsController *workspaceTabsController;
+@property (nonatomic) BOOL workspaceRenderScheduled;
 @property (nonatomic, strong) NSLayoutConstraint *tabStackLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *contentLeadingConstraint;
@@ -175,11 +181,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @property (nonatomic, strong) TLHistoryPanelController *historyPanelController;
 @property (nonatomic, strong) TLTokenView *agentsView;
-@property (nonatomic, strong) TLTokenView *notesView;
-@property (nonatomic, strong) NSView *notesArticleView;
-@property (nonatomic, strong) TLMessageInput *notesMessageInput;
-@property (nonatomic, strong) NSTextView *notesPromptTextView;
-@property (nonatomic, strong) NSLayoutConstraint *notesMessageInputWidthConstraint;
+@property (nonatomic, strong) TLNotesTabController *notesTabController;
+@property (nonatomic, strong) TLSettingsTabController *settingsTabController;
 @property (nonatomic, strong) NSTableView *agentsTableView;
 @property (nonatomic, strong) NSTextField *agentsStatusLabel;
 @property (nonatomic, strong) NSButton *createAgentButton;
@@ -225,13 +228,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)handleLinkURL:(NSURL *)URL modifierFlags:(NSEventModifierFlags)modifierFlags;
 - (void)handleBrowserTabRequestURL:(NSURL *)URL modifierFlags:(NSEventModifierFlags)modifierFlags;
 - (void)openSidebarBookmark:(TLSidebarShortcutButton *)sender;
-- (void)navigateBrowserFromAddressInput:(TLGlassButton *)sender;
-- (void)navigateBrowserBack:(NSButton *)sender;
-- (void)navigateBrowserForward:(NSButton *)sender;
-- (void)reloadBrowser:(NSButton *)sender;
-- (void)toggleBrowserHeightMode:(NSButton *)sender;
 - (nullable NSURL *)browserURLFromPromptString:(NSString *)promptString;
-- (NSString *)displayAddressForBrowserURL:(NSURL *)URL;
 - (void)applyBrowserAddressInputWidth:(CGFloat)width;
 - (void)applyContentTopLeftCornerRadius:(CGFloat)cornerRadius;
 - (void)invalidateThemeAppearanceForViewTree:(NSView *)view;
@@ -359,7 +356,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.notchOverlayController stopTracking];
   for (TLWorkspaceTab *browserTab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
     TLWorkspaceTabRuntime *runtime = [self runtimeForTab:browserTab];
-    [TLChromiumBrowserController.sharedController closeSession:runtime.browserSession];
+    [runtime.featureController close];
   }
   if (self.messageScrollWheelMonitor) {
     [NSEvent removeMonitor:self.messageScrollWheelMonitor];
@@ -415,9 +412,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return;
     }
 
-    [strongSelf updateWorkspaceMode];
     [strongSelf reloadWorkspaceTabs];
-    [strongSelf updateControlStates];
   };
 
   for (TLAppSignalName signalName in @[
@@ -562,6 +557,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [workspace addSubview:topbar];
   [workspace addSubview:self.sidebarResizeHandle];
   [self.contentShadowView addSubview:self.contentHost];
+  self.workspaceOutline = [[TLWorkspaceOutlineView alloc] init];
+  self.workspaceOutline.translatesAutoresizingMaskIntoConstraints = NO;
+  self.workspaceOutline.layer.zPosition = 11.0;
+  self.workspaceOutline.contentView = self.contentHost;
+  self.workspaceOutline.selectionView = self.workspaceTabsController.selectionView;
+  [workspace addSubview:self.workspaceOutline];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.workspaceOutline.leadingAnchor constraintEqualToAnchor:workspace.leadingAnchor],
+    [self.workspaceOutline.trailingAnchor constraintEqualToAnchor:workspace.trailingAnchor],
+    [self.workspaceOutline.topAnchor constraintEqualToAnchor:workspace.topAnchor],
+    [self.workspaceOutline.bottomAnchor constraintEqualToAnchor:workspace.bottomAnchor],
+  ]];
+  __weak TLWorkspaceOutlineView *outline = self.workspaceOutline;
+  self.workspaceTabsController.selectionView.geometryChanged = ^{ [outline updateOutline]; };
   self.contentLeadingConstraint = [self.contentShadowView.leadingAnchor constraintEqualToAnchor:workspace.leadingAnchor
                                                                                        constant:[self contentLeadingOffsetForSidebarWidth:[self currentSidebarWidth]]];
   self.sidebarActionStackLeadingConstraint =
@@ -1204,7 +1213,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)applyBrowserAddressInputWidth:(CGFloat)width {
   for (TLWorkspaceTab *browserTab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
     TLWorkspaceTabRuntime *runtime = [self runtimeForTab:browserTab];
-    runtime.browserAddressInputWidthConstraint.constant = width;
+    [(TLBrowserTabController *)runtime.featureController setAddressInputWidth:width];
   }
 }
 
@@ -1244,6 +1253,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
                                                                              palette:self.palette];
   self.sidebarToggleButton = [self makeSidebarToggleButton];
   self.createChatButton = [self makeCreateChatButton];
+  __weak TLButton *animatedCreateButton = self.createChatButton;
+  self.workspaceTabsController.animationActivityChanged = ^(BOOL animating) {
+    animatedCreateButton.hoverSuppressed = animating;
+  };
   self.agentWalletButton = [self makeAgentWalletButton];
 
   [self.topbar addSubview:self.tabStack];
@@ -1259,6 +1272,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self.tabStack.trailingAnchor constraintEqualToAnchor:self.createChatButton.leadingAnchor
                                                  constant:[self createChatButtonTabOverlap]];
   tabStackTrailingConstraint.priority = NSLayoutPriorityDefaultHigh;
+  self.workspaceTabsController.createTabButtonSpacingConstraint = tabStackTrailingConstraint;
   NSLayoutConstraint *createButtonWalletSpacingConstraint =
     [self.createChatButton.trailingAnchor constraintLessThanOrEqualToAnchor:self.agentWalletButton.leadingAnchor
                                                                     constant:-[self agentWalletPillGap]];
@@ -1653,7 +1667,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.chats = [TLWidgetbookChats() mutableCopy];
   self.activeChat = TLWidgetbookChat();
   [self addChatToSessionIfNeeded:self.activeChat.chatID activate:YES];
-  [self.messages removeAllObjects];
+  self.messages = [NSMutableArray array];
   [self resetMessageRowCache];
   for (TLChatMessage *message in self.activeChat.messages) {
     [self.messages addObject:[message copy]];
@@ -1698,9 +1712,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)loadChatWithID:(NSInteger)chatID {
-  if (self.isSending) {
-    return;
-  }
   if (chatID <= 0) {
     [self activateDraftChatWithID:chatID];
     return;
@@ -1716,11 +1727,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.activeChat = chat;
   [self addChatToSessionIfNeeded:chat.chatID activate:YES];
   [self showChatWorkspace];
-  [self.messages removeAllObjects];
+  self.messages = [NSMutableArray array];
   [self resetMessageRowCache];
   for (TLStoredChatMessage *storedMessage in chat.messages) {
     [self.messages addObject:[storedMessage copy]];
   }
+  if (self.isSending && self.sendingChatID == chatID) self.messages = self.sendingMessages;
 
   self.promptTextView.string = @"";
   self.errorMessage = @"";
@@ -1745,7 +1757,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.activeChat = chat;
   [self activateTabKind:TLWorkspaceTabKindChat tabID:chatID];
   [self showChatWorkspace];
-  [self.messages removeAllObjects];
+  self.messages = [NSMutableArray array];
   [self resetMessageRowCache];
   self.promptTextView.string = @"";
   self.errorMessage = @"";
@@ -1771,7 +1783,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)showSidebarUserMenu:(id)sender {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -1887,7 +1899,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openHistoryTab:(id)sender {
-  if (self.isSending || self.widgetbookMode || !self.historyTab) {
+  if (self.widgetbookMode || !self.historyTab) {
     return;
   }
 
@@ -1905,13 +1917,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  BOOL closingActiveTab = [self isWorkspaceTabActive:self.historyTab];
   [self.appStateManager removeWorkspaceTabWithKind:self.historyTab.kind tabID:self.historyTab.tabID];
   [self removeRuntimeForKind:self.historyTab.kind tabID:self.historyTab.tabID];
   self.historyTab = nil;
-  if (closingActiveTab) {
-    [self activateDefaultTab];
-  }
 
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -1923,7 +1931,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openChatTabWithID:(NSInteger)chatID {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -1935,7 +1943,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)closeChatTabWithID:(NSInteger)chatID {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -1953,21 +1961,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.appStateManager removeWorkspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID];
   [self removeRuntimeForKind:TLWorkspaceTabKindChat tabID:chatID];
 
-  NSArray<TLWorkspaceTab *> *chatTabs = [self workspaceTabsOfKind:TLWorkspaceTabKindChat];
-  if (closingActiveChat && chatTabs.count > 0) {
-    NSUInteger nextIndex = MIN(closedIndex, chatTabs.count - 1);
-    [self loadChatWithID:chatTabs[nextIndex].tabID];
-    return;
-  }
-
   if (closingActiveChat) {
     self.activeChat = nil;
-    [self.messages removeAllObjects];
+    self.messages = [NSMutableArray array];
     [self resetMessageRowCache];
     self.promptTextView.string = @"";
     self.errorMessage = @"";
-    [self ensureHistoryTab];
-    [self activateTabKind:TLWorkspaceTabKindHistory tabID:self.historyTab.tabID];
     [self updateWorkspaceMode];
     [self renderMessages];
   }
@@ -1998,217 +1997,41 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openBrowserTabWithURL:(NSURL *)URL {
-  if (![self isBrowserURL:URL]) {
-    return;
-  }
-
-  NSView *browserContentView = [[NSView alloc] init];
-  browserContentView.translatesAutoresizingMaskIntoConstraints = NO;
-  browserContentView.wantsLayer = YES;
-  browserContentView.layer.backgroundColor = TLCGColor(self.palette.tabBackground);
-
-  NSView *browserHostView = [[NSView alloc] init];
-  browserHostView.translatesAutoresizingMaskIntoConstraints = NO;
-  browserHostView.wantsLayer = YES;
-  browserHostView.layer.masksToBounds = YES;
-  [browserContentView addSubview:browserHostView];
-
-  TLBrowserBackdropView *browserBackdropView = [[TLBrowserBackdropView alloc] init];
-  [browserContentView addSubview:browserBackdropView];
-
+  if (![self isBrowserURL:URL]) return;
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser
-                                             tabID:self.nextBrowserTabID
-                                             title:[self browserTabTitleForURL:URL]
-                                           toolTip:URL.absoluteString
-                                               URL:URL
-                                         closeable:YES];
-  self.nextBrowserTabID += 1;
-  TLWorkspaceTabRuntime *runtime = [TLWorkspaceTabRuntime runtimeWithContentView:browserContentView
-                                                                      openAction:@selector(openBrowserTab:)
-                                                                     closeAction:@selector(closeBrowserTab:)];
-  runtime.browserHostView = browserHostView;
-  runtime.browserUsesReducedHeight = NO;
-
-  TLBrowserAddressInput *addressInput = [[TLBrowserAddressInput alloc] init];
-  addressInput.palette = self.palette;
-  addressInput.reducedHeight = NO;
-  [addressInput setDisplayedAddress:[self displayAddressForBrowserURL:URL]];
-  addressInput.sendButton.target = self;
-  addressInput.sendButton.action = @selector(navigateBrowserFromAddressInput:);
-  addressInput.textView.toolTip = URL.absoluteString;
-  for (NSButton *button in @[addressInput.backButton,
-                             addressInput.forwardButton,
-                             addressInput.reloadButton,
-                             addressInput.chatButton,
-                             addressInput.heightToggleButton]) {
-    button.tag = tab.tabID;
-    button.target = self;
-  }
-  addressInput.backButton.action = @selector(navigateBrowserBack:);
-  addressInput.forwardButton.action = @selector(navigateBrowserForward:);
-  addressInput.reloadButton.action = @selector(reloadBrowser:);
-  addressInput.heightToggleButton.action = @selector(toggleBrowserHeightMode:);
-  addressInput.chatButton.action = @selector(restoreBrowserChat:);
-  [browserContentView addSubview:addressInput];
-  runtime.browserAddressInput = addressInput;
-
-  NSLayoutConstraint *addressInputWidthConstraint = [addressInput.widthAnchor constraintEqualToConstant:
-    [self messageInputWidthForWindowWidth:NSWidth(self.window.frame)
-                              sidebarWidth:[self currentSidebarWidth]
-                     contentLeadingPadding:[self contentLeadingPadding]]];
-  addressInputWidthConstraint.priority = NSLayoutPriorityWindowSizeStayPut - 1.0;
-  runtime.browserAddressInputWidthConstraint = addressInputWidthConstraint;
-  NSLayoutConstraint *addressInputLeadingConstraint = [addressInput.leadingAnchor constraintGreaterThanOrEqualToAnchor:browserContentView.leadingAnchor
-                                                                                                           constant:self.palette.space11];
-  NSLayoutConstraint *addressInputTrailingConstraint = [addressInput.trailingAnchor constraintLessThanOrEqualToAnchor:browserContentView.trailingAnchor
-                                                                                                             constant:-self.palette.space11];
-  addressInputLeadingConstraint.priority = NSLayoutPriorityDefaultLow;
-  addressInputTrailingConstraint.priority = NSLayoutPriorityDefaultLow;
-  NSLayoutConstraint *browserHostBottomConstraint =
-    [browserHostView.bottomAnchor constraintEqualToAnchor:browserContentView.bottomAnchor];
-  runtime.browserHostBottomConstraint = browserHostBottomConstraint;
-  __weak TLWorkspaceTabRuntime *weakRuntime = runtime;
-  __weak typeof(self) weakController = self;
-  addressInput.heightChangeHandler = ^(CGFloat height) {
-    TLWorkspaceTabRuntime *currentRuntime = weakRuntime;
-    if (currentRuntime.browserUsesReducedHeight) {
-      [currentRuntime setBrowserBottomInset:-(weakController.palette.browserReducedHeightSpacing + height)
-        duration:NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ? 0 : weakController.palette.browserHeightTransitionDuration
-        overshoot:0];
-    }
-  };
-  [NSLayoutConstraint activateConstraints:@[
-    [browserHostView.leadingAnchor constraintEqualToAnchor:browserContentView.leadingAnchor],
-    [browserHostView.trailingAnchor constraintEqualToAnchor:browserContentView.trailingAnchor],
-    [browserHostView.topAnchor constraintEqualToAnchor:browserContentView.topAnchor],
-    browserHostBottomConstraint,
-    [browserBackdropView.leadingAnchor constraintEqualToAnchor:browserContentView.leadingAnchor],
-    [browserBackdropView.trailingAnchor constraintEqualToAnchor:browserContentView.trailingAnchor],
-    [browserBackdropView.bottomAnchor constraintEqualToAnchor:browserContentView.bottomAnchor],
-    [browserBackdropView.heightAnchor constraintEqualToConstant:self.palette.browserBackdropHeight],
-    [addressInput.centerXAnchor constraintEqualToAnchor:browserContentView.centerXAnchor],
-    [addressInput.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.messageInputMinWidth],
-    [addressInput.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth],
-    addressInputLeadingConstraint,
-    addressInputTrailingConstraint,
-    addressInputWidthConstraint,
-    [addressInput.bottomAnchor constraintEqualToAnchor:browserContentView.bottomAnchor constant:-self.palette.space10],
-  ]];
+    tabID:self.nextBrowserTabID++ title:[self browserTabTitleForURL:URL]
+    toolTip:URL.absoluteString URL:URL closeable:YES];
+  CGFloat inputWidth = [self messageInputWidthForWindowWidth:NSWidth(self.window.frame)
+    sidebarWidth:[self currentSidebarWidth] contentLeadingPadding:[self contentLeadingPadding]];
+  TLBrowserTabController *controller = [[TLBrowserTabController alloc] initWithURL:URL palette:self.palette
+    database:self.database orchestrator:self.agentOrchestrator inputWidth:inputWidth];
+  TLWorkspaceTabRuntime *runtime = [TLWorkspaceTabRuntime runtimeWithContentView:controller.view
+    openAction:@selector(openBrowserTab:) closeAction:@selector(closeBrowserTab:)];
+  runtime.featureController = controller;
   [self setRuntime:runtime forTab:tab];
-
+  NSInteger tabID = tab.tabID;
+  __weak typeof(self) weakSelf = self;
+  controller.metadataChangedHandler = ^(NSString *title, NSURL *updatedURL) {
+    TalariaWindowController *windowController = weakSelf;
+    TLWorkspaceTab *updatedTab = [windowController browserTabWithID:tabID];
+    if (!updatedTab) return;
+    updatedTab.title = title;
+    updatedTab.URL = updatedURL;
+    updatedTab.toolTip = updatedURL.absoluteString ?: title;
+    [windowController.appStateManager upsertWorkspaceTab:updatedTab activate:[windowController isWorkspaceTabActive:updatedTab]];
+  };
+  controller.faviconChangedHandler = ^{ [weakSelf reloadWorkspaceTabs]; };
+  controller.linkHandler = ^(NSURL *linkedURL, NSEventModifierFlags flags) {
+    [weakSelf handleBrowserTabRequestURL:linkedURL modifierFlags:flags];
+  };
+  controller.settingsProvider = ^{ return weakSelf.settings; };
+  controller.settingsRequiredHandler = ^{ [weakSelf showSettings:weakSelf]; };
   [self.appStateManager addWorkspaceTab:tab activate:YES];
-  [self addWorkspaceContentView:runtime.contentView];
-
+  [self addWorkspaceContentView:controller.view];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
   [self updateControlStates];
-  [browserContentView.superview layoutSubtreeIfNeeded];
-  [browserContentView layoutSubtreeIfNeeded];
-
-  __weak typeof(self) weakSelf = self;
-  NSInteger tabID = tab.tabID;
-  runtime.browserSession = [TLChromiumBrowserController.sharedController loadURL:URL
-                                                                          inView:runtime.browserHostView
-                                                                      fromWindow:self.window
-                                                                    titleHandler:^(NSString *title) {
-    TalariaWindowController *strongSelf = weakSelf;
-    TLWorkspaceTab *updatedTab = [strongSelf browserTabWithID:tabID];
-    if (!strongSelf || !updatedTab || title.length == 0) {
-      return;
-    }
-    updatedTab.title = title;
-    updatedTab.toolTip = updatedTab.URL.absoluteString ?: title;
-    [strongSelf.appStateManager upsertWorkspaceTab:updatedTab
-                                          activate:strongSelf.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindBrowser &&
-                                                   strongSelf.appStateManager.snapshot.activeTabID == updatedTab.tabID];
-    [strongSelf reloadWorkspaceTabs];
-  } linkHandler:^(NSURL *linkedURL, NSEventModifierFlags linkedModifierFlags) {
-    [weakSelf handleBrowserTabRequestURL:linkedURL modifierFlags:linkedModifierFlags];
-  } URLHandler:^(NSURL *updatedURL) {
-    TalariaWindowController *strongSelf = weakSelf;
-    TLWorkspaceTab *updatedTab = [strongSelf browserTabWithID:tabID];
-    if (!strongSelf || !updatedTab || ![strongSelf isBrowserURL:updatedURL]) {
-      return;
-    }
-    updatedTab.URL = updatedURL;
-    updatedTab.toolTip = updatedURL.absoluteString;
-    TLWorkspaceTabRuntime *updatedRuntime = [strongSelf runtimeForTab:updatedTab];
-    TLBrowserAddressInput *updatedAddressInput = (TLBrowserAddressInput *)updatedRuntime.browserAddressInput;
-    [updatedAddressInput updateDisplayedAddress:[strongSelf displayAddressForBrowserURL:updatedURL]];
-    updatedAddressInput.textView.toolTip = updatedURL.absoluteString;
-    [strongSelf.appStateManager upsertWorkspaceTab:updatedTab
-                                          activate:strongSelf.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindBrowser &&
-                                                   strongSelf.appStateManager.snapshot.activeTabID == updatedTab.tabID];
-  } faviconHandler:^(NSImage *favicon) {
-    TalariaWindowController *strongSelf = weakSelf;
-    TLWorkspaceTab *updatedTab = [strongSelf browserTabWithID:tabID];
-    if (!strongSelf || !updatedTab) {
-      return;
-    }
-    TLWorkspaceTabRuntime *updatedRuntime = [strongSelf runtimeForTab:updatedTab];
-    if (updatedRuntime.browserFavicon == favicon) {
-      return;
-    }
-    updatedRuntime.browserFavicon = favicon;
-    [strongSelf reloadWorkspaceTabs];
-  } navigationHandler:^(BOOL canGoBack, BOOL canGoForward, BOOL loading) {
-    TalariaWindowController *strongSelf = weakSelf;
-    TLWorkspaceTab *updatedTab = [strongSelf browserTabWithID:tabID];
-    if (!strongSelf || !updatedTab) {
-      return;
-    }
-    TLWorkspaceTabRuntime *updatedRuntime = [strongSelf runtimeForTab:updatedTab];
-    TLBrowserAddressInput *updatedAddressInput = (TLBrowserAddressInput *)updatedRuntime.browserAddressInput;
-    if (!updatedAddressInput) {
-      return;
-    }
-    updatedAddressInput.backButton.enabled = canGoBack;
-    updatedAddressInput.forwardButton.enabled = canGoForward;
-    updatedAddressInput.reloadButton.enabled = YES;
-  }];
-}
-
-- (void)navigateBrowserBack:(NSButton *)sender {
-  TLWorkspaceTab *tab = [self browserTabWithID:sender.tag];
-  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
-  if (!tab || !runtime.browserSession) {
-    return;
-  }
-  [TLChromiumBrowserController.sharedController goBackInSession:runtime.browserSession];
-}
-
-- (void)navigateBrowserForward:(NSButton *)sender {
-  TLWorkspaceTab *tab = [self browserTabWithID:sender.tag];
-  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
-  if (!tab || !runtime.browserSession) {
-    return;
-  }
-  [TLChromiumBrowserController.sharedController goForwardInSession:runtime.browserSession];
-}
-
-- (void)reloadBrowser:(NSButton *)sender {
-  TLWorkspaceTab *tab = [self browserTabWithID:sender.tag];
-  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
-  if (!tab || !runtime.browserSession) {
-    return;
-  }
-  [TLChromiumBrowserController.sharedController reloadSession:runtime.browserSession];
-}
-
-- (void)toggleBrowserHeightMode:(NSButton *)sender {
-  TLWorkspaceTab *tab = [self browserTabWithID:sender.tag];
-  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
-  TLBrowserAddressInput *addressInput = (TLBrowserAddressInput *)runtime.browserAddressInput;
-  if (!tab || !runtime.browserHostBottomConstraint || !addressInput) {
-    return;
-  }
-
-  runtime.browserUsesReducedHeight = !runtime.browserUsesReducedHeight;
-  CGFloat reducedInset = self.palette.browserReducedHeightSpacing + NSHeight(addressInput.frame);
-  addressInput.reducedHeight = runtime.browserUsesReducedHeight;
-  [runtime setBrowserBottomInset:runtime.browserUsesReducedHeight ? -reducedInset : self.palette.space0
-    duration:NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ? 0 : self.palette.browserHeightTransitionDuration
-    overshoot:runtime.browserUsesReducedHeight ? self.palette.browserHeightTransitionOvershoot : 0];
+  [controller startInWindow:self.window];
 }
 
 - (void)openSidebarBookmark:(TLSidebarShortcutButton *)sender {
@@ -2219,126 +2042,18 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self openBrowserTabWithURL:sender.URL];
 }
 
-- (void)navigateBrowserFromAddressInput:(TLGlassButton *)sender {
-  TLWorkspaceTab *tab = nil;
-  for (TLWorkspaceTab *candidate in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
-    TLBrowserAddressInput *input = (TLBrowserAddressInput *)[self runtimeForTab:candidate].browserAddressInput;
-    if (input.sendButton == sender) { tab = candidate; break; }
-  }
-  if (!tab) { return; }
-  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
-  TLBrowserAddressInput *input = (TLBrowserAddressInput *)runtime.browserAddressInput;
-  NSString *text = [input.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (text.length == 0) { return; }
-  NSURL *URL = input.hasUserDraft ? [self browserURLFromPromptString:text] : tab.URL;
-  if (!URL) {
-    [self sendBrowserPrompt:text tab:tab];
-    return;
-  }
-  [input setDisplayedAddress:[self displayAddressForBrowserURL:URL]];
-  input.textView.toolTip = URL.absoluteString;
-  [self.window makeFirstResponder:runtime.browserHostView];
-  tab.URL = URL;
-  tab.toolTip = URL.absoluteString;
-  [self.appStateManager upsertWorkspaceTab:tab activate:[self isWorkspaceTabActive:tab]];
-  [TLChromiumBrowserController.sharedController navigateSession:runtime.browserSession toURL:URL];
-}
-
-- (void)updateBrowserChatForRuntime:(TLWorkspaceTabRuntime *)runtime {
-  if (!runtime) return;
-  TLBrowserConversation *conversation = runtime.browserConversation;
-  TLBrowserAddressInput *input = (TLBrowserAddressInput *)runtime.browserAddressInput;
-  [runtime.browserChatPane setPresented:!conversation.minimized animated:YES];
-  runtime.browserChatPane.title = conversation.title;
-  [runtime.browserChatPane showMarkdown:conversation.markdown loading:conversation.loading];
-  input.chatVisible = conversation.minimized;
-  input.responseCount = conversation.responseCount;
-}
-
-- (void)minimizeBrowserChat:(NSButton *)sender {
-  TLWorkspaceTab *tab = [self browserTabWithID:sender.tag];
-  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
-  if (!runtime.browserConversation) return;
-  runtime.browserConversation.minimized = YES;
-  [(TLBrowserAddressInput *)runtime.browserAddressInput setDisplayedAddress:[self displayAddressForBrowserURL:tab.URL]];
-  [self updateBrowserChatForRuntime:runtime];
-}
-
-- (void)restoreBrowserChat:(NSButton *)sender {
-  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:[self browserTabWithID:sender.tag]];
-  if (!runtime.browserConversation) return;
-  runtime.browserConversation.minimized = NO;
-  [self updateBrowserChatForRuntime:runtime];
-  [(TLBrowserAddressInput *)runtime.browserAddressInput beginPromptEditing];
-}
-
-- (void)sendBrowserPrompt:(NSString *)prompt tab:(TLWorkspaceTab *)tab {
-  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
-  if (runtime.browserConversation.busy) { NSBeep(); return; }
-  if (!self.settings.openRouterToken.length || !self.settings.selectedModel.length) {
-    [self showSettings:self]; return;
-  }
-  TLBrowserAddressInput *input = (TLBrowserAddressInput *)runtime.browserAddressInput;
-  if (!runtime.browserConversation) {
-    runtime.browserConversation = [[TLBrowserConversation alloc] initWithDatabase:self.database orchestrator:self.agentOrchestrator];
-    TLBrowserChatPane *pane = [[TLBrowserChatPane alloc] init];
-    pane.palette = self.palette;
-    pane.minimizeButton.target = self;
-    pane.minimizeButton.action = @selector(minimizeBrowserChat:);
-    pane.minimizeButton.tag = tab.tabID;
-    runtime.browserChatPane = pane;
-    [runtime.contentView addSubview:pane positioned:NSWindowAbove relativeTo:input];
-    NSLayoutConstraint *height = [pane.heightAnchor constraintEqualToAnchor:runtime.contentView.heightAnchor multiplier:self.palette.browserChatPaneHeightFraction];
-    height.priority = NSLayoutPriorityDefaultHigh;
-    [NSLayoutConstraint activateConstraints:@[
-      [pane.leadingAnchor constraintEqualToAnchor:input.leadingAnchor],
-      [pane.widthAnchor constraintEqualToAnchor:input.widthAnchor],
-      [pane.bottomAnchor constraintEqualToAnchor:input.topAnchor constant:-self.palette.space4],
-      [pane.topAnchor constraintGreaterThanOrEqualToAnchor:runtime.contentView.topAnchor constant:self.palette.space4],
-      height,
-    ]];
-    __weak typeof(self) weakSelf = self;
-    __weak TLWorkspaceTabRuntime *weakRuntime = runtime;
-    runtime.browserConversation.changeHandler = ^{ [weakSelf updateBrowserChatForRuntime:weakRuntime]; };
-    pane.linkHandler = ^(NSURL *URL, NSEventModifierFlags flags) {
-      [weakSelf handleBrowserTabRequestURL:URL modifierFlags:flags];
-    };
-  }
-  NSURL *pageURL = tab.URL;
-  TLChromiumBrowserSession *session = runtime.browserSession;
-  BOOL started = [runtime.browserConversation sendPrompt:prompt token:self.settings.openRouterToken model:self.settings.selectedModel
-    pageReader:^(void (^completion)(NSDictionary *, NSError *)) {
-      [TLChromiumBrowserController.sharedController readPageInSession:session expectedURL:pageURL completion:completion];
-    }];
-  if (started) [input setDisplayedAddress:[self displayAddressForBrowserURL:tab.URL]];
-}
 
 - (nullable NSURL *)browserURLFromPromptString:(NSString *)promptString {
   return [TLInputSuggestions browserURLForInput:promptString];
 }
 
-- (NSString *)displayAddressForBrowserURL:(NSURL *)URL {
-  NSString *address = URL.absoluteString ?: @"";
-  NSString *scheme = URL.scheme.lowercaseString;
-  if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
-    address = [address substringFromIndex:scheme.length + 3];
-  }
-  if ([address rangeOfString:@"www."
-                     options:NSAnchoredSearch | NSCaseInsensitiveSearch].location != NSNotFound) {
-    address = [address substringFromIndex:4];
-  }
-  if ([address hasSuffix:@"/"]) {
-    address = [address substringToIndex:address.length - 1];
-  }
-  return address;
-}
 
 - (void)openBrowserTab:(NSButton *)sender {
   [self openBrowserTabWithID:sender.tag];
 }
 
 - (void)openBrowserTabWithID:(NSInteger)tabID {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -2358,7 +2073,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)closeBrowserTabWithID:(NSInteger)tabID {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -2372,21 +2087,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
   TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
-  BOOL closingActiveTab = [self isWorkspaceTabActive:tab];
-  [TLChromiumBrowserController.sharedController closeSession:runtime.browserSession];
+  [runtime.featureController close];
   [runtime.contentView removeFromSuperview];
   [self.appStateManager removeWorkspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:tab.tabID];
   [self removeRuntimeForKind:TLWorkspaceTabKindBrowser tabID:tab.tabID];
-
-  if (closingActiveTab) {
-    NSArray<TLWorkspaceTab *> *browserTabs = [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser];
-    if (browserTabs.count > 0) {
-      NSUInteger nextIndex = MIN(closedIndex, browserTabs.count - 1);
-      [self activateTabKind:TLWorkspaceTabKindBrowser tabID:browserTabs[nextIndex].tabID];
-    } else {
-      [self activateDefaultTab];
-    }
-  }
 
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -2394,9 +2098,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)startNewChatWithModel:(NSString *)model focus:(BOOL)focus {
-  if (self.isSending) {
-    return;
-  }
 
   TLChatRecord *chat = [[TLChatRecord alloc] init];
   chat.chatID = self.nextDraftChatID;
@@ -2407,7 +2108,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.activeChat = chat;
   [self addChatToSessionIfNeeded:chat.chatID activate:YES];
   [self showChatWorkspace];
-  [self.messages removeAllObjects];
+  self.messages = [NSMutableArray array];
   [self resetMessageRowCache];
   self.promptTextView.string = @"";
   [self selectActiveChatInHistory];
@@ -2425,7 +2126,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   if (self.activeChat.chatID <= 0) {
-    [self.messages removeAllObjects];
+    self.messages = [NSMutableArray array];
     [self resetMessageRowCache];
     self.promptTextView.string = @"";
     [self renderMessages];
@@ -2442,7 +2143,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.activeChat = chat;
-  [self.messages removeAllObjects];
+  self.messages = [NSMutableArray array];
   [self resetMessageRowCache];
   [self refreshChatsKeepingActiveSelection];
   [self renderMessages];
@@ -2536,6 +2237,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   TLChatRecord *chat = self.activeChat;
+  NSMutableArray<TLChatMessage *> *turnMessages = self.messages;
+  self.sendingChatID = chat.chatID;
+  self.sendingMessages = turnMessages;
   self.promptTextView.string = @"";
   self.isSending = YES;
   self.errorMessage = @"";
@@ -2545,35 +2249,61 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   BOOL started = [self.assistantTurnRunner startTurnWithChat:chat
                                                        token:token
                                                        model:model
-                                                    messages:self.messages
+                                                    messages:turnMessages
                                                   nextPrompt:nextPrompt
                                                updateHandler:^{
     TalariaWindowController *strongSelf = weakSelf;
     if (!strongSelf) {
       return;
     }
-    [strongSelf renderMessages];
+    if (strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive]) {
+      [strongSelf renderMessages];
+    }
     [strongSelf updateControlStates];
-  } completionHandler:^(NSError *error) {
+  } completionHandler:^(TLAssistantTurnResult *result) {
     TalariaWindowController *strongSelf = weakSelf;
     if (!strongSelf) {
       return;
     }
 
-    if (error) {
-      [strongSelf presentErrorMessage:error.localizedDescription ?: @"Could not save assistant message."];
+    strongSelf.isSending = NO;
+    BOOL showingOrigin = strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive];
+    if (showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+      strongSelf.promptTextView.string = result.userMessage.content;
+      [strongSelf.messageInput recalculateHeight];
+      [strongSelf updateMessageScrollInsets];
     }
 
-    strongSelf.isSending = NO;
     [strongSelf refreshChatsKeepingActiveSelection];
-    [strongSelf generateChatIconIfNeededForChatID:chat.chatID messages:strongSelf.messages];
-    [strongSelf renderMessages];
+    if (result.generationStatus == TLAssistantTurnGenerationStatusSucceeded &&
+        result.persistenceStatus == TLAssistantTurnPersistenceStatusSucceeded) {
+      [strongSelf generateChatIconIfNeededForChatID:chat.chatID messages:turnMessages];
+    }
+    if (showingOrigin) [strongSelf renderMessages];
+    strongSelf.sendingMessages = nil;
     [strongSelf updateControlStates];
-    [strongSelf.window makeFirstResponder:strongSelf.promptTextView];
+    if (showingOrigin) [strongSelf.window makeFirstResponder:strongSelf.promptTextView];
+
+    NSMutableArray<NSString *> *errors = [NSMutableArray array];
+    if (result.generationError) {
+      [errors addObject:[NSString stringWithFormat:@"Request failed: %@", result.generationError.localizedDescription]];
+    }
+    if (result.persistenceError) {
+      [errors addObject:[NSString stringWithFormat:@"Could not save conversation: %@", result.persistenceError.localizedDescription]];
+    }
+    if (errors.count && showingOrigin) {
+      [strongSelf presentErrorMessage:[errors componentsJoinedByString:@"\n\n"]];
+    } else if (errors.count) {
+      NSAlert *alert = [[NSAlert alloc] init];
+      alert.messageText = [NSString stringWithFormat:@"Conversation: %@", chat.title ?: @"Chat"];
+      alert.informativeText = [errors componentsJoinedByString:@"\n\n"];
+      [alert beginSheetModalForWindow:strongSelf.window completionHandler:nil];
+    }
   } error:&startError];
 
   if (!started) {
     self.isSending = NO;
+    self.sendingMessages = nil;
     self.promptTextView.string = nextPrompt;
     [self presentErrorMessage:startError.localizedDescription ?: @"Could not start assistant turn."];
     [self updateControlStates];
@@ -2816,7 +2546,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openAWSOutageChat:(id)sender {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -3124,7 +2854,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)showSettings:(id)sender {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -3151,7 +2881,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openSettingsTab:(id)sender {
-  if (self.isSending || self.widgetbookMode || !self.settingsTab) {
+  if (self.widgetbookMode || !self.settingsTab) {
     return;
   }
 
@@ -3162,7 +2892,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)showAgents:(id)sender {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -3190,7 +2920,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openAgentsTab:(id)sender {
-  if (self.isSending || self.widgetbookMode || !self.agentsTab) {
+  if (self.widgetbookMode || !self.agentsTab) {
     return;
   }
 
@@ -3209,15 +2939,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  BOOL closingActiveTab = [self isWorkspaceTabActive:self.agentsTab];
   [self.appStateManager removeWorkspaceTabWithKind:self.agentsTab.kind tabID:self.agentsTab.tabID];
   [[self contentViewForTab:self.agentsTab] removeFromSuperview];
   [self removeRuntimeForKind:self.agentsTab.kind tabID:self.agentsTab.tabID];
   self.agentsTab = nil;
 
-  if (closingActiveTab) {
-    [self activateDefaultTab];
-  }
 
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -3225,7 +2951,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)showDebug:(id)sender {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -3252,7 +2978,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openDebugTab:(id)sender {
-  if (self.isSending || self.widgetbookMode || !self.debugTab) {
+  if (self.widgetbookMode || !self.debugTab) {
     return;
   }
   [self activateTabKind:TLWorkspaceTabKindDebug tabID:self.debugTab.tabID];
@@ -3269,14 +2995,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  BOOL closingActiveTab = [self isWorkspaceTabActive:self.debugTab];
   [self.appStateManager removeWorkspaceTabWithKind:self.debugTab.kind tabID:self.debugTab.tabID];
   [[self contentViewForTab:self.debugTab] removeFromSuperview];
   [self removeRuntimeForKind:self.debugTab.kind tabID:self.debugTab.tabID];
   self.debugTab = nil;
-  if (closingActiveTab) {
-    [self activateDefaultTab];
-  }
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
   [self updateControlStates];
@@ -3291,7 +3013,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)showNotes:(id)sender {
-  if (self.isSending || self.widgetbookMode) {
+  if (self.widgetbookMode) {
     return;
   }
 
@@ -3318,7 +3040,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openNotesTab:(id)sender {
-  if (self.isSending || self.widgetbookMode || !self.notesTab) {
+  if (self.widgetbookMode || !self.notesTab) {
     return;
   }
 
@@ -3336,20 +3058,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  BOOL closingActiveTab = [self isWorkspaceTabActive:self.notesTab];
   [self.appStateManager removeWorkspaceTabWithKind:self.notesTab.kind tabID:self.notesTab.tabID];
   [[self contentViewForTab:self.notesTab] removeFromSuperview];
   [self removeRuntimeForKind:self.notesTab.kind tabID:self.notesTab.tabID];
   self.notesTab = nil;
-  self.notesView = nil;
-  self.notesArticleView = nil;
-  self.notesMessageInput = nil;
-  self.notesPromptTextView = nil;
-  self.notesMessageInputWidthConstraint = nil;
+  self.notesTabController = nil;
 
-  if (closingActiveTab) {
-    [self activateDefaultTab];
-  }
 
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -3357,493 +3071,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (NSView *)buildNotesTabContent {
-  TLThemePalette *palette = self.palette;
-  TLTokenView *content = [[TLTokenView alloc] init];
-  content.translatesAutoresizingMaskIntoConstraints = NO;
-  content.fillColor = palette.tabBackground;
-  self.notesView = content;
-
-  NSView *vaultSidebar = [self notesVaultSidebarViewWithPalette:palette];
-  NSView *article = [self notesArticleScrollViewWithPalette:palette];
-  self.notesArticleView = article;
-  for (NSView *view in @[
-    vaultSidebar,
-    article,
-  ]) {
-    [content addSubview:view];
-  }
-  self.notesMessageInput = [self buildNotesMessageInputWithPalette:palette];
-  [content addSubview:self.notesMessageInput];
-
-  NSLayoutConstraint *vaultWidthConstraint = [vaultSidebar.widthAnchor constraintEqualToConstant:palette.sidebarWidth + palette.space6];
-  vaultWidthConstraint.priority = NSLayoutPriorityDefaultHigh;
-  NSLayoutConstraint *articleMinimumWidthConstraint = [article.widthAnchor constraintGreaterThanOrEqualToConstant:palette.messageInputMinWidth];
-  articleMinimumWidthConstraint.priority = NSLayoutPriorityDefaultLow;
-  CGFloat initialPromptWidth = [self notesMessageInputWidthForArticleWidth:palette.messageInputMaxWidth + (palette.space11 * 2.0)];
-  self.notesMessageInputWidthConstraint = [self.notesMessageInput.widthAnchor constraintEqualToConstant:initialPromptWidth];
-  self.notesMessageInputWidthConstraint.priority = NSLayoutPriorityWindowSizeStayPut - 1.0;
-  NSLayoutConstraint *notesInputLeadingConstraint =
-    [self.notesMessageInput.leadingAnchor constraintGreaterThanOrEqualToAnchor:article.leadingAnchor
-                                                                       constant:palette.space11];
-  NSLayoutConstraint *notesInputTrailingConstraint =
-    [self.notesMessageInput.trailingAnchor constraintLessThanOrEqualToAnchor:article.trailingAnchor
-                                                                     constant:-palette.space11];
-  notesInputLeadingConstraint.priority = NSLayoutPriorityDefaultLow;
-  notesInputTrailingConstraint.priority = NSLayoutPriorityDefaultLow;
-
-  [NSLayoutConstraint activateConstraints:@[
-    [vaultSidebar.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-    [vaultSidebar.topAnchor constraintEqualToAnchor:content.topAnchor],
-    [vaultSidebar.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-    vaultWidthConstraint,
-
-    [article.leadingAnchor constraintEqualToAnchor:vaultSidebar.trailingAnchor],
-    [article.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-    [article.topAnchor constraintEqualToAnchor:content.topAnchor],
-    [article.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-    articleMinimumWidthConstraint,
-
-    [self.notesMessageInput.centerXAnchor constraintEqualToAnchor:article.centerXAnchor],
-    [self.notesMessageInput.widthAnchor constraintGreaterThanOrEqualToConstant:palette.messageInputMinWidth],
-    [self.notesMessageInput.widthAnchor constraintLessThanOrEqualToConstant:palette.messageInputMaxWidth],
-    notesInputLeadingConstraint,
-    notesInputTrailingConstraint,
-    self.notesMessageInputWidthConstraint,
-    [self.notesMessageInput.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-palette.space10],
-  ]];
-
-  [self updateNotesPromptControlState];
-  dispatch_async(dispatch_get_main_queue(), ^{
-    [self updateNotesMessageInputWidth];
-  });
-
-  return content;
-}
-
-- (TLMessageInput *)buildNotesMessageInputWithPalette:(TLThemePalette *)palette {
-  TLMessageInput *messageInput = [[TLMessageInput alloc] init];
-  messageInput.palette = palette;
-  messageInput.layer.zPosition = 20.0;
-  self.notesPromptTextView = messageInput.textView;
-  self.notesPromptTextView.delegate = self;
-  messageInput.sendButton.target = self;
-  messageInput.sendButton.action = @selector(sendNotesPrompt:);
-  return messageInput;
-}
-
-- (NSView *)notesVaultSidebarViewWithPalette:(TLThemePalette *)palette {
-  TLTokenView *sidebar = [[TLTokenView alloc] init];
-  sidebar.translatesAutoresizingMaskIntoConstraints = NO;
-  sidebar.fillColor = palette.sidebarSurface;
-  sidebar.borderColor = palette.sidebarBorder;
-  sidebar.borderWidth = palette.borderWidth;
-  sidebar.borderEdges = TLBorderEdgeRight;
-
-  NSStackView *stack = [[NSStackView alloc] init];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  stack.alignment = NSLayoutAttributeWidth;
-  stack.distribution = NSStackViewDistributionGravityAreas;
-  stack.spacing = palette.space0;
-  [sidebar addSubview:stack];
-
-  NSView *header = [self notesVaultHeaderWithPalette:palette];
-  NSView *search = [self notesSearchFieldWithPalette:palette];
-  [stack addArrangedSubview:header];
-  [stack setCustomSpacing:palette.space8 afterView:header];
-  [stack addArrangedSubview:search];
-  [stack setCustomSpacing:palette.space8 afterView:search];
-
-  NSArray<NSDictionary<NSString *, id> *> *sections = @[
-    @{
-      @"title": @"Advanced topics",
-      @"expanded": @NO,
-      @"items": @[],
-    },
-    @{
-      @"title": @"Concepts",
-      @"expanded": @NO,
-      @"items": @[],
-    },
-    @{
-      @"title": @"Extending Talaria",
-      @"expanded": @YES,
-      @"items": @[
-        @"Community plugins",
-        @"CSS snippets",
-        @"Plugin security",
-        @"Themes",
-      ],
-    },
-    @{
-      @"title": @"Getting started",
-      @"expanded": @YES,
-      @"items": @[
-        @"Create a vault",
-        @"Create your first note",
-        @"Link notes",
-        @"Sync notes across devices",
-      ],
-    },
-    @{
-      @"title": @"Linking notes and files",
-      @"expanded": @NO,
-      @"items": @[],
-    },
-  ];
-  for (NSDictionary<NSString *, id> *section in sections) {
-    [stack addArrangedSubview:[self notesNavigationSectionWithTitle:section[@"title"]
-                                                           expanded:[section[@"expanded"] boolValue]
-                                                              items:section[@"items"]
-                                                       selectedItem:@"Themes"
-                                                            palette:palette]];
-  }
-
-  [NSLayoutConstraint activateConstraints:@[
-    [stack.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:palette.space12],
-    [stack.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-palette.space12],
-    [stack.topAnchor constraintEqualToAnchor:sidebar.topAnchor constant:palette.space12],
-    [stack.bottomAnchor constraintLessThanOrEqualToAnchor:sidebar.bottomAnchor constant:-palette.space12],
-  ]];
-
-  return sidebar;
-}
-
-- (NSView *)notesVaultHeaderWithPalette:(TLThemePalette *)palette {
-  NSView *header = [[NSView alloc] init];
-  header.translatesAutoresizingMaskIntoConstraints = NO;
-
-  TLBrandMarkView *markView = [[TLBrandMarkView alloc] init];
-  markView.translatesAutoresizingMaskIntoConstraints = NO;
-  markView.palette = palette;
-  [header addSubview:markView];
-
-  NSTextField *titleLabel = [self labelWithString:@"Talaria Notes" font:palette.markdownHeading2Font color:palette.appText];
-  titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-  [header addSubview:titleLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [header.heightAnchor constraintEqualToConstant:palette.topbarHeight],
-    [markView.leadingAnchor constraintEqualToAnchor:header.leadingAnchor],
-    [markView.centerYAnchor constraintEqualToAnchor:header.centerYAnchor],
-    [markView.widthAnchor constraintEqualToConstant:palette.space10],
-    [markView.heightAnchor constraintEqualToConstant:palette.space10],
-    [titleLabel.leadingAnchor constraintEqualToAnchor:markView.trailingAnchor constant:palette.space4],
-    [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:header.trailingAnchor],
-    [titleLabel.centerYAnchor constraintEqualToAnchor:markView.centerYAnchor],
-  ]];
-
-  return header;
-}
-
-- (NSView *)notesSearchFieldWithPalette:(TLThemePalette *)palette {
-  TLTokenView *field = [[TLTokenView alloc] init];
-  field.translatesAutoresizingMaskIntoConstraints = NO;
-  field.fillColor = palette.controlSurface;
-  field.borderColor = palette.controlBorder;
-  field.borderWidth = palette.borderWidth;
-  field.borderEdges = TLBorderEdgeAll;
-  field.cornerRadius = palette.space3;
-
-  NSImageView *searchIcon = [self notesIconViewWithSystemName:@"magnifyingglass"
-                                     accessibilityDescription:@"Search"
-                                                        color:palette.textMuted
-                                                    pointSize:palette.smallFont.pointSize];
-  [field addSubview:searchIcon];
-
-  NSTextField *placeholder = [self labelWithString:@"Search page or heading..." font:palette.smallFont color:palette.textMuted];
-  placeholder.lineBreakMode = NSLineBreakByTruncatingTail;
-  [field addSubview:placeholder];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [field.heightAnchor constraintEqualToConstant:palette.fieldHeight - palette.space2],
-    [searchIcon.leadingAnchor constraintEqualToAnchor:field.leadingAnchor constant:palette.space4],
-    [searchIcon.centerYAnchor constraintEqualToAnchor:field.centerYAnchor],
-    [searchIcon.widthAnchor constraintEqualToConstant:palette.space8],
-    [searchIcon.heightAnchor constraintEqualToConstant:palette.space8],
-    [placeholder.leadingAnchor constraintEqualToAnchor:searchIcon.trailingAnchor constant:palette.space3],
-    [placeholder.trailingAnchor constraintLessThanOrEqualToAnchor:field.trailingAnchor constant:-palette.space4],
-    [placeholder.centerYAnchor constraintEqualToAnchor:field.centerYAnchor],
-  ]];
-
-  return field;
-}
-
-- (NSView *)notesNavigationSectionWithTitle:(NSString *)title
-                                   expanded:(BOOL)expanded
-                                      items:(NSArray<NSString *> *)items
-                               selectedItem:(NSString *)selectedItem
-                                    palette:(TLThemePalette *)palette {
-  NSStackView *sectionStack = [[NSStackView alloc] init];
-  sectionStack.translatesAutoresizingMaskIntoConstraints = NO;
-  sectionStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  sectionStack.alignment = NSLayoutAttributeWidth;
-  sectionStack.distribution = NSStackViewDistributionGravityAreas;
-  sectionStack.spacing = palette.space0;
-
-  NSString *chevron = expanded ? @"chevron.down" : @"chevron.right";
-  [sectionStack addArrangedSubview:[self notesNavigationRowWithTitle:title
-                                                            selected:NO
-                                                               level:0
-                                                      systemIconName:chevron
-                                                             palette:palette]];
-  if (expanded) {
-    for (NSString *item in items) {
-      [sectionStack addArrangedSubview:[self notesNavigationRowWithTitle:item
-                                                                selected:[item isEqualToString:selectedItem]
-                                                                   level:1
-                                                          systemIconName:@""
-                                                                 palette:palette]];
+  TLNotesTabController *controller = [[TLNotesTabController alloc] initWithPalette:self.palette];
+  self.notesTabController = controller;
+  controller.inputEnabled = !self.isSending && !self.widgetbookMode;
+  __weak typeof(self) weakSelf = self;
+  controller.sendPromptHandler = ^(NSString *prompt) {
+    TalariaWindowController *windowController = weakSelf;
+    if (!windowController || windowController.isSending || windowController.widgetbookMode) return;
+    if (!windowController.activeChat) {
+      [windowController startNewChatWithModel:windowController.settings.selectedModel focus:NO];
+    } else {
+      [windowController showChatWorkspace];
     }
-  }
-
-  return sectionStack;
-}
-
-- (NSView *)notesNavigationRowWithTitle:(NSString *)title
-                               selected:(BOOL)selected
-                                  level:(NSUInteger)level
-                         systemIconName:(NSString *)systemIconName
-                                palette:(TLThemePalette *)palette {
-  TLTokenView *row = [[TLTokenView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-  row.fillColor = selected ? palette.chromeHoverSurface : palette.transparentSurface;
-  row.borderColor = palette.transparentSurface;
-  row.borderEdges = TLBorderEdgeNone;
-  row.cornerRadius = palette.radiusMedium;
-
-  NSImageView *iconView = [self notesIconViewWithSystemName:systemIconName
-                                   accessibilityDescription:title
-                                                      color:selected ? palette.markdownLinkText : palette.labelText
-                                                  pointSize:palette.smallFont.pointSize];
-  [row addSubview:iconView];
-
-  NSTextField *titleLabel = [self labelWithString:title
-                                             font:selected ? palette.labelFont : palette.bodyFont
-                                            color:selected ? palette.markdownLinkText : palette.labelText];
-  titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-  [row addSubview:titleLabel];
-
-  TLTokenView *accent = [[TLTokenView alloc] init];
-  accent.translatesAutoresizingMaskIntoConstraints = NO;
-  accent.fillColor = selected ? palette.markdownLinkText : palette.transparentSurface;
-  accent.borderColor = palette.transparentSurface;
-  accent.borderEdges = TLBorderEdgeNone;
-  accent.cornerRadius = palette.radiusPill;
-  [row addSubview:accent];
-
-  CGFloat leadingInset = palette.space2 + (CGFloat)level * palette.space11;
-  [NSLayoutConstraint activateConstraints:@[
-    [row.heightAnchor constraintEqualToConstant:palette.fieldHeight],
-    [accent.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
-    [accent.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [accent.widthAnchor constraintEqualToConstant:selected ? palette.borderWidth + palette.space2 : palette.space0],
-    [accent.heightAnchor constraintEqualToConstant:palette.fieldHeight - palette.space3],
-    [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:leadingInset],
-    [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [iconView.widthAnchor constraintEqualToConstant:palette.space8],
-    [iconView.heightAnchor constraintEqualToConstant:palette.space8],
-    [titleLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:palette.space4],
-    [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor constant:-palette.space4],
-    [titleLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-  ]];
-
-  return row;
-}
-
-- (NSView *)notesArticleScrollViewWithPalette:(TLThemePalette *)palette {
-  NSScrollView *scrollView = [[NSScrollView alloc] init];
-  scrollView.translatesAutoresizingMaskIntoConstraints = NO;
-  scrollView.hasVerticalScroller = YES;
-  scrollView.autohidesScrollers = YES;
-  scrollView.drawsBackground = NO;
-
-  TLFlippedView *documentView = [[TLFlippedView alloc] init];
-  documentView.translatesAutoresizingMaskIntoConstraints = NO;
-  scrollView.documentView = documentView;
-
-  NSStackView *stack = [[NSStackView alloc] init];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  stack.alignment = NSLayoutAttributeLeading;
-  stack.distribution = NSStackViewDistributionFill;
-  stack.spacing = palette.space0;
-  [documentView addSubview:stack];
-
-  NSTextField *titleLabel = [self labelWithString:@"Themes" font:palette.markdownHeading1Font color:palette.appText];
-  NSTextField *summaryLabel = [self wrappingLabelWithString:@"Learn how to change the look and feel of your workspace using themes built by the community."
-                                                       font:palette.messageBodyFont
-                                                      color:palette.labelText];
-  titleLabel.alignment = NSTextAlignmentLeft;
-  summaryLabel.alignment = NSTextAlignmentLeft;
-  [stack addArrangedSubview:titleLabel];
-  [stack setCustomSpacing:palette.space12 afterView:titleLabel];
-  [stack addArrangedSubview:summaryLabel];
-  [stack setCustomSpacing:palette.space16 afterView:summaryLabel];
-
-  NSView *browseSection = [self notesArticleSectionWithTitle:@"Browse themes"
-                                                       steps:@[
-                                                         @"Open Settings.",
-                                                         @"Select Turn on community plugins, then open Community themes.",
-                                                         @"Select Browse to list available community themes.",
-                                                       ]
-                                                   paragraph:nil
-                                                     palette:palette];
-  NSView *installSection = [self notesArticleSectionWithTitle:@"Install a new theme"
-                                                        steps:@[
-                                                          @"Open Settings.",
-                                                          @"Under Appearance > Themes, select Manage.",
-                                                          @"Choose a theme, then select Install and use.",
-                                                        ]
-                                                    paragraph:@"The selected theme is applied immediately. To return to the default look, stop using the active theme."
-                                                      palette:palette];
-  NSView *updateSection = [self notesArticleSectionWithTitle:@"Update themes"
-                                                       steps:@[
-                                                         @"Open Settings.",
-                                                         @"Under Appearance > Current community themes, select Check for updates.",
-                                                         @"If updates are available, select Update all.",
-                                                       ]
-                                                   paragraph:@"Themes do not update automatically, so review updates before applying them across a vault."
-                                                     palette:palette];
-  for (NSView *section in @[
-    browseSection,
-    installSection,
-    updateSection,
-  ]) {
-    [stack addArrangedSubview:section];
-    [section.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    [stack setCustomSpacing:palette.space16 afterView:section];
-  }
-
-  [NSLayoutConstraint activateConstraints:@[
-    [documentView.widthAnchor constraintEqualToAnchor:scrollView.contentView.widthAnchor],
-    [stack.leadingAnchor constraintEqualToAnchor:documentView.leadingAnchor constant:palette.space16],
-    [stack.trailingAnchor constraintEqualToAnchor:documentView.trailingAnchor constant:-palette.space16],
-    [stack.topAnchor constraintEqualToAnchor:documentView.topAnchor constant:palette.space12 + palette.space11],
-    [stack.bottomAnchor constraintEqualToAnchor:documentView.bottomAnchor constant:-(palette.space16 + palette.composerButtonHeight + palette.space10)],
-    [titleLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
-    [summaryLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
-  ]];
-
-  return scrollView;
-}
-
-- (NSView *)notesArticleSectionWithTitle:(NSString *)title
-                                   steps:(NSArray<NSString *> *)steps
-                               paragraph:(nullable NSString *)paragraph
-                                 palette:(TLThemePalette *)palette {
-  NSStackView *sectionStack = [[NSStackView alloc] init];
-  sectionStack.translatesAutoresizingMaskIntoConstraints = NO;
-  sectionStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  sectionStack.alignment = NSLayoutAttributeLeading;
-  sectionStack.distribution = NSStackViewDistributionFill;
-  sectionStack.spacing = palette.space0;
-
-  NSTextField *titleLabel = [self labelWithString:title font:palette.markdownHeading2Font color:palette.appText];
-  titleLabel.alignment = NSTextAlignmentLeft;
-  [sectionStack addArrangedSubview:titleLabel];
-  [titleLabel.widthAnchor constraintEqualToAnchor:sectionStack.widthAnchor].active = YES;
-  [sectionStack setCustomSpacing:palette.space8 afterView:titleLabel];
-  NSView *divider = [self notesDividerViewWithPalette:palette];
-  [sectionStack addArrangedSubview:divider];
-  [divider.widthAnchor constraintEqualToAnchor:sectionStack.widthAnchor].active = YES;
-  [sectionStack setCustomSpacing:palette.space8 afterView:divider];
-
-  for (NSUInteger index = 0; index < steps.count; index += 1) {
-    NSView *stepRow = [self notesOrderedLineWithNumber:index + 1 text:steps[index] palette:palette];
-    [sectionStack addArrangedSubview:stepRow];
-    [stepRow.widthAnchor constraintEqualToAnchor:sectionStack.widthAnchor].active = YES;
-    [sectionStack setCustomSpacing:palette.space3 afterView:stepRow];
-  }
-
-  if (paragraph.length > 0) {
-    NSTextField *paragraphLabel = [self wrappingLabelWithString:paragraph font:palette.messageBodyFont color:palette.labelText];
-    paragraphLabel.alignment = NSTextAlignmentLeft;
-    [sectionStack setCustomSpacing:palette.space8 afterView:sectionStack.arrangedSubviews.lastObject];
-    [sectionStack addArrangedSubview:paragraphLabel];
-    [paragraphLabel.widthAnchor constraintEqualToAnchor:sectionStack.widthAnchor].active = YES;
-  }
-  [sectionStack setCustomSpacing:palette.space16 afterView:sectionStack.arrangedSubviews.lastObject];
-
-  return sectionStack;
-}
-
-- (NSView *)notesOrderedLineWithNumber:(NSUInteger)number text:(NSString *)text palette:(TLThemePalette *)palette {
-  NSView *row = [[NSView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-
-  NSTextField *numberLabel = [self labelWithString:[NSString stringWithFormat:@"%lu.", (unsigned long)number]
-                                              font:palette.messageBodyFont
-                                             color:palette.textMuted];
-  numberLabel.alignment = NSTextAlignmentRight;
-  [row addSubview:numberLabel];
-
-  NSTextField *textLabel = [self wrappingLabelWithString:text font:palette.messageBodyFont color:palette.labelText];
-  textLabel.alignment = NSTextAlignmentLeft;
-  [row addSubview:textLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [numberLabel.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
-    [numberLabel.widthAnchor constraintEqualToConstant:palette.space11],
-    [numberLabel.firstBaselineAnchor constraintEqualToAnchor:textLabel.firstBaselineAnchor],
-    [textLabel.leadingAnchor constraintEqualToAnchor:numberLabel.trailingAnchor constant:palette.space4],
-    [textLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
-    [textLabel.topAnchor constraintEqualToAnchor:row.topAnchor],
-    [textLabel.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
-  ]];
-
-  return row;
-}
-
-- (NSView *)notesDividerViewWithPalette:(TLThemePalette *)palette {
-  TLTokenView *divider = [[TLTokenView alloc] init];
-  divider.translatesAutoresizingMaskIntoConstraints = NO;
-  divider.fillColor = palette.transparentSurface;
-  divider.borderColor = palette.topbarBorder;
-  divider.borderWidth = palette.borderWidth;
-  divider.borderEdges = TLBorderEdgeTop;
-  [divider.heightAnchor constraintEqualToConstant:palette.borderWidth].active = YES;
-  return divider;
-}
-
-- (NSImageView *)notesIconViewWithSystemName:(NSString *)systemName
-                    accessibilityDescription:(NSString *)accessibilityDescription
-                                       color:(NSColor *)color
-                                   pointSize:(CGFloat)pointSize {
-  NSImageView *iconView = [[NSImageView alloc] init];
-  iconView.translatesAutoresizingMaskIntoConstraints = NO;
-  iconView.imageAlignment = NSImageAlignCenter;
-  iconView.imageScaling = NSImageScaleProportionallyDown;
-  NSImage *image = [self symbolImageNamed:systemName accessibilityDescription:accessibilityDescription];
-  if (@available(macOS 11.0, *)) {
-    NSImageSymbolConfiguration *configuration =
-      [NSImageSymbolConfiguration configurationWithPointSize:pointSize
-                                                      weight:NSFontWeightRegular
-                                                       scale:NSImageSymbolScaleMedium];
-    image = [image imageWithSymbolConfiguration:configuration] ?: image;
-  }
-  image.template = YES;
-  iconView.image = image;
-  iconView.contentTintColor = color;
-  return iconView;
-}
-
-- (void)rebuildNotesTabContentForCurrentPalette {
-  if (!self.notesTab) {
-    return;
-  }
-
-  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:self.notesTab];
-  if (!runtime) {
-    return;
-  }
-
-  NSView *previousContentView = runtime.contentView;
-  NSView *nextContentView = [self buildNotesTabContent];
-  runtime.contentView = nextContentView;
-  [previousContentView removeFromSuperview];
-  [self addWorkspaceContentView:nextContentView];
-  nextContentView.hidden = ![self isWorkspaceTabActive:self.notesTab];
+    windowController.promptTextView.string = prompt;
+    [windowController sendMessage:windowController];
+  };
+  return controller.view;
 }
 
 - (void)rebuildDebugTabContentForCurrentPalette {
@@ -3862,60 +3105,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   nextContentView.hidden = ![self isWorkspaceTabActive:self.debugTab];
 }
 
-- (CGFloat)notesMessageInputWidthForArticleWidth:(CGFloat)articleWidth {
-  CGFloat availableWidth = articleWidth > self.palette.space0
-    ? articleWidth - (self.palette.space11 * 2.0)
-    : self.palette.messageInputMaxWidth;
-  return MIN(self.palette.messageInputMaxWidth,
-             MAX(self.palette.messageInputMinWidth, availableWidth));
-}
-
 - (void)updateNotesMessageInputWidth {
-  if (!self.notesMessageInputWidthConstraint || !self.notesArticleView) {
-    return;
-  }
-
-  [self.notesArticleView.superview layoutSubtreeIfNeeded];
-  self.notesMessageInputWidthConstraint.constant =
-    [self notesMessageInputWidthForArticleWidth:NSWidth(self.notesArticleView.bounds)];
+  [self.notesTabController updateNotesMessageInputWidth];
 }
 
 - (void)updateNotesPromptControlState {
-  if (!self.notesMessageInput || !self.notesPromptTextView) {
-    return;
-  }
-
-  [self.notesMessageInput recalculateHeight];
-  BOOL inputEnabled = !self.isSending && !self.widgetbookMode;
-  NSString *prompt = [self.notesPromptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  BOOL sendEnabled = inputEnabled && prompt.length > 0;
-  self.notesPromptTextView.editable = inputEnabled;
-  self.notesPromptTextView.selectable = YES;
-  self.notesMessageInput.sendButton.enabled = sendEnabled;
-  self.notesMessageInput.sendButton.alphaValue = sendEnabled ? 1.0 : self.palette.disabledOpacity;
-}
-
-- (void)sendNotesPrompt:(id)sender {
-  if (self.isSending || self.widgetbookMode || !self.notesPromptTextView) {
-    return;
-  }
-
-  NSString *prompt = [self.notesPromptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (prompt.length == 0) {
-    return;
-  }
-
-  if (!self.activeChat) {
-    [self startNewChatWithModel:self.settings.selectedModel focus:NO];
-  } else {
-    [self showChatWorkspace];
-  }
-
-  self.promptTextView.string = prompt;
-  self.notesPromptTextView.string = @"";
-  [self.notesMessageInput recalculateHeight];
-  [self updateNotesPromptControlState];
-  [self sendMessage:sender];
+  self.notesTabController.inputEnabled = !self.isSending && !self.widgetbookMode;
 }
 
 - (NSView *)buildDebugTabContent {
@@ -4339,223 +3534,21 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (NSView *)buildSettingsTabContent {
-  TLAppSettings *draftSettings = [self.settings copy];
-  TLThemePalette *palette = self.palette;
-
-  TLTokenView *content = [[TLTokenView alloc] init];
-  content.translatesAutoresizingMaskIntoConstraints = NO;
-  content.fillColor = palette.tabBackground;
-
-  NSTextField *titleLabel = [self labelWithString:@"Settings" font:palette.titleFont color:palette.appText];
-  NSTextField *subtitleLabel = [self labelWithString:@"Configure your Hermes VM, model provider, and appearance."
-                                                font:palette.bodyFont color:palette.textMuted];
-  NSTextField *providerSectionLabel = [self labelWithString:@"AI provider" font:palette.labelFont color:palette.appText];
-  NSTextField *appearanceSectionLabel = [self labelWithString:@"Appearance" font:palette.labelFont color:palette.appText];
-  NSTextField *catalogueStatusLabel = [self labelWithString:@"OpenRouter catalogue" font:palette.smallFont color:palette.textMuted];
-  NSSecureTextField *tokenField = [[NSSecureTextField alloc] init];
-  NSButton *rememberButton = [NSButton checkboxWithTitle:@"Remember token" target:nil action:nil];
-  NSPopUpButton *themePopup = [[NSPopUpButton alloc] init];
-  NSButton *closeButton = [self buttonWithTitle:@"Close" action:@selector(closeSettingsTab:)];
-  NSButton *saveButton = [self buttonWithTitle:@"Save" action:nil];
-  NSButton *reloadButton = [self buttonWithTitle:@"Refresh catalogue" action:nil];
-  NSButton *onboardingButton = [self buttonWithTitle:@"Set up a fresh Hermes VM" action:@selector(showOnboardingDemoWindow:)];
-  TLModelPickerView *mainModelPicker = [[TLModelPickerView alloc] initWithTitle:@"Main model"
-                                                                        palette:palette
-                                                                selectedModelID:draftSettings.selectedModel];
-  TLModelPickerView *supportingModelPicker = [[TLModelPickerView alloc] initWithTitle:@"Supporting small model"
-                                                                              palette:palette
-                                                                      selectedModelID:draftSettings.supportingModel];
-
-  tokenField.translatesAutoresizingMaskIntoConstraints = NO;
-  rememberButton.translatesAutoresizingMaskIntoConstraints = NO;
-  themePopup.translatesAutoresizingMaskIntoConstraints = NO;
-  catalogueStatusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  tokenField.stringValue = draftSettings.openRouterToken;
-  tokenField.placeholderString = @"sk-or-v1-...";
-  tokenField.font = palette.bodyFont;
-  tokenField.textColor = palette.controlText;
-  tokenField.backgroundColor = palette.controlSurface;
-  rememberButton.state = draftSettings.rememberOpenRouterToken ? NSControlStateValueOn : NSControlStateValueOff;
-  rememberButton.font = palette.bodyFont;
-  rememberButton.contentTintColor = palette.controlText;
-  [themePopup addItemsWithTitles:@[@"System", @"Light", @"Dark"]];
-  [themePopup selectItemAtIndex:draftSettings.theme];
-  themePopup.font = palette.bodyFont;
-
-  NSTextField *tokenLabel = [self labelWithString:@"OpenRouter token" font:palette.labelFont color:palette.labelText];
-  NSTextField *themeLabel = [self labelWithString:@"Theme" font:palette.labelFont color:palette.labelText];
-
-  for (NSView *view in @[
-    titleLabel,
-    subtitleLabel,
-    providerSectionLabel,
-    appearanceSectionLabel,
-    catalogueStatusLabel,
-    tokenLabel,
-    tokenField,
-    rememberButton,
-    themeLabel,
-    themePopup,
-    reloadButton,
-    onboardingButton,
-    mainModelPicker,
-    supportingModelPicker,
-    closeButton,
-    saveButton,
-  ]) {
-    [content addSubview:view];
-  }
-
-  [NSLayoutConstraint activateConstraints:@[
-    [titleLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:palette.space12],
-    [titleLabel.topAnchor constraintEqualToAnchor:content.topAnchor constant:palette.space11],
-    [closeButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
-    [closeButton.centerYAnchor constraintEqualToAnchor:titleLabel.centerYAnchor],
-    [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
-    [closeButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
-    [saveButton.trailingAnchor constraintEqualToAnchor:closeButton.leadingAnchor constant:-palette.space5],
-    [saveButton.centerYAnchor constraintEqualToAnchor:closeButton.centerYAnchor],
-    [saveButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
-    [saveButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
-    [subtitleLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:palette.space2],
-    [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:saveButton.leadingAnchor constant:-palette.space8],
-    [providerSectionLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [providerSectionLabel.topAnchor constraintEqualToAnchor:subtitleLabel.bottomAnchor constant:palette.space8],
-    [appearanceSectionLabel.leadingAnchor constraintEqualToAnchor:content.centerXAnchor constant:palette.space6],
-    [appearanceSectionLabel.centerYAnchor constraintEqualToAnchor:providerSectionLabel.centerYAnchor],
-
-    [tokenLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [tokenLabel.trailingAnchor constraintEqualToAnchor:content.centerXAnchor constant:-palette.space6],
-    [tokenLabel.topAnchor constraintEqualToAnchor:providerSectionLabel.bottomAnchor constant:palette.space4],
-    [tokenField.leadingAnchor constraintEqualToAnchor:tokenLabel.leadingAnchor],
-    [tokenField.trailingAnchor constraintEqualToAnchor:tokenLabel.trailingAnchor],
-    [tokenField.topAnchor constraintEqualToAnchor:tokenLabel.bottomAnchor constant:palette.space4],
-    [tokenField.heightAnchor constraintEqualToConstant:palette.fieldHeight],
-
-    [rememberButton.leadingAnchor constraintEqualToAnchor:tokenLabel.leadingAnchor],
-    [rememberButton.topAnchor constraintEqualToAnchor:tokenField.bottomAnchor constant:palette.space5],
-
-    [themeLabel.leadingAnchor constraintEqualToAnchor:content.centerXAnchor constant:palette.space6],
-    [themeLabel.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
-    [themeLabel.topAnchor constraintEqualToAnchor:appearanceSectionLabel.bottomAnchor constant:palette.space4],
-    [themePopup.leadingAnchor constraintEqualToAnchor:themeLabel.leadingAnchor],
-    [themePopup.trailingAnchor constraintEqualToAnchor:themeLabel.trailingAnchor],
-    [themePopup.topAnchor constraintEqualToAnchor:themeLabel.bottomAnchor constant:palette.space4],
-    [themePopup.heightAnchor constraintEqualToConstant:palette.fieldHeight],
-
-    [reloadButton.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
-    [reloadButton.topAnchor constraintEqualToAnchor:rememberButton.bottomAnchor constant:palette.space8],
-    [reloadButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth * 2.0],
-    [reloadButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
-
-    [onboardingButton.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [onboardingButton.centerYAnchor constraintEqualToAnchor:reloadButton.centerYAnchor],
-    [onboardingButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth * 2.0],
-    [onboardingButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
-
-    [catalogueStatusLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:onboardingButton.trailingAnchor constant:palette.space5],
-    [catalogueStatusLabel.trailingAnchor constraintEqualToAnchor:reloadButton.leadingAnchor constant:-palette.space5],
-    [catalogueStatusLabel.centerYAnchor constraintEqualToAnchor:reloadButton.centerYAnchor],
-
-    [mainModelPicker.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [mainModelPicker.topAnchor constraintEqualToAnchor:reloadButton.bottomAnchor constant:palette.space6],
-    [mainModelPicker.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-palette.space12],
-    [supportingModelPicker.leadingAnchor constraintEqualToAnchor:mainModelPicker.trailingAnchor constant:palette.space6],
-    [supportingModelPicker.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
-    [supportingModelPicker.topAnchor constraintEqualToAnchor:mainModelPicker.topAnchor],
-    [supportingModelPicker.bottomAnchor constraintEqualToAnchor:mainModelPicker.bottomAnchor],
-    [supportingModelPicker.widthAnchor constraintEqualToAnchor:mainModelPicker.widthAnchor],
-  ]];
-
-  [self styleButton:closeButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
-  [self styleButton:saveButton background:palette.primaryActionSurface foreground:palette.primaryActionText];
-  [self styleButton:reloadButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
-  [self styleButton:onboardingButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
-
+  TLSettingsTabController *controller = [[TLSettingsTabController alloc] initWithSettings:self.settings
+    database:self.database orchestrator:self.agentOrchestrator palette:self.palette];
+  self.settingsTabController = controller;
   __weak typeof(self) weakSelf = self;
-  __weak NSButton *weakReloadButton = reloadButton;
-
-  __block void (^loadCatalogue)(void) = nil;
-  loadCatalogue = ^{
-    TalariaWindowController *strongSelf = weakSelf;
-    NSButton *strongReloadButton = weakReloadButton;
-    if (!strongSelf || !strongReloadButton) {
-      return;
-    }
-
-    catalogueStatusLabel.stringValue = @"Loading OpenRouter catalogue";
-    strongReloadButton.enabled = NO;
-    strongReloadButton.alphaValue = palette.disabledOpacity;
-    [mainModelPicker setStatusText:@"Loading catalogue"];
-    [supportingModelPicker setStatusText:@"Loading catalogue"];
-
-    [strongSelf.agentOrchestrator fetchModelCatalogueWithToken:tokenField.stringValue
-                                                    completion:^(NSArray<TLOpenRouterModel *> *models, NSError *error) {
-      NSButton *completedReloadButton = weakReloadButton;
-      completedReloadButton.enabled = YES;
-      completedReloadButton.alphaValue = 1.0;
-
-      if (error) {
-        catalogueStatusLabel.stringValue = error.localizedDescription ?: @"Could not load OpenRouter catalogue.";
-        [mainModelPicker setStatusText:@"Catalogue unavailable"];
-        [supportingModelPicker setStatusText:@"Catalogue unavailable"];
-        return;
-      }
-
-      [mainModelPicker setModels:models];
-      [supportingModelPicker setModels:models];
-      NSString *loadedStatus = [NSString stringWithFormat:@"%lu OpenRouter text models loaded", (unsigned long)models.count];
-      catalogueStatusLabel.stringValue = loadedStatus;
-      [mainModelPicker setStatusText:loadedStatus];
-      [supportingModelPicker setStatusText:loadedStatus];
-    }];
+  controller.closeHandler = ^{ [weakSelf closeSettingsTab:weakSelf]; };
+  controller.onboardingHandler = ^{ [weakSelf showOnboardingDemoWindow:weakSelf]; };
+  controller.errorHandler = ^(NSString *message) { [weakSelf presentErrorMessage:message]; };
+  controller.settingsSavedHandler = ^(TLAppSettings *settings) {
+    TalariaWindowController *windowController = weakSelf;
+    windowController.settings = settings;
+    windowController.palette = [TLThemePalette paletteForPreference:settings.theme];
+    [windowController closeSettingsTab:windowController];
+    [windowController applyTheme];
   };
-
-  TLActionTrampoline *reloadTarget = [[TLActionTrampoline alloc] init];
-  reloadTarget.block = ^{
-    if (loadCatalogue) {
-      loadCatalogue();
-    }
-  };
-  objc_setAssociatedObject(reloadButton, @"TLReloadCatalogueTrampoline", reloadTarget, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  reloadButton.target = reloadTarget;
-  reloadButton.action = @selector(perform:);
-
-  TLActionTrampoline *saveTarget = [[TLActionTrampoline alloc] init];
-  saveTarget.block = ^{
-    TalariaWindowController *strongSelf = weakSelf;
-    if (!strongSelf) {
-      return;
-    }
-
-    draftSettings.openRouterToken = tokenField.stringValue;
-    draftSettings.rememberOpenRouterToken = rememberButton.state == NSControlStateValueOn;
-    draftSettings.selectedModel = mainModelPicker.selectedModelID;
-    draftSettings.supportingModel = supportingModelPicker.selectedModelID;
-    draftSettings.theme = themePopup.indexOfSelectedItem;
-
-    NSError *error = nil;
-    TLAppSettings *savedSettings = [strongSelf.database saveAppSettings:draftSettings error:&error];
-    if (!savedSettings) {
-      [strongSelf presentErrorMessage:error.localizedDescription ?: @"Could not save settings."];
-      return;
-    }
-
-    strongSelf.settings = savedSettings;
-    strongSelf.palette = [TLThemePalette paletteForPreference:savedSettings.theme];
-    [strongSelf closeSettingsTab:strongSelf];
-    [strongSelf applyTheme];
-  };
-  objc_setAssociatedObject(saveButton, @"TLActionTrampoline", saveTarget, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  saveButton.target = saveTarget;
-  saveButton.action = @selector(perform:);
-
-  if (loadCatalogue && tokenField.stringValue.length > 0) {
-    loadCatalogue();
-  }
-
-  return content;
+  return controller.view;
 }
 
 - (void)closeSettingsTab:(id)sender {
@@ -4566,15 +3559,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  BOOL closingActiveTab = [self isWorkspaceTabActive:self.settingsTab];
   [self.appStateManager removeWorkspaceTabWithKind:self.settingsTab.kind tabID:self.settingsTab.tabID];
   [[self contentViewForTab:self.settingsTab] removeFromSuperview];
   [self removeRuntimeForKind:self.settingsTab.kind tabID:self.settingsTab.tabID];
   self.settingsTab = nil;
+  self.settingsTabController = nil;
 
-  if (closingActiveTab) {
-    [self activateDefaultTab];
-  }
 
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -4591,14 +3581,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (commandSelector == @selector(insertNewline:)) {
     BOOL shiftPressed = (NSApp.currentEvent.modifierFlags & NSEventModifierFlagShift) == NSEventModifierFlagShift;
     if (!shiftPressed) {
-      if (textView == self.notesPromptTextView) {
-        [self sendNotesPrompt:textView];
-      } else {
-        if ([self performSelectedSlashCommand]) {
-          return YES;
-        }
-        [self sendMessage:textView];
-      }
+      if ([self performSelectedSlashCommand]) return YES;
+      [self sendMessage:textView];
       return YES;
     }
   }
@@ -4607,10 +3591,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)textDidChange:(NSNotification *)notification {
-  if (notification.object == self.notesPromptTextView) {
-    [self updateNotesPromptControlState];
-    return;
-  }
 
   [self.messageInput recalculateHeight];
   [self updateMessageScrollInsets];
@@ -5093,7 +4073,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (TLButton *)makeCreateChatButton {
   TLButton *button = [[TLButton alloc] init];
   button.palette = self.palette;
-  button.style = TLButtonStyleMinimal;
+  button.style = TLButtonStyleCompactMinimal;
   button.size = TLButtonSizeMedium;
   button.target = self;
   button.action = @selector(startNewChatFromButton:);
@@ -6080,53 +5060,49 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   CGFloat targetTabLeading = [self tabStackLeadingConstant];
   CGFloat targetContentLeading = [self contentLeadingPadding];
   CGFloat targetContentLeadingOffset = [self contentLeadingOffsetForSidebarWidth:targetSidebarWidth];
-  CGFloat targetTabAvailableWidth = [self availableTabStripWidthForLeadingConstant:targetTabLeading];
   CGFloat targetInputWidth = [self messageInputWidthForWindowWidth:windowWidth
                                                       sidebarWidth:targetSidebarWidth
                                              contentLeadingPadding:targetContentLeading];
-  [self applyBrowserAddressInputWidth:targetInputWidth];
-
-  if (!hideAfterLayout) {
-    self.sidebarView.hidden = NO;
-    self.sidebarResizeHandle.hidden = NO;
-  }
-  [self.workspaceTabsController updateEdgeAttachmentState];
-  [self.workspaceTabsController updateTabWidthsForAvailableWidth:targetTabAvailableWidth];
-
-  if (animated) {
-    if (!hideAfterLayout) {
-      self.sidebarView.alphaValue = 0.0;
-    }
+  if (!self.sidebarTransitions) self.sidebarTransitions = [[TLTransitionCoordinator alloc] init];
+  [self.sidebarTransitions cancelTransitionForKey:@"sidebar"];
+  [layoutView layoutSubtreeIfNeeded];
+  CGFloat startWidth = self.sidebarWidthConstraint.constant;
+  CGFloat startTabLeading = self.tabStackLeadingConstraint.constant;
+  CGFloat startContentLeading = self.contentLeadingConstraint.constant;
+  CGFloat startInputWidth = self.messageInputWidthConstraint.constant;
+  CGFloat startAlpha = self.sidebarView.hidden ? 0 : self.sidebarView.alphaValue;
+  self.sidebarView.hidden = NO;
+  self.sidebarResizeHandle.hidden = NO;
+  __weak typeof(self) weakSelf = self;
+  NSTimeInterval duration = animated && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ? 0.18 : 0;
+  [self.sidebarTransitions startTransitionForKey:@"sidebar" duration:duration update:^(CGFloat progress) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner) return;
+    // Layout, selection geometry and the union outline share one model-frame tick.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    owner.sidebarWidthConstraint.constant = startWidth + (targetSidebarContentWidth - startWidth) * progress;
+    owner.tabStackLeadingConstraint.constant = startTabLeading + (targetTabLeading - startTabLeading) * progress;
+    owner.contentLeadingConstraint.constant = startContentLeading + (targetContentLeadingOffset - startContentLeading) * progress;
+    owner.messageInputWidthConstraint.constant = startInputWidth + (targetInputWidth - startInputWidth) * progress;
+    owner.sidebarView.alphaValue = startAlpha + ((hideAfterLayout ? 0 : 1) - startAlpha) * progress;
+    [owner applyBrowserAddressInputWidth:owner.messageInputWidthConstraint.constant];
     [layoutView layoutSubtreeIfNeeded];
-
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-      context.duration = 0.18;
-      context.allowsImplicitAnimation = YES;
-      [[self.sidebarWidthConstraint animator] setConstant:targetSidebarContentWidth];
-      [[self.tabStackLeadingConstraint animator] setConstant:targetTabLeading];
-      [[self.contentLeadingConstraint animator] setConstant:targetContentLeadingOffset];
-      [[self.messageInputWidthConstraint animator] setConstant:targetInputWidth];
-      [[self.sidebarView animator] setAlphaValue:hideAfterLayout ? 0.0 : 1.0];
-      [[layoutView animator] layoutSubtreeIfNeeded];
-    } completionHandler:^{
-      self.sidebarView.hidden = hideAfterLayout;
-      self.sidebarResizeHandle.hidden = hideAfterLayout;
-      self.sidebarView.alphaValue = 1.0;
-      [self updateNotesMessageInputWidth];
-      [self invalidateSidebarResizeCursorRects];
-    }];
-  } else {
-    self.sidebarWidthConstraint.constant = targetSidebarContentWidth;
-    self.tabStackLeadingConstraint.constant = targetTabLeading;
-    self.contentLeadingConstraint.constant = targetContentLeadingOffset;
-    self.messageInputWidthConstraint.constant = targetInputWidth;
-    self.sidebarView.alphaValue = 1.0;
+    [owner updateWorkspaceTabWidths];
     [layoutView layoutSubtreeIfNeeded];
-    self.sidebarView.hidden = hideAfterLayout;
-    self.sidebarResizeHandle.hidden = hideAfterLayout;
-    [self updateNotesMessageInputWidth];
-    [self invalidateSidebarResizeCursorRects];
-  }
+    [owner.workspaceTabsController updateEdgeAttachmentState];
+    [owner.workspaceOutline updateOutline];
+    [CATransaction commit];
+  } completion:^(BOOL finished) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || !finished) return;
+    owner.sidebarView.hidden = hideAfterLayout;
+    owner.sidebarResizeHandle.hidden = hideAfterLayout;
+    owner.sidebarView.alphaValue = 1;
+    [owner updateNotesMessageInputWidth];
+    [owner invalidateSidebarResizeCursorRects];
+    [owner.workspaceOutline updateOutline];
+  }];
 }
 
 - (NSUInteger)indexOfSessionChatID:(NSInteger)chatID {
@@ -6210,6 +5186,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (!runtime || !tab) {
     return;
   }
+  if (tab.kind == TLWorkspaceTabKindSettings) runtime.featureController = self.settingsTabController;
+  if (tab.kind == TLWorkspaceTabKindNotes) runtime.featureController = self.notesTabController;
   self.workspaceTabRuntimes[TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID)] = runtime;
 }
 
@@ -6354,7 +5332,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (tab.kind != TLWorkspaceTabKindBrowser) {
     return nil;
   }
-  return [self runtimeForTab:tab].browserFavicon;
+  return ((TLBrowserTabController *)[self runtimeForTab:tab].featureController).favicon;
 }
 
 - (NSString *)displaySystemIconNameForWorkspaceTab:(TLWorkspaceTab *)tab {
@@ -6447,6 +5425,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index {
   [self.appStateManager moveWorkspaceTabWithKind:tab.kind tabID:tab.tabID toIndex:index];
+  // The drag controller clears its temporary translations before returning.
+  // Apply the committed order now so it never paints the pre-drag positions.
+  [self renderWorkspaceTabs];
 }
 
 - (BOOL)isWorkspaceTabActive:(TLWorkspaceTab *)tab {
@@ -6478,10 +5459,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)updateWorkspaceMode {
-  if (![self activeWorkspaceTab]) {
-    [self activateDefaultTab];
-  }
-
   self.chatWorkspace.hidden = ![self isChatWorkspaceActive];
   self.historyPanelController.panelView.hidden = ![self isHistoryScreenActive];
   TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
@@ -6500,6 +5477,26 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)reloadWorkspaceTabs {
+  if (self.workspaceRenderScheduled) return;
+  self.workspaceRenderScheduled = YES;
+  __weak typeof(self) weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    TalariaWindowController *owner = weakSelf;
+    if (!owner) return;
+    TLAppStateSnapshot *snapshot = owner.appStateManager.snapshot;
+    if (snapshot.activeTabKind == TLWorkspaceTabKindChat &&
+        [owner.appStateManager hasWorkspaceTabWithKind:snapshot.activeTabKind tabID:snapshot.activeTabID] &&
+        (!owner.activeChat || owner.activeChat.chatID != snapshot.activeTabID)) {
+      [owner loadChatWithID:snapshot.activeTabID];
+    }
+    [owner updateWorkspaceMode];
+    [owner renderWorkspaceTabs];
+    [owner updateControlStates];
+    owner.workspaceRenderScheduled = NO;
+  });
+}
+
+- (void)renderWorkspaceTabs {
   if (!self.tabStack) {
     return;
   }
@@ -6581,11 +5578,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.contentShadowView.borderEdges = TLBorderEdgeNone;
   self.contentShadowView.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
   self.contentShadowView.layer.masksToBounds = NO;
-  self.contentShadowView.layer.shadowColor = TLCGColor(self.palette.contentShadow);
-  self.contentShadowView.layer.shadowOpacity = 1.0;
-  self.contentShadowView.layer.shadowRadius = self.palette.space5;
-  self.contentShadowView.layer.shadowOffset = NSMakeSize(self.palette.space0, -self.palette.space2);
+  // The unified workspace perimeter owns the content + selected-tab shadow.
+  self.contentShadowView.layer.shadowOpacity = 0.0;
   self.contentHost.fillColor = self.palette.tabBackground;
+  self.workspaceOutline.palette = self.palette;
   self.contentHost.layer.masksToBounds = YES;
   [self applyContentTopLeftCornerRadius:self.palette.space5];
   self.sidebarView.fillColor = self.palette.appBackground;
@@ -6605,29 +5601,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self updateSlashCommandList];
   }
 
-  for (TLWorkspaceTab *browserTab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
-    TLWorkspaceTabRuntime *runtime = [self runtimeForTab:browserTab];
-    runtime.contentView.layer.backgroundColor = TLCGColor(self.palette.tabBackground);
-    runtime.browserChatPane.palette = self.palette;
-    CGFloat reducedInset = self.palette.browserReducedHeightSpacing + MAX(self.palette.composerButtonHeight, NSHeight(runtime.browserAddressInput.frame));
-    [runtime setBrowserBottomInset:runtime.browserUsesReducedHeight ? -reducedInset : self.palette.space0 duration:0 overshoot:0];
-    if ([runtime.browserAddressInput isKindOfClass:TLBrowserAddressInput.class]) {
-      TLBrowserAddressInput *addressInput = (TLBrowserAddressInput *)runtime.browserAddressInput;
-      addressInput.palette = self.palette;
-      addressInput.reducedHeight = runtime.browserUsesReducedHeight;
-    }
-  }
-  NSView *settingsContentView = [self contentViewForTab:self.settingsTab];
-  if ([settingsContentView isKindOfClass:TLTokenView.class]) {
-    TLTokenView *settingsView = (TLTokenView *)settingsContentView;
-    settingsView.fillColor = self.palette.tabBackground;
-    [settingsView setNeedsDisplay:YES];
+  for (TLWorkspaceTabRuntime *runtime in self.workspaceTabRuntimes.allValues) {
+    [runtime.featureController applyPalette:self.palette];
   }
   if (self.agentsView) {
     self.agentsView.fillColor = self.palette.tabBackground;
     [self.agentsView setNeedsDisplay:YES];
   }
-  [self rebuildNotesTabContentForCurrentPalette];
   [self rebuildDebugTabContentForCurrentPalette];
   [self.debugTerminalWindowController updatePalette:self.palette];
   self.agentsTableView.backgroundColor = self.palette.tabBackground;
@@ -6716,6 +5696,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.contentHost.topLeftCornerRadius = clampedRadius;
   [self.contentShadowView setNeedsDisplay:YES];
   [self.contentHost setNeedsDisplay:YES];
+  [self.workspaceOutline updateOutline];
 }
 
 - (void)openFromNotchOverlay:(id)sender {
@@ -6794,16 +5775,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (!chatActive || prompt.length == 0 || self.isSending) {
     [self hideSlashCommandList];
   }
-  self.createChatButton.enabled = !self.isSending;
-  self.sidebarToggleButton.enabled = !self.isSending;
-  self.agentWalletButton.enabled = !self.isSending;
-  self.taskStatusSidebarButton.enabled = !self.isSending;
-  self.notesShortcutButton.enabled = !self.isSending;
-  self.historyShortcutButton.enabled = !self.isSending;
-  self.sidebarUserButton.enabled = !self.isSending;
+  self.createChatButton.enabled = YES;
+  self.sidebarToggleButton.enabled = YES;
+  self.agentWalletButton.enabled = YES;
+  self.taskStatusSidebarButton.enabled = YES;
+  self.notesShortcutButton.enabled = YES;
+  self.historyShortcutButton.enabled = YES;
+  self.sidebarUserButton.enabled = YES;
   self.sendButton.enabled = !self.isSending && chatActive && prompt.length > 0;
-  self.historyPanelController.enabled = !self.isSending;
-  self.promptTextView.editable = !self.isSending && chatActive;
+  self.historyPanelController.enabled = YES;
+  self.promptTextView.editable = chatActive;
   self.promptTextView.selectable = YES;
 
   self.createChatButton.alphaValue = self.createChatButton.enabled ? 1.0 : self.palette.disabledOpacity;
@@ -6811,14 +5792,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.agentWalletButton.alphaValue = self.agentWalletButton.enabled ? 1.0 : self.palette.disabledOpacity;
   self.sendButton.alphaValue = self.sendButton.enabled ? 1.0 : self.palette.disabledOpacity;
   [self styleSidebarActionButtons];
-  [self.workspaceTabsController setControlsEnabled:!self.isSending disabledOpacity:self.palette.disabledOpacity];
+  [self.workspaceTabsController setControlsEnabled:YES disabledOpacity:self.palette.disabledOpacity];
   [self updateAgentControlStates];
 }
 
 - (void)historyPanelController:(TLHistoryPanelController *)controller didSelectChatID:(NSInteger)chatID {
-  if (self.isSending) {
-    return;
-  }
   if (self.widgetbookMode) {
     [self selectActiveChatInHistory];
     return;
@@ -6859,8 +5837,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
-  BOOL deletingActiveWorkspaceChat = snapshot.activeTabKind == TLWorkspaceTabKindChat && snapshot.activeTabID == chatID;
   BOOL deletingLoadedChat = self.activeChat && self.activeChat.chatID == chatID;
   NSUInteger closedIndex = [self indexOfSessionChatID:chatID];
 
@@ -6885,24 +5861,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   if (deletingLoadedChat) {
     self.activeChat = nil;
-    [self.messages removeAllObjects];
+    self.messages = [NSMutableArray array];
     [self resetMessageRowCache];
     self.promptTextView.string = @"";
     self.errorMessage = @"";
   }
 
-  if (deletingActiveWorkspaceChat) {
-    NSArray<TLWorkspaceTab *> *chatTabs = [self workspaceTabsOfKind:TLWorkspaceTabKindChat];
-    if (chatTabs.count > 0) {
-      NSUInteger nextIndex = closedIndex == NSNotFound ? 0 : MIN(closedIndex, chatTabs.count - 1);
-      [self loadChatWithID:chatTabs[nextIndex].tabID];
-      return;
-    }
-
+  if ([self workspaceTabs].count == 0) {
     [self ensureHistoryTab];
     [self activateTabKind:TLWorkspaceTabKindHistory tabID:self.historyTab.tabID];
-  } else if (![self activeWorkspaceTab]) {
-    [self activateDefaultTab];
   }
 
   [self reloadHistoryPanel];
