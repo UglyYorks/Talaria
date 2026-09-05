@@ -53,6 +53,8 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                                          command:(NSString *)command
                                           output:(void (^)(NSString *text))output
                                       completion:(TLAgentStreamCompletionHandler)completion;
+// Last successful TUI discovery for the current agent; never starts a VM.
+- (nullable NSDictionary *)cachedHermesCommands;
 - (void)fetchHermesCommandsWithToken:(NSString *)token
                                model:(NSString *)model
                           completion:(void (^)(NSDictionary *_Nullable catalogue, NSError *_Nullable error))completion;

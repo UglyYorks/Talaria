@@ -209,6 +209,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *hermesCommands;
 @property (nonatomic, strong) NSDate *hermesCommandsFetchedAt;
 @property (nonatomic) BOOL loadingHermesCommands;
+@property (nonatomic, copy) NSString *hermesCommandsRequestID;
 @property (nonatomic, copy) NSString *hermesCommandsError;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *visibleSlashCommands;
 @property (nonatomic, copy) NSArray<TLSlashCommandItemView *> *slashCommandRows;
@@ -1426,6 +1427,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self renderMessages];
   if (!self.settings.onboardingCompleted) {
     dispatch_async(dispatch_get_main_queue(), ^{ [self showOnboardingDemoWindow:self]; });
+  } else {
+    // Restore suggestions immediately, then warm the VM/gateway before the first /.
+    [self prepareHermesCommands];
   }
 }
 
@@ -2126,16 +2130,30 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return self.hermesCommands ?: @[];
 }
 
+- (void)prepareHermesCommands {
+  self.hermesCommandsRequestID = nil;
+  self.loadingHermesCommands = NO;
+  self.hermesCommandsFetchedAt = nil;
+  self.hermesCommandsError = nil;
+  NSDictionary *cached = [self.agentOrchestrator cachedHermesCommands];
+  self.hermesCommands = cached ? [TLInputSuggestions hermesCommandsFromCatalogue:cached] : @[];
+  // Let AppKit finish presenting the window before beginning VM startup.
+  dispatch_async(dispatch_get_main_queue(), ^{ [self refreshHermesCommandsIfNeeded]; });
+}
+
 - (void)refreshHermesCommandsIfNeeded {
   if (self.loadingHermesCommands || (self.hermesCommandsFetchedAt && -self.hermesCommandsFetchedAt.timeIntervalSinceNow < 60)) return;
   self.loadingHermesCommands = YES;
   self.hermesCommandsError = nil;
+  NSString *requestID = NSUUID.UUID.UUIDString;
+  self.hermesCommandsRequestID = requestID;
   __weak typeof(self) weakSelf = self;
   [self.agentOrchestrator fetchHermesCommandsWithToken:self.settings.openRouterToken ?: @""
                                                model:self.settings.selectedModel ?: @""
                                           completion:^(NSDictionary *catalogue, NSError *error) {
     TalariaWindowController *strongSelf = weakSelf;
     if (!strongSelf) return;
+    if (![strongSelf.hermesCommandsRequestID isEqualToString:requestID]) return;
     strongSelf.loadingHermesCommands = NO;
     strongSelf.hermesCommandsFetchedAt = NSDate.date;
     strongSelf.hermesCommandsError = error.localizedDescription;
@@ -2473,11 +2491,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   BOOL slashInput = [[input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] hasPrefix:@"/"];
   if (slashInput) [self refreshHermesCommandsIfNeeded];
   NSArray<NSDictionary<NSString *, NSString *> *> *commands = [self slashCommandsMatchingPrompt:input];
-  if (slashInput && self.hermesCommands.count == 0 && (self.loadingHermesCommands || self.hermesCommandsError.length)) {
-    commands = @[@{@"kind": self.loadingHermesCommands ? @"status" : @"retry",
-                  @"command": self.loadingHermesCommands ? @"Loading Hermes commands…" : @"Retry loading commands",
-                  @"title": self.hermesCommandsError ?: @"Discovering commands from Hermes",
-                  @"description": self.hermesCommandsError ?: @"", @"icon": @"terminal"}];
+  if (slashInput && self.loadingHermesCommands && self.hermesCommands.count == 0) {
+    commands = @[@{@"kind": @"status", @"command": @"Loading Hermes commands…",
+                  @"title": @"Starting Hermes for first discovery", @"description": @"", @"icon": @"terminal"}];
+  } else if (slashInput && self.hermesCommandsError.length) {
+    commands = [commands arrayByAddingObject:@{@"kind": @"retry", @"command": @"Retry loading commands",
+                  @"title": self.hermesCommandsError, @"description": self.hermesCommandsError, @"icon": @"terminal"}];
   }
   if (commands.count == 0) {
     [self hideSlashCommandList];
@@ -2544,6 +2563,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
         TLAppSettings *completedSettings = [strongSelf.database saveAppSettings:completed error:nil];
         if (completedSettings) strongSelf.settings = completedSettings;
         [strongSelf refreshAgents];
+        [strongSelf prepareHermesCommands];
       }
       [strongSelf.hermesOnboardingWindowController finishWithError:installError];
     }];

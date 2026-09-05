@@ -57,6 +57,10 @@ static NSUInteger TLFailureCount = 0;
 @property (nonatomic) NSUInteger installCount;
 @property (nonatomic) BOOL deferInstall;
 @property (nonatomic, copy) TLAgentStreamCompletionHandler pendingInstallCompletion;
+@property (nonatomic, copy) NSDictionary *commandCatalogue;
+@property (nonatomic) NSUInteger catalogueRequestCount;
+@property (nonatomic) BOOL deferCatalogue;
+@property (nonatomic, copy) void (^pendingCatalogue)(NSDictionary *, NSError *);
 @end
 
 @implementation TLFakeAgentClient
@@ -91,7 +95,9 @@ static NSUInteger TLFailureCount = 0;
 
 - (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent token:(NSString *)token model:(NSString *)model
                          completion:(void (^)(NSDictionary *, NSError *))completion {
-  completion(@{@"pairs": @[]}, nil);
+  self.catalogueRequestCount++;
+  if (self.deferCatalogue) { self.pendingCatalogue = completion; return; }
+  completion(self.commandCatalogue ?: @{@"pairs": @[]}, nil);
 }
 
 - (void)fetchModelCatalogueWithAgent:(TLAgentRecord *)agent
@@ -787,6 +793,58 @@ static void TestAgentProfilesAndSelection(void) {
   [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
 }
 
+static void TestHermesCommandCache(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"TalariaCommandCacheTests");
+  NSURL *agentsURL = TLTemporaryDirectoryURL(@"TalariaCommandCacheVMs");
+  NSURL *runtimeURL = TLTemporaryDirectoryURL(@"TalariaCommandCacheRuntime");
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:nil];
+  TLFakeAgentClient *client = [[TLFakeAgentClient alloc] init];
+  TLFakeAgentVMService *vm = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:agentsURL runtimeBundleURL:runtimeURL];
+  TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:client vmService:vm];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"missing cache needs live discovery");
+  TLAssertTrue([database listAgents:nil].count == 0 && vm.startCount == 0, @"cache lookup never creates or boots a VM");
+  TLAgentRecord *agent = [orchestrator createAgentWithName:@"Cache test" error:nil];
+  NSDictionary *original = @{@"pairs": @[@[@"/custom", @"Discovered custom command"]], @"canon": @{@"/alias": @"/custom"}};
+  client.commandCatalogue = original;
+  [orchestrator fetchHermesCommandsWithToken:@"token" model:@"model" completion:^(NSDictionary *catalogue, NSError *error) {
+    TLAssertTrue(error == nil, @"live TUI discovery succeeds");
+  }];
+  orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:client vmService:vm];
+  NSUInteger boots = vm.startCount, requests = client.catalogueRequestCount;
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, original, @"discovered commands and aliases survive app restart");
+  TLAssertTrue(vm.startCount == boots && client.catalogueRequestCount == requests, @"cached suggestions do not wait for Hermes");
+
+  client.deferCatalogue = YES;
+  __block NSError *refreshError = nil;
+  [orchestrator fetchHermesCommandsWithToken:@"token" model:@"model" completion:^(NSDictionary *catalogue, NSError *error) { refreshError = error; }];
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, original, @"old suggestions remain available while refresh is pending");
+  NSDictionary *updated = @{@"pairs": @[@[@"/new-skill", @"Newly installed skill"]]};
+  client.pendingCatalogue(updated, nil);
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, updated, @"live discovery replaces removed commands and adds new skills");
+
+  [orchestrator fetchHermesCommandsWithToken:@"token" model:@"model" completion:^(NSDictionary *catalogue, NSError *error) { refreshError = error; }];
+  client.pendingCatalogue(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Gateway unavailable"}]);
+  TLAssertTrue(refreshError != nil, @"refresh failure reaches the picker for a visible retry");
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, updated, @"failed refresh preserves last successful catalogue");
+  [orchestrator fetchHermesCommandsWithToken:@"token" model:@"model" completion:^(NSDictionary *catalogue, NSError *error) { refreshError = error; }];
+  client.pendingCatalogue(@{@"unexpected": @[]}, nil);
+  client.pendingCatalogue = nil;
+  TLAssertTrue(refreshError != nil, @"invalid catalogue is rejected");
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, updated, @"invalid response cannot destroy cache");
+
+  NSString *cachePath = [agent.vmDirectory stringByAppendingPathComponent:@"hermes-commands-cache.json"];
+  [@"broken JSON" writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"corrupt cache falls back to live TUI discovery");
+  [@"{\"version\":2,\"catalogue\":{\"pairs\":[]}}" writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"unsupported cache version is ignored");
+  [orchestrator deleteAgentWithID:agent.agentID error:nil];
+  [orchestrator createAgentWithName:@"Replacement" error:nil];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"replacement agent cannot inherit old custom commands");
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
+}
+
 static void TestBrowserConversation(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaBrowserChatTests");
   TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:nil];
@@ -1132,6 +1190,7 @@ int main(int argc, const char *argv[]) {
     TestAgentOrchestrator();
     TestAgentProfilesAndSelection();
     TestAgentProfileMigration();
+    TestHermesCommandCache();
     TestAssistantTurnRunner();
     TestBrowserConversation();
     TestNotchOverlayState();

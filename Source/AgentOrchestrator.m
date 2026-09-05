@@ -42,6 +42,14 @@ static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
   return [parts componentsJoinedByString:@"\n\n"];
 }
 
+static NSURL *TLHermesCommandCacheURL(TLAgentRecord *agent) {
+  return [NSURL fileURLWithPath:[agent.vmDirectory stringByAppendingPathComponent:@"hermes-commands-cache.json"]];
+}
+
+static BOOL TLValidHermesCatalogue(id catalogue) {
+  return [catalogue isKindOfClass:NSDictionary.class] && [catalogue[@"pairs"] isKindOfClass:NSArray.class];
+}
+
 typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NSError *_Nullable error);
 
 @interface TLAgentOrchestrator ()
@@ -389,6 +397,19 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }];
 }
 
+- (NSDictionary *)cachedHermesCommands {
+  // The file belongs to one agent, so reinstalling/deleting it cannot leak another
+  // installation's skills or custom commands into the picker. Cache only metadata.
+  TLAgentRecord *agent = [self.database listAgents:nil].lastObject;
+  if (!agent) return nil;
+  NSData *data = [NSData dataWithContentsOfURL:TLHermesCommandCacheURL(agent)];
+  if (!data) return nil;
+  id saved = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if (![saved isKindOfClass:NSDictionary.class] || ![saved[@"version"] isEqual:@1] ||
+      !TLValidHermesCatalogue(saved[@"catalogue"])) return nil;
+  return saved[@"catalogue"];
+}
+
 - (void)fetchHermesCommandsWithToken:(NSString *)token
                                model:(NSString *)model
                           completion:(void (^)(NSDictionary *, NSError *))completion {
@@ -398,7 +419,17 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
       completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to discover Hermes commands."));
       return;
     }
-    [self.agentClient fetchHermesCommandsWithAgent:agent token:token model:model completion:completion];
+    [self.agentClient fetchHermesCommandsWithAgent:agent token:token model:model completion:^(NSDictionary *catalogue, NSError *fetchError) {
+      if (!fetchError && !TLValidHermesCatalogue(catalogue)) {
+        fetchError = TLAgentOrchestratorError(@"Hermes returned an invalid command catalogue.");
+      }
+      if (!fetchError) {
+        NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"version": @1, @"catalogue": catalogue} options:0 error:nil];
+        // A cache write failure must not discard a successful live discovery.
+        [data writeToURL:TLHermesCommandCacheURL(agent) options:NSDataWritingAtomic error:nil];
+      }
+      completion(fetchError ? nil : catalogue, fetchError);
+    }];
   }];
 }
 
