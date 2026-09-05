@@ -737,6 +737,7 @@ static void TestInactiveDecorationFades(TLThemePalette *palette) {
   AssertClose(separator.opacity, 0.0, @"hover fades out the separator");
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
     CABasicAnimation *fade = (CABasicAnimation *)[hover animationForKey:@"tab-decoration-fade"];
+    AssertClose(palette.tabHoverFadeDuration, 0.10, @"tab hover duration is 100ms");
     AssertClose(fade.duration, palette.tabHoverFadeDuration, @"hover background fades in over the themed duration");
   }
   [tab mouseExited:event];

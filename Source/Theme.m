@@ -109,7 +109,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.tabLifecycleCollapsedWidthRatio = 0.30;
   self.tabLifecycleContentFadeDurationRatio = 0.30;
   self.tabSeparatorFadeDuration = 0.20;
-  self.tabHoverFadeDuration = 0.20;
+  self.tabHoverFadeDuration = 0.10;
   self.historyRowHeight = 60.0;
   self.historyRowSelectionHorizontalInset = 9.0;
   self.historyRowSelectionVerticalInset = 5.0;
