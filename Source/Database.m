@@ -2,7 +2,7 @@
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 
-static NSInteger const TLDatabaseSchemaVersion = 6;
+static NSInteger const TLDatabaseSchemaVersion = 7;
 
 typedef BOOL (^TLDatabaseTransactionBlock)(NSError **error);
 
@@ -321,8 +321,8 @@ static NSString *TLTitleFromMessage(NSString *content) {
     __block TLStoredChatMessage *savedMessage = nil;
     BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
       const char *sql =
-        "INSERT INTO messages (chat_id, role, content, thinking, created_at) "
-        "VALUES (?1, ?2, ?3, ?4, datetime('now'))";
+        "INSERT INTO messages (chat_id, role, content, thinking, attachments, created_at) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))";
 
       TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
       if (!statement) {
@@ -332,6 +332,9 @@ static NSString *TLTitleFromMessage(NSString *content) {
       [statement bindInt64:chatID atIndex:1];
       [statement bindText:message.role atIndex:2];
       [statement bindText:message.content atIndex:3];
+      NSData *attachmentData = [NSJSONSerialization dataWithJSONObject:message.attachments ?: @[] options:0 error:transactionError];
+      if (!attachmentData) return NO;
+      [statement bindText:[[NSString alloc] initWithData:attachmentData encoding:NSUTF8StringEncoding] atIndex:5];
 
       if (message.thinking.length > 0) {
         [statement bindText:message.thinking atIndex:4];
@@ -659,7 +662,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
   chat.hermesSessionID = summary.hermesSessionID;
 
   const char *messagesSQL =
-    "SELECT id, role, content, thinking, created_at "
+    "SELECT id, role, content, thinking, created_at, attachments "
     "FROM messages "
     "WHERE chat_id = ?1 "
     "ORDER BY id ASC";
@@ -704,7 +707,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 }
 
 - (TLStoredChatMessage *)loadMessageWithID:(NSInteger)messageID error:(NSError **)error {
-  const char *sql = "SELECT id, role, content, thinking, created_at FROM messages WHERE id = ?1";
+  const char *sql = "SELECT id, role, content, thinking, created_at, attachments FROM messages WHERE id = ?1";
 
   TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
   if (!statement) {
@@ -783,6 +786,16 @@ static NSString *TLTitleFromMessage(NSString *content) {
   message.content = TLStringFromColumn(statement, 2);
   message.thinking = TLNullableStringFromColumn(statement, 3);
   message.createdAt = TLStringFromColumn(statement, 4);
+  NSData *data = [TLStringFromColumn(statement, 5) dataUsingEncoding:NSUTF8StringEncoding];
+  id attachments = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+  NSMutableArray *valid = [NSMutableArray array];
+  if ([attachments isKindOfClass:NSArray.class]) {
+    for (id item in attachments) {
+      if ([item isKindOfClass:NSDictionary.class] && [item[@"name"] isKindOfClass:NSString.class] &&
+          [item[@"guestPath"] isKindOfClass:NSString.class] && [item[@"directory"] isKindOfClass:NSNumber.class]) [valid addObject:item];
+    }
+  }
+  message.attachments = valid;
   return message;
 }
 

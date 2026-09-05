@@ -1,5 +1,6 @@
 #import "AssistantTurnRunner.h"
 #import "PromptMessages.h"
+#import "PromptBuilder.h"
 #import "StreamingBlockBuffer.h"
 
 static NSString * const TLAssistantTurnRunnerErrorDomain = @"Talaria.AssistantTurnRunner";
@@ -94,6 +95,18 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   if (self.referenceContext.length) {
     [requestMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:self.referenceContext thinking:nil] atIndex:0];
   }
+  NSArray *attachments = [self.attachments copy] ?: @[];
+  if (attachments.count) {
+    TLPromptBuilder *builder = [[TLPromptBuilder alloc] init];
+    NSString *request = requestMessages.lastObject.content;
+    // An attached slash-prefixed request is chat text, not a TUI command.
+    if ([request hasPrefix:@"/"]) request = [@"User request:\n" stringByAppendingString:request];
+    [builder addPartWithContent:request importance:TLPromptImportanceRequired
+                      strategy:TLPromptCompactionStrategyWhole name:@"user-request"];
+    [builder addPartWithContent:TLBuildAttachmentContext(attachments) importance:TLPromptImportanceRequired
+                      strategy:TLPromptCompactionStrategyWhole name:@"attachments"];
+    requestMessages.lastObject.content = [builder build];
+  }
   NSUInteger assistantMessageIndex = messages.count + 1;
   NSString *requestID = NSUUID.UUID.UUIDString;
   NSMutableString *assistantContent = [NSMutableString string];
@@ -102,6 +115,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   TLStreamingBlockBuffer *assistantThinkingDisplay = [[TLStreamingBlockBuffer alloc] init];
 
   TLChatMessage *userMessage = [TLChatMessage messageWithRole:TLRoleUser content:trimmedPrompt thinking:nil];
+  userMessage.attachments = attachments;
   TLChatMessage *assistantMessage = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
   [messages addObject:userMessage];
   [messages addObject:assistantMessage];

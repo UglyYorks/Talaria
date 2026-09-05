@@ -5,6 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 extern const NSUInteger TLMessagePromptLimit;
 
+NSString *TLBuildAttachmentContext(NSArray<NSDictionary<NSString *, id> *> *attachments);
 NSString *TLBuildPromptContent(TLChatMessage *message, BOOL isLatestUserMessage);
 NSArray<TLChatMessage *> *TLBuildRequestMessages(NSArray<TLChatMessage *> *messages, NSString *nextUserPrompt);
 

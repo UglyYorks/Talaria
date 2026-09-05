@@ -66,7 +66,7 @@ CEF_DEFINES := -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -DCEF_USE_SANDBOX
 CEF_INCLUDE_FLAGS := -I$(CEF_ROOT)
 CEF_CXXFLAGS := $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-strict-aliasing -fstack-protector -funwind-tables -fvisibility=hidden -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-narrowing -Wsign-compare -Wno-undefined-var-template -O3 -mmacosx-version-min=13.0
 APP_OBJCXXFLAGS := $(OBJCFLAGS) $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-sign-compare -Wno-nullability-completeness -Wno-missing-field-initializers
-APP_FRAMEWORKS := -framework AppKit -framework Foundation -framework QuartzCore -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
+APP_FRAMEWORKS := -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -framework AppKit -framework Foundation -framework QuartzCore -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
 TEST_FRAMEWORKS := -framework Foundation -framework AppKit -framework Virtualization -framework Security -lsqlite3
 
 .PHONY: all build test audit-theme-colors clean run widgetbook close-running-app check-signing-identity FORCE
@@ -248,7 +248,8 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	test -s "$(AGENT_LINUX_INITRD)"
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
-test: test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+test: $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+	"$(BUILD_DIR)/ChatAttachmentTests"
 	"$(TEST_EXECUTABLE)"
 	"$(TAB_LAYOUT_TEST_EXECUTABLE)"
 	"$(NOTCH_VIEW_TEST_EXECUTABLE)"
@@ -279,7 +280,7 @@ $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/FeatureControllerTests: | $(MARKDOWN_
 $(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/MarkdownRenderer.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
 	mkdir -p "$(BUILD_DIR)"
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -framework WebKit -o "$@"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -framework WebKit -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -o "$@"
 
 $(NOTCH_VIEW_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/NotchOverlayState.m Source/NotchOverlayController.m Tests/NotchOverlayViewTests.m
 	mkdir -p "$(BUILD_DIR)"
@@ -292,7 +293,7 @@ $(TAB_LAYOUT_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedCo
 audit-theme-colors:
 	python3 Scripts/audit-theme-colors.py
 
-$(TEST_EXECUTABLE): Source/TalariaModels.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/AgentVMService.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Source/WorkspaceState.m Source/AppStateManager.m Tests/PromptBuilderTests.m
+$(TEST_EXECUTABLE): Source/ChatAttachmentStore.m Source/TalariaModels.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/AgentVMService.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Source/WorkspaceState.m Source/AppStateManager.m Tests/PromptBuilderTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ $(TEST_FRAMEWORKS) -o "$@"
 
@@ -328,6 +329,9 @@ $(BUILD_DIR)/TransitionCoordinatorTests: Source/design_system/TLTransitionCoordi
 $(BUILD_DIR)/FeatureControllerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/FeatureControllerTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
 
+$(BUILD_DIR)/ChatAttachmentTests: Source/ChatAttachmentStore.m Source/TalariaModels.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/PromptMessages.m Source/PromptBuilder.m Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/TLMessageInput.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLGlassButton.m Tests/ChatAttachmentTests.m
+	mkdir -p "$(BUILD_DIR)"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework AppKit -framework QuartzCore -framework Security -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -lsqlite3 -o "$@"
 $(BUILD_DIR)/TabShortcutTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/TabShortcutTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
 

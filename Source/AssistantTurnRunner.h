@@ -56,6 +56,7 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
 @property (nonatomic, copy, nullable) NSString *referenceContext;
 // Defaults to YES so each answer delta is visible, including unfinished Markdown.
 @property (nonatomic) BOOL streamsPartialContent;
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *attachments;
 
 - (instancetype)initWithDatabase:(TLDatabase *)database agentOrchestrator:(TLAgentOrchestrator *)agentOrchestrator;
 - (instancetype)initWithMessageStore:(id<TLAssistantTurnMessageStore>)messageStore

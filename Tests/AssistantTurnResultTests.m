@@ -32,6 +32,7 @@ static NSError *TLTestError(NSString *message) {
     return nil;
   }
   TLStoredChatMessage *saved = [TLStoredChatMessage messageWithRole:message.role content:message.content thinking:message.thinking];
+  saved.attachments = message.attachments;
   saved.messageID = (NSInteger)self.saveCount;
   saved.createdAt = @"2026-09-05";
   [self.savedMessages addObject:saved];
@@ -53,6 +54,7 @@ static NSError *TLTestError(NSString *message) {
 @property NSString *thinking;
 @property NSError *streamError;
 @property BOOL deferred;
+@property NSArray<TLChatMessage *> *lastMessages;
 @property NSString *cancelledRequestID;
 @property NSUInteger cancelCount;
 @end
@@ -77,6 +79,7 @@ static NSError *TLTestError(NSString *message) {
                                  messages:(NSArray<TLChatMessage *> *)messages
                                     delta:(TLAgentStreamDeltaHandler)delta
                                completion:(TLAgentStreamCompletionHandler)completion {
+  self.lastMessages = messages;
   TLTurnTestRequest *request = [[TLTurnTestRequest alloc] init];
   request.requestID = requestID;
   request.delta = delta;
@@ -311,8 +314,29 @@ static void TestCancellation(void) {
   }
 }
 
+static void TestAttachmentPrompt(void) {
+  TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
+  TLTurnTestStream *stream = [[TLTurnTestStream alloc] init];
+  TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+  runner.attachments = @[@{@"name":@"report.pdf", @"guestPath":@"/workspace/attachments/session/batch/report.pdf", @"directory":@NO}];
+  NSString *prompt = [@"Review " stringByPaddingToLength:16000 withString:@"details " startingAtIndex:0];
+  NSMutableArray *messages = [NSMutableArray array];
+  [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:prompt
+             updateHandler:nil completionHandler:nil error:nil];
+  TLAssert([stream.lastMessages.lastObject.content containsString:@"report.pdf"], @"file manifest survives long-prompt compaction");
+  TLAssert([stream.lastMessages.lastObject.content containsString:@"reference material"], @"wire prompt distinguishes document content from instructions");
+  TLAssert([store.savedMessages.firstObject.content isEqual:prompt], @"attachment context does not replace the user's saved text");
+  TLAssert(store.savedMessages.firstObject.attachments.count == 1 && store.savedMessages.lastObject.attachments.count == 0,
+           @"metadata belongs only to the outgoing message");
+  [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:[NSMutableArray array]
+    nextPrompt:@"/help with this file" updateHandler:nil completionHandler:nil error:nil];
+  TLAssert(![stream.lastMessages.lastObject.content hasPrefix:@"/"] &&
+    [stream.lastMessages.lastObject.content containsString:@"/help with this file"], @"attached slash text is sent as a turn, not dispatched as a TUI command");
+}
+
 int main(void) {
   @autoreleasepool {
+    TestAttachmentPrompt();
     TestCancellation();
     TestSuccessfulTurn();
     TestUserSaveFailure();

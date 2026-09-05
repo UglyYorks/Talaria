@@ -1,4 +1,6 @@
 #import "AgentOrchestrator.h"
+#import "ChatAttachmentStore.h"
+#import "PromptBuilder.h"
 
 static NSString * const TLAgentOrchestratorErrorDomain = @"Talaria.AgentOrchestrator";
 
@@ -39,7 +41,10 @@ static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
   if (prompt.length > 0) {
     [parts addObject:prompt];
   }
-  return [parts componentsJoinedByString:@"\n\n"];
+  TLPromptBuilder *builder = [[TLPromptBuilder alloc] init];
+  for (NSString *part in parts) [builder addPartWithContent:part importance:TLPromptImportanceRequired
+                                                strategy:TLPromptCompactionStrategyWhole name:nil];
+  return [builder build];
 }
 
 static NSURL *TLHermesCommandCacheURL(TLAgentRecord *agent) {
@@ -371,6 +376,35 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     [self.agentClient generateHermesTextWithAgent:agent requestID:requestID token:token model:model
                                    instructions:instructions input:input delta:delta completion:completion];
   }];
+}
+
+- (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID
+                  completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *, NSError *))completion {
+  NSError *error = nil;
+  TLAgentRecord *agent = [self defaultAgentCreatingIfNeeded:&error];
+  if (!agent || ![self.vmService prepareStorageForAgent:agent error:&error]) {
+    completion(nil, error ?: TLAgentOrchestratorError(@"Could not prepare the attachment workspace."));
+    return;
+  }
+  NSArray *sources = [URLs copy];
+  NSURL *workspace = [[NSURL fileURLWithPath:agent.vmDirectory] URLByAppendingPathComponent:@"workspace"];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *copyError = nil;
+    TLChatAttachmentStore *store = [[TLChatAttachmentStore alloc] initWithWorkspaceURL:workspace];
+    NSArray *attachments = [store copyURLs:sources sessionID:sessionID error:&copyError];
+    dispatch_async(dispatch_get_main_queue(), ^{ completion(attachments, copyError); });
+  });
+}
+
+- (BOOL)removeAttachmentsForSessionID:(NSString *)sessionID error:(NSError **)error {
+  NSArray *agents = [self.database listAgents:error];
+  if (!agents) return NO;
+  for (TLAgentRecord *agent in agents) {
+    NSURL *workspace = [[NSURL fileURLWithPath:agent.vmDirectory] URLByAppendingPathComponent:@"workspace"];
+    TLChatAttachmentStore *store = [[TLChatAttachmentStore alloc] initWithWorkspaceURL:workspace];
+    if (![store removeAttachmentsForSessionID:sessionID error:error]) return NO;
+  }
+  return YES;
 }
 
 - (void)createFreshHermesAgentWithProgress:(TLHermesInstallProgressHandler)progress

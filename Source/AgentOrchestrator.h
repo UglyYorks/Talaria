@@ -46,6 +46,9 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                                    messages:(NSArray<TLChatMessage *> *)messages
                                       delta:(TLAgentStreamDeltaHandler)delta
                                  completion:(TLAgentStreamCompletionHandler)completion;
+- (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID
+                  completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *_Nullable attachments, NSError *_Nullable error))completion;
+- (BOOL)removeAttachmentsForSessionID:(NSString *)sessionID error:(NSError **)error;
 - (void)generateTextWithDefaultAgentRequestID:(NSString *)requestID
                                        token:(NSString *)token
                                        model:(NSString *)model

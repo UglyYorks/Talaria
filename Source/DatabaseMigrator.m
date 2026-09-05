@@ -56,6 +56,39 @@ static BOOL TLDatabaseHasCompatibleVersion5Schema(TLSQLiteConnection *connection
   return hasKnownAddition;
 }
 
+// Worktrees may share a schema version while introducing independent features.
+// Check this feature's actual schema inside the migration write transaction.
+static BOOL TLEnsureMessageAttachments(TLSQLiteConnection *connection, NSError **error) {
+  BOOL hasAttachments = NO;
+  {
+    TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(messages)" error:error];
+    if (!columns) return NO;
+    int result;
+    while ((result = [columns step]) == SQLITE_ROW) {
+      if ([[columns stringAtColumn:1] isEqualToString:@"attachments"]) hasAttachments = YES;
+    }
+    if (result != SQLITE_DONE) { [connection setCurrentError:error]; return NO; }
+  }
+  return hasAttachments || [connection executeSQL:
+    "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'" error:error];
+}
+
+static BOOL TLEnsureAgentProfiles(TLSQLiteConnection *connection, NSError **error) {
+  TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(agents)" error:error];
+  if (!columns) return NO;
+  NSMutableSet *names = [NSMutableSet set];
+  int result;
+  while ((result = [columns step]) == SQLITE_ROW) [names addObject:[columns stringAtColumn:1]];
+  if (result != SQLITE_DONE) { [connection setCurrentError:error]; return NO; }
+  NSDictionary *defaults = @{@"avatar": @"'🤖'", @"soul": @"''", @"folder_paths": @"'[]'"};
+  for (NSString *name in defaults) {
+    if ([names containsObject:name]) continue;
+    NSString *sql = [NSString stringWithFormat:@"ALTER TABLE agents ADD COLUMN %@ TEXT NOT NULL DEFAULT %@", name, defaults[name]];
+    if (![connection executeSQL:sql.UTF8String error:error]) return NO;
+  }
+  return [connection executeSQL:"CREATE UNIQUE INDEX IF NOT EXISTS agents_vm_directory ON agents(vm_directory)" error:error];
+}
+
 BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, NSError **error) {
   NSInteger version = TLDatabaseSchemaVersion(connection, error);
   if (version < 0) {
@@ -160,12 +193,7 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
 
   if (version < 5 && targetVersion >= 5) {
     BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
-      const char *sql =
-        "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT '🤖';"
-        "ALTER TABLE agents ADD COLUMN soul TEXT NOT NULL DEFAULT '';"
-        "ALTER TABLE agents ADD COLUMN folder_paths TEXT NOT NULL DEFAULT '[]';"
-        "CREATE UNIQUE INDEX agents_vm_directory ON agents(vm_directory);";
-      return [connection executeSQL:sql error:transactionError] &&
+      return TLEnsureAgentProfiles(connection, transactionError) &&
         TLDatabaseSetSchemaVersion(connection, 5, transactionError);
     } error:error];
     if (!migrated) return NO;
@@ -180,24 +208,24 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
       return NO;
     }
     BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
-      TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(agents)" error:transactionError];
-      if (!columns) return NO;
-      NSMutableSet *names = [NSMutableSet set];
-      int result;
-      while ((result = [columns step]) == SQLITE_ROW) [names addObject:[columns stringAtColumn:1]];
-      if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
-      NSDictionary *defaults = @{@"avatar": @"'🤖'", @"soul": @"''", @"folder_paths": @"'[]'"};
-      for (NSString *name in defaults) {
-        if ([names containsObject:name]) continue;
-        NSString *sql = [NSString stringWithFormat:@"ALTER TABLE agents ADD COLUMN %@ TEXT NOT NULL DEFAULT %@", name, defaults[name]];
-        if (![connection executeSQL:sql.UTF8String error:transactionError]) return NO;
-      }
-      return [connection executeSQL:"CREATE UNIQUE INDEX IF NOT EXISTS agents_vm_directory ON agents(vm_directory)" error:transactionError] &&
+      return TLEnsureAgentProfiles(connection, transactionError) &&
         TLDatabaseSetSchemaVersion(connection, 6, transactionError);
     } error:error];
     if (!migrated) return NO;
     version = 6;
   }
 
+  if (version < 7 && targetVersion >= 7) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      if (!TLDatabaseHasCompatibleVersion5Schema(connection)) {
+        [connection setError:transactionError message:@"Unrecognized database schema before attachment migration."];
+        return NO;
+      }
+      return TLEnsureMessageAttachments(connection, transactionError) &&
+        TLDatabaseSetSchemaVersion(connection, 7, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 7;
+  }
   return version == targetVersion;
 }

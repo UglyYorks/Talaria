@@ -36,6 +36,8 @@ NSString *TLAgentDisplayStatus(NSString *status);
 @property (nonatomic, copy) NSString *role;
 @property (nonatomic, copy) NSString *content;
 @property (nonatomic, copy, nullable) NSString *thinking;
+// JSON-compatible records: name, guestPath, directory. Originals are never exposed to the VM.
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *attachments;
 
 + (instancetype)messageWithRole:(NSString *)role content:(NSString *)content thinking:(nullable NSString *)thinking;
 - (NSDictionary<NSString *, NSString *> *)requestDictionary;

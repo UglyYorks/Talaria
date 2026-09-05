@@ -6,6 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface TLHoverIconButton : NSButton
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic) BOOL hoverSurfaceOnly;
+@property (nonatomic, strong, nullable) NSColor *idleSurfaceColor;
 @end
 
 @interface TLGlassButton : NSView

@@ -1,6 +1,7 @@
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
+#import "PromptBuilder.h"
 #import "AgentOrchestrator.h"
 #import "AppStateManager.h"
 #import "AssistantTurnRunner.h"
@@ -136,6 +137,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong, nullable) TLWorkspaceTab *agentsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *debugTab;
 @property (nonatomic, strong) TLChatRecord *activeChat;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<NSURL *> *> *attachmentDrafts;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *attachmentPromptDrafts;
+@property (nonatomic, readonly) BOOL preparingAttachments;
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *preparingAttachmentChats;
 @property (nonatomic) NSInteger nextBrowserTabID;
 @property (nonatomic) NSInteger nextDraftChatID;
 @property (nonatomic, strong) NSMutableArray<TLChatMessage *> *messages;
@@ -284,6 +289,33 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @end
 
 @implementation TalariaWindowController
+
+- (void)setActiveChat:(TLChatRecord *)chat {
+  if (!self.attachmentDrafts) self.attachmentDrafts = [NSMutableDictionary dictionary];
+  if (!self.attachmentPromptDrafts) self.attachmentPromptDrafts = [NSMutableDictionary dictionary];
+  if (_activeChat && chat && _activeChat.chatID == chat.chatID) {
+    _activeChat = chat;
+    return;
+  }
+  if (_activeChat) {
+    self.attachmentDrafts[@(_activeChat.chatID)] = self.messageInput.attachmentURLs ?: @[];
+    self.attachmentPromptDrafts[@(_activeChat.chatID)] = [self.promptTextView.string copy] ?: @"";
+  }
+  _activeChat = chat;
+  self.promptTextView.string = chat ? self.attachmentPromptDrafts[@(chat.chatID)] ?: @"" : @"";
+  [self.messageInput setAttachmentURLs:chat ? self.attachmentDrafts[@(chat.chatID)] ?: @[] : @[] animated:NO];
+}
+
+- (void)restoreAttachmentDraft:(NSArray<NSURL *> *)URLs prompt:(NSString *)prompt chatID:(NSInteger)chatID {
+  self.attachmentDrafts[@(chatID)] = URLs;
+  self.attachmentPromptDrafts[@(chatID)] = [prompt copy];
+  if (self.activeChat.chatID == chatID) {
+    self.messageInput.attachmentURLs = URLs;
+    self.promptTextView.string = prompt;
+    [self.messageInput recalculateHeight];
+  }
+}
+
 
 - (void)allowHorizontalWindowExpansionForView:(NSView *)view {
   [view setContentHuggingPriority:NSLayoutPriorityDefaultLow
@@ -1508,6 +1540,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.messageInput = [[TLGlassMessageInput alloc] init];
   ((TLGlassMessageInput *)self.messageInput).usesChatBackdrop = YES;
   self.messageInput.palette = self.palette;
+  self.messageInput.attachmentsEnabled = YES;
+  __weak typeof(self) weakSelf = self;
+  self.messageInput.attachmentsChangeHandler = ^{
+    [weakSelf updateMessageScrollInsets];
+    [weakSelf updateSlashCommandList];
+    [weakSelf updateControlStates];
+  };
   self.promptTextView = self.messageInput.textView;
   self.promptTextView.delegate = self;
   self.sendButton = self.messageInput.sendButton;
@@ -1735,7 +1774,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSMutableArray<TLChatMessage *> *streamingMessages = self.turnMessagesByChat[@(chatID)];
   if (streamingMessages) self.messages = streamingMessages;
 
-  self.promptTextView.string = @"";
+  self.promptTextView.string = self.attachmentPromptDrafts[@(chatID)] ?: @"";
   self.errorMessage = @"";
   [self selectActiveChatInHistory];
   [self renderMessages];
@@ -1760,7 +1799,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self showChatWorkspace];
   self.messages = [NSMutableArray array];
   [self resetMessageRowCache];
-  self.promptTextView.string = @"";
+  self.promptTextView.string = self.attachmentPromptDrafts[@(chatID)] ?: @"";
   self.errorMessage = @"";
   [self selectActiveChatInHistory];
   [self renderMessages];
@@ -2102,7 +2141,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   persistedChat.messages = @[];
+  NSArray *draftURLs = self.messageInput.attachmentURLs;
   self.activeChat = persistedChat;
+  self.messageInput.attachmentURLs = draftURLs;
+  [self.attachmentDrafts removeObjectForKey:@(draftChatID)];
+  [self.attachmentPromptDrafts removeObjectForKey:@(draftChatID)];
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat
                                              tabID:persistedChat.chatID
                                              title:persistedChat.title.length > 0 ? persistedChat.title : @"New chat"
@@ -2124,12 +2167,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return YES;
 }
 
+- (BOOL)preparingAttachments {
+  return self.activeChat && [self.preparingAttachmentChats containsObject:@(self.activeChat.chatID)];
+}
+
 - (BOOL)isSending {
-  return self.activeChat && self.turnRunners[@(self.activeChat.chatID)] != nil;
+  return self.activeChat && (self.turnRunners[@(self.activeChat.chatID)] != nil || self.preparingAttachments);
 }
 
 - (BOOL)hasSendingTurns {
-  return self.turnRunners.count > 0;
+  return self.turnRunners.count > 0 || self.preparingAttachmentChats.count > 0;
 }
 
 - (TLAssistantTurnRunner *)newAssistantTurnRunner {
@@ -2138,7 +2185,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (BOOL)canStopResponse {
   return self.turnRunners[@(self.activeChat.chatID)].running && [self isChatWorkspaceActive] &&
-    self.promptTextView.string.length == 0;
+    self.promptTextView.string.length == 0 && self.messageInput.attachmentURLs.count == 0;
 }
 
 - (void)activateComposerButton:(id)sender {
@@ -2151,7 +2198,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)sendMessage:(id)sender {
   [self flushSlashCommandUpdate];
-  if ([self performSelectedSlashCommand]) {
+  if (!self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) {
     return;
   }
   [self sendMessage:sender allowAutomaticRouting:YES];
@@ -2162,9 +2209,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSString *model = [self.settings.selectedModel stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSString *nextPrompt = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
 
-  if (nextPrompt.length == 0) return;
+  NSArray<NSURL *> *sourceURLs = self.messageInput.attachmentURLs;
+  if (sourceURLs.count) allowAutomaticRouting = NO;
+  if (self.preparingAttachments || (!nextPrompt.length && !sourceURLs.count)) return;
   if (self.isSending) {
-    if (![nextPrompt hasPrefix:@"/"] || !self.activeChat) return;
+    if (sourceURLs.count || ![nextPrompt hasPrefix:@"/"] || !self.activeChat) return;
     self.promptTextView.string = @"";
     [self updateControlStates];
     __weak typeof(self) weakSelf = self;
@@ -2179,6 +2228,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
+  if (!nextPrompt.length) {
+    TLPromptBuilder *builder = [[TLPromptBuilder alloc] init];
+    nextPrompt = [[builder addPartWithContent:@"Please inspect the attached files and folders." importance:TLPromptImportanceRequired
+                                    strategy:TLPromptCompactionStrategyWhole name:@"file-only-request"] build];
+  }
   NSURL *browserURL = allowAutomaticRouting ? [self browserURLFromPromptString:nextPrompt] : nil;
   if (browserURL) {
     self.promptTextView.string = @"";
@@ -2210,13 +2264,45 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   TLChatRecord *chat = self.activeChat;
   NSMutableArray<TLChatMessage *> *turnMessages = self.messages;
+  if (sourceURLs.count) {
+    if (!self.preparingAttachmentChats) self.preparingAttachmentChats = [NSMutableSet set];
+    [self.preparingAttachmentChats addObject:@(chat.chatID)];
+    [self updateControlStates];
+    [self.agentOrchestrator prepareAttachmentURLs:sourceURLs sessionID:chat.hermesSessionID
+      completion:^(NSArray *attachments, NSError *error) {
+        [self.preparingAttachmentChats removeObject:@(chat.chatID)];
+        if (!attachments) {
+          [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
+          [self presentErrorMessage:error.localizedDescription ?: @"Could not copy attachments."];
+          [self updateControlStates];
+          return;
+        }
+        [self beginPreparedTurnWithChat:chat messages:turnMessages token:token model:model prompt:nextPrompt
+                           attachments:attachments sourceURLs:sourceURLs];
+      }];
+  } else {
+    [self beginPreparedTurnWithChat:chat messages:turnMessages token:token model:model prompt:nextPrompt
+                       attachments:@[] sourceURLs:@[]];
+  }
+}
+
+- (void)beginPreparedTurnWithChat:(TLChatRecord *)chat messages:(NSMutableArray<TLChatMessage *> *)turnMessages
+                          token:(NSString *)token model:(NSString *)model prompt:(NSString *)nextPrompt
+                    attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs {
+  self.attachmentDrafts[@(chat.chatID)] = @[];
+  self.attachmentPromptDrafts[@(chat.chatID)] = @"";
+  if (self.activeChat.chatID == chat.chatID) {
+    self.promptTextView.string = @"";
+    self.messageInput.attachmentURLs = @[];
+    self.errorMessage = @"";
+    [self.messageInput recalculateHeight];
+  }
   TLAssistantTurnRunner *runner = [self newAssistantTurnRunner];
   if (!self.turnRunners) self.turnRunners = [NSMutableDictionary dictionary];
   if (!self.turnMessagesByChat) self.turnMessagesByChat = [NSMutableDictionary dictionary];
   self.turnRunners[@(chat.chatID)] = runner;
   self.turnMessagesByChat[@(chat.chatID)] = turnMessages;
-  self.promptTextView.string = @"";
-  self.errorMessage = @"";
+  runner.attachments = attachments;
   __weak typeof(self) weakSelf = self;
 
   NSError *startError = nil;
@@ -2243,6 +2329,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [strongSelf.turnRunners removeObjectForKey:@(chat.chatID)];
     [strongSelf.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
     BOOL showingOrigin = strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive];
+    if (result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+      [strongSelf restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
+    }
     if (showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       strongSelf.promptTextView.string = result.userMessage.content;
       [strongSelf.messageInput recalculateHeight];
@@ -2284,7 +2373,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (!started) {
     [self.turnRunners removeObjectForKey:@(chat.chatID)];
     [self.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
-    self.promptTextView.string = nextPrompt;
+    [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     [self presentErrorMessage:startError.localizedDescription ?: @"Could not start assistant turn."];
     [self updateControlStates];
   }
@@ -2602,7 +2691,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)renderSlashCommandList {
-  if (self.isSending || ![self isChatWorkspaceActive] || !self.messageInput.window || NSIsEmptyRect(self.messageInput.bounds)) {
+  if (self.isSending || self.messageInput.attachmentURLs.count || ![self isChatWorkspaceActive] || !self.messageInput.window || NSIsEmptyRect(self.messageInput.bounds)) {
     [self hideSlashCommandList];
     return;
   }
@@ -3541,7 +3630,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (commandSelector == @selector(insertNewline:)) {
     BOOL shiftPressed = (NSApp.currentEvent.modifierFlags & NSEventModifierFlagShift) == NSEventModifierFlagShift;
     if (!shiftPressed) {
-      if ([self performSelectedSlashCommand]) return YES;
+      if (!self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) return YES;
       [self sendMessage:textView];
       return YES;
     }
@@ -3824,6 +3913,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSString *displayText = showThinking
     ? (message.thinking ?: @"")
     : (hasResponseContent ? message.content : ([message.role isEqualToString:TLRoleAssistant] ? @"..." : @""));
+  if (user && message.attachments.count) displayText = [displayText stringByAppendingFormat:@"\n%@", message.attachments];
   if ([self messageShowsAWSOutageIntent:message]) {
     displayText = TLAWSOutageAgentMessage;
   }
@@ -3942,7 +4032,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [stack addArrangedSubview:markdown];
     [self.messageMarkdownViews setObject:markdown forKey:message];
   } else if (user) {
-    NSString *content = hasResponseContent ? message.content : @"";
+    NSMutableString *content = [NSMutableString stringWithString:hasResponseContent ? message.content : @""];
+    for (NSDictionary *attachment in message.attachments) {
+      [content appendFormat:@"\n%@ %@", [attachment[@"directory"] boolValue] ? @"▸" : @"↳", attachment[@"name"]];
+    }
     TLUserMessageBubbleLayout userLayout = TLUserMessageBubbleLayoutForContent(content,
                                                                                self.palette,
                                                                                availableMessageWidth,
@@ -4914,28 +5007,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)fileURLs {
   [self openFromNotchOverlay:self.notchOverlayController];
-  if (fileURLs.count == 0) {
+  if (!fileURLs.count) return;
+  if (self.preparingAttachments) {
+    [self presentErrorMessage:@"Files are still being copied. Drop these attachments again when copying finishes."];
     return;
   }
-
-  NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:fileURLs.count];
-  for (NSURL *fileURL in fileURLs) {
-    if (fileURL.isFileURL && fileURL.path.length > 0) {
-      [paths addObject:fileURL.path];
-    }
-  }
-  if (paths.count == 0) {
-    return;
-  }
-
-  NSMutableString *droppedFilesText = [NSMutableString stringWithString:paths.count == 1 ? @"Dropped file:" : @"Dropped files:"];
-  for (NSString *path in paths) {
-    [droppedFilesText appendFormat:@"\n- %@", path];
-  }
-
-  NSString *existingPrompt = self.promptTextView.string ?: @"";
-  NSString *separator = [existingPrompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length > 0 ? @"\n\n" : @"";
-  self.promptTextView.string = [NSString stringWithFormat:@"%@%@%@", existingPrompt, separator, droppedFilesText];
+  if (![self isChatWorkspaceActive]) [self startNewChatWithModel:self.settings.selectedModel focus:NO];
+  [self.messageInput addAttachmentURLs:fileURLs];
   [self updateControlStates];
   [self.window makeFirstResponder:self.promptTextView];
 }
@@ -4960,6 +5038,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.sidebarToggleButton.enabled = NO;
     self.sidebarUserButton.enabled = NO;
     self.sendButton.enabled = NO;
+    self.messageInput.attachmentsEditable = NO;
     self.historyPanelController.enabled = NO;
     self.promptTextView.editable = NO;
     self.promptTextView.selectable = YES;
@@ -4981,9 +5060,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.sidebarToggleButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
   self.messageInput.showsStopButton = [self canStopResponse];
-  self.sendButton.enabled = self.messageInput.showsStopButton || (chatActive && prompt.length > 0 && (!self.isSending || [prompt hasPrefix:@"/"]));
+  BOOL hasAttachments = self.messageInput.attachmentURLs.count > 0;
+  self.sendButton.enabled = !self.preparingAttachments && (self.messageInput.showsStopButton ||
+    (chatActive && (prompt.length > 0 || hasAttachments) && (!self.isSending || (!hasAttachments && [prompt hasPrefix:@"/"]))));
+  self.messageInput.attachmentsEditable = !self.preparingAttachments && chatActive;
+  if (self.preparingAttachments) self.sendButton.toolTip = @"Copying attachments…";
   self.historyPanelController.enabled = YES;
-  self.promptTextView.editable = chatActive;
+  self.promptTextView.editable = chatActive && !self.preparingAttachments;
   self.promptTextView.selectable = YES;
 
   self.createChatButton.alphaValue = self.createChatButton.enabled ? 1.0 : self.palette.disabledOpacity;
@@ -5039,12 +5122,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSUInteger closedIndex = [self indexOfSessionChatID:chatID];
 
   NSError *error = nil;
+  TLChatRecord *deletedChat = [self.database chatWithID:chatID error:&error];
+  if (!deletedChat) {
+    [self presentErrorMessage:error.localizedDescription ?: @"Could not load conversation."];
+    return;
+  }
   if (![self.database deleteChatWithID:chatID error:&error]) {
     [self presentErrorMessage:error.localizedDescription ?: @"Could not delete conversation."];
     return;
   }
 
+  NSError *attachmentCleanupError = nil;
+  [self.agentOrchestrator removeAttachmentsForSessionID:deletedChat.hermesSessionID error:&attachmentCleanupError];
+  if (attachmentCleanupError) [self presentErrorMessage:attachmentCleanupError.localizedDescription];
   [self.chatIconRequests removeObject:@(chatID)];
+  [self.attachmentDrafts removeObjectForKey:@(chatID)];
+  [self.attachmentPromptDrafts removeObjectForKey:@(chatID)];
   if (closedIndex != NSNotFound) {
     [self.appStateManager removeWorkspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID];
     [self removeRuntimeForKind:TLWorkspaceTabKindChat tabID:chatID];

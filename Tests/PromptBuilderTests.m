@@ -483,7 +483,7 @@ static void TestDatabasePersistence(void) {
                @"deleted chats cannot be loaded");
 
   database = nil;
-  TLAssertTrue(TLReadSQLiteUserVersion(url) == 6, @"sets database schema user_version");
+  TLAssertTrue(TLReadSQLiteUserVersion(url) == 7, @"sets database schema user_version");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
 
@@ -526,7 +526,7 @@ static void TestCompatibleVersion5Database(void) {
       TLAssertEqualObjects([check stringAtColumn:1], @"keep", @"preserves newer agent instructions");
       TLAssertEqualObjects([check stringAtColumn:2], @"[\"/tmp/keep\"]", @"preserves newer agent folders");
     }
-    TLAssertTrue(TLReadSQLiteUserVersion(url) == 6, @"upgrades both version-5 variants without downgrading data");
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 7, @"upgrades both version-5 variants without downgrading data");
     [connection executeSQL:"PRAGMA user_version = 6" error:&error];
     error = nil;
     TLAssertTrue(!TLDatabaseMigrate(connection, 4, &error) && error != nil, @"rejects unknown future versions");
