@@ -299,6 +299,16 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                        delta:delta streamCompletion:completion modelCompletion:nil];
 }
 
+- (void)selectHermesModelWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
+                           token:(NSString *)token model:(NSString *)model
+                      completion:(TLAgentStreamCompletionHandler)completion {
+  NSDictionary *payload = @{@"operation": @"hermes_select_model", @"request_id": NSUUID.UUID.UUIDString,
+    @"session_id": sessionID, @"token": token, @"model": model};
+  [self startWorkerWithAgent:agent payload:payload operation:@"hermes_select_model"
+    delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {}
+    streamCompletion:completion modelCompletion:nil];
+}
+
 - (void)installHermesWithAgent:(TLAgentRecord *)agent
                      requestID:(NSString *)requestID
                       progress:(TLAgentStreamDeltaHandler)progress

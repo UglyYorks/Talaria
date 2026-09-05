@@ -148,6 +148,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
     _title = @"New chat";
     _icon = @"";
     _model = [TLDefaultModelID copy];
+    _supportingModel = [TLDefaultSupportingModelID copy];
     _hermesSessionID = @"";
     _createdAt = @"";
     _updatedAt = @"";
@@ -161,6 +162,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.title = self.title;
   copy.icon = self.icon;
   copy.model = self.model;
+  copy.supportingModel = self.supportingModel;
   copy.hermesSessionID = self.hermesSessionID;
   copy.createdAt = self.createdAt;
   copy.updatedAt = self.updatedAt;

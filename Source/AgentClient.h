@@ -43,6 +43,9 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLAgentModel *> *_Nullable 
                                delta:(TLAgentStreamDeltaHandler)delta
                           completion:(TLAgentStreamCompletionHandler)completion;
 @optional
+- (void)selectHermesModelWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
+                           token:(NSString *)token model:(NSString *)model
+                      completion:(TLAgentStreamCompletionHandler)completion;
 - (void)cancelChatWithRequestID:(NSString *)requestID;
 - (void)installHermesWithAgent:(TLAgentRecord *)agent
                      requestID:(NSString *)requestID
