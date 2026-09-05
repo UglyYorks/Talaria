@@ -6,6 +6,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @class TLWorkspaceTabsController;
+@class TLChromeTabSelectionView;
 
 @protocol TLWorkspaceTabsControllerDelegate <NSObject>
 
@@ -32,6 +33,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, weak, nullable) id target;
 @property (nonatomic, weak, nullable) id<TLWorkspaceTabsControllerDelegate> delegate;
 @property (nonatomic, strong, readonly) TLTransitionCoordinator *transitionCoordinator;
+@property (nonatomic, strong, readonly) TLChromeTabSelectionView *selectionView;
 
 - (instancetype)initWithTabStack:(NSStackView *)tabStack
                           target:(nullable id)target

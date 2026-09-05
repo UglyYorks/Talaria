@@ -168,6 +168,16 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.backgroundLayer.path = path;
   [CATransaction commit];
   CGPathRelease(path);
+  if (self.geometryChanged) self.geometryChanged();
+}
+
+- (CGPathRef)newOutlinePath {
+  return [self newBackgroundPathForSelectionFrame:self.selectionFrame leadingFlareOutset:self.leadingFlareOutset];
+}
+
+- (void)setHidden:(BOOL)hidden {
+  [super setHidden:hidden];
+  if (self.geometryChanged) self.geometryChanged();
 }
 
 - (void)setSelectionFrame:(NSRect)selectionFrame
@@ -196,6 +206,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [CATransaction setDisableActions:YES];
   self.backgroundLayer.path = targetPath;
   [CATransaction commit];
+  if (self.geometryChanged) self.geometryChanged();
   if (!animated || duration <= 0.0 || CGPathEqualToPath(sourcePath, targetPath)) {
     CGPathRelease(fallbackStartPath);
     CGPathRelease(targetPath);

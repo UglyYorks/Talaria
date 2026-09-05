@@ -554,6 +554,13 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
   return TLCreateRoundedRectBezierPath(bounds, topLeftRadius, topRightRadius, bottomRightRadius, bottomLeftRadius);
 }
 
+- (CGPathRef)newOutlinePath {
+  CGFloat topLeft, topRight, bottomRight, bottomLeft;
+  [self resolvedTopLeftRadius:&topLeft topRightRadius:&topRight
+           bottomRightRadius:&bottomRight bottomLeftRadius:&bottomLeft inRect:self.bounds];
+  return TLCreateRoundedRectPath(self.bounds, topLeft, topRight, bottomRight, bottomLeft);
+}
+
 - (void)updateLayerCornerGeometry {
   if (!self.layer) {
     return;

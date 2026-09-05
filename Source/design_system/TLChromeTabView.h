@@ -12,6 +12,8 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic) CGFloat leadingFlareOutset;
 @property (nonatomic, readonly) NSRect selectionFrame;
+@property (nonatomic, copy, nullable) void (^geometryChanged)(void);
+- (CGPathRef)newOutlinePath CF_RETURNS_RETAINED;
 
 - (void)applyCurrentState;
 - (void)setSelectionFrame:(NSRect)selectionFrame

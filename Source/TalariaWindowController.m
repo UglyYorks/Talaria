@@ -17,6 +17,8 @@
 #import "TLVMDebugTerminalWindowController.h"
 #import "TLWorkspaceTabsController.h"
 #import "UIComponents.h"
+#import "design_system/TLWorkspaceOutlineView.h"
+#import "design_system/TLChromeTabView.h"
 #import "WorkspaceState.h"
 #import "WorkspaceTabRuntime.h"
 #import "Widgetbook.h"
@@ -138,6 +140,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) TLMessageInput *messageInput;
 @property (nonatomic, strong) TLTokenView *contentShadowView;
 @property (nonatomic, strong) TLTokenView *contentHost;
+@property (nonatomic, strong) TLWorkspaceOutlineView *workspaceOutline;
 @property (nonatomic, strong) NSView *chatWorkspace;
 @property (nonatomic, strong) NSLayoutConstraint *messageInputWidthConstraint;
 @property (nonatomic, strong) NSStackView *tabStack;
@@ -550,6 +553,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [workspace addSubview:topbar];
   [workspace addSubview:self.sidebarResizeHandle];
   [self.contentShadowView addSubview:self.contentHost];
+  self.workspaceOutline = [[TLWorkspaceOutlineView alloc] init];
+  self.workspaceOutline.translatesAutoresizingMaskIntoConstraints = NO;
+  self.workspaceOutline.layer.zPosition = 11.0;
+  self.workspaceOutline.contentView = self.contentHost;
+  self.workspaceOutline.selectionView = self.workspaceTabsController.selectionView;
+  [workspace addSubview:self.workspaceOutline];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.workspaceOutline.leadingAnchor constraintEqualToAnchor:workspace.leadingAnchor],
+    [self.workspaceOutline.trailingAnchor constraintEqualToAnchor:workspace.trailingAnchor],
+    [self.workspaceOutline.topAnchor constraintEqualToAnchor:workspace.topAnchor],
+    [self.workspaceOutline.bottomAnchor constraintEqualToAnchor:workspace.bottomAnchor],
+  ]];
+  __weak TLWorkspaceOutlineView *outline = self.workspaceOutline;
+  self.workspaceTabsController.selectionView.geometryChanged = ^{ [outline updateOutline]; };
   self.contentLeadingConstraint = [self.contentShadowView.leadingAnchor constraintEqualToAnchor:workspace.leadingAnchor
                                                                                        constant:[self contentLeadingOffsetForSidebarWidth:[self currentSidebarWidth]]];
   self.sidebarActionStackLeadingConstraint =
@@ -5553,6 +5570,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.contentShadowView.layer.shadowRadius = self.palette.space5;
   self.contentShadowView.layer.shadowOffset = NSMakeSize(self.palette.space0, -self.palette.space2);
   self.contentHost.fillColor = self.palette.tabBackground;
+  self.workspaceOutline.palette = self.palette;
   self.contentHost.layer.masksToBounds = YES;
   [self applyContentTopLeftCornerRadius:self.palette.space5];
   self.sidebarView.fillColor = self.palette.appBackground;
@@ -5667,6 +5685,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.contentHost.topLeftCornerRadius = clampedRadius;
   [self.contentShadowView setNeedsDisplay:YES];
   [self.contentHost setNeedsDisplay:YES];
+  [self.workspaceOutline updateOutline];
 }
 
 - (void)openFromNotchOverlay:(id)sender {

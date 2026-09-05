@@ -9,9 +9,64 @@
 #import "TalariaWindowController.h"
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLButton.h"
+#import "design_system/TLWorkspaceOutlineView.h"
+#import "design_system/TLChromeTabView.h"
 
 static void Check(BOOL condition, NSString *message) {
   if (!condition) { NSLog(@"FAIL: %@", message); exit(1); }
+}
+
+static void TestUnifiedWorkspaceOutline(void) {
+  NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 280)];
+  root.wantsLayer = YES;
+  TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  root.layer.backgroundColor = TLCGColor(palette.sidebarSurface);
+  TLTokenView *content = [[TLTokenView alloc] init];
+  content.frame = NSMakeRect(20, 20, 360, 200);
+  content.cornerRadius = palette.space5;
+  content.fillColor = palette.tabBackground;
+  [root addSubview:content];
+  TLChromeTabSelectionView *selection = [[TLChromeTabSelectionView alloc] initWithFrame:root.bounds];
+  selection.palette = palette;
+  [root addSubview:selection];
+  TLWorkspaceOutlineView *outline = [[TLWorkspaceOutlineView alloc] initWithFrame:root.bounds];
+  outline.contentView = content;
+  outline.selectionView = selection;
+  [root addSubview:outline];
+  outline.palette = palette;
+  __weak TLWorkspaceOutlineView *weakOutline = outline;
+  selection.geometryChanged = ^{ [weakOutline updateOutline]; };
+  NSRect selectedRect = NSMakeRect(100, 220, 160, palette.tabHeight);
+  [selection setSelectionFrame:selectedRect leadingFlareOutset:palette.tabFlareRadius
+    animated:NO fromFrame:selectedRect duration:0];
+  CAShapeLayer *layer = [outline valueForKey:@"outlineLayer"];
+  CGPathRef stroke = CGPathCreateCopyByStrokingPath(layer.path, NULL, layer.lineWidth,
+    kCGLineCapButt, kCGLineJoinRound, 0);
+  Check(!CGPathContainsPoint(stroke, NULL, CGPointMake(180, 220), false), @"joined border has no seam below selected tab");
+  Check(CGPathContainsPoint(stroke, NULL, CGPointMake(60, 220), false), @"content top border remains outside selection");
+  Check(CGPathContainsPoint(stroke, NULL, CGPointMake(180, 254), false), @"border follows selected tab top");
+  Check(CGPathContainsPoint(stroke, NULL, CGPointMake(20, 100), false), @"border wraps content side");
+  Check(!CGPathContainsPoint(layer.path, NULL, CGPointMake(20.5, 20.5), false), @"content corner remains rounded");
+  CGPathRelease(stroke);
+  Check([outline hitTest:NSMakePoint(50, 50)] == nil, @"outline never intercepts content or tab clicks");
+  NSBitmapImageRep *preview = [root bitmapImageRepForCachingDisplayInRect:root.bounds];
+  [root cacheDisplayInRect:root.bounds toBitmapImageRep:preview];
+  [[preview representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+    writeToFile:@"/tmp/talaria-workspace-outline.png" atomically:YES];
+  selectedRect.origin.x = 200;
+  [selection setSelectionFrame:selectedRect leadingFlareOutset:palette.tabFlareRadius
+    animated:NO fromFrame:selectedRect duration:0];
+  stroke = CGPathCreateCopyByStrokingPath(layer.path, NULL, layer.lineWidth, kCGLineCapButt, kCGLineJoinRound, 0);
+  Check(!CGPathContainsPoint(stroke, NULL, CGPointMake(140, 254), false), @"moving selection removes old tab outline");
+  Check(CGPathContainsPoint(stroke, NULL, CGPointMake(280, 254), false), @"moving selection updates outline on the same tick");
+  CGPathRelease(stroke);
+  selection.hidden = YES;
+  Check(CGRectGetMaxY(CGPathGetBoundingBox(layer.path)) == 220, @"hidden selection leaves only the content perimeter");
+  outline.palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
+  Check(CGColorEqualToColor(layer.strokeColor, TLCGColor(outline.palette.controlBorder)), @"outline follows theme border color");
+  content.topLeftCornerRadius = 0;
+  [outline updateOutline];
+  Check(CGPathContainsPoint(layer.path, NULL, CGPointMake(20.5, 219.5), false), @"outline respects connected first-tab corner geometry");
 }
 
 @interface TLButtonPointerWindow : NSWindow
@@ -366,6 +421,7 @@ int main(void) {
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();
     TestCompactButtonHitAreaAndMovingHover();
+    TestUnifiedWorkspaceOutline();
     NSLog(@"FeatureControllerTests passed");
   }
   return 0;
