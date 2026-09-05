@@ -296,6 +296,7 @@
   _sendButtonInset = sendButtonInset;
   self.sendButtonTrailingConstraint.constant = -sendButtonInset;
   self.sendButtonBottomConstraint.constant = -sendButtonInset;
+  [self applyAttachmentPalette];
   [self setNeedsLayout:YES];
 }
 
@@ -416,7 +417,6 @@
 - (void)buildAttachmentInterface {
   self.attachButton = [[TLGlassButton alloc] initWithUsesGlassEffect:NO];
   self.attachButton.hoverSurfaceOnly = YES;
-  self.attachButton.image = [NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:@"Add files or folders"];
   self.attachButton.toolTip = @"Add files or folders";
   self.attachButton.target = self;
   self.attachButton.action = @selector(chooseAttachments:);
@@ -453,10 +453,17 @@
 - (void)applyAttachmentPalette {
   if (!self.attachButton) return;
   self.attachButton.palette = self.palette;
-  self.attachLeadingConstraint.constant = self.palette.space3;
+  self.attachButton.wantsLayer = YES;
+  self.attachButton.layer.backgroundColor = TLCGColor(self.palette.chromeHoverSurface);
+  self.attachButton.layer.cornerRadius = self.sendButtonSize / 2;
+  NSImage *plus = [NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:@"Add files or folders"];
+  NSImageSymbolConfiguration *configuration = [NSImageSymbolConfiguration configurationWithPointSize:self.palette.space11
+                                                                                           weight:NSFontWeightRegular];
+  self.attachButton.image = [plus imageWithSymbolConfiguration:configuration] ?: plus;
+  self.attachLeadingConstraint.constant = self.sendButtonInset;
   self.attachWidthConstraint.constant = self.sendButtonSize;
   self.attachHeightConstraint.constant = self.sendButtonSize;
-  self.textLeadingConstraint.constant = self.attachmentsEnabled ? self.palette.space3 * 2 + self.sendButtonSize : self.palette.space6;
+  self.textLeadingConstraint.constant = self.attachmentsEnabled ? self.sendButtonInset + self.palette.space3 + self.sendButtonSize : self.palette.space6;
   self.attachmentTopConstraint.constant = self.palette.space3;
   self.attachmentLeadingConstraint.constant = self.palette.space5;
   self.attachmentTrailingConstraint.constant = -self.palette.space5;
