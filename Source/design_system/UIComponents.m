@@ -2892,6 +2892,28 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 @end
 
+NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *palette) {
+  NSString *name = [displayName stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  NSString *initial = name.length > 0
+    ? [[name substringWithRange:[name rangeOfComposedCharacterSequenceAtIndex:0]] uppercaseString]
+    : @"?";
+  NSSize size = NSMakeSize(palette.sidebarActionIconSize, palette.sidebarActionIconSize);
+  NSImage *image = [NSImage imageWithSize:size flipped:NO drawingHandler:^BOOL(NSRect rect) {
+    [palette.userMessageSurface setFill];
+    [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(rect, palette.borderWidth * 0.5,
+                                                     palette.borderWidth * 0.5)] fill];
+    NSDictionary *attributes = @{NSFontAttributeName: palette.roleFont,
+                                 NSForegroundColorAttributeName: palette.userMessageText};
+    NSSize textSize = [initial sizeWithAttributes:attributes];
+    [initial drawAtPoint:NSMakePoint(NSMidX(rect) - textSize.width * 0.5,
+                                    NSMidY(rect) - textSize.height * 0.5)
+         withAttributes:attributes];
+    return YES;
+  }];
+  image.template = NO;
+  return image;
+}
+
 @interface TLAvatarInitialView : NSView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSString *initial;

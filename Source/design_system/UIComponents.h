@@ -4,6 +4,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *palette);
+
 typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
   TLBorderEdgeNone = 0,
   TLBorderEdgeTop = 1 << 0,

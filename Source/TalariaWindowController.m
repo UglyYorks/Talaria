@@ -1061,7 +1061,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
   button.palette = self.palette;
   button.title = displayName;
-  button.image = [self symbolImageNamed:@"person.crop.circle" accessibilityDescription:@"Account menu"];
+  button.image = TLAvatarImageForDisplayName(displayName, self.palette);
   [button setContentHuggingPriority:NSLayoutPriorityDefaultHigh
                    forOrientation:NSLayoutConstraintOrientationHorizontal];
   button.target = self;
@@ -4520,6 +4520,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   self.sidebarUserButton.palette = self.palette;
   self.sidebarUserButton.title = @"Yaroslav";
+  self.sidebarUserButton.image = TLAvatarImageForDisplayName(self.sidebarUserButton.title, self.palette);
 }
 
 - (void)updateSidebarContentInsets {

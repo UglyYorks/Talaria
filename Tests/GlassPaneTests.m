@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "design_system/UIComponents.h"
+#import "design_system/TLGlassButton.h"
 #import "InputSuggestions.h"
 #import "TLBrowserHeightTransition.h"
 #import "ChromiumRunLoop.h"
@@ -39,6 +40,33 @@ static id Evaluate(WKWebView *view, NSString *script) {
   while (!done && deadline.timeIntervalSinceNow > 0) [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
   Check(done && !failure, [NSString stringWithFormat:@"JavaScript completed: %@", failure]);
   return value;
+}
+
+static void TestGlassAccountButtonSizing(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 300, 100)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
+  button.title = @"Yaroslav";
+  [window.contentView addSubview:button];
+  [NSLayoutConstraint activateConstraints:@[
+    [button.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [button.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+  ]];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    button.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    button.image = TLAvatarImageForDisplayName(button.title, button.palette);
+    [window.contentView layoutSubtreeIfNeeded];
+    NSTextField *label = [button valueForKey:@"contentLabel"];
+    NSImageView *avatar = [button valueForKey:@"contentImageView"];
+    Check(NSWidth(label.frame) >= label.intrinsicContentSize.width - 0.5,
+          @"glass account button reserves enough width for the full name");
+    Check(NSWidth(button.frame) < NSWidth(window.contentView.bounds),
+          @"glass account button fits its content rather than the sidebar width");
+    Check(avatar.image != nil && !avatar.image.isTemplate && avatar.contentTintColor == nil,
+          @"account avatar preserves its own colors in both themes");
+  }
+  [window close];
 }
 
 static void TestBrowserChatPane(void) {
@@ -522,6 +550,7 @@ int main(void) {
       Check(target.activationCount == before + 1, @"disabled web choice cannot activate");
       row.enabled = YES;
     }
+    TestGlassAccountButtonSizing();
     NSLog(@"GlassPaneTests passed");
   }
   return 0;
