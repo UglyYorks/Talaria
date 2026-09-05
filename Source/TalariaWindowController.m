@@ -204,7 +204,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @property (nonatomic, strong) TLButton *createChatButton;
 @property (nonatomic, strong) TLButton *sidebarToggleButton;
-@property (nonatomic, strong) TLGlassPaneView *slashCommandListView;
+@property (nonatomic, strong) TLTokenView *slashCommandListView;
 @property (nonatomic, strong) TLInputSuggestionListView *slashCommandScrollView;
 @property (nonatomic, strong) NSTimer *slashCommandUpdateTimer;
 @property (nonatomic) BOOL renderingSlashCommands;
@@ -2163,7 +2163,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (NSView *)buildSlashCommandListView {
-  self.slashCommandListView = [[TLGlassPaneView alloc] init];
+  self.slashCommandListView = [[TLTokenView alloc] init];
   self.slashCommandListView.translatesAutoresizingMaskIntoConstraints = NO;
   self.slashCommandListView.hidden = YES;
   self.slashCommandListView.wantsLayer = YES;
@@ -2190,7 +2190,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (!self.slashCommandListView) {
     return;
   }
-  self.slashCommandListView.palette = self.palette;
+  self.slashCommandListView.fillColor = self.palette.controlSurface;
+  self.slashCommandListView.cornerRadius = self.palette.slashCommandListCornerRadius;
+  self.slashCommandListView.borderWidth = self.palette.space0;
   self.slashCommandScrollView.palette = self.palette;
   self.slashCommandListBottomConstraint.constant = -self.palette.space5;
 }
@@ -2210,8 +2212,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)showSlashCommandListWithCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {
   CGFloat rowHeight = self.palette.slashCommandRowHeight;
   CGFloat padding = self.palette.space2;
-  CGFloat spacing = commands.count > 1 ? self.palette.space2 * (commands.count - 1) : self.palette.space0;
-  CGFloat height = (rowHeight * commands.count) + (padding * 2.0) + spacing;
 
   BOOL changed = ![self.visibleSlashCommands isEqualToArray:commands];
   self.visibleSlashCommands = [commands copy];
@@ -2220,7 +2220,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self applySlashCommandListPalette];
   self.slashCommandListWidthConstraint.constant = [self slashCommandListWidthForCommands:commands];
   CGFloat availableHeight = MAX(rowHeight + padding * 2, NSHeight(self.rootView.bounds) * 0.4);
-  self.slashCommandListHeightConstraint.constant = MIN(height, MIN(availableHeight, rowHeight * 8 + padding * 9));
+  CGFloat contentHeight = self.slashCommandScrollView.contentHeight;
+  CGFloat heightLimit = MIN(availableHeight, (rowHeight + self.palette.space2) * 8 + padding * 2);
+  self.slashCommandListHeightConstraint.constant = MIN(contentHeight + padding * 2, heightLimit);
+  self.slashCommandScrollView.scrollingEnabled = contentHeight + padding * 2 > heightLimit;
   self.slashCommandListView.hidden = NO;
   [self updateMessageScrollInsets];
 }

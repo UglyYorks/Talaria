@@ -8,6 +8,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *suggestions;
 @property (nonatomic) NSInteger selectedIndex;
+@property (nonatomic, readonly) CGFloat contentHeight;
+@property (nonatomic) BOOL scrollingEnabled;
 @property (nonatomic, copy, nullable) void (^activationHandler)(NSUInteger index);
 - (BOOL)isSuggestionEnabledAtIndex:(NSUInteger)index;
 @end

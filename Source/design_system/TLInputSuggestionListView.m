@@ -19,7 +19,9 @@
     _selectedIndex = -1;
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.drawsBackground = NO;
-    self.hasVerticalScroller = YES;
+    self.hasVerticalScroller = NO;
+    self.verticalScrollElasticity = NSScrollElasticityNone;
+    self.horizontalScrollElasticity = NSScrollElasticityNone;
     self.autohidesScrollers = YES;
     _table = [[TLInputSuggestionTableView alloc] initWithFrame:self.bounds];
     _table.headerView = nil;
@@ -37,6 +39,21 @@
     self.palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
   }
   return self;
+}
+
+- (CGFloat)contentHeight {
+  // NSTableView includes intercell spacing in every row, including the last one.
+  return ceil(self.suggestions.count * (self.table.rowHeight + self.table.intercellSpacing.height));
+}
+
+- (void)setScrollingEnabled:(BOOL)enabled {
+  _scrollingEnabled = enabled;
+  self.hasVerticalScroller = enabled;
+  if (!enabled) [self.contentView scrollToPoint:NSZeroPoint];
+}
+
+- (void)scrollWheel:(NSEvent *)event {
+  if (self.scrollingEnabled) [super scrollWheel:event];
 }
 
 - (void)setPalette:(TLThemePalette *)palette {

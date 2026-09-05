@@ -887,6 +887,7 @@ static void TestSuggestionTypingAndVirtualization(void) {
     DrainSuggestionTimer();
     [window.contentView layoutSubtreeIfNeeded];
     Check(table.numberOfRows == (NSInteger)commands.count, @"large catalogue remains complete");
+    Check(list.scrollingEnabled && list.hasVerticalScroller, @"long catalogue scrolls after reaching the viewport limit");
     Check(NSWidth(pane.frame) <= width.doubleValue, [NSString stringWithFormat:@"suggestions fit composers: requested %@, input %.0f, pane %.0f", width, NSWidth(input.bounds), NSWidth(pane.frame)]);
     __block NSUInteger materialized = 0;
     [table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger index) { materialized++; }];
@@ -945,6 +946,18 @@ static void TestSuggestionTypingAndVirtualization(void) {
   Check(![controller textView:input.textView doCommandBySelector:@selector(moveDown:)] &&
         [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == -1,
         @"arrow keys cannot select the error message");
+  Check(!list.scrollingEnabled && !list.hasVerticalScroller, @"one error message has no scrollbar");
+  Check([pane isKindOfClass:TLTokenView.class] && ![pane isKindOfClass:TLGlassPaneView.class], @"suggestions use a plain surface without glass treatment");
+  [controller setValue:nil forKey:@"hermesCommandsError"];
+  for (NSUInteger count = 1; count <= 9; count++) {
+    [controller setValue:[commands subarrayWithRange:NSMakeRange(0, count)] forKey:@"hermesCommands"];
+    [controller textDidChange:nil];
+    DrainSuggestionTimer();
+    [window.contentView layoutSubtreeIfNeeded];
+    BOOL overflow = list.contentHeight > NSHeight(list.contentView.bounds) + 0.5;
+    Check(list.hasVerticalScroller == overflow && list.scrollingEnabled == overflow, @"scrolling only appears when content exceeds the available height");
+    if (!overflow) Check(NSHeight(list.contentView.bounds) >= list.contentHeight, @"short lists fit all rows without scrolling");
+  }
   [window close];
 }
 
