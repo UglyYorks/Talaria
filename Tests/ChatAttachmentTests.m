@@ -152,9 +152,13 @@ static void TestComposer(void) {
   input.attachmentsEditable = NO;
   [input addAttachmentURLs:@[[NSURL fileURLWithPath:@"/tmp/ignored.txt"]]];
   Check(input.attachmentURLs.count == 4, @"cannot mutate attachment selection during send");
+  NSStackView *disabledStack = [input valueForKey:@"attachmentStack"];
+  NSButton *disabledRemove = [disabledStack.arrangedSubviews.firstObject valueForKey:@"closeButton"];
+  Check(!disabledRemove.enabled, @"remove control is disabled during send");
   input.attachmentsEditable = YES;
+  Check(disabledRemove.enabled, @"remove control is enabled after send");
   NSStackView *stack = [input valueForKey:@"attachmentStack"];
-  NSButton *remove = (NSButton *)stack.arrangedSubviews.firstObject;
+  NSButton *remove = [stack.arrangedSubviews.firstObject valueForKey:@"closeButton"];
   [NSApp sendAction:remove.action to:remove.target from:remove];
   Check(input.attachmentURLs.count == 3, @"remove action updates the draft");
   input.attachmentURLs = @[];
@@ -187,12 +191,13 @@ static void TestSystemAttachmentThumbnails(void) {
   NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
   while (deadline.timeIntervalSinceNow > 0) {
     BOOL pending = NO;
-    for (NSButton *button in stack.arrangedSubviews) pending |= [button valueForKey:@"thumbnailRequest"] != nil;
+    for (NSView *button in stack.arrangedSubviews) pending |= [button valueForKey:@"thumbnailRequest"] != nil;
     if (!pending) break;
     [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
   }
-  for (NSButton *button in stack.arrangedSubviews) {
-    Check(button.image && !button.image.template, @"Quick Look supplies content thumbnails for images and PDFs");
+  for (NSView *button in stack.arrangedSubviews) {
+    NSImage *image = [button valueForKey:@"image"];
+    Check(image && !image.template, @"Quick Look supplies content thumbnails for images and PDFs");
     Check([button valueForKey:@"thumbnailRequest"] == nil, @"completed thumbnail requests are released");
   }
   [root layoutSubtreeIfNeeded];

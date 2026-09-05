@@ -75,39 +75,87 @@
 }
 @end
 
-// NSButton's intrinsic width does not inset its image/title drawing. Apply the
-// same padding to the cell's content frame so neither edge touches the pill.
-@interface TLAttachmentChipCell : NSButtonCell
-@property (nonatomic) CGFloat horizontalPadding;
-@end
-@implementation TLAttachmentChipCell
-- (void)drawInteriorWithFrame:(NSRect)cellFrame inView:(NSView *)controlView {
-  [super drawInteriorWithFrame:NSInsetRect(cellFrame, self.horizontalPadding, 0) inView:controlView];
-}
-@end
-
-@interface TLAttachmentChipButton : TLHoverIconButton
-@property (nonatomic) BOOL attachmentHovered;
+@interface TLAttachmentChipView : NSView
+@property (nonatomic, strong) TLThemePalette *palette;
+@property (nonatomic, strong) NSImage *image;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic) BOOL enabled;
+@property (nonatomic, strong) NSImageView *imageView;
+@property (nonatomic, strong) NSTextField *label;
+@property (nonatomic, strong) TLHoverIconButton *closeButton;
 @property (nonatomic, strong) QLThumbnailGenerationRequest *thumbnailRequest;
 @property (nonatomic, strong) NSURL *previewURL;
 @property (nonatomic) BOOL previewSecurityScope;
 @end
-@implementation TLAttachmentChipButton
-+ (Class)cellClass { return TLAttachmentChipCell.class; }
-- (NSSize)intrinsicContentSize {
-  NSSize size = [super intrinsicContentSize];
-  size.width += self.palette.space6 * 2;
-  size.height = MAX(size.height, self.palette.fieldHeight);
-  return size;
+@implementation TLAttachmentChipView
+- (instancetype)initWithFrame:(NSRect)frame {
+  self = [super initWithFrame:frame];
+  if (self) {
+    _imageView = [[NSImageView alloc] init];
+    _imageView.imageScaling = NSImageScaleProportionallyDown;
+    _label = [NSTextField labelWithString:@""];
+    _label.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    _label.usesSingleLineMode = YES;
+    _closeButton = [[TLHoverIconButton alloc] init];
+    _closeButton.hoverSurfaceOnly = YES;
+    _closeButton.imagePosition = NSImageOnly;
+    _closeButton.title = @"";
+    [self addSubview:_imageView];
+    [self addSubview:_label];
+    [self addSubview:_closeButton];
+  }
+  return self;
 }
-- (void)applyChipPalette {
+- (NSSize)intrinsicContentSize {
+  CGFloat width = self.palette.space6 + self.image.size.width + self.palette.space4 +
+    self.label.intrinsicContentSize.width + self.palette.space4 + self.palette.space12 + self.palette.space2;
+  return NSMakeSize(ceil(width), self.palette.fieldHeight);
+}
+- (void)setImage:(NSImage *)image {
+  _image = image;
+  self.imageView.image = image;
+  [self invalidateIntrinsicContentSize];
+  self.needsLayout = YES;
+}
+- (void)setTitle:(NSString *)title {
+  _title = [title copy];
+  self.label.stringValue = title ?: @"";
+  [self invalidateIntrinsicContentSize];
+  self.needsLayout = YES;
+}
+- (void)setEnabled:(BOOL)enabled { _enabled = enabled; self.closeButton.enabled = enabled; }
+- (void)setPalette:(TLThemePalette *)palette {
+  _palette = palette;
   self.wantsLayer = YES;
-  self.layer.cornerRadius = MIN(self.palette.radiusPill, NSHeight(self.bounds) / 2);
-  ((TLAttachmentChipCell *)self.cell).horizontalPadding = self.palette.space6;
-  self.layer.backgroundColor = TLCGColor(self.attachmentHovered && self.enabled ? self.palette.chromeHoverSurface : self.palette.controlSurface);
-  self.layer.borderWidth = self.palette.space0;
-  self.font = self.palette.smallFont;
-  self.contentTintColor = self.palette.controlText;
+  self.layer.backgroundColor = TLCGColor(palette.controlSurface);
+  self.layer.borderWidth = palette.space0;
+  self.label.font = palette.smallFont;
+  self.label.textColor = palette.controlText;
+  self.imageView.contentTintColor = palette.controlText;
+  self.closeButton.palette = palette;
+  self.closeButton.contentTintColor = palette.controlText;
+  self.closeButton.layer.borderColor = TLCGColor(palette.controlBorder);
+  self.closeButton.layer.borderWidth = palette.borderWidth;
+  NSImage *cross = [NSImage imageWithSystemSymbolName:@"xmark" accessibilityDescription:nil];
+  self.closeButton.image = [cross imageWithSymbolConfiguration:[NSImageSymbolConfiguration
+    configurationWithPointSize:palette.space6 weight:NSFontWeightRegular]] ?: cross;
+  [self invalidateIntrinsicContentSize];
+  self.needsLayout = YES;
+}
+- (void)layout {
+  [super layout];
+  CGFloat height = NSHeight(self.bounds);
+  CGFloat inset = self.palette.space2;
+  CGFloat diameter = height - inset * 2;
+  self.layer.cornerRadius = height / 2;
+  self.closeButton.frame = NSMakeRect(NSWidth(self.bounds) - inset - diameter, inset, diameter, diameter);
+  self.closeButton.layer.cornerRadius = diameter / 2;
+  self.imageView.frame = NSMakeRect(self.palette.space6, (height - self.palette.space11) / 2,
+    self.image.size.width, self.palette.space11);
+  CGFloat labelX = NSMaxX(self.imageView.frame) + self.palette.space4;
+  CGFloat labelHeight = self.label.intrinsicContentSize.height;
+  self.label.frame = [self.label frameForAlignmentRect:NSMakeRect(labelX, (height - labelHeight) / 2,
+    MAX(0, NSMinX(self.closeButton.frame) - self.palette.space4 - labelX), labelHeight)];
 }
 - (void)loadPreviewForURL:(NSURL *)URL {
   UTType *type = nil;
@@ -125,7 +173,7 @@
   [QLThumbnailGenerator.sharedGenerator generateBestRepresentationForRequest:request
     completionHandler:^(QLThumbnailRepresentation *thumbnail, NSError *error) {
       dispatch_async(dispatch_get_main_queue(), ^{
-        TLAttachmentChipButton *button = weakSelf;
+        TLAttachmentChipView *button = weakSelf;
         if (!button || button.thumbnailRequest != request) return;
         button.thumbnailRequest = nil;
         if (button.previewSecurityScope) {
@@ -149,10 +197,6 @@
   if (_thumbnailRequest) [QLThumbnailGenerator.sharedGenerator cancelRequest:_thumbnailRequest];
   if (_previewSecurityScope) [_previewURL stopAccessingSecurityScopedResource];
 }
-- (void)setPalette:(TLThemePalette *)palette { [super setPalette:palette]; [self applyChipPalette]; [self invalidateIntrinsicContentSize]; }
-- (void)mouseEntered:(NSEvent *)event { self.attachmentHovered = YES; [self applyChipPalette]; }
-- (void)mouseExited:(NSEvent *)event { self.attachmentHovered = NO; [self applyChipPalette]; }
-- (void)layout { [super layout]; [self applyChipPalette]; }
 @end
 
 @interface TLMessageInput ()
@@ -455,7 +499,7 @@
 - (void)setAttachmentsEditable:(BOOL)editable {
   _attachmentsEditable = editable;
   self.attachButton.enabled = editable;
-  for (NSButton *button in self.attachmentStack.arrangedSubviews) button.enabled = editable;
+  for (TLAttachmentChipView *chip in self.attachmentStack.arrangedSubviews) chip.enabled = editable;
 }
 
 - (void)buildAttachmentInterface {
@@ -516,11 +560,7 @@
   self.attachmentHeightConstraint.constant = self.palette.composerButtonHeight;
   self.attachmentStack.spacing = self.palette.space3;
   self.attachmentScrollView.hidden = !self.attachmentsEnabled || !self.attachmentURLs.count;
-  for (TLHoverIconButton *button in self.attachmentStack.arrangedSubviews) {
-    button.palette = self.palette;
-    button.font = self.palette.smallFont;
-    button.contentTintColor = self.palette.controlText;
-  }
+  for (TLAttachmentChipView *chip in self.attachmentStack.arrangedSubviews) chip.palette = self.palette;
 }
 
 - (void)setAttachmentURLs:(NSArray<NSURL *> *)URLs {
@@ -531,23 +571,20 @@
   }
   NSUInteger index = 0;
   for (NSURL *URL in _attachmentURLs) {
-    TLAttachmentChipButton *button = [[TLAttachmentChipButton alloc] init];
+    TLAttachmentChipView *button = [[TLAttachmentChipView alloc] init];
     button.palette = self.palette;
     BOOL directory = URL.hasDirectoryPath;
     [NSFileManager.defaultManager fileExistsAtPath:URL.path isDirectory:&directory];
     button.image = [NSImage imageWithSystemSymbolName:directory ? @"folder" : @"doc" accessibilityDescription:nil];
-    button.imagePosition = NSImageLeft;
-    button.imageScaling = NSImageScaleProportionallyDown;
     button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.title = [URL.lastPathComponent stringByAppendingString:@"  ×"];
-    button.toolTip = [@"Remove " stringByAppendingString:URL.path];
-    button.accessibilityLabel = [@"Remove attachment " stringByAppendingString:URL.lastPathComponent];
-    button.bordered = NO;
-    button.target = self;
-    button.action = @selector(removeAttachment:);
-    button.tag = index++;
+    button.title = URL.lastPathComponent;
+    button.toolTip = URL.path;
+    button.closeButton.toolTip = [@"Remove " stringByAppendingString:URL.lastPathComponent];
+    button.closeButton.accessibilityLabel = [@"Remove attachment " stringByAppendingString:URL.lastPathComponent];
+    button.closeButton.target = self;
+    button.closeButton.action = @selector(removeAttachment:);
+    button.closeButton.tag = index++;
     button.enabled = self.attachmentsEditable;
-    button.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [button.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth / 3].active = YES;
     [self.attachmentStack addArrangedSubview:button];
     [button loadPreviewForURL:URL];
