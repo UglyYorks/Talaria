@@ -53,6 +53,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic, strong) NSColor *brandMark;
 @property (nonatomic, strong) NSColor *statusItemIcon;
 @property (nonatomic, strong) NSColor *textMuted;
+@property (nonatomic, strong) NSColor *agentRunningIndicator;
 @property (nonatomic, strong) NSColor *labelText;
 @property (nonatomic, strong) NSColor *controlSurface;
 @property (nonatomic, strong) NSColor *controlText;
@@ -309,6 +310,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat notchOverlayDropGlareDuration;
 @property (nonatomic) CGFloat notchOverlayDropGlareOpacity;
 
+@property (nonatomic, strong) NSFont *agentListAvatarFont;
 @property (nonatomic, strong) NSFont *bodyFont;
 @property (nonatomic, strong) NSFont *messageBodyFont;
 @property (nonatomic, strong) NSFont *smallFont;

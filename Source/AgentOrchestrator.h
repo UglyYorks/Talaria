@@ -20,9 +20,17 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 
 - (nullable NSArray<TLAgentRecord *> *)listAgents:(NSError **)error;
 - (nullable TLAgentRecord *)createAgentWithName:(NSString *)name error:(NSError **)error;
+- (nullable TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
+                                         soul:(NSString *)soul folderPaths:(NSArray<NSString *> *)folderPaths
+                                        error:(NSError **)error;
+- (void)installHermesForAgentWithID:(NSInteger)agentID progress:(TLHermesInstallProgressHandler)progress
+                        completion:(TLAgentOperationCompletionHandler)completion;
 - (nullable TLAgentRecord *)defaultAgentCreatingIfNeeded:(NSError **)error;
 - (void)startAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion;
 - (void)stopAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion;
+- (nullable TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)folderPaths error:(NSError **)error;
+- (nullable TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name
+                                      avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error;
 - (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error;
 
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID

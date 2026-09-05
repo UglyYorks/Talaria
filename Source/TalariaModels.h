@@ -10,6 +10,8 @@ extern NSString * const TLRoleAssistant;
 extern NSString * const TLAgentGuestKindLinux;
 extern NSString * const TLAgentRuntimePython;
 extern NSString * const TLAgentStatusStopped;
+// Presentation state while this process provisions Hermes; VM state remains stored separately.
+extern NSString * const TLAgentStatusInitializing;
 extern NSString * const TLAgentStatusStarting;
 extern NSString * const TLAgentStatusRunning;
 extern NSString * const TLAgentStatusStopping;
@@ -69,6 +71,9 @@ NSString *TLAgentDisplayStatus(NSString *status);
 
 @property (nonatomic) NSInteger agentID;
 @property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy) NSString *avatar;
+@property (nonatomic, copy) NSString *soul;
+@property (nonatomic, copy) NSArray<NSString *> *folderPaths;
 @property (nonatomic, copy) NSString *guestKind;
 @property (nonatomic, copy) NSString *runtime;
 @property (nonatomic, copy) NSString *status;

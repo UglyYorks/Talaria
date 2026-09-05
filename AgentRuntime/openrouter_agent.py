@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -78,9 +79,36 @@ def hermes_environment(token="", model=""):
     return environment
 
 
+def save_agent_soul(request):
+    # A VM hosts one Hermes instance, so its soul belongs to that instance.
+    if "soul" not in request:
+        return
+    soul = request["soul"]
+    if not isinstance(soul, str):
+        raise ValueError("Agent soul must be text.")
+    HERMES_HOME.mkdir(parents=True, exist_ok=True)
+    path = HERMES_HOME / "SOUL.md"
+    if path.exists() and path.read_text(encoding="utf-8") == soul:
+        return
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=HERMES_HOME,
+                                     prefix=".SOUL-", delete=False) as file:
+        temporary = Path(file.name)
+        try:
+            file.write(soul)
+            file.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def install_hermes(request, output=None):
     request_id = trim(request.get("request_id")) or "install"
     if hermes_executable():
+        try:
+            save_agent_soul(request)
+        except (OSError, ValueError) as exc:
+            error(f"Could not save agent soul: {exc}", output)
+            return
         progress(request_id, "Hermes Agent is already installed.\n", output)
         emit({"type": "complete"}, output)
         return
@@ -135,6 +163,11 @@ def install_hermes(request, output=None):
 
     if return_code != 0 or not hermes_executable():
         error(f"Hermes Agent installation failed with exit code {return_code}.", output)
+        return
+    try:
+        save_agent_soul(request)
+    except (OSError, ValueError) as exc:
+        error(f"Could not save agent soul: {exc}", output)
         return
     progress(request_id, "Hermes Agent is ready.\n", output)
     emit({"type": "complete"}, output)
@@ -291,6 +324,7 @@ def stream_hermes_session(request, output=None):
         error("Hermes session, OpenRouter token, model, request ID, and prompt are required.", output)
         return
     try:
+        save_agent_soul(request)
         ensure_hermes_gateway(token, model)
         ensure_hermes_session(session_id, model)
         quoted = urllib.parse.quote(session_id, safe="")

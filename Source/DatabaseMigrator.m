@@ -158,5 +158,46 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     version = 4;
   }
 
+  if (version < 5 && targetVersion >= 5) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql =
+        "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT '🤖';"
+        "ALTER TABLE agents ADD COLUMN soul TEXT NOT NULL DEFAULT '';"
+        "ALTER TABLE agents ADD COLUMN folder_paths TEXT NOT NULL DEFAULT '[]';"
+        "CREATE UNIQUE INDEX agents_vm_directory ON agents(vm_directory);";
+      return [connection executeSQL:sql error:transactionError] &&
+        TLDatabaseSetSchemaVersion(connection, 5, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 5;
+  }
+
+  if (version < 6 && targetVersion >= 6) {
+    // Earlier builds used version 5 for either attachments or profiles. Complete
+    // the profile schema without replacing either variant's existing data.
+    if (!TLDatabaseHasCompatibleVersion5Schema(connection)) {
+      [connection setError:error message:@"Unrecognized version-5 database schema."];
+      return NO;
+    }
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(agents)" error:transactionError];
+      if (!columns) return NO;
+      NSMutableSet *names = [NSMutableSet set];
+      int result;
+      while ((result = [columns step]) == SQLITE_ROW) [names addObject:[columns stringAtColumn:1]];
+      if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
+      NSDictionary *defaults = @{@"avatar": @"'🤖'", @"soul": @"''", @"folder_paths": @"'[]'"};
+      for (NSString *name in defaults) {
+        if ([names containsObject:name]) continue;
+        NSString *sql = [NSString stringWithFormat:@"ALTER TABLE agents ADD COLUMN %@ TEXT NOT NULL DEFAULT %@", name, defaults[name]];
+        if (![connection executeSQL:sql.UTF8String error:transactionError]) return NO;
+      }
+      return [connection executeSQL:"CREATE UNIQUE INDEX IF NOT EXISTS agents_vm_directory ON agents(vm_directory)" error:transactionError] &&
+        TLDatabaseSetSchemaVersion(connection, 6, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 6;
+  }
+
   return version == targetVersion;
 }
