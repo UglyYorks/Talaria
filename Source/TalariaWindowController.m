@@ -1736,13 +1736,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   historyItem.image = [self symbolImageNamed:@"clock" accessibilityDescription:@"History"];
   [menu addItem:historyItem];
 
-  NSMenuItem *agentsItem = [[NSMenuItem alloc] initWithTitle:@"Agents"
-                                                      action:@selector(showAgents:)
-                                               keyEquivalent:@""];
-  agentsItem.target = self;
-  agentsItem.image = [self symbolImageNamed:@"cpu" accessibilityDescription:@"Agents"];
-  [menu addItem:agentsItem];
-
   NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:@"Debug"
                                                      action:@selector(showDebug:)
                                               keyEquivalent:@""];
