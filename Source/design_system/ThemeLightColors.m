@@ -62,6 +62,7 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.markdownTableHeaderSurface = palette.gray100;
   palette.markdownTableAlternateRowSurface = TLColorWithAlpha(palette.markdownTableHeaderSurface, 0.40);
   palette.markdownLinkText = palette.blue600;
+  palette.chatInputBackdrop = TLColorWithAlpha(palette.tabBackground, 0.90);
   palette.composerBorder = TLColorWithAlpha(palette.gray400, 0.38);
   palette.composerSurface = palette.gray50;
   palette.suggestionBackdropTint = TLColorWithAlpha(palette.tabBackground, 0.70);

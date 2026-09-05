@@ -102,6 +102,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic, strong) NSColor *markdownLinkText;
 @property (nonatomic, strong) NSColor *composerBorder;
 @property (nonatomic, strong) NSColor *composerSurface;
+@property (nonatomic, strong) NSColor *chatInputBackdrop;
 @property (nonatomic, strong) NSColor *suggestionBackdropTint;
 @property (nonatomic, strong) NSColor *slashCommandItemSurface;
 @property (nonatomic, strong) NSColor *slashCommandItemText;

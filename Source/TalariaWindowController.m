@@ -1377,6 +1377,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (NSView *)buildMessageInput {
   self.messageInput = [[TLGlassMessageInput alloc] init];
+  ((TLGlassMessageInput *)self.messageInput).usesChatBackdrop = YES;
   self.messageInput.palette = self.palette;
   self.promptTextView = self.messageInput.textView;
   self.promptTextView.delegate = self;

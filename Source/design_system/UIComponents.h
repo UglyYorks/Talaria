@@ -46,6 +46,7 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 @end
 
 @interface TLGlassMessageInput : TLMessageInput
+@property (nonatomic) BOOL usesChatBackdrop;
 @end
 
 @interface TLBrowserAddressInput : TLGlassMessageInput <NSTextViewDelegate>

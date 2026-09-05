@@ -2406,10 +2406,19 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   [self applyGlassPalette];
 }
 
+- (void)setUsesChatBackdrop:(BOOL)usesChatBackdrop {
+  _usesChatBackdrop = usesChatBackdrop;
+  [self applyGlassPalette];
+}
+
 - (void)applyGlassPalette {
   TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
   glass.palette = self.palette;
   glass.cornerRadius = self.palette.messageInputCornerRadius;
+  glass.wantsLayer = YES;
+  glass.layer.cornerRadius = self.palette.messageInputCornerRadius;
+  glass.layer.masksToBounds = YES;
+  glass.layer.backgroundColor = TLCGColor(self.usesChatBackdrop ? self.palette.chatInputBackdrop : self.palette.transparentSurface);
   self.sendButtonSize = self.palette.messageInputSendButtonSize;
   self.sendButtonInset = self.palette.space4;
   self.sendButton.solidSurfaceColor = self.palette.messageInputSendButtonSurface;
