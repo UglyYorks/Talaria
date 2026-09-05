@@ -8,8 +8,9 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).parents[1] / "AgentRuntime"))
 
-spec = importlib.util.spec_from_file_location("agent_runtime", Path(__file__).parents[1] / "AgentRuntime/openrouter_agent.py")
+spec = importlib.util.spec_from_file_location("agent_runtime", Path(__file__).parents[1] / "AgentRuntime/talaria_agent.py")
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
 
@@ -40,7 +41,7 @@ class AgentSoulTests(unittest.TestCase):
             def gateway(token, model):
                 self.assertEqual(path.read_text(), "Updated soul 🦊")
                 raise RuntimeError("stop before network")
-            with patch.object(runtime, "ensure_hermes_gateway", side_effect=gateway):
+            with patch.object(runtime, "tui_gateway", side_effect=gateway):
                 runtime.stream_hermes_session({"request_id": "r", "session_id": "new-chat", "token": "test",
                     "model": "test", "prompt": "Hello", "soul": "Updated soul 🦊"}, io.BytesIO())
             self.assertEqual(list(Path(directory).glob(".SOUL-*")), [])

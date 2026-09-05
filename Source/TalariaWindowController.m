@@ -211,6 +211,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic) BOOL renderingSlashCommands;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *hermesCommands;
 @property (nonatomic, strong) NSDate *hermesCommandsFetchedAt;
+@property (nonatomic) NSInteger hermesCommandsAgentID;
 @property (nonatomic) BOOL loadingHermesCommands;
 @property (nonatomic, copy) NSString *hermesCommandsRequestID;
 @property (nonatomic, copy) NSString *hermesCommandsError;
@@ -2132,6 +2133,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)prepareHermesCommands {
+  self.hermesCommandsAgentID = self.database.currentAgentID;
   self.hermesCommandsRequestID = nil;
   self.loadingHermesCommands = NO;
   self.hermesCommandsFetchedAt = nil;
@@ -3017,6 +3019,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.agents = [loadedAgents mutableCopy];
+  if (self.hermesCommandsAgentID != self.database.currentAgentID) {
+    [self prepareHermesCommands];
+    [self updateSlashCommandList];
+  }
   [self rebuildSidebarAgents];
   [self.agentsTableView reloadData];
   if (selectedAgentID > 0) {

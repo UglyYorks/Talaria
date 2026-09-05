@@ -814,6 +814,13 @@ static void TestHermesCommandCache(void) {
   TLAssertEqualObjects(orchestrator.cachedHermesCommands, original, @"discovered commands and aliases survive app restart");
   TLAssertTrue(vm.startCount == boots && client.catalogueRequestCount == requests, @"cached suggestions do not wait for Hermes");
 
+  TLAgentRecord *other = [orchestrator createAgentWithName:@"Other cache" error:nil];
+  [database setCurrentAgentID:other.agentID error:nil];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"selected agent does not inherit another agent catalogue");
+  [database setCurrentAgentID:agent.agentID error:nil];
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, original, @"cache follows selected agent instead of newest agent");
+  [orchestrator deleteAgentWithID:other.agentID error:nil];
+
   client.deferCatalogue = YES;
   __block NSError *refreshError = nil;
   [orchestrator fetchHermesCommandsWithToken:@"token" model:@"model" completion:^(NSDictionary *catalogue, NSError *error) { refreshError = error; }];

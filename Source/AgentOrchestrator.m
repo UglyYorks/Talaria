@@ -400,7 +400,8 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 - (NSDictionary *)cachedHermesCommands {
   // The file belongs to one agent, so reinstalling/deleting it cannot leak another
   // installation's skills or custom commands into the picker. Cache only metadata.
-  TLAgentRecord *agent = [self.database listAgents:nil].lastObject;
+  NSArray<TLAgentRecord *> *agents = [self.database listAgents:nil];
+  TLAgentRecord *agent = [self.database agentWithID:self.database.currentAgentID error:nil] ?: agents.lastObject;
   if (!agent) return nil;
   NSData *data = [NSData dataWithContentsOfURL:TLHermesCommandCacheURL(agent)];
   if (!data) return nil;

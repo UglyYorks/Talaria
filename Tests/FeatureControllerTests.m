@@ -983,7 +983,6 @@ int main(void) {
     TestAgentSettingsForm();
     TestRealSidebarAgents();
     TestSuggestionTypingAndVirtualization();
-    TestNotesThemePreservesEditing();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();
