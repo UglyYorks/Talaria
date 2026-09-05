@@ -27,6 +27,7 @@
 @property (nonatomic, weak) TLWorkspaceTabsController *controller;
 @property (nonatomic) NSRect contentDragBounds;
 @property (nonatomic) NSRect newTabButtonBounds;
+@property (nonatomic) CGFloat contentCornerRadius;
 @end
 
 @implementation TLTabContextMenuHarness
@@ -89,6 +90,7 @@
 }
 
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller firstTabEdgeCornerRadiusDidChange:(CGFloat)cornerRadius {
+  self.contentCornerRadius = cornerRadius;
 }
 
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index {
@@ -459,8 +461,12 @@ static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette
     CGFloat visibleMaskWidth = visibleRemovalMask.path
       ? CGRectGetWidth(CGPathGetBoundingBox(visibleRemovalMask.path))
       : NSWidth(removedContentContainer.bounds);
-    if (visibleMaskWidth > visibleRemovalWidth + 0.5) {
-      NSLog(@"FAIL closing tab content mask does not stay behind the moving layout boundary");
+    // AppKit layout and Core Animation presentation snapshots can be one refresh
+    // apart; scale the sampling tolerance to the transition speed.
+    CGFloat samplingTolerance = NSWidth(removedFrame) * 2.0 *
+      ((1.0 / 60.0) / palette.tabLifecycleTransitionDuration);
+    if (visibleMaskWidth > visibleRemovalWidth + samplingTolerance) {
+      NSLog(@"FAIL closing tab content mask does not stay behind the moving layout boundary: mask=%g slot=%g", visibleMaskWidth, visibleRemovalWidth);
       exit(1);
     }
     if (fabs(NSWidth(removedTabView.frame) - NSWidth(removedFrame)) > 0.001) {
@@ -476,13 +482,8 @@ static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette
       NSLog(@"FAIL closing tab content can escape its contracting layout slot");
       exit(1);
     }
-    CGFloat twoFrameTrackingTolerance = NSWidth(removedFrame) *
-      ((2.0 / 60.0) / palette.tabLifecycleTransitionDuration) + 2.0;
-    if (fabs(NSMinX(selectionView.selectionFrame) - CGRectGetMinX(visibleSurvivingLayer.frame)) >
-        twoFrameTrackingTolerance) {
-      NSLog(@"FAIL selected background does not track the moving fallback tab");
-      exit(1);
-    }
+    AssertClose(NSMinX(selectionView.selectionFrame), NSMinX(removedFrame),
+                @"selected background stays in the closing slot while the next tab moves into it");
     if (!CATransform3DIsIdentity(removedTabView.layer.transform)) {
       NSLog(@"FAIL removal animation transforms the closing tab layer");
       exit(1);
@@ -609,6 +610,32 @@ static void TestDraggedTabOpensInsertionGap(TLThemePalette *palette) {
     NSLog(@"FAIL normal separator visibility is not restored after dropping");
     exit(1);
   }
+  CGFloat firstSlotTranslation = [controller chromeTabView:draggedTab
+                        constrainedHorizontalTranslationForEvent:event
+                                             proposedTranslation:-CGFLOAT_MAX];
+  [draggedTab setValue:@(firstSlotTranslation) forKey:@"dragTranslationX"];
+  [controller chromeTabView:draggedTab didDragWithEvent:event];
+  AssertClose([[controller valueForKey:@"draggedCurrentIndex"] unsignedIntegerValue], 0,
+              @"second tab can enter the first slot at the left drag boundary");
+  AssertClose(tabs[0].reorderTranslationX, 100.0, @"first tab moves aside for incoming tab");
+  AssertClose(draggedTab.leadingFlareOutset, palette.space0,
+              @"incoming tab connects its leading edge to the content at the first slot");
+  AssertClose(harness.contentCornerRadius, palette.space0,
+              @"content corner connects when the second tab reaches the left edge");
+  [controller chromeTabViewDidEndDragging:draggedTab];
+  draggedTab.active = NO;
+  TLChromeTabView *lastTab = tabs.lastObject;
+  lastTab.active = YES;
+  [lastTab setValue:@(-300.0) forKey:@"dragTranslationX"];
+  [controller chromeTabView:lastTab didDragWithEvent:event];
+  AssertClose([[controller valueForKey:@"draggedCurrentIndex"] unsignedIntegerValue], 0,
+              @"last tab can also enter the first slot");
+  AssertClose(harness.contentCornerRadius, palette.space0, @"last tab connects the content corner");
+  [lastTab setValue:@(-275.0) forKey:@"dragTranslationX"];
+  [controller chromeTabView:lastTab didDragWithEvent:event];
+  AssertClose(harness.contentCornerRadius, palette.space5, @"content corner restores away from the edge");
+  AssertClose(lastTab.leadingFlareOutset, palette.tabFlareRadius, @"tab flare restores away from the edge");
+  [controller chromeTabViewDidEndDragging:lastTab];
 }
 
 static void TestInactiveFirstTabPadding(TLThemePalette *palette) {

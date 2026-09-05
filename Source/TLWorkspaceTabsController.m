@@ -8,6 +8,7 @@
 @property (nonatomic, strong) NSLayoutConstraint *widthConstraint;
 @property (nonatomic) NSUInteger arrangedIndex;
 @property (nonatomic) NSRect originalTabFrame;
+@property (nonatomic, strong) TLChromeTabView *incomingSelectedTab;
 @end
 
 @implementation TLTabRemovalTransition
@@ -154,6 +155,12 @@
       [transition.placeholderView.heightAnchor constraintEqualToConstant:self.palette.tabHeight],
     ]];
     transition.arrangedIndex = previousIndex;
+    if (removedTabView == previousActiveView && previousIndex + 1 < previousTabViews.count) {
+      TLChromeTabView *incomingTab = previousTabViews[previousIndex + 1];
+      if ([self.tabViews containsObject:incomingTab]) {
+        transition.incomingSelectedTab = incomingTab;
+      }
+    }
     NSValue *previousFrame = [previousFrames objectForKey:removedTabView];
     if (previousFrame) {
       transition.widthConstraint.constant = NSWidth(previousFrame.rectValue);
@@ -299,6 +306,11 @@
       }
       CALayer *visibleTabLayer = activeTabView.layer.presentationLayer ?: activeTabView.layer;
       NSRect visibleFrame = NSRectFromCGRect(visibleTabLayer.frame);
+      for (TLTabRemovalTransition *transition in strongSelf.removalTransitions) {
+        if (transition.incomingSelectedTab == activeTabView) {
+          visibleFrame.origin.x = NSMinX(transition.originalTabFrame);
+        }
+      }
       strongSelf.selectionView.frame = strongSelf.tabStack.bounds;
       [strongSelf.selectionView setSelectionFrame:visibleFrame
                                 leadingFlareOutset:activeTabView.leadingFlareOutset
@@ -633,6 +645,11 @@
   }
 
   NSRect targetFrame = activeTabView.frame;
+  for (TLTabRemovalTransition *transition in self.removalTransitions) {
+    if (transition.incomingSelectedTab == activeTabView) {
+      targetFrame.origin.x = NSMinX(transition.originalTabFrame);
+    }
+  }
   NSRect startFrame = self.hasPendingSelectionAnimation
     ? self.pendingSelectionStartFrame
     : [self visibleSelectionFrameWithFallback:targetFrame];
@@ -759,13 +776,12 @@ constrainedHorizontalTranslationForEvent:(NSEvent *)event
 
   CGFloat draggedMidX = NSMidX(draggedTabView.frame) + draggedTabView.dragTranslationX;
   NSUInteger targetIndex = 0;
-  for (TLChromeTabView *view in self.tabViews) {
-    if (view == draggedTabView) {
-      continue;
-    }
-
-    if (draggedMidX >= NSMidX(view.frame)) {
-      targetIndex += 1;
+  CGFloat nearestDistance = CGFLOAT_MAX;
+  for (NSUInteger index = 0; index < self.tabViews.count; index += 1) {
+    CGFloat distance = fabs(draggedMidX - NSMidX(self.tabViews[index].frame));
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      targetIndex = index;
     }
   }
 
