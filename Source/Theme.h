@@ -315,6 +315,7 @@ CGColorRef TLCGColor(NSColor *color);
 
 @property (nonatomic, strong) NSFont *agentListAvatarFont;
 @property (nonatomic, strong) NSFont *bodyFont;
+@property (nonatomic, strong) NSFont *suggestionCommandFont;
 @property (nonatomic, strong) NSFont *messageBodyFont;
 @property (nonatomic, strong) NSFont *smallFont;
 @property (nonatomic, strong) NSFont *labelFont;

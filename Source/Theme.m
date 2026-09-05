@@ -257,6 +257,7 @@ CGColorRef TLCGColor(NSColor *color) {
 
   self.agentListAvatarFont = [NSFont systemFontOfSize:28.0 weight:NSFontWeightRegular];
   self.bodyFont = [NSFont systemFontOfSize:13.0 weight:NSFontWeightRegular];
+  self.suggestionCommandFont = [NSFont systemFontOfSize:self.bodyFont.pointSize weight:NSFontWeightBold];
   self.messageBodyFont = [NSFont systemFontOfSize:15.0 weight:NSFontWeightRegular];
   self.smallFont = [NSFont systemFontOfSize:11.8 weight:NSFontWeightRegular];
   self.labelFont = [NSFont systemFontOfSize:12.4 weight:NSFontWeightSemibold];

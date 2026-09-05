@@ -743,7 +743,7 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
     : self.palette.slashCommandItemSurface);
   self.layer.cornerRadius = self.palette.slashCommandListCornerRadius;
   self.layer.masksToBounds = YES;
-  self.commandLabel.font = self.palette.bodyFont;
+  self.commandLabel.font = self.palette.suggestionCommandFont;
   self.descriptionLabel.font = self.palette.bodyFont;
   self.descriptionLabel.textColor = self.palette.textMuted;
   self.descriptionLeadingConstraint.constant = self.commandDescription.length ? self.palette.space6 : self.palette.space0;
