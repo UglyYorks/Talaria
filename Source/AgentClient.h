@@ -30,6 +30,10 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLOpenRouterModel *> *_Null
                            completion:(TLAgentModelCatalogueHandler)completion;
 
 @optional
+- (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent
+                              token:(NSString *)token
+                              model:(NSString *)model
+                         completion:(void (^)(NSDictionary *_Nullable catalogue, NSError *_Nullable error))completion;
 - (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent
                            requestID:(NSString *)requestID
                            sessionID:(NSString *)sessionID

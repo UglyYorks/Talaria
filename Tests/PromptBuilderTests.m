@@ -921,6 +921,13 @@ static void TestAssistantTurnRunner(void) {
   TLStoredChatMessage *copiedMessage = [loadedChat.messages[0] copy];
   TLAssertTrue(copiedMessage.messageID == loadedChat.messages[0].messageID, @"loaded message copies preserve identity");
 
+  runner.referenceContext = @"Unrelated page context";
+  [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
+                nextPrompt:@"/model provider/model with arguments" updateHandler:nil completionHandler:nil error:&error];
+  TLAssertEqualObjects(client.capturedMessages[0].content, @"/model provider/model with arguments",
+                       @"Hermes receives raw slash commands without injected reference context");
+  runner.referenceContext = nil;
+
   NSMutableArray<TLChatMessage *> *validationMessages = [NSMutableArray array];
   NSError *validationError = nil;
   BOOL validationStarted = [runner startTurnWithChat:nil

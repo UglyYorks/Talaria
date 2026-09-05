@@ -259,6 +259,31 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   return self;
 }
 
+- (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent
+                              token:(NSString *)token
+                              model:(NSString *)model
+                         completion:(void (^)(NSDictionary *, NSError *))completion {
+  NSString *requestID = NSUUID.UUID.UUIDString;
+  NSMutableString *response = [NSMutableString string];
+  [self startWorkerWithAgent:agent
+                    payload:@{@"operation": @"hermes_commands", @"request_id": requestID,
+                              @"token": token ?: @"", @"model": model ?: @""}
+                  operation:@"hermes_commands"
+                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
+    if ([deltaID isEqualToString:requestID]) [response appendString:text];
+  } streamCompletion:^(NSError *error) {
+    if (error) { completion(nil, error); return; }
+    NSError *parseError = nil;
+    id catalogue = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
+                                                 options:0 error:&parseError];
+    if (![catalogue isKindOfClass:NSDictionary.class] || ![catalogue[@"pairs"] isKindOfClass:NSArray.class]) {
+      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned an invalid command catalogue."));
+      return;
+    }
+    completion(catalogue, nil);
+  } modelCompletion:nil];
+}
+
 - (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent
                            requestID:(NSString *)requestID
                            sessionID:(NSString *)sessionID

@@ -8,7 +8,7 @@ APP_ENTITLEMENTS := Entitlements.plist
 # Override with an Apple Development identity when one becomes available.
 CODE_SIGN_IDENTITY ?= Talaria Local Development
 SIGNING_CONFIG := $(BUILD_DIR)/.signing-identity
-AGENT_RUNTIME_FILES := $(shell find AgentRuntime -type f 2>/dev/null)
+AGENT_RUNTIME_FILES := $(wildcard AgentRuntime/*.py) AgentRuntime/talaria-init
 AGENT_LINUX_RUNTIME_DIR := $(BUILD_DIR)/agent-runtime/linux-arm64
 AGENT_LINUX_RUNTIME_STAMP := $(AGENT_LINUX_RUNTIME_DIR)/.download.stamp
 AGENT_LINUX_KERNEL_ZBOOT := $(AGENT_LINUX_RUNTIME_DIR)/vmlinuz-virt
@@ -204,7 +204,7 @@ $(CEF_ARCHIVE_PATH):
 	  exit 1; \
 	fi
 
-$(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py AgentRuntime/openrouter_agent.py AgentRuntime/talaria-init
+$(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILES)
 	mkdir -p "$(AGENT_LINUX_RUNTIME_DIR)"
 	curl -fL -o "$(AGENT_LINUX_KERNEL_ZBOOT).tmp" "$(ALPINE_NETBOOT_URL)/vmlinuz-virt"
 	mv "$(AGENT_LINUX_KERNEL_ZBOOT).tmp" "$(AGENT_LINUX_KERNEL_ZBOOT)"
@@ -244,7 +244,7 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py AgentRuntime/openrou
 	test -s "$(AGENT_LINUX_INITRD)"
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
-test: audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests
+test: test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests
 	"$(TEST_EXECUTABLE)"
 	"$(TAB_LAYOUT_TEST_EXECUTABLE)"
 	"$(NOTCH_VIEW_TEST_EXECUTABLE)"
@@ -307,3 +307,7 @@ $(BUILD_DIR)/TransitionCoordinatorTests: Source/design_system/TLTransitionCoordi
 
 $(BUILD_DIR)/FeatureControllerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/FeatureControllerTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
+
+.PHONY: test-hermes-gateway
+test-hermes-gateway:
+	python3 -B -m unittest discover -s Tests -p "test_*.py"

@@ -27,6 +27,8 @@ static NSString *TLAgentOrchestratorTrim(NSString *value) {
 }
 
 static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
+  NSString *rawInput = messages.lastObject.content ?: @"";
+  if ([rawInput hasPrefix:@"/"]) { return rawInput; }
   NSMutableArray<NSString *> *parts = [NSMutableArray array];
   for (TLChatMessage *message in messages) {
     if ([message.role isEqualToString:TLRoleSystem] && message.content.length > 0) {
@@ -361,6 +363,19 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
                                         output:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
       if (kind == TLAgentStreamDeltaKindContent && output) output(text);
     } completion:completion];
+  }];
+}
+
+- (void)fetchHermesCommandsWithToken:(NSString *)token
+                               model:(NSString *)model
+                          completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(fetchHermesCommandsWithAgent:token:model:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to discover Hermes commands."));
+      return;
+    }
+    [self.agentClient fetchHermesCommandsWithAgent:agent token:token model:model completion:completion];
   }];
 }
 

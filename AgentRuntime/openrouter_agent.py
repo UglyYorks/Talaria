@@ -14,14 +14,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from hermes_gateway import HermesGateway
+
 
 CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODELS_URL = "https://openrouter.ai/api/v1/models?output_modalities=text"
 HERMES_HOME = Path("/workspace/.hermes")
 HERMES_INSTALL_DIR = HERMES_HOME / "hermes-agent"
-HERMES_API_URL = "http://127.0.0.1:8642"
-HERMES_API_KEY = "talaria-vsock-only"
-_gateway_process = None
+_tui_token = None
+_tui_gateway = None
 _gateway_lock = threading.Lock()
 _shell_directories = {}
 _shell_lock = threading.Lock()
@@ -66,10 +67,6 @@ def hermes_environment(token="", model=""):
     environment.update({
         "HOME": "/workspace",
         "HERMES_HOME": str(HERMES_HOME),
-        "API_SERVER_ENABLED": "true",
-        "API_SERVER_KEY": HERMES_API_KEY,
-        "API_SERVER_HOST": "127.0.0.1",
-        "API_SERVER_PORT": "8642",
         "HERMES_INFERENCE_PROVIDER": "openrouter",
     })
     if trim(token):
@@ -228,90 +225,38 @@ def run_shell_command(request, output=None):
     emit({"type": "complete"}, output)
 
 
-def configure_hermes(token, model):
-    HERMES_HOME.mkdir(parents=True, exist_ok=True)
-    safe_token = trim(token).replace("\n", "").replace("\r", "")
-    safe_model = trim(model).replace("\n", "").replace("\r", "")
-    env_path = HERMES_HOME / ".env"
-    env_path.write_text(
-        f"OPENROUTER_API_KEY={safe_token}\n"
-        f"HERMES_INFERENCE_PROVIDER=openrouter\n"
-        f"HERMES_INFERENCE_MODEL={safe_model}\n"
-        f"API_SERVER_ENABLED=true\n"
-        f"API_SERVER_KEY={HERMES_API_KEY}\n"
-        f"API_SERVER_HOST=127.0.0.1\n"
-        f"API_SERVER_PORT=8642\n",
-        encoding="utf-8",
-    )
-
-
-def api_request(path, method="GET", body=None, timeout=60):
-    payload = None if body is None else json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(
-        HERMES_API_URL + path,
-        data=payload,
-        headers={"Authorization": f"Bearer {HERMES_API_KEY}", "Content-Type": "application/json"},
-        method=method,
-    )
-    return urllib.request.urlopen(request, timeout=timeout)
-
-
-def ensure_hermes_gateway(token, model):
-    global _gateway_process
-    executable = hermes_executable()
-    if not executable:
-        raise RuntimeError("Hermes Agent is not installed. Start onboarding from Settings.")
-    configure_hermes(token, model)
-    try:
-        with api_request("/health", timeout=2) as response:
-            if response.status == 200:
-                return
-    except (OSError, urllib.error.URLError):
-        pass
-
+def tui_gateway(token="", model=""):
+    global _tui_gateway, _tui_token
     with _gateway_lock:
-        try:
-            with api_request("/health", timeout=2) as response:
-                if response.status == 200:
-                    return
-        except (OSError, urllib.error.URLError):
-            pass
-        log_path = HERMES_HOME / "talaria-gateway.log"
-        log_file = log_path.open("ab")
-        _gateway_process = subprocess.Popen(
-            [executable, "gateway", "run"],
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            env=hermes_environment(token, model),
-            cwd="/workspace",
-        )
-        deadline = time.time() + 45
-        while time.time() < deadline:
-            if _gateway_process.poll() is not None:
-                raise RuntimeError(f"Hermes gateway exited. See {log_path}.")
+        if _tui_gateway is not None and token and token != _tui_token:
+            if _tui_gateway.listeners:
+                raise RuntimeError("Finish the active Hermes turn before changing credentials.")
+            _tui_gateway.process.terminate()
             try:
-                with api_request("/health", timeout=2) as response:
-                    if response.status == 200:
-                        return
-            except (OSError, urllib.error.URLError):
-                time.sleep(0.5)
-        raise RuntimeError("Timed out waiting for the Hermes gateway.")
+                _tui_gateway.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _tui_gateway.process.kill()
+                _tui_gateway.process.wait()
+            _tui_gateway = None
+        if _tui_gateway is None or _tui_gateway.process.poll() is not None:
+            executable = hermes_executable()
+            if not executable:
+                raise RuntimeError("Hermes Agent is not installed. Start onboarding from Settings.")
+            HERMES_HOME.mkdir(parents=True, exist_ok=True)
+            python = Path(executable).resolve().parent / "python"
+            _tui_gateway = HermesGateway(python, hermes_environment(token, model), HERMES_HOME)
+            _tui_token = token
+        return _tui_gateway
 
 
-def ensure_hermes_session(session_id, model):
-    quoted = urllib.parse.quote(session_id, safe="")
+def fetch_hermes_commands(request, output=None):
     try:
-        with api_request(f"/api/sessions/{quoted}", timeout=5):
-            return
-    except urllib.error.HTTPError as exc:
-        if exc.code != 404:
-            raise
-    with api_request("/api/sessions", method="POST", body={
-        "id": session_id,
-        "source": "talaria",
-        "model": model,
-    }, timeout=10):
-        return
+        catalogue = tui_gateway(trim(request.get("token")), trim(request.get("model"))).catalog()
+        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
+              "text": json.dumps(catalogue)}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not load Hermes commands: {exc}", output)
 
 
 def stream_hermes_session(request, output=None):
@@ -325,40 +270,11 @@ def stream_hermes_session(request, output=None):
         return
     try:
         save_agent_soul(request)
-        ensure_hermes_gateway(token, model)
-        ensure_hermes_session(session_id, model)
-        quoted = urllib.parse.quote(session_id, safe="")
-        with api_request(f"/api/sessions/{quoted}/chat/stream", method="POST", body={
-            "input": prompt,
-            "model": model,
-            "provider": "openrouter",
-        }, timeout=600) as response:
-            event_name = ""
-            for raw_line in response:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if line.startswith("event:"):
-                    event_name = line[6:].strip()
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                payload = json.loads(line[5:].strip())
-                if event_name == "assistant.delta":
-                    text = payload.get("delta")
-                    if isinstance(text, str) and text:
-                        emit({"type": "delta", "request_id": request_id, "kind": "content", "text": text}, output)
-                elif event_name == "tool.progress" and payload.get("tool_name") == "_thinking":
-                    text = payload.get("delta") or payload.get("preview")
-                    if isinstance(text, str) and text:
-                        emit({"type": "delta", "request_id": request_id, "kind": "thinking", "text": text}, output)
-                elif event_name == "run.completed":
-                    emit({"type": "complete"}, output)
-                    return
-                elif event_name == "error":
-                    error(payload.get("message") or "Hermes session failed.", output)
-                    return
-    except urllib.error.HTTPError as exc:
-        error(f"Hermes returned HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}", output)
-    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        gateway = tui_gateway(token, model)
+        gateway.run(session_id, model, prompt, lambda kind, text: emit(
+            {"type": "delta", "request_id": request_id, "kind": kind, "text": text}, output))
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
         error(f"Could not run the Hermes session: {exc}", output)
 
 
@@ -540,6 +456,9 @@ def handle_request(request, output=None):
         return 0
     if operation == "install_hermes":
         install_hermes(request, output)
+        return 0
+    if operation == "hermes_commands":
+        fetch_hermes_commands(request, output)
         return 0
     if operation == "hermes_session_chat":
         stream_hermes_session(request, output)

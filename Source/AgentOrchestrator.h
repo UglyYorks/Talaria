@@ -46,6 +46,9 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                                          command:(NSString *)command
                                           output:(void (^)(NSString *text))output
                                       completion:(TLAgentStreamCompletionHandler)completion;
+- (void)fetchHermesCommandsWithToken:(NSString *)token
+                               model:(NSString *)model
+                          completion:(void (^)(NSDictionary *_Nullable catalogue, NSError *_Nullable error))completion;
 - (void)fetchModelCatalogueWithToken:(NSString *)token
                            completion:(TLAgentModelCatalogueHandler)completion;
 

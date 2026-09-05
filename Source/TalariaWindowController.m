@@ -205,6 +205,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) TLButton *sidebarToggleButton;
 @property (nonatomic, strong) TLGlassPaneView *slashCommandListView;
 @property (nonatomic, strong) NSStackView *slashCommandListStack;
+@property (nonatomic, strong) NSScrollView *slashCommandScrollView;
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *hermesCommands;
+@property (nonatomic, strong) NSDate *hermesCommandsFetchedAt;
+@property (nonatomic) BOOL loadingHermesCommands;
+@property (nonatomic, copy) NSString *hermesCommandsError;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *visibleSlashCommands;
 @property (nonatomic, copy) NSArray<TLSlashCommandItemView *> *slashCommandRows;
 @property (nonatomic) NSInteger selectedSlashCommandIndex;
@@ -240,7 +245,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)setSelectedSlashCommandIndexAndUpdateRows:(NSInteger)selectedIndex;
 - (BOOL)moveSlashCommandSelectionByOffset:(NSInteger)offset;
 - (BOOL)performSelectedSlashCommand;
-- (BOOL)performSlashCommandIfNeededForPrompt:(NSString *)prompt;
 - (void)updateSlashCommandList;
 - (void)openAppFromOnboarding;
 - (void)revealMainWindowFromOnboarding;
@@ -1991,7 +1995,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSString *model = [self.settings.selectedModel stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSString *nextPrompt = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
 
-  if (self.isSending || nextPrompt.length == 0) {
+  if (nextPrompt.length == 0) return;
+  if (self.isSending) {
+    if (![nextPrompt hasPrefix:@"/"] || !self.activeChat || self.activeChat.chatID != self.sendingChatID) return;
+    self.promptTextView.string = @"";
+    [self updateControlStates];
+    __weak typeof(self) weakSelf = self;
+    [self.agentOrchestrator streamChatWithDefaultAgentRequestID:NSUUID.UUID.UUIDString
+                                                      sessionID:self.activeChat.hermesSessionID
+                                                          token:token model:model
+                                                       messages:@[[TLChatMessage messageWithRole:TLRoleUser content:nextPrompt thinking:nil]]
+                                                          delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {
+    } completion:^(NSError *error) {
+      if (error) [weakSelf presentErrorMessage:error.localizedDescription];
+    }];
     return;
   }
 
@@ -2002,10 +2019,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self updateMessageScrollInsets];
     [self updateSlashCommandList];
     [self openBrowserTabWithURL:browserURL];
-    return;
-  }
-
-  if (allowAutomaticRouting && [self performSlashCommandIfNeededForPrompt:nextPrompt]) {
     return;
   }
 
@@ -2066,6 +2079,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       [strongSelf updateMessageScrollInsets];
     }
 
+    if ([nextPrompt hasPrefix:@"/"]) strongSelf.hermesCommandsFetchedAt = nil;
     [strongSelf refreshChatsKeepingActiveSelection];
     if (result.generationStatus == TLAssistantTurnGenerationStatusSucceeded &&
         result.persistenceStatus == TLAssistantTurnPersistenceStatusSucceeded) {
@@ -2103,32 +2117,31 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)slashCommandsMatchingPrompt:(NSString *)prompt {
-  NSString *trimmedPrompt = [prompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (![trimmedPrompt hasPrefix:@"/"]) {
-    return [TLInputSuggestions webSuggestionsForInput:trimmedPrompt];
-  }
-  if ([trimmedPrompt rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) {
-    return @[];
-  }
-
-  NSArray<NSDictionary<NSString *, NSString *> *> *commands = [self availableSlashCommands];
-  NSString *query = trimmedPrompt.length > 1 ? [[trimmedPrompt substringFromIndex:1] lowercaseString] : @"";
-  if (query.length == 0) {
-    return commands;
-  }
-
-  NSMutableArray<NSDictionary<NSString *, NSString *> *> *matches = [NSMutableArray array];
-  for (NSDictionary<NSString *, NSString *> *command in commands) {
-    NSString *name = [[command[@"command"] substringFromIndex:1] lowercaseString];
-    if ([name hasPrefix:query]) {
-      [matches addObject:command];
-    }
-  }
-  return matches;
+  NSString *trimmed = [prompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (![trimmed hasPrefix:@"/"]) return [TLInputSuggestions webSuggestionsForInput:trimmed];
+  return [TLInputSuggestions slashCommandsForInput:prompt commands:[self availableSlashCommands]];
 }
 
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)availableSlashCommands {
-  return @[];
+  return self.hermesCommands ?: @[];
+}
+
+- (void)refreshHermesCommandsIfNeeded {
+  if (self.loadingHermesCommands || (self.hermesCommandsFetchedAt && -self.hermesCommandsFetchedAt.timeIntervalSinceNow < 60)) return;
+  self.loadingHermesCommands = YES;
+  self.hermesCommandsError = nil;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator fetchHermesCommandsWithToken:self.settings.openRouterToken ?: @""
+                                               model:self.settings.selectedModel ?: @""
+                                          completion:^(NSDictionary *catalogue, NSError *error) {
+    TalariaWindowController *strongSelf = weakSelf;
+    if (!strongSelf) return;
+    strongSelf.loadingHermesCommands = NO;
+    strongSelf.hermesCommandsFetchedAt = NSDate.date;
+    strongSelf.hermesCommandsError = error.localizedDescription;
+    if (catalogue) strongSelf.hermesCommands = [TLInputSuggestions hermesCommandsFromCatalogue:catalogue];
+    [strongSelf updateSlashCommandList];
+  }];
 }
 
 - (NSView *)buildSlashCommandListView {
@@ -2146,20 +2159,21 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.slashCommandListStack.alignment = NSLayoutAttributeLeading;
   self.slashCommandListStack.distribution = NSStackViewDistributionFill;
   self.slashCommandListStack.spacing = self.palette.space3;
-  [self.slashCommandListView addSubview:self.slashCommandListStack];
-
-  NSLayoutConstraint *stackTopConstraint = [self.slashCommandListStack.topAnchor constraintEqualToAnchor:self.slashCommandListView.topAnchor
-                                                                                                constant:self.palette.space2];
-  NSLayoutConstraint *stackBottomConstraint = [self.slashCommandListStack.bottomAnchor constraintEqualToAnchor:self.slashCommandListView.bottomAnchor
-                                                                                                      constant:-self.palette.space2];
-  stackTopConstraint.priority = NSLayoutPriorityDefaultLow;
-  stackBottomConstraint.priority = NSLayoutPriorityDefaultLow;
+  self.slashCommandScrollView = [[NSScrollView alloc] init];
+  self.slashCommandScrollView.translatesAutoresizingMaskIntoConstraints = NO;
+  self.slashCommandScrollView.drawsBackground = NO;
+  self.slashCommandScrollView.hasVerticalScroller = YES;
+  self.slashCommandScrollView.autohidesScrollers = YES;
+  self.slashCommandScrollView.documentView = self.slashCommandListStack;
+  [self.slashCommandListView addSubview:self.slashCommandScrollView];
   [NSLayoutConstraint activateConstraints:@[
-    [self.slashCommandListStack.leadingAnchor constraintEqualToAnchor:self.slashCommandListView.leadingAnchor constant:self.palette.space3],
-    [self.slashCommandListStack.trailingAnchor constraintEqualToAnchor:self.slashCommandListView.trailingAnchor constant:-self.palette.space3],
-    stackTopConstraint,
-    stackBottomConstraint,
-    self.slashCommandListHeightConstraint,
+    [self.slashCommandScrollView.leadingAnchor constraintEqualToAnchor:self.slashCommandListView.leadingAnchor constant:self.palette.space3],
+    [self.slashCommandScrollView.trailingAnchor constraintEqualToAnchor:self.slashCommandListView.trailingAnchor constant:-self.palette.space3],
+    [self.slashCommandScrollView.topAnchor constraintEqualToAnchor:self.slashCommandListView.topAnchor constant:self.palette.space2],
+    [self.slashCommandScrollView.bottomAnchor constraintEqualToAnchor:self.slashCommandListView.bottomAnchor constant:-self.palette.space2],
+    [self.slashCommandListStack.widthAnchor constraintEqualToAnchor:self.slashCommandScrollView.contentView.widthAnchor],
+    [self.slashCommandListStack.leadingAnchor constraintEqualToAnchor:self.slashCommandScrollView.contentView.leadingAnchor],
+    [self.slashCommandListStack.topAnchor constraintEqualToAnchor:self.slashCommandScrollView.contentView.topAnchor],
   ]];
 
   [self applySlashCommandListPalette];
@@ -2172,7 +2186,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   row.command = command[@"command"] ?: @"";
   row.commandDescription = command[@"description"] ?: @"";
   row.systemIconName = command[@"icon"] ?: @"text.bubble";
-  row.enabled = ![command[@"kind"] isEqualToString:@"web"] || command[@"URL"].length > 0;
+  row.enabled = ![command[@"kind"] isEqualToString:@"status"] &&
+    (![command[@"kind"] isEqualToString:@"web"] || command[@"URL"].length > 0);
   row.target = self;
   row.action = @selector(runSlashCommandFromItem:);
   row.toolTip = command[@"title"];
@@ -2245,8 +2260,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.selectedSlashCommandIndex = -1;
   [self applySlashCommandListPalette];
   self.slashCommandListWidthConstraint.constant = [self slashCommandListWidthForCommands:commands];
-  self.slashCommandListHeightConstraint.constant = height;
+  CGFloat availableHeight = MAX(rowHeight + padding * 2, NSHeight(self.rootView.bounds) * 0.4);
+  self.slashCommandListHeightConstraint.constant = MIN(height, MIN(availableHeight, rowHeight * 8 + padding * 9));
   self.slashCommandListView.hidden = NO;
+  [self.slashCommandListView layoutSubtreeIfNeeded];
+  if (self.slashCommandRows.count) [self.slashCommandListStack scrollRectToVisible:self.slashCommandRows.firstObject.frame];
   [self updateMessageScrollInsets];
 }
 
@@ -2261,6 +2279,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
                                                        BOOL *stop) {
     row.selected = (NSInteger)index == boundedIndex;
   }];
+  if (boundedIndex >= 0) [self.slashCommandListStack scrollRectToVisible:self.slashCommandRows[(NSUInteger)boundedIndex].frame];
 }
 
 - (BOOL)moveSlashCommandSelectionByOffset:(NSInteger)offset {
@@ -2294,6 +2313,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return NO;
   }
   NSDictionary<NSString *, NSString *> *suggestion = self.visibleSlashCommands[index];
+  if ([suggestion[@"kind"] isEqualToString:@"retry"]) {
+    self.hermesCommandsFetchedAt = nil;
+    [self refreshHermesCommandsIfNeeded];
+    [self updateSlashCommandList];
+    return YES;
+  }
   if (![[self slashCommandsMatchingPrompt:self.promptTextView.string ?: @""] containsObject:suggestion]) {
     return NO;
   }
@@ -2312,11 +2337,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self sendMessage:self allowAutomaticRouting:NO];
     return YES;
   }
-  return [self performSlashCommandIfNeededForPrompt:suggestion[@"command"]];
-}
-
-- (BOOL)performSlashCommandIfNeededForPrompt:(NSString *)prompt {
-  return NO;
+  NSString *command = suggestion[@"command"];
+  NSString *current = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if ([current caseInsensitiveCompare:command] == NSOrderedSame) {
+    [self hideSlashCommandList];
+    [self sendMessage:self allowAutomaticRouting:NO];
+  } else {
+    self.promptTextView.string = [command stringByAppendingString:@" "];
+    [self.messageInput recalculateHeight];
+    [self hideSlashCommandList];
+    [self.window makeFirstResponder:self.promptTextView];
+    [self.promptTextView setSelectedRange:NSMakeRange(self.promptTextView.string.length, 0)];
+    [self updateControlStates];
+  }
+  return YES;
 }
 
 - (void)addUrgentNotification {
@@ -2435,7 +2469,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  NSArray<NSDictionary<NSString *, NSString *> *> *commands = [self slashCommandsMatchingPrompt:self.promptTextView.string ?: @""];
+  NSString *input = self.promptTextView.string ?: @"";
+  BOOL slashInput = [[input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] hasPrefix:@"/"];
+  if (slashInput) [self refreshHermesCommandsIfNeeded];
+  NSArray<NSDictionary<NSString *, NSString *> *> *commands = [self slashCommandsMatchingPrompt:input];
+  if (slashInput && self.hermesCommands.count == 0 && (self.loadingHermesCommands || self.hermesCommandsError.length)) {
+    commands = @[@{@"kind": self.loadingHermesCommands ? @"status" : @"retry",
+                  @"command": self.loadingHermesCommands ? @"Loading Hermes commands…" : @"Retry loading commands",
+                  @"title": self.hermesCommandsError ?: @"Discovering commands from Hermes",
+                  @"description": self.hermesCommandsError ?: @"", @"icon": @"terminal"}];
+  }
   if (commands.count == 0) {
     [self hideSlashCommandList];
     return;
@@ -3322,6 +3365,21 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
+  if (commandSelector == @selector(cancelOperation:)) {
+    if (!self.slashCommandListView.hidden) { [self hideSlashCommandList]; return YES; }
+  }
+  if (commandSelector == @selector(insertTab:) && !self.slashCommandListView.hidden) {
+    if (self.selectedSlashCommandIndex < 0) [self moveSlashCommandSelectionByOffset:1];
+    NSInteger index = self.selectedSlashCommandIndex;
+    if (index >= 0 && [self.visibleSlashCommands[(NSUInteger)index][@"kind"] isEqualToString:@"hermes"]) {
+      self.promptTextView.string = [self.visibleSlashCommands[(NSUInteger)index][@"command"] stringByAppendingString:@" "];
+      [self.messageInput recalculateHeight];
+      [self.promptTextView setSelectedRange:NSMakeRange(self.promptTextView.string.length, 0)];
+      [self hideSlashCommandList];
+      [self updateControlStates];
+      return YES;
+    }
+  }
   if (commandSelector == @selector(moveUp:)) {
     return [self moveSlashCommandSelectionByOffset:-1];
   }
@@ -4719,7 +4777,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
-  self.sendButton.enabled = !self.isSending && chatActive && prompt.length > 0;
+  self.sendButton.enabled = chatActive && prompt.length > 0 && (!self.isSending || ([prompt hasPrefix:@"/"] && self.activeChat.chatID == self.sendingChatID));
   self.historyPanelController.enabled = YES;
   self.promptTextView.editable = chatActive;
   self.promptTextView.selectable = YES;

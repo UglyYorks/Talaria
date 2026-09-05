@@ -219,6 +219,7 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (void)updateWorkspaceMode;
 - (void)updateControlStates;
 - (void)startNewChatWithModel:(NSString *)model focus:(BOOL)focus;
+- (void)sendMessage:(id)sender allowAutomaticRouting:(BOOL)allowAutomaticRouting;
 - (void)workspaceTabsController:(nullable TLWorkspaceTabsController *)controller
                        moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index;
 @end
@@ -270,6 +271,17 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
   [controller updateControlStates];
   Check(prompt.editable && !send.enabled, @"draft editing stays available but concurrent sends remain blocked");
   Check([[controller valueForKey:@"isSending"] boolValue], @"navigation does not cancel the turn");
+  [controller setValue:@42 forKey:@"sendingChatID"];
+  prompt.string = @"/stop";
+  [controller updateControlStates];
+  Check(!send.enabled, @"slash controls stay disabled in a different conversation during a turn");
+  [controller sendMessage:nil allowAutomaticRouting:YES];
+  Check([prompt.string isEqualToString:@"/stop"], @"keyboard submission cannot route slash control to another chat");
+  TLChatRecord *origin = [[TLChatRecord alloc] init];
+  origin.chatID = 42;
+  [controller setValue:origin forKey:@"activeChat"];
+  [controller updateControlStates];
+  Check(send.enabled, @"returning to the running conversation enables slash controls");
 }
 
 /// Exercise the real state subscriptions and drag delegate without constructing app services or UI.
