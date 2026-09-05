@@ -102,7 +102,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return layout;
 }
 
-@interface TalariaWindowController () <NSWindowDelegate, NSTextViewDelegate, NSTableViewDataSource, NSTableViewDelegate, NSPopoverDelegate, TLHistoryPanelControllerDelegate, TLWorkspaceTabsControllerDelegate>
+@interface TalariaWindowController () <NSWindowDelegate, NSTextViewDelegate, NSTableViewDataSource, NSTableViewDelegate, TLHistoryPanelControllerDelegate, TLWorkspaceTabsControllerDelegate>
 
 @property (nonatomic, strong) TLDatabase *database;
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
@@ -171,7 +171,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackHeightConstraint;
-@property (nonatomic, strong) TLSidebarNavigationButton *taskStatusSidebarButton;
 @property (nonatomic, strong) TLSidebarUserButton *sidebarUserButton;
 @property (nonatomic, strong) TLSidebarResizeHandle *sidebarResizeHandle;
 @property (nonatomic) CGFloat sidebarPreferredWidth;
@@ -202,9 +201,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @property (nonatomic, strong) TLButton *createChatButton;
 @property (nonatomic, strong) TLButton *sidebarToggleButton;
-@property (nonatomic, strong) TLTaskStatusPillView *agentWalletButton;
-@property (nonatomic, strong) NSPopover *agentWalletPopover;
-@property (nonatomic, strong) NSPopover *taskStatusPopover;
 @property (nonatomic, strong) TLGlassPaneView *slashCommandListView;
 @property (nonatomic, strong) NSStackView *slashCommandListStack;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *visibleSlashCommands;
@@ -221,7 +217,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic) BOOL hasMainWindowFrameBeforeOnboarding;
 @property (nonatomic, strong) NSImage *mainWindowSnapshotBeforeOnboarding;
 @property (nonatomic, strong) NSWindow *mainWindowRevealOverlayWindow;
-@property (nonatomic) BOOL agentWalletCardDetailsVisible;
 @property (nonatomic, strong) TLGlassButton *sendButton;
 
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)fileURLs;
@@ -1079,26 +1074,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [actionStack setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                        forOrientation:NSLayoutConstraintOrientationVertical];
 
-  self.taskStatusSidebarButton = [self makeTaskStatusSidebarButton];
   self.sidebarUserButton = [self sidebarUserButtonWithDisplayName:@"Yaroslav"];
 
-  [actionStack addArrangedSubview:self.taskStatusSidebarButton];
-  [actionStack setCustomSpacing:self.palette.space0 afterView:self.taskStatusSidebarButton];
   [actionStack addArrangedSubview:self.sidebarUserButton];
   return actionStack;
-}
-
-- (TLSidebarNavigationButton *)sidebarActionButtonWithTitle:(NSString *)title
-                                             systemIconName:(NSString *)systemIconName
-                                                     action:(SEL)action {
-  TLSidebarNavigationButton *button = [[TLSidebarNavigationButton alloc] init];
-  button.palette = self.palette;
-  button.title = title;
-  button.systemIconName = systemIconName;
-  button.target = self;
-  button.action = action;
-  button.toolTip = title;
-  return button;
 }
 
 - (TLSidebarUserButton *)sidebarUserButtonWithDisplayName:(NSString *)displayName {
@@ -1257,15 +1236,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.workspaceTabsController.animationActivityChanged = ^(BOOL animating) {
     animatedCreateButton.hoverSuppressed = animating;
   };
-  self.agentWalletButton = [self makeAgentWalletButton];
 
   [self.topbar addSubview:self.tabStack];
   [self.topbar addSubview:self.createChatButton];
   [self.topbar addSubview:self.sidebarToggleButton];
-  [self.topbar addSubview:self.agentWalletButton];
 
   NSSize headerButtonSize = self.createChatButton.intrinsicContentSize;
-  NSSize walletPillSize = self.agentWalletButton.intrinsicContentSize;
   self.tabStackLeadingConstraint = [self.tabStack.leadingAnchor constraintEqualToAnchor:self.topbar.leadingAnchor
                                                                                 constant:[self tabStackLeadingConstant]];
   NSLayoutConstraint *tabStackTrailingConstraint =
@@ -1273,10 +1249,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
                                                  constant:[self createChatButtonTabOverlap]];
   tabStackTrailingConstraint.priority = NSLayoutPriorityDefaultHigh;
   self.workspaceTabsController.createTabButtonSpacingConstraint = tabStackTrailingConstraint;
-  NSLayoutConstraint *createButtonWalletSpacingConstraint =
-    [self.createChatButton.trailingAnchor constraintLessThanOrEqualToAnchor:self.agentWalletButton.leadingAnchor
-                                                                    constant:-[self agentWalletPillGap]];
-  createButtonWalletSpacingConstraint.priority = NSLayoutPriorityDefaultHigh;
+  NSLayoutConstraint *createButtonTrailingConstraint =
+    [self.createChatButton.trailingAnchor constraintLessThanOrEqualToAnchor:self.topbar.trailingAnchor
+                                                                    constant:-self.palette.space4];
+  createButtonTrailingConstraint.priority = NSLayoutPriorityDefaultHigh;
   [NSLayoutConstraint activateConstraints:@[
     [self.sidebarToggleButton.leadingAnchor constraintEqualToAnchor:self.topbar.leadingAnchor
                                                            constant:self.palette.trafficLightLeftInset + self.palette.trafficLightReservedWidth - self.palette.space5],
@@ -1286,13 +1262,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.tabStackLeadingConstraint,
     tabStackTrailingConstraint,
     [self.tabStack.bottomAnchor constraintEqualToAnchor:self.topbar.bottomAnchor],
-    createButtonWalletSpacingConstraint,
+    createButtonTrailingConstraint,
     [self.createChatButton.centerYAnchor constraintEqualToAnchor:self.topbar.centerYAnchor constant:[self createChatButtonVerticalOffset]],
     [self.createChatButton.widthAnchor constraintEqualToConstant:headerButtonSize.width],
     [self.createChatButton.heightAnchor constraintEqualToConstant:headerButtonSize.height],
-    [self.agentWalletButton.trailingAnchor constraintEqualToAnchor:self.topbar.trailingAnchor constant:-[self agentWalletPillTrailingInset]],
-    [self.agentWalletButton.centerYAnchor constraintEqualToAnchor:self.topbar.centerYAnchor],
-    [self.agentWalletButton.heightAnchor constraintEqualToConstant:walletPillSize.height],
   ]];
 
   return self.topbar;
@@ -1815,79 +1788,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [menu popUpMenuPositioningItem:nil
                        atLocation:NSMakePoint(self.palette.space0, -self.palette.space2)
                            inView:sourceView];
-}
-
-- (void)showAgentWalletPopover:(id)sender {
-  if (self.agentWalletPopover.isShown) {
-    self.agentWalletButton.forcesHoverState = NO;
-    [self.agentWalletPopover close];
-    return;
-  }
-
-  [self.taskStatusPopover close];
-  self.taskStatusPopover = nil;
-  self.taskStatusSidebarButton.forcesHoverState = NO;
-
-  NSPopover *popover = [[NSPopover alloc] init];
-  popover.behavior = NSPopoverBehaviorTransient;
-  popover.animates = YES;
-  popover.delegate = self;
-  self.agentWalletCardDetailsVisible = NO;
-  popover.contentViewController = [self agentWalletPopoverViewController];
-  self.agentWalletPopover = popover;
-  self.agentWalletButton.forcesHoverState = YES;
-
-  NSView *sourceView = [sender isKindOfClass:NSView.class] ? (NSView *)sender : self.agentWalletButton;
-  [popover showRelativeToRect:sourceView.bounds ofView:sourceView preferredEdge:NSMinYEdge];
-}
-
-- (void)showTaskStatusPopover:(id)sender {
-  if (self.taskStatusPopover.isShown) {
-    self.taskStatusSidebarButton.forcesHoverState = NO;
-    [self.taskStatusPopover close];
-    return;
-  }
-
-  [self.agentWalletPopover close];
-  self.agentWalletPopover = nil;
-  self.agentWalletButton.forcesHoverState = NO;
-
-  NSPopover *popover = [[NSPopover alloc] init];
-  popover.behavior = NSPopoverBehaviorTransient;
-  popover.animates = YES;
-  popover.delegate = self;
-  popover.contentViewController = [self taskStatusPopoverViewController];
-  self.taskStatusPopover = popover;
-  self.taskStatusSidebarButton.forcesHoverState = YES;
-
-  NSView *sourceView = [sender isKindOfClass:NSView.class] ? (NSView *)sender : self.taskStatusSidebarButton;
-  [popover showRelativeToRect:sourceView.bounds ofView:sourceView preferredEdge:NSMaxXEdge];
-}
-
-- (void)popoverDidClose:(NSNotification *)notification {
-  if (notification.object == self.agentWalletPopover) {
-    self.agentWalletButton.forcesHoverState = NO;
-    self.agentWalletPopover = nil;
-    self.agentWalletCardDetailsVisible = NO;
-    return;
-  }
-
-  if (notification.object == self.taskStatusPopover) {
-    self.taskStatusSidebarButton.forcesHoverState = NO;
-    self.taskStatusPopover = nil;
-  }
-}
-
-- (void)openAgentWalletPurchaseChat:(NSButton *)sender {
-  NSInteger chatID = sender.tag;
-  if (chatID <= 0) {
-    return;
-  }
-
-  [self.agentWalletPopover close];
-  self.agentWalletPopover = nil;
-  self.agentWalletButton.forcesHoverState = NO;
-  [self openChatTabWithID:chatID];
 }
 
 - (void)showChatWorkspace {
@@ -4098,771 +3998,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return button;
 }
 
-- (TLTaskStatusPillView *)makeAgentWalletButton {
-  TLTaskStatusPillView *button = [[TLTaskStatusPillView alloc] init];
-  button.palette = self.palette;
-  button.title = @"$12.32";
-  button.showsActivityIndicator = NO;
-  button.target = self;
-  button.action = @selector(showAgentWalletPopover:);
-  button.toolTip = @"Agent wallet";
-  [button setContentHuggingPriority:NSLayoutPriorityDefaultLow
-                      forOrientation:NSLayoutConstraintOrientationHorizontal];
-  [button setContentCompressionResistancePriority:NSLayoutPriorityRequired
-                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
-  return button;
-}
-
-- (TLSidebarNavigationButton *)makeTaskStatusSidebarButton {
-  TLSidebarNavigationButton *button = [self sidebarActionButtonWithTitle:@"8 Subagents"
-                                                          systemIconName:@""
-                                                                  action:@selector(showTaskStatusPopover:)];
-  button.showsActivityIndicatorIcon = YES;
-  button.toolTip = @"Subagents";
-  return button;
-}
-
-- (NSArray<NSDictionary<NSString *, NSString *> *> *)taskStatusMocks {
-  return @[
-    @{ @"title": @"Reviewing sidebar UX", @"detail": @"Checking hover states", @"status": @"running", @"icon": @"sidebar.left" },
-    @{ @"title": @"Compiling app bundle", @"detail": @"Building Talaria.app", @"status": @"running", @"icon": @"hammer" },
-    @{ @"title": @"Refreshing history", @"detail": @"Syncing recent chats", @"status": @"running", @"icon": @"clock.arrow.circlepath" },
-    @{ @"title": @"Syncing agents", @"detail": @"Preparing runtimes", @"status": @"running", @"icon": @"cpu" },
-    @{ @"title": @"Indexing workspace", @"detail": @"Scanning changed files", @"status": @"running", @"icon": @"doc.text.magnifyingglass" },
-    @{ @"title": @"Running theme audit", @"detail": @"Validating palette usage", @"status": @"running", @"icon": @"checkmark.shield" },
-    @{ @"title": @"Preparing preview", @"detail": @"Updating window chrome", @"status": @"running", @"icon": @"sparkles" },
-    @{ @"title": @"Publishing branch", @"detail": @"Waiting for changes", @"status": @"running", @"icon": @"arrow.triangle.branch" },
-  ];
-}
-
-- (NSViewController *)taskStatusPopoverViewController {
-  NSArray<NSDictionary<NSString *, NSString *> *> *tasks = [self taskStatusMocks];
-
-  CGFloat popoverWidth = self.palette.sidebarMaximumWidth;
-  CGFloat rowHeight = self.palette.fieldHeight + self.palette.space8;
-  CGFloat rowSpacingTotal = self.palette.space3 * MAX(0, (NSInteger)tasks.count - 1);
-  CGFloat contentHeight =
-    self.palette.space8 +
-    (rowHeight * tasks.count) +
-    rowSpacingTotal +
-    self.palette.space8;
-
-  NSViewController *viewController = [[NSViewController alloc] init];
-  NSView *contentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, popoverWidth, contentHeight)];
-  contentView.translatesAutoresizingMaskIntoConstraints = NO;
-  contentView.wantsLayer = YES;
-  contentView.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
-
-  NSStackView *stack = [[NSStackView alloc] init];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  stack.alignment = NSLayoutAttributeWidth;
-  stack.distribution = NSStackViewDistributionGravityAreas;
-  stack.spacing = self.palette.space3;
-  [contentView addSubview:stack];
-
-  for (NSDictionary<NSString *, NSString *> *task in tasks) {
-    NSView *row = [self taskStatusPopoverRowWithTitle:task[@"title"]
-                                               detail:task[@"detail"]
-                                               status:task[@"status"]
-                                       systemIconName:task[@"icon"]];
-    [stack addArrangedSubview:row];
-    [row.heightAnchor constraintEqualToConstant:rowHeight].active = YES;
-  }
-
-  [NSLayoutConstraint activateConstraints:@[
-    [contentView.widthAnchor constraintEqualToConstant:popoverWidth],
-    [contentView.heightAnchor constraintEqualToConstant:contentHeight],
-    [stack.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:self.palette.space8],
-    [stack.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-self.palette.space8],
-    [stack.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:self.palette.space8],
-    [stack.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-self.palette.space8],
-  ]];
-
-  viewController.view = contentView;
-  return viewController;
-}
-
-- (NSView *)taskStatusPopoverRowWithTitle:(NSString *)title
-                                   detail:(NSString *)detail
-                                   status:(NSString *)status
-                           systemIconName:(NSString *)systemIconName {
-  NSView *row = [[NSView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-
-  NSImageView *iconView = [[NSImageView alloc] init];
-  iconView.translatesAutoresizingMaskIntoConstraints = NO;
-  iconView.imageAlignment = NSImageAlignCenter;
-  iconView.imageScaling = NSImageScaleProportionallyDown;
-  iconView.image = [self symbolImageNamed:systemIconName accessibilityDescription:title];
-  iconView.image.template = YES;
-  iconView.contentTintColor = self.palette.labelText;
-  [row addSubview:iconView];
-
-  NSTextField *titleLabel = [self labelWithString:title font:self.palette.labelFont color:self.palette.appText];
-  NSTextField *detailLabel = [self labelWithString:detail font:self.palette.smallFont color:self.palette.textMuted];
-
-  NSStackView *textStack = [[NSStackView alloc] init];
-  textStack.translatesAutoresizingMaskIntoConstraints = NO;
-  textStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  textStack.alignment = NSLayoutAttributeLeading;
-  textStack.distribution = NSStackViewDistributionGravityAreas;
-  textStack.spacing = self.palette.space0;
-  [textStack addArrangedSubview:titleLabel];
-  [textStack addArrangedSubview:detailLabel];
-  [row addSubview:textStack];
-
-  NSTextField *statusLabel = [self labelWithString:status font:self.palette.labelFont color:self.palette.textMuted];
-  statusLabel.alignment = NSTextAlignmentRight;
-  [row addSubview:statusLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:self.palette.space3],
-    [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [iconView.widthAnchor constraintEqualToConstant:self.palette.space11],
-    [iconView.heightAnchor constraintEqualToConstant:self.palette.space11],
-
-    [textStack.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:self.palette.space5],
-    [textStack.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:statusLabel.leadingAnchor constant:-self.palette.space5],
-
-    [statusLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-self.palette.space3],
-    [statusLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-  ]];
-
-  return row;
-}
-
-- (NSArray<NSDictionary<NSString *, id> *> *)agentWalletTransactionMocks {
-  NSArray<NSDictionary<NSString *, id> *> *transactionTemplates = @[
-    @{
-      @"title": @"Flowers for Lily",
-      @"detail": @"flowers.com",
-      @"amount": @"-$45.00",
-      @"positive": @NO,
-      @"icon": @"leaf",
-    },
-    @{
-      @"title": @"Top Up",
-      @"detail": @"",
-      @"amount": @"$60.00",
-      @"positive": @YES,
-      @"icon": @"dollarsign.circle",
-    },
-  ];
-  NSMutableArray<NSDictionary<NSString *, id> *> *transactions = [NSMutableArray arrayWithCapacity:transactionTemplates.count];
-  for (NSUInteger index = 0; index < transactionTemplates.count; index += 1) {
-    TLChatSummary *linkedChat = index < self.chats.count ? self.chats[index] : nil;
-    if (!linkedChat && self.activeChat) {
-      linkedChat = self.activeChat;
-    }
-
-    NSString *chatTitle = linkedChat.title.length > 0 ? linkedChat.title : @"Current chat";
-    NSInteger chatID = linkedChat ? linkedChat.chatID : 0;
-    NSMutableDictionary<NSString *, id> *transaction = [transactionTemplates[index] mutableCopy];
-    transaction[@"chatTitle"] = chatTitle;
-    transaction[@"chatID"] = @(chatID);
-    [transactions addObject:transaction];
-  }
-  return transactions;
-}
-
-- (NSImage *)agentWalletCardImage {
-  NSURL *cardURL = [NSBundle.mainBundle URLForResource:@"agent-card" withExtension:@"png"];
-  return cardURL ? [[NSImage alloc] initWithContentsOfURL:cardURL] : [[NSImage alloc] init];
-}
-
-- (CGFloat)agentWalletCardAspectRatio {
-  NSImage *image = [self agentWalletCardImage];
-  if (image.size.height <= 0.0) {
-    return 1.0;
-  }
-
-  return image.size.width / image.size.height;
-}
-
-- (NSView *)agentWalletCardView {
-  TLTokenView *cardContainer = [[TLTokenView alloc] init];
-  cardContainer.translatesAutoresizingMaskIntoConstraints = NO;
-  cardContainer.wantsLayer = YES;
-  cardContainer.fillColor = self.palette.transparentSurface;
-  cardContainer.borderColor = self.palette.transparentSurface;
-  cardContainer.borderEdges = TLBorderEdgeNone;
-  cardContainer.cornerRadius = self.palette.radiusMedium;
-  cardContainer.layer.masksToBounds = NO;
-  cardContainer.layer.shadowColor = TLCGColor(self.palette.contentShadow);
-  cardContainer.layer.shadowOpacity = self.palette.agentWalletCardShadowOpacity;
-  cardContainer.layer.shadowRadius = self.palette.agentWalletCardShadowRadius;
-  cardContainer.layer.shadowOffset = NSMakeSize(self.palette.space0, self.palette.agentWalletCardShadowOffsetY);
-
-  NSImageView *cardView = [[NSImageView alloc] init];
-  cardView.translatesAutoresizingMaskIntoConstraints = NO;
-  cardView.image = [self agentWalletCardImage];
-  cardView.imageAlignment = NSImageAlignCenter;
-  cardView.imageScaling = NSImageScaleProportionallyUpOrDown;
-  [cardContainer addSubview:cardView];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [cardView.leadingAnchor constraintEqualToAnchor:cardContainer.leadingAnchor],
-    [cardView.trailingAnchor constraintEqualToAnchor:cardContainer.trailingAnchor],
-    [cardView.topAnchor constraintEqualToAnchor:cardContainer.topAnchor],
-    [cardView.bottomAnchor constraintEqualToAnchor:cardContainer.bottomAnchor],
-  ]];
-
-  return cardContainer;
-}
-
-- (NSView *)agentWalletOverviewViewWithCardWidth:(CGFloat)cardWidth cardHeight:(CGFloat)cardHeight {
-  NSView *overviewView = [[NSView alloc] init];
-  overviewView.translatesAutoresizingMaskIntoConstraints = NO;
-
-  NSView *cardView = [self agentWalletCardView];
-  [overviewView addSubview:cardView];
-
-  NSStackView *cardActionRow = [[NSStackView alloc] init];
-  cardActionRow.translatesAutoresizingMaskIntoConstraints = NO;
-  cardActionRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  cardActionRow.alignment = NSLayoutAttributeCenterY;
-  cardActionRow.distribution = NSStackViewDistributionFill;
-  cardActionRow.spacing = self.palette.agentWalletOverviewActionGap;
-  [overviewView addSubview:cardActionRow];
-
-  TLGlassButton *topUpButton = [self agentWalletTopUpButton];
-  [cardActionRow addArrangedSubview:topUpButton];
-  [topUpButton.heightAnchor constraintEqualToConstant:self.palette.agentWalletTopUpButtonHeight].active = YES;
-
-  TLGlassButton *manageCardButton = [self agentWalletManageCardButton];
-  [cardActionRow addArrangedSubview:manageCardButton];
-  [manageCardButton.heightAnchor constraintEqualToConstant:self.palette.agentWalletTopUpButtonHeight].active = YES;
-
-  NSStackView *balanceStack = [[NSStackView alloc] init];
-  balanceStack.translatesAutoresizingMaskIntoConstraints = NO;
-  balanceStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  balanceStack.alignment = NSLayoutAttributeCenterX;
-  balanceStack.distribution = NSStackViewDistributionGravityAreas;
-  balanceStack.spacing = self.palette.space3;
-  [overviewView addSubview:balanceStack];
-
-  NSTextField *balanceCaptionLabel = [self labelWithString:@"Available Balance"
-                                                     font:self.palette.agentWalletBalanceCaptionFont
-                                                    color:self.palette.agentWalletBalanceCaptionText];
-  balanceCaptionLabel.alignment = NSTextAlignmentCenter;
-  [balanceStack addArrangedSubview:balanceCaptionLabel];
-
-  NSTextField *balanceLabel = [self labelWithString:@"$12.32"
-                                              font:self.palette.agentWalletBalanceAmountFont
-                                             color:self.palette.agentWalletTransactionPrimaryText];
-  balanceLabel.alignment = NSTextAlignmentCenter;
-  [balanceStack addArrangedSubview:balanceLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [cardView.leadingAnchor constraintEqualToAnchor:overviewView.leadingAnchor],
-    [cardView.topAnchor constraintEqualToAnchor:overviewView.topAnchor],
-    [cardView.widthAnchor constraintEqualToConstant:cardWidth],
-    [cardView.heightAnchor constraintEqualToConstant:cardHeight],
-
-    [cardActionRow.leadingAnchor constraintEqualToAnchor:cardView.leadingAnchor],
-    [cardActionRow.topAnchor constraintEqualToAnchor:cardView.bottomAnchor constant:self.palette.agentWalletOverviewActionRowGap],
-    [cardActionRow.bottomAnchor constraintEqualToAnchor:overviewView.bottomAnchor],
-    [cardActionRow.heightAnchor constraintEqualToConstant:self.palette.agentWalletTopUpButtonHeight],
-
-    [balanceStack.leadingAnchor constraintEqualToAnchor:cardView.trailingAnchor constant:self.palette.agentWalletOverviewContentGap],
-    [balanceStack.trailingAnchor constraintEqualToAnchor:overviewView.trailingAnchor],
-    [balanceStack.centerYAnchor constraintEqualToAnchor:cardView.centerYAnchor],
-    [balanceStack.topAnchor constraintGreaterThanOrEqualToAnchor:overviewView.topAnchor],
-    [balanceStack.bottomAnchor constraintLessThanOrEqualToAnchor:overviewView.bottomAnchor],
-  ]];
-
-  return overviewView;
-}
-
-- (TLGlassButton *)agentWalletOpenCardButton {
-  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
-  button.palette = self.palette;
-  button.title = @"Create Card";
-  button.font = self.palette.agentWalletIntroButtonFont;
-  button.contentTintColor = self.palette.appText;
-  button.target = self;
-  button.action = @selector(openAgentWalletCard:);
-  return button;
-}
-
-- (nullable NSImage *)agentWalletActionButtonImageNamed:(NSString *)name accessibilityDescription:(NSString *)description {
-  NSImage *image = [self symbolImageNamed:name accessibilityDescription:description];
-  if (@available(macOS 11.0, *)) {
-    NSImageSymbolConfiguration *configuration =
-      [NSImageSymbolConfiguration configurationWithPointSize:self.palette.smallFont.pointSize
-                                                      weight:NSFontWeightRegular];
-    image = [image imageWithSymbolConfiguration:configuration] ?: image;
-  }
-  image.template = YES;
-  return image;
-}
-
-- (TLGlassButton *)agentWalletTopUpButton {
-  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
-  button.palette = self.palette;
-  button.title = @"Top up";
-  button.image = [self agentWalletActionButtonImageNamed:@"dollarsign.circle" accessibilityDescription:@"Top up"];
-  button.contentTintColor = self.palette.agentWalletTransactionPrimaryText;
-  button.target = self;
-  button.action = @selector(topUpAgentWallet:);
-  return button;
-}
-
-- (void)topUpAgentWallet:(id)sender {
-}
-
-- (TLGlassButton *)agentWalletManageCardButton {
-  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
-  button.palette = self.palette;
-  button.title = @"Manage Card";
-  button.image = [self agentWalletActionButtonImageNamed:@"creditcard" accessibilityDescription:@"Manage Card"];
-  button.contentTintColor = self.palette.agentWalletTransactionPrimaryText;
-  button.target = self;
-  button.action = @selector(manageAgentWalletCard:);
-  return button;
-}
-
-- (void)manageAgentWalletCard:(id)sender {
-}
-
-- (TLGlassButton *)agentWalletSeeAllButton {
-  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
-  button.palette = self.palette;
-  button.title = @"see all";
-  button.font = self.palette.smallFont;
-  button.contentTintColor = self.palette.agentWalletTransactionPrimaryText;
-  button.target = self;
-  button.action = @selector(seeAllAgentWalletTransactions:);
-  return button;
-}
-
-- (void)seeAllAgentWalletTransactions:(id)sender {
-}
-
-- (CGFloat)agentWalletPopoverWidth {
-  return self.palette.agentWalletDetailsPopoverWidth;
-}
-
-- (CGFloat)agentWalletIntroPopoverWidth {
-  return self.palette.agentWalletIntroPopoverWidth;
-}
-
-- (CGFloat)agentWalletPopoverPadding {
-  return self.palette.space5 * 2.0;
-}
-
-- (NSSize)agentWalletCardSize {
-  return NSMakeSize(self.palette.agentWalletCardWidth, self.palette.agentWalletCardHeight);
-}
-
-- (NSSize)agentWalletDetailsCardSize {
-  return NSMakeSize(self.palette.agentWalletDetailsCardWidth, self.palette.agentWalletDetailsCardHeight);
-}
-
-- (NSViewController *)agentWalletIntroPopoverViewController {
-  CGFloat popoverWidth = [self agentWalletIntroPopoverWidth];
-  CGFloat padding = [self agentWalletPopoverPadding];
-  NSSize walletCardSize = [self agentWalletCardSize];
-  CGFloat textWidth = popoverWidth - (padding * 2.0);
-  CGFloat buttonWidth = walletCardSize.width - (self.palette.space12 * 2.0);
-  CGFloat buttonHeight = self.palette.agentWalletIntroButtonHeight;
-
-  NSViewController *viewController = [[NSViewController alloc] init];
-  NSView *contentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, popoverWidth, self.palette.space0)];
-  contentView.translatesAutoresizingMaskIntoConstraints = NO;
-  contentView.wantsLayer = YES;
-  contentView.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
-
-  NSView *cardView = [self agentWalletCardView];
-  [contentView addSubview:cardView];
-
-  NSTextField *titleLabel = [self wrappingLabelWithString:@"Give Your Agent Pocket Money"
-                                                     font:self.palette.agentWalletIntroTitleFont
-                                                    color:self.palette.appText];
-  titleLabel.maximumNumberOfLines = 2;
-  titleLabel.preferredMaxLayoutWidth = textWidth;
-  [contentView addSubview:titleLabel];
-
-  NSTextField *descriptionLabel =
-    [self wrappingLabelWithString:@"Open a temporary debit card for your agent to help you with small purchases"
-                             font:self.palette.agentWalletIntroSubtitleFont
-                            color:self.palette.textMuted];
-  descriptionLabel.maximumNumberOfLines = 3;
-  descriptionLabel.preferredMaxLayoutWidth = textWidth;
-  [contentView addSubview:descriptionLabel];
-
-  TLGlassButton *openCardButton = [self agentWalletOpenCardButton];
-  [contentView addSubview:openCardButton];
-
-  NSTextField *issuedLabel = [self labelWithString:@"Issued by AgentCard"
-                                             font:self.palette.smallFont
-                                            color:self.palette.agentWalletIssuerText];
-  issuedLabel.alignment = NSTextAlignmentLeft;
-  [contentView addSubview:issuedLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [cardView.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [cardView.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:padding],
-    [cardView.widthAnchor constraintEqualToConstant:walletCardSize.width],
-    [cardView.heightAnchor constraintEqualToConstant:walletCardSize.height],
-
-    [titleLabel.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [titleLabel.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-padding],
-    [titleLabel.topAnchor constraintEqualToAnchor:cardView.bottomAnchor constant:self.palette.space8],
-
-    [descriptionLabel.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [descriptionLabel.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-padding],
-    [descriptionLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:self.palette.space3],
-    [descriptionLabel.bottomAnchor constraintLessThanOrEqualToAnchor:openCardButton.topAnchor constant:-self.palette.space10],
-
-    [openCardButton.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [openCardButton.topAnchor constraintEqualToAnchor:descriptionLabel.bottomAnchor constant:self.palette.space10],
-    [openCardButton.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-padding],
-    [openCardButton.widthAnchor constraintEqualToConstant:buttonWidth],
-    [openCardButton.heightAnchor constraintEqualToConstant:buttonHeight],
-
-    [issuedLabel.leadingAnchor constraintEqualToAnchor:openCardButton.trailingAnchor constant:self.palette.agentWalletIssuerGap],
-    [issuedLabel.trailingAnchor constraintLessThanOrEqualToAnchor:contentView.trailingAnchor constant:-padding],
-    [issuedLabel.centerYAnchor constraintEqualToAnchor:openCardButton.centerYAnchor],
-    [contentView.widthAnchor constraintEqualToConstant:popoverWidth],
-  ]];
-
-  [contentView layoutSubtreeIfNeeded];
-  NSSize fittingSize = contentView.fittingSize;
-  contentView.frame = NSMakeRect(self.palette.space0,
-                                 self.palette.space0,
-                                 popoverWidth,
-                                 ceil(fittingSize.height));
-
-  viewController.view = contentView;
-  return viewController;
-}
-
-- (void)openAgentWalletCard:(id)sender {
-  self.agentWalletCardDetailsVisible = YES;
-  if (!self.agentWalletPopover.isShown) {
-    return;
-  }
-
-  NSViewController *detailsViewController = [self agentWalletPopoverViewController];
-  self.agentWalletPopover.contentViewController = detailsViewController;
-  self.agentWalletPopover.contentSize = detailsViewController.view.frame.size;
-}
-
-- (NSViewController *)agentWalletPopoverViewController {
-  if (!self.agentWalletCardDetailsVisible) {
-    return [self agentWalletIntroPopoverViewController];
-  }
-
-  NSArray<NSDictionary<NSString *, id> *> *transactions = [self agentWalletTransactionMocks];
-
-  CGFloat popoverWidth = [self agentWalletPopoverWidth];
-  CGFloat padding = [self agentWalletPopoverPadding];
-  CGFloat topPadding = padding;
-  CGFloat bottomPadding = self.palette.space0;
-  CGFloat topUpSectionGap = self.palette.space6;
-  CGFloat transactionsPanelTopPadding = self.palette.space5;
-  NSSize walletCardSize = [self agentWalletDetailsCardSize];
-  CGFloat overviewHeight =
-    walletCardSize.height +
-    self.palette.agentWalletOverviewActionRowGap +
-    self.palette.agentWalletTopUpButtonHeight;
-  CGFloat sectionTitleHeight = MAX(self.palette.space9, self.palette.agentWalletSeeAllButtonHeight);
-  CGFloat dateHeight = self.palette.space10;
-  CGFloat rowHeight = self.palette.fieldHeight + self.palette.space10;
-  CGFloat transactionSeparatorTotal = self.palette.borderWidth * MAX(0, (NSInteger)transactions.count - 1);
-  CGFloat contentHeight =
-    topPadding +
-    overviewHeight +
-    topUpSectionGap +
-    transactionsPanelTopPadding +
-    sectionTitleHeight +
-    self.palette.space8 +
-    dateHeight +
-    self.palette.space3 +
-    (rowHeight * transactions.count) +
-    transactionSeparatorTotal +
-    bottomPadding;
-
-  NSViewController *viewController = [[NSViewController alloc] init];
-  NSView *contentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, popoverWidth, contentHeight)];
-  contentView.translatesAutoresizingMaskIntoConstraints = NO;
-  contentView.wantsLayer = YES;
-  contentView.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
-
-  TLTokenView *transactionsPanel = [[TLTokenView alloc] init];
-  transactionsPanel.translatesAutoresizingMaskIntoConstraints = NO;
-  transactionsPanel.fillColor = self.palette.agentWalletTransactionsSurface;
-  transactionsPanel.borderColor = self.palette.transparentSurface;
-  transactionsPanel.borderEdges = TLBorderEdgeNone;
-  [contentView addSubview:transactionsPanel];
-
-  NSStackView *stack = [[NSStackView alloc] init];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  stack.alignment = NSLayoutAttributeWidth;
-  stack.distribution = NSStackViewDistributionGravityAreas;
-  stack.spacing = self.palette.space0;
-  [contentView addSubview:stack];
-
-  NSView *overviewView = [self agentWalletOverviewViewWithCardWidth:walletCardSize.width
-                                                         cardHeight:walletCardSize.height];
-  [stack addArrangedSubview:overviewView];
-  [overviewView.heightAnchor constraintEqualToConstant:overviewHeight].active = YES;
-  [overviewView.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-  [stack setCustomSpacing:topUpSectionGap + transactionsPanelTopPadding afterView:overviewView];
-
-  NSView *sectionTitleContainer = [[NSView alloc] init];
-  sectionTitleContainer.translatesAutoresizingMaskIntoConstraints = NO;
-  NSTextField *sectionTitleLabel = [self labelWithString:@"Recent Transactions"
-                                                    font:self.palette.agentWalletSectionTitleFont
-                                                   color:self.palette.agentWalletTransactionPrimaryText];
-  sectionTitleLabel.alignment = NSTextAlignmentLeft;
-  [sectionTitleContainer addSubview:sectionTitleLabel];
-  TLGlassButton *seeAllButton = [self agentWalletSeeAllButton];
-  [sectionTitleContainer addSubview:seeAllButton];
-  [stack addArrangedSubview:sectionTitleContainer];
-  [sectionTitleContainer.heightAnchor constraintEqualToConstant:sectionTitleHeight].active = YES;
-  [sectionTitleContainer.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-  [NSLayoutConstraint activateConstraints:@[
-    [sectionTitleLabel.leadingAnchor constraintEqualToAnchor:sectionTitleContainer.leadingAnchor],
-    [sectionTitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:seeAllButton.leadingAnchor constant:-self.palette.space6],
-    [sectionTitleLabel.centerYAnchor constraintEqualToAnchor:sectionTitleContainer.centerYAnchor],
-    [seeAllButton.trailingAnchor constraintEqualToAnchor:sectionTitleContainer.trailingAnchor],
-    [seeAllButton.centerYAnchor constraintEqualToAnchor:sectionTitleContainer.centerYAnchor],
-    [seeAllButton.widthAnchor constraintEqualToConstant:self.palette.agentWalletSeeAllButtonWidth],
-    [seeAllButton.heightAnchor constraintEqualToConstant:self.palette.agentWalletSeeAllButtonHeight],
-  ]];
-  [stack setCustomSpacing:self.palette.space8 afterView:sectionTitleContainer];
-
-  NSTextField *dateLabel = [self labelWithString:@"Thu 27 Aug"
-                                            font:self.palette.agentWalletTransactionDateFont
-                                           color:self.palette.agentWalletTransactionDateText];
-  [stack addArrangedSubview:dateLabel];
-  [dateLabel.heightAnchor constraintEqualToConstant:dateHeight].active = YES;
-  [dateLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-  [stack setCustomSpacing:self.palette.space3 afterView:dateLabel];
-
-  for (NSUInteger index = 0; index < transactions.count; index += 1) {
-    NSDictionary<NSString *, id> *transaction = transactions[index];
-    NSView *row = [self agentWalletTransactionRowWithTitle:transaction[@"title"]
-                                                    detail:transaction[@"detail"]
-                                                    amount:transaction[@"amount"]
-                                                  positive:[transaction[@"positive"] boolValue]
-                                            systemIconName:transaction[@"icon"]
-                                                    chatID:[transaction[@"chatID"] integerValue]];
-    [stack addArrangedSubview:row];
-    [row.heightAnchor constraintEqualToConstant:rowHeight].active = YES;
-    [row.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    if (index + 1 < transactions.count) {
-      NSView *separator = [self agentWalletTransactionSeparatorView];
-      [stack addArrangedSubview:separator];
-      [separator.heightAnchor constraintEqualToConstant:self.palette.borderWidth].active = YES;
-      [separator.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    }
-  }
-
-  [NSLayoutConstraint activateConstraints:@[
-    [contentView.widthAnchor constraintEqualToConstant:popoverWidth],
-    [contentView.heightAnchor constraintEqualToConstant:contentHeight],
-    [transactionsPanel.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
-    [transactionsPanel.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor],
-    [transactionsPanel.topAnchor constraintEqualToAnchor:overviewView.bottomAnchor constant:topUpSectionGap],
-    [transactionsPanel.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor],
-    [stack.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [stack.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-padding],
-    [stack.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:topPadding],
-    [stack.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-bottomPadding],
-  ]];
-
-  viewController.view = contentView;
-  return viewController;
-}
-
-- (NSView *)agentWalletTransactionSeparatorView {
-  TLTokenView *separator = [[TLTokenView alloc] init];
-  separator.translatesAutoresizingMaskIntoConstraints = NO;
-  separator.fillColor = self.palette.transparentSurface;
-  separator.borderColor = self.palette.topbarBorder;
-  separator.borderEdges = TLBorderEdgeTop;
-  separator.borderWidth = self.palette.borderWidth;
-  separator.alphaValue = self.palette.agentWalletTransactionSeparatorOpacity;
-  return separator;
-}
-
-- (NSView *)agentWalletPositiveAmountBadgeWithAmount:(NSString *)amount {
-  TLTokenView *badge = [[TLTokenView alloc] init];
-  badge.translatesAutoresizingMaskIntoConstraints = NO;
-  badge.fillColor = self.palette.agentWalletTopUpSurface;
-  badge.borderColor = self.palette.transparentSurface;
-  badge.borderEdges = TLBorderEdgeNone;
-  badge.cornerRadius = self.palette.radiusMedium;
-
-  NSTextField *amountLabel = [self labelWithString:amount
-                                              font:self.palette.agentWalletTransactionAmountFont
-                                             color:self.palette.agentWalletTopUpText];
-  amountLabel.alignment = NSTextAlignmentCenter;
-  [badge addSubview:amountLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [amountLabel.leadingAnchor constraintEqualToAnchor:badge.leadingAnchor constant:self.palette.space3],
-    [amountLabel.trailingAnchor constraintEqualToAnchor:badge.trailingAnchor constant:-self.palette.space3],
-    [amountLabel.centerYAnchor constraintEqualToAnchor:badge.centerYAnchor],
-    [badge.heightAnchor constraintEqualToConstant:self.palette.space11],
-  ]];
-
-  return badge;
-}
-
-- (NSView *)agentWalletTransactionRowWithTitle:(NSString *)title
-                                        detail:(NSString *)detail
-                                        amount:(NSString *)amount
-                                      positive:(BOOL)positive
-                                systemIconName:(NSString *)systemIconName
-                                        chatID:(NSInteger)chatID {
-  NSView *row = [[NSView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-
-  NSImageView *iconView = [[NSImageView alloc] init];
-  iconView.translatesAutoresizingMaskIntoConstraints = NO;
-  iconView.imageAlignment = NSImageAlignCenter;
-  iconView.imageScaling = NSImageScaleProportionallyDown;
-  NSImage *iconImage = [self symbolImageNamed:systemIconName accessibilityDescription:title];
-  if (@available(macOS 11.0, *)) {
-    NSImageSymbolConfiguration *iconConfiguration =
-      [NSImageSymbolConfiguration configurationWithPointSize:self.palette.agentWalletTransactionIconSize
-                                                      weight:NSFontWeightRegular];
-    iconImage = [iconImage imageWithSymbolConfiguration:iconConfiguration] ?: iconImage;
-  }
-  iconView.image = iconImage;
-  iconView.image.template = YES;
-  iconView.contentTintColor = self.palette.agentWalletTransactionDateText;
-  [row addSubview:iconView];
-
-  NSTextField *titleLabel = [self labelWithString:title
-                                             font:self.palette.agentWalletTransactionTitleFont
-                                            color:self.palette.agentWalletTransactionPrimaryText];
-  titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-
-  NSStackView *textStack = [[NSStackView alloc] init];
-  textStack.translatesAutoresizingMaskIntoConstraints = NO;
-  textStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  textStack.alignment = NSLayoutAttributeLeading;
-  textStack.distribution = NSStackViewDistributionGravityAreas;
-  textStack.spacing = self.palette.space0;
-  [textStack addArrangedSubview:titleLabel];
-  if (detail.length > 0) {
-    NSTextField *detailLabel = [self labelWithString:detail
-                                                font:self.palette.agentWalletTransactionDetailFont
-                                               color:self.palette.agentWalletTransactionDetailText];
-    detailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [textStack addArrangedSubview:detailLabel];
-  }
-  [row addSubview:textStack];
-
-  NSView *amountView = nil;
-  if (positive) {
-    amountView = [self agentWalletPositiveAmountBadgeWithAmount:amount];
-  } else {
-    NSTextField *amountLabel = [self labelWithString:amount
-                                                font:self.palette.agentWalletTransactionAmountFont
-                                               color:self.palette.agentWalletTransactionPrimaryText];
-    amountLabel.alignment = NSTextAlignmentRight;
-    amountView = amountLabel;
-  }
-  [row addSubview:amountView];
-
-  NSButton *chevronButton = [[NSButton alloc] init];
-  chevronButton.translatesAutoresizingMaskIntoConstraints = NO;
-  chevronButton.bordered = NO;
-  chevronButton.image = [self symbolImageNamed:@"chevron.right" accessibilityDescription:@"Open chat"];
-  chevronButton.image.template = YES;
-  chevronButton.contentTintColor = self.palette.agentWalletTransactionDetailText;
-  chevronButton.imagePosition = NSImageOnly;
-  chevronButton.target = self;
-  chevronButton.action = @selector(openAgentWalletPurchaseChat:);
-  chevronButton.tag = chatID;
-  chevronButton.enabled = chatID > 0;
-  [row addSubview:chevronButton];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
-    [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [iconView.widthAnchor constraintEqualToConstant:self.palette.agentWalletTransactionIconSize],
-    [iconView.heightAnchor constraintEqualToConstant:self.palette.agentWalletTransactionIconSize],
-
-    [textStack.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:self.palette.agentWalletTransactionIconTextGap],
-    [textStack.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:amountView.leadingAnchor constant:-self.palette.space8],
-
-    [chevronButton.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
-    [chevronButton.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [chevronButton.widthAnchor constraintEqualToConstant:self.palette.space9],
-    [chevronButton.heightAnchor constraintEqualToConstant:self.palette.space9],
-
-    [amountView.trailingAnchor constraintEqualToAnchor:chevronButton.leadingAnchor constant:-self.palette.space6],
-    [amountView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-  ]];
-
-  return row;
-}
-
-- (NSView *)agentWalletPopoverRowWithTitle:(NSString *)title
-                                    amount:(NSString *)amount
-                                 chatTitle:(NSString *)chatTitle
-                                    chatID:(NSInteger)chatID {
-  NSView *row = [[NSView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-
-  NSTextField *titleLabel = [self labelWithString:title font:self.palette.labelFont color:self.palette.appText];
-  titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-
-  NSButton *chatLinkButton = [NSButton buttonWithTitle:chatTitle target:self action:@selector(openAgentWalletPurchaseChat:)];
-  chatLinkButton.translatesAutoresizingMaskIntoConstraints = NO;
-  chatLinkButton.bordered = NO;
-  chatLinkButton.alignment = NSTextAlignmentLeft;
-  chatLinkButton.tag = chatID;
-  chatLinkButton.enabled = chatID > 0;
-  chatLinkButton.cell.lineBreakMode = NSLineBreakByTruncatingTail;
-  NSColor *chatLinkColor = chatID > 0 ? self.palette.markdownLinkText : self.palette.textMuted;
-  chatLinkButton.attributedTitle =
-    [[NSAttributedString alloc] initWithString:chatTitle
-                                    attributes:@{
-                                      NSFontAttributeName: self.palette.smallFont,
-                                      NSForegroundColorAttributeName: chatLinkColor,
-                                      NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
-                                    }];
-
-  NSStackView *textStack = [[NSStackView alloc] init];
-  textStack.translatesAutoresizingMaskIntoConstraints = NO;
-  textStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  textStack.alignment = NSLayoutAttributeLeading;
-  textStack.distribution = NSStackViewDistributionGravityAreas;
-  textStack.spacing = self.palette.space0;
-  [textStack addArrangedSubview:titleLabel];
-  [textStack addArrangedSubview:chatLinkButton];
-  [row addSubview:textStack];
-
-  NSTextField *amountLabel = [self labelWithString:amount font:self.palette.labelFont color:self.palette.appText];
-  amountLabel.alignment = NSTextAlignmentRight;
-  [row addSubview:amountLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [textStack.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:self.palette.space3],
-    [textStack.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:amountLabel.leadingAnchor constant:-self.palette.space5],
-
-    [chatLinkButton.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor constant:-(self.palette.space8 * 2.0)],
-
-    [amountLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-self.palette.space3],
-    [amountLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-  ]];
-
-  return row;
-}
-
 - (NSButton *)buttonWithTitle:(NSString *)title action:(SEL)action {
   NSButton *button = [NSButton buttonWithTitle:title target:self action:action];
   button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4908,9 +4043,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     ? NSWidth(self.createChatButton.bounds)
     : self.createChatButton.intrinsicContentSize.width;
   CGFloat maximumTabTrailing = topbarWidth -
-    [self agentWalletPillTrailingInset] -
-    [self agentWalletPillWidth] -
-    [self agentWalletPillGap] -
+    self.palette.space4 -
     createButtonWidth +
     [self createChatButtonTabOverlap];
   return MAX(self.palette.space0, maximumTabTrailing - leadingConstant);
@@ -4922,20 +4055,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (CGFloat)createChatButtonVerticalOffset {
   return self.palette.space2 * 0.5;
-}
-
-- (CGFloat)agentWalletPillTrailingInset {
-  return self.palette.space4;
-}
-
-- (CGFloat)agentWalletPillGap {
-  return self.palette.space4;
-}
-
-- (CGFloat)agentWalletPillWidth {
-  return NSWidth(self.agentWalletButton.bounds) > self.palette.space0
-    ? NSWidth(self.agentWalletButton.bounds)
-    : self.agentWalletButton.intrinsicContentSize.width;
 }
 
 - (void)updateWorkspaceTabWidths {
@@ -5513,9 +4632,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.sidebarToggleButton.contentTintColor = foreground;
   self.createChatButton.palette = self.palette;
   self.createChatButton.contentTintColor = foreground;
-  self.agentWalletButton.palette = self.palette;
-  self.agentWalletButton.title = @"$12.32";
-  self.agentWalletButton.showsActivityIndicator = NO;
   [self styleSidebarActionButtons];
 }
 
@@ -5523,14 +4639,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.sidebarActionStack.spacing = self.palette.space0;
   [self updateSidebarContentInsets];
   self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
-  [self.sidebarActionStack setCustomSpacing:self.palette.space0 afterView:self.taskStatusSidebarButton];
 
-  self.taskStatusSidebarButton.palette = self.palette;
-  self.taskStatusSidebarButton.title = @"8 Subagents";
-  self.taskStatusSidebarButton.systemIconName = @"";
-  self.taskStatusSidebarButton.showsActivityIndicatorIcon = YES;
-  self.taskStatusSidebarButton.toolTip = @"Subagents";
-  self.taskStatusSidebarButton.selected = NO;
   self.notesShortcutButton.palette = self.palette;
   self.historyShortcutButton.palette = self.palette;
   self.sidebarUserButton.palette = self.palette;
@@ -5550,12 +4659,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.sidebarAgentPaneSurface removeFromSuperview];
   self.sidebarAgentPaneSurface = nil;
   self.sidebarAgentPane = nil;
-  [self.agentWalletPopover close];
-  self.agentWalletPopover = nil;
-  self.agentWalletButton.forcesHoverState = NO;
-  [self.taskStatusPopover close];
-  self.taskStatusPopover = nil;
-  self.taskStatusSidebarButton.forcesHoverState = NO;
   TLThemePreference themePreference = self.settings.theme;
   NSAppearance *requestedAppearance = nil;
   if (themePreference == TLThemePreferenceLight) {
@@ -5752,8 +4855,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.widgetbookMode) {
     self.createChatButton.enabled = NO;
     self.sidebarToggleButton.enabled = NO;
-    self.agentWalletButton.enabled = NO;
-    self.taskStatusSidebarButton.enabled = NO;
     self.notesShortcutButton.enabled = NO;
     self.historyShortcutButton.enabled = NO;
     self.sidebarUserButton.enabled = NO;
@@ -5777,8 +4878,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
-  self.agentWalletButton.enabled = YES;
-  self.taskStatusSidebarButton.enabled = YES;
   self.notesShortcutButton.enabled = YES;
   self.historyShortcutButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
@@ -5789,7 +4888,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   self.createChatButton.alphaValue = self.createChatButton.enabled ? 1.0 : self.palette.disabledOpacity;
   self.sidebarToggleButton.alphaValue = self.sidebarToggleButton.enabled ? 1.0 : self.palette.disabledOpacity;
-  self.agentWalletButton.alphaValue = self.agentWalletButton.enabled ? 1.0 : self.palette.disabledOpacity;
   self.sendButton.alphaValue = self.sendButton.enabled ? 1.0 : self.palette.disabledOpacity;
   [self styleSidebarActionButtons];
   [self.workspaceTabsController setControlsEnabled:YES disabledOpacity:self.palette.disabledOpacity];
