@@ -5,7 +5,8 @@
 
 CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palette) {
   CGFloat flareOutset = MIN(palette.tabFlareRadius, width * 0.18);
-  CGFloat tightening = MIN(palette.space2, flareOutset * 0.5);
+  CGFloat tightening = palette.tabFlareRadius > 0
+    ? palette.tabInterTabTightening * flareOutset / palette.tabFlareRadius : 0;
   return flareOutset + tightening;
 }
 
@@ -13,8 +14,8 @@ static NSBezierPath *TLChromeTabBackgroundPath(NSRect rect,
                                                TLThemePalette *palette,
                                                CGFloat requestedLeadingFlareOutset) {
   CGFloat radius = MIN(palette.radiusMedium, NSHeight(rect) * 0.45);
-  CGFloat flareOutset = MIN(palette.tabFlareRadius, rect.size.width * 0.18);
-  CGFloat flareHeight = MIN(palette.tabFlareRadius, rect.size.height * 0.5);
+  CGFloat flareOutset = MIN(palette.tabActiveFlareRadius, rect.size.width * 0.18);
+  CGFloat flareHeight = MIN(palette.tabActiveFlareRadius, rect.size.height * 0.5);
   CGFloat leadingFlareOutset = requestedLeadingFlareOutset >= 0.0
     ? MIN(flareOutset, requestedLeadingFlareOutset)
     : flareOutset;
@@ -436,6 +437,8 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 @property (nonatomic, strong) NSLayoutConstraint *iconHeightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *iconLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *iconCenterYConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *titleCenterYConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *closeCenterYConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *iconSpacingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *titleClipHeightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *titleClipTrailingConstraint;
@@ -683,6 +686,8 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.iconSpacingConstraint = [self.titleClipView.leadingAnchor constraintEqualToAnchor:self.tabIconView.trailingAnchor
                                                                                  constant:self.palette.tabIconTextSpacing];
   self.titleClipHeightConstraint = [self.titleClipView.heightAnchor constraintEqualToConstant:self.palette.tabHeight];
+  self.titleCenterYConstraint = [self.titleClipView.centerYAnchor constraintEqualToAnchor:self.centerYAnchor constant:-self.palette.tabContentVerticalOffset];
+  self.closeCenterYConstraint = [self.closeButton.centerYAnchor constraintEqualToAnchor:self.centerYAnchor constant:-self.palette.tabContentVerticalOffset];
   self.titleClipTrailingConstraint = [self.titleClipView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
                                                                                        constant:self.palette.space0];
   // The icon/title/close chain must not impose a minimum tab or window width.
@@ -706,7 +711,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 
     self.iconSpacingConstraint,
     self.titleClipTrailingConstraint,
-    [self.titleClipView.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+    self.titleCenterYConstraint,
     self.titleClipHeightConstraint,
     [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.titleClipView.leadingAnchor],
     [self.titleLabel.trailingAnchor constraintEqualToAnchor:self.titleClipView.trailingAnchor],
@@ -714,7 +719,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
     [self.titleLabel.bottomAnchor constraintEqualToAnchor:self.titleClipView.bottomAnchor],
 
     self.closeTrailingConstraint,
-    [self.closeButton.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+    self.closeCenterYConstraint,
     self.closeWidthConstraint,
     self.closeHeightConstraint,
   ]];
@@ -778,6 +783,8 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.iconWidthConstraint.constant = self.tabIconView.hasIcon ? self.palette.tabIconSize : self.palette.space0;
   self.iconHeightConstraint.constant = self.tabIconView.hasIcon ? self.palette.tabIconSize : self.palette.space0;
   self.iconCenterYConstraint.constant = [self tabIconContainerVerticalOffset];
+  self.titleCenterYConstraint.constant = -self.palette.tabContentVerticalOffset;
+  self.closeCenterYConstraint.constant = -self.palette.tabContentVerticalOffset;
   self.iconSpacingConstraint.constant = self.tabIconView.hasIcon ? self.palette.tabIconTextSpacing : self.palette.space0;
   self.titleClipHeightConstraint.constant = self.palette.tabHeight;
 
@@ -827,7 +834,9 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 }
 
 - (CGFloat)tabIconContainerVerticalOffset {
-  return self.image || self.systemIconName.length > 0 ? self.palette.space0 : self.palette.space2;
+  // Auto Layout's vertical constants increase downward, unlike our layer coordinates.
+  return -self.palette.tabContentVerticalOffset +
+    (self.image || self.systemIconName.length > 0 ? self.palette.space0 : self.palette.space2);
 }
 
 - (void)updateHorizontalContentInset {
@@ -966,7 +975,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   CGFloat leadingOutset = self.leadingFlareOutset >= self.palette.space0
     ? MIN(flareOutset, self.leadingFlareOutset) : flareOutset;
   return NSMakeRect(NSMinX(rect) + leadingOutset,
-                    NSMinY(rect) + self.palette.space2,
+                    NSMinY(rect) + self.palette.space2 + self.palette.tabContentVerticalOffset,
                     MAX(self.palette.space0, NSWidth(rect) - leadingOutset - flareOutset),
                     MAX(self.palette.space0, NSHeight(rect) - self.palette.space2 * 2.0));
 }
@@ -985,11 +994,11 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.inactiveHoverBackgroundLayer.cornerRadius = MIN(self.palette.tabFlareRadius, NSHeight(pillRect) * 0.5);
   self.inactiveHoverBackgroundLayer.masksToBounds = YES;
   self.leadingSeparatorLayer.frame = NSMakeRect(leadingCenterX - width * 0.5,
-                                                NSMinY(rect) + insetY,
+                                                NSMinY(rect) + insetY + self.palette.tabContentVerticalOffset,
                                                 width,
                                                 height);
   self.trailingSeparatorLayer.frame = NSMakeRect(trailingCenterX - width * 0.5,
-                                                 NSMinY(rect) + insetY,
+                                                 NSMinY(rect) + insetY + self.palette.tabContentVerticalOffset,
                                                  width,
                                                  height);
   [CATransaction commit];
@@ -1215,10 +1224,24 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 
 - (void)prepareForInsertionAnimation {
   [self setLifecycleVisibleWidth:NSWidth(self.bounds) * self.palette.tabLifecycleCollapsedWidthRatio
-                 contentOpacity:0.0];
+                 contentOpacity:1.0];
+}
+
+- (BOOL)canOpenTabContextMenu {
+  if (self.didDrag || (NSEvent.pressedMouseButtons & 1)) return NO;
+  if ([self.dragDelegate respondsToSelector:@selector(chromeTabViewShouldOpenContextMenu:)]) {
+    return [self.dragDelegate chromeTabViewShouldOpenContextMenu:self];
+  }
+  return YES;
+}
+
+- (void)rightMouseDown:(NSEvent *)event {
+  if (![self canOpenTabContextMenu]) return;
+  [super rightMouseDown:event];
 }
 
 - (NSMenu *)menuForEvent:(NSEvent *)event {
+  if (![self canOpenTabContextMenu]) return nil;
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
   menu.autoenablesItems = NO;
 

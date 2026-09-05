@@ -131,6 +131,7 @@
 @end
 
 static void AssertOffset(TLChromeTabView *tab, CGFloat expected, NSString *context) {
+  expected -= tab.palette.tabContentVerticalOffset;
   NSLayoutConstraint *constraint = [tab valueForKey:@"iconCenterYConstraint"];
   if (fabs(constraint.constant - expected) > 0.001) {
     NSLog(@"FAIL %@: expected %g, got %g", context, expected, constraint.constant);
@@ -160,7 +161,7 @@ static void TestSharedFlareSpace(TLThemePalette *palette) {
   [controller updateTabWidthsForAvailableWidth:300.0];
   AssertClose(leftWidth.constant, 156.0, @"two tabs reclaim their tightened shared boundary");
   AssertClose(rightWidth.constant, 156.0, @"tightened flare layout keeps tab widths equal");
-  AssertClose(stack.spacing, -(palette.tabFlareRadius + palette.space2), @"neighboring tab bodies sit closer together");
+  AssertClose(stack.spacing, -(palette.tabFlareRadius + palette.tabInterTabTightening), @"neighboring tabs use the shared spacing token");
   AssertClose(leftWidth.constant + rightWidth.constant + stack.spacing, 300.0, @"tightened tabs leave no unused strip width");
 
   [controller updateTabWidthsForAvailableWidth:20.0];
@@ -467,7 +468,9 @@ static void TestClosePreservesWidthsUntilPointerLeaves(TLThemePalette *palette) 
   TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc]
     initWithTabStack:stack target:harness delegate:(id)harness palette:palette transitionCoordinator:timeline];
   [controller reloadTabs];
-  [controller updateTabWidthsForAvailableWidth:400];
+  // Keep the initial equal widths pixel-aligned so preservation checks do not
+  // compare different AppKit rounding of neighboring fractional-width frames.
+  [controller updateTabWidthsForAvailableWidth:4 * 108 - 3 * TLChromeTabInterTabOverlapForWidth(palette.tabMaxWidth, palette)];
   NSArray<TLChromeTabView *> *views = [[controller valueForKey:@"tabViews"] copy];
   CGFloat width = NSWidth(views[1].frame);
   window.testPointer = [views[1] convertPoint:NSMakePoint(width * 0.5, palette.tabHeight * 0.5) toView:nil];
@@ -505,13 +508,13 @@ static void TestClosePreservesWidthsUntilPointerLeaves(TLThemePalette *palette) 
       NSLog(@"FAIL pointer exit must not finish the closing animation"); exit(1);
     }
     [controller updateTabWidthsForAvailableWidth:400];
-    restorationTime += palette.tabLifecycleTransitionDuration * 0.5;
+    restorationTime += palette.tabClosingTransitionDuration * 0.5;
     [timeline advance];
     if (![timeline hasTransitionForKey:@"lifecycle"] || !views[2].superview) {
       NSLog(@"FAIL closing tab must remain visible until its duration elapses"); exit(1);
     }
     AssertClose(NSWidth(views[3].frame), width, @"width restoration waits for closing to finish");
-    restorationTime += palette.tabLifecycleTransitionDuration * 0.5;
+    restorationTime += palette.tabClosingTransitionDuration * 0.5;
     [timeline advance];
     if ([timeline hasTransitionForKey:@"lifecycle"] || views[2].superview ||
         ![timeline hasTransitionForKey:@"width-restoration"]) {
@@ -618,15 +621,13 @@ static void TestNewTabButtonMovesWithInsertion(TLThemePalette *palette) {
     if (fabs(NSMinX(button.frame) - NSMaxX(controller.selectionView.selectionFrame)) > 0.5) {
       NSLog(@"FAIL plus must track the growing background's right edge"); exit(1);
     }
-    AssertClose(tabViews.lastObject.lifecycleContentOpacity, 0, @"new content waits until background advances before fading in");
+    AssertClose(tabViews.lastObject.lifecycleContentOpacity, 1, @"new content reveals at full opacity");
     now = palette.tabLifecycleTransitionDuration * 0.5;
     [timeline advance];
     if (fabs(NSMinX(button.frame) - NSMaxX(controller.selectionView.selectionFrame)) > 0.5) {
       NSLog(@"FAIL plus loses the background edge at midpoint"); exit(1);
     }
-    if (tabViews.lastObject.lifecycleContentOpacity <= 0 || tabViews.lastObject.lifecycleContentOpacity >= 1) {
-      NSLog(@"FAIL content should still be fading at midpoint"); exit(1);
-    }
+    AssertClose(tabViews.lastObject.lifecycleContentOpacity, 1, @"creation does not fade content at midpoint");
     AssertClose(NSMinX(controller.selectionView.selectionFrame), selectionStart + (selectionTarget - selectionStart) * 0.875,
                 @"new-tab background matches selection easing at half time");
     NSView *content = [tabViews.lastObject valueForKey:@"contentContainer"];
@@ -742,19 +743,23 @@ static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette
   [controller performPendingSelectionAnimation];
   TLChromeTabSelectionView *selection = [controller valueForKey:@"selectionView"];
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
-    now += palette.tabLifecycleTransitionDuration * 0.1;
+    now += palette.tabClosingTransitionDuration * 0.1;
     [timeline advance];
     if (closing.lifecycleContentOpacity >= 1.0 || closing.lifecycleContentOpacity <= 0.0) {
       NSLog(@"FAIL closing content should already be fading near the start"); exit(1);
     }
-    now += palette.tabLifecycleTransitionDuration * 0.4;
+    now += palette.tabClosingTransitionDuration * 0.4;
     [timeline advance];
     AssertClose(closing.lifecycleContentOpacity, 0.0, @"closing content finishes fading before the slot finishes shrinking");
     id transition = ((NSArray *)[controller valueForKey:@"removalTransitions"]).firstObject;
     NSView *placeholder = [transition valueForKey:@"placeholderView"];
     CGFloat targetWidth = MAX(0, -stack.spacing);
     CGFloat expectedWidth = (NSWidth(closingFrame) + targetWidth) * 0.5;
-    AssertClose(NSWidth(placeholder.frame), expectedWidth, @"closing slot contracts at shared progress");
+    AssertClose([[transition valueForKey:@"widthConstraint"] constant], expectedWidth,
+                @"closing slot contracts at shared progress");
+    if (fabs(NSWidth(placeholder.frame) - expectedWidth) > 0.5) {
+      NSLog(@"FAIL closing slot layout exceeds pixel rounding tolerance"); exit(1);
+    }
     AssertClose(closing.lifecycleVisibleWidth, expectedWidth, @"mask exactly matches the moving layout boundary");
     NSView *closingContent = [closing valueForKey:@"contentContainer"];
     CAShapeLayer *backgroundClip = (CAShapeLayer *)closingContent.layer.mask.mask;
@@ -768,7 +773,7 @@ static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette
                 @"closing content mask tracks the selected background width");
     AssertClose(NSWidth(closing.frame), NSWidth(closingFrame), @"content geometry is not scaled");
     AssertClose(NSMinX(selection.selectionFrame), NSMinX(closingFrame), @"background stays in the closing slot");
-    AssertClose(NSMinX(surviving.frame), survivingStartX - (NSWidth(closingFrame) - expectedWidth),
+    AssertClose(NSMinX(surviving.frame), survivingStartX - (NSWidth(closingFrame) - NSWidth(placeholder.frame)),
                 @"neighbor moves with the closing slot");
     if (selection.layer.mask || closing.drawsActiveBackground) {
       NSLog(@"FAIL closing content clips or duplicates the selection background"); exit(1);
@@ -780,7 +785,7 @@ static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette
       NSLog(@"FAIL metadata reload replaced the surviving view"); exit(1);
     }
     AssertClose(closing.lifecycleVisibleWidth, expectedWidth, @"metadata update preserves animation progress");
-    now += palette.tabLifecycleTransitionDuration;
+    now += palette.tabClosingTransitionDuration;
     [timeline advance];
   }
   if (closing.superview || ((NSArray *)[controller valueForKey:@"removalTransitions"]).count) {
@@ -795,7 +800,7 @@ static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
     AssertClose(inserted.lifecycleVisibleWidth, NSWidth(inserted.bounds) * palette.tabLifecycleCollapsedWidthRatio,
                 @"new tab starts clipped before the first tick");
-    AssertClose(inserted.lifecycleContentOpacity, 0.0, @"new tab starts transparent");
+    AssertClose(inserted.lifecycleContentOpacity, 1.0, @"new tab starts fully opaque behind its reveal mask");
     now += palette.tabLifecycleTransitionDuration * 0.25;
     [timeline advance];
     CGFloat interruptedWidth = inserted.lifecycleVisibleWidth;
@@ -832,15 +837,15 @@ static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette
         ((NSArray *)[controller valueForKey:@"insertingTabViews"]).count != 1) {
       NSLog(@"FAIL same-batch insertion cancels the closing tab"); exit(1);
     }
-    AssertClose(appearing.lifecycleContentOpacity, 0.0, @"same-batch replacement starts hidden");
+    AssertClose(appearing.lifecycleContentOpacity, 1.0, @"same-batch replacement reveals without fading");
     now += palette.tabLifecycleTransitionDuration * 0.5;
     [timeline advance];
     id removal = ((NSArray *)[controller valueForKey:@"removalTransitions"]).firstObject;
-    NSView *placeholder = [removal valueForKey:@"placeholderView"];
+    NSLayoutConstraint *closingWidth = [removal valueForKey:@"widthConstraint"];
     CGFloat collapsedWidth = MAX(0, -stack.spacing);
-    AssertClose(NSWidth(placeholder.frame), (replacedWidth + collapsedWidth) * 0.5,
+    AssertClose(closingWidth.constant, (replacedWidth + collapsedWidth) * 0.5,
                 @"same-batch replacement contracts the outgoing slot at shared midpoint");
-    AssertClose(replaced.lifecycleVisibleWidth, NSWidth(placeholder.frame),
+    AssertClose(replaced.lifecycleVisibleWidth, closingWidth.constant,
                 @"same-batch replacement keeps the outgoing mask aligned");
     AssertClose(appearing.lifecycleVisibleWidth,
                 NSWidth(appearing.frame) * (1.0 + palette.tabLifecycleCollapsedWidthRatio) * 0.5,
@@ -869,7 +874,7 @@ static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette
   harness.tabs = @[replacement];
   [controller reloadTabs];
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
-    now += palette.tabLifecycleTransitionDuration * 0.5;
+    now += palette.tabClosingTransitionDuration * 0.5;
     [timeline advance];
     id laterRemoval = ((NSArray *)[controller valueForKey:@"removalTransitions"])[1];
     NSView *laterPlaceholder = [laterRemoval valueForKey:@"placeholderView"];
@@ -1008,7 +1013,7 @@ static void TestDraggedTabOpensInsertionGap(TLThemePalette *palette) {
   [lastTab setValue:@(-275.0) forKey:@"dragTranslationX"];
   [controller chromeTabView:lastTab didDragWithEvent:event];
   AssertClose(harness.contentCornerRadius, palette.space5, @"content corner restores away from the edge");
-  AssertClose(lastTab.leadingFlareOutset, palette.tabFlareRadius, @"tab flare restores away from the edge");
+  AssertClose(lastTab.leadingFlareOutset, palette.tabActiveFlareRadius, @"tab flare restores away from the edge");
   [controller chromeTabViewDidEndDragging:lastTab];
 }
 
@@ -1041,12 +1046,22 @@ static void TestDropSettlesFromVisiblePosition(TLThemePalette *palette) {
   [controller chromeTabView:dragged didDragWithEvent:nil];
   CGFloat releaseX = NSMinX(dragged.frame) + dragged.dragTranslationX;
   CGFloat neighborReleaseX = NSMinX(neighbor.frame) + (neighbor.layer.presentationLayer ?: neighbor.layer).transform.m41;
+  NSEvent *rightClick = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown location:NSZeroPoint
+    modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+  if ([dragged menuForEvent:rightClick] || [neighbor menuForEvent:rightClick]) {
+    NSLog(@"FAIL all tab context menus must be suppressed during drag"); exit(1);
+  }
+  [dragged rightMouseDown:rightClick];
+  [neighbor rightMouseDown:rightClick];
+  AssertClose(NSMinX(dragged.frame) + dragged.dragTranslationX, releaseX,
+              @"right-click leaves the active drag position intact");
   NSEvent *release = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:NSZeroPoint
     modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0];
   [dragged mouseUp:release];
   if (harness.tabs.lastObject.tabID != 801) { NSLog(@"FAIL drop must commit the new order"); exit(1); }
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
     AssertClose(NSMinX(dragged.frame) + dragged.reorderTranslationX, releaseX, @"mouse-up preserves dragged artwork position");
+    if ([neighbor menuForEvent:rightClick]) { NSLog(@"FAIL menus must wait for settling"); exit(1); }
     AssertClose(NSMinX(controller.selectionView.selectionFrame), releaseX, @"mouse-up preserves slab position");
     AssertClose(NSMinX(neighbor.frame) + neighbor.reorderTranslationX, neighborReleaseX,
                 @"mouse-up preserves the neighbor's in-flight position");
@@ -1063,6 +1078,9 @@ static void TestDropSettlesFromVisiblePosition(TLThemePalette *palette) {
   AssertClose(dragged.reorderTranslationX, 0, @"drop clears dragged offset after settling");
   AssertClose(neighbor.reorderTranslationX, 0, @"drop clears neighbor offset after settling");
   AssertClose(controller.selectionView.layer.zPosition, -1, @"drop restores normal slab depth after settling");
+  if (![dragged menuForEvent:rightClick] || ![neighbor menuForEvent:rightClick]) {
+    NSLog(@"FAIL tab context menus must return after drop settles"); exit(1);
+  }
   [window close];
 }
 
@@ -1267,9 +1285,13 @@ static void TestInactiveDecorationFades(TLThemePalette *palette) {
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
     CABasicAnimation *fade = (CABasicAnimation *)[hover animationForKey:@"tab-decoration-fade"];
     CGFloat timingMultiplier = palette.tabHoverFadeDuration / 0.10;
-    AssertClose(palette.tabSelectionSlideDuration, 0.16 * timingMultiplier, @"selection shares tab timing multiplier");
+    AssertClose(palette.tabSelectionSlideDuration, 0.16 * timingMultiplier, @"long selection uses 320ms at normal speed");
+    AssertClose(palette.tabNeighborSelectionSlideDuration, 0.12 * timingMultiplier, @"neighbor selection uses 240ms at normal speed");
+    AssertClose(palette.tabTeleportSelectionSlideDuration, 0.14 * timingMultiplier, @"teleport selection uses 280ms at normal speed");
     AssertClose(palette.tabReorderSlideDuration, 0.12 * timingMultiplier, @"reordering shares tab timing multiplier");
-    AssertClose(palette.tabLifecycleTransitionDuration, 0.20 * timingMultiplier, @"lifecycle shares tab timing multiplier");
+    AssertClose(palette.tabLifecycleTransitionDuration, 0.135 * timingMultiplier, @"creation uses 270ms at normal speed");
+    AssertClose(palette.tabClosingTransitionDuration, 0.10 * timingMultiplier,
+                @"closing retains its independent 200ms duration");
     AssertClose(palette.tabSeparatorFadeDuration, palette.tabHoverFadeDuration, @"separators match the 100ms hover timing and shared multiplier");
     AssertClose(fade.duration, palette.tabHoverFadeDuration, @"hover background fades in over the themed duration");
   }
@@ -1309,7 +1331,7 @@ static void TestClosingFirstTabAnimatesSelectedNeighborCorners(TLThemePalette *p
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
     BOOL sawPartialRadius = NO;
     for (NSUInteger tick = 0; tick < 100; tick++) {
-      now = palette.tabLifecycleTransitionDuration * tick / 100.0;
+      now = palette.tabClosingTransitionDuration * tick / 100.0;
       [timeline advance];
       CGFloat distance = MAX(0, NSMinX(controller.selectionView.selectionFrame) - edge);
       if (firstView.layer.zPosition >= controller.selectionView.layer.zPosition) {
@@ -1317,7 +1339,7 @@ static void TestClosingFirstTabAnimatesSelectedNeighborCorners(TLThemePalette *p
       }
       AssertClose(controller.selectionView.layer.zPosition, -1,
                   @"covering the closing predecessor does not raise the slab over live tabs");
-      AssertClose(controller.selectionView.leadingFlareOutset, MIN(palette.tabFlareRadius, distance),
+      AssertClose(controller.selectionView.leadingFlareOutset, MIN(palette.tabActiveFlareRadius, distance),
                   @"closing first slot keeps the selected neighbor flare tied to the strip edge");
       AssertClose(harness.contentCornerRadius, MIN(palette.space5, distance),
                   @"content corner follows the selected neighbor as the preceding slot collapses");
@@ -1352,7 +1374,7 @@ static void TestSelectionEdgeFollowsVisibleBackground(TLThemePalette *palette) {
       NSRect frame = NSOffsetRect(first.frame, offset.doubleValue, 0);
       [selection setSelectionFrame:frame leadingFlareOutset:-1 animated:NO fromFrame:frame duration:0];
       [controller updateEdgeAttachmentState];
-      AssertClose(selection.leadingFlareOutset, MIN(palette.tabFlareRadius, offset.doubleValue),
+      AssertClose(selection.leadingFlareOutset, MIN(palette.tabActiveFlareRadius, offset.doubleValue),
                   @"selection flare follows distance from edge regardless of logical selection");
       AssertClose(harness.contentCornerRadius, MIN(palette.space5, offset.doubleValue),
                   @"content corner follows approaching and departing background");
@@ -1394,16 +1416,18 @@ static void TestSelectionSlabSlidesBetweenTabs(TLThemePalette *palette) {
   left.active = NO;
   right.active = YES;
   [controller setValue:[NSValue valueWithRect:left.frame] forKey:@"pendingSelectionStartFrame"];
+  [controller setValue:@0 forKey:@"pendingSelectionStartIndex"];
+  [controller setValue:@1 forKey:@"pendingSelectionTargetIndex"];
   [controller setValue:@YES forKey:@"hasPendingSelectionAnimation"];
   [controller performPendingSelectionAnimation];
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
     AssertClose(NSMinX(selectionView.selectionFrame), NSMinX(left.frame), @"selection begins at previous tab");
     AssertClose(selectionView.leadingFlareOutset, 0, @"departing first tab starts attached to the edge");
-    now = palette.tabSelectionSlideDuration * 0.001;
+    now = palette.tabNeighborSelectionSlideDuration * 0.001;
     [timeline advance];
     AssertClose(selectionView.leadingFlareOutset, NSMinX(selectionView.selectionFrame),
                 @"selection tick gradually opens the flare near the edge");
-    now = palette.tabSelectionSlideDuration * 0.5;
+    now = palette.tabNeighborSelectionSlideDuration * 0.5;
     [timeline advance];
     AssertClose(NSMinX(selectionView.selectionFrame), NSMinX(left.frame) + (NSMinX(right.frame) - NSMinX(left.frame)) * 0.875,
                 @"selection eases out without a slow ease-in start");
@@ -1411,7 +1435,7 @@ static void TestSelectionSlabSlidesBetweenTabs(TLThemePalette *palette) {
     if (![timeline hasTransitionForKey:@"selection"]) {
       NSLog(@"FAIL duplicate reload cancels the selection transition"); exit(1);
     }
-    now = palette.tabSelectionSlideDuration;
+    now = palette.tabNeighborSelectionSlideDuration;
     [timeline advance];
   }
   if (!NSEqualRects(selectionView.selectionFrame, right.frame) || timeline.hasTransitions) {
@@ -1506,6 +1530,22 @@ int main(void) {
       TLThemePreference theme = themeValue.integerValue;
       TLChromeTabView *tab = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, 200, 36)];
       tab.palette = [TLThemePalette paletteForPreference:theme];
+      AssertClose(tab.palette.tabContentVerticalOffset, 1, @"tab artwork moves up one point");
+      AssertClose(tab.palette.tabActiveFlareRadius, 9.6, @"active tab flares are twenty percent larger");
+      AssertClose(TLChromeTabInterTabOverlapForWidth(tab.palette.tabMaxWidth, tab.palette),
+                  tab.palette.tabFlareRadius + tab.palette.space2, @"tabs use their original spacing without the extra half point");
+      AssertClose(tab.palette.tabActiveHeightReduction, 1, @"selected background moves up one point");
+      AssertClose([[tab valueForKey:@"titleCenterYConstraint"] constant], -1, @"title moves up with tab artwork");
+      AssertClose([[tab valueForKey:@"closeCenterYConstraint"] constant], -1, @"close button moves up with tab artwork");
+      [tab layoutSubtreeIfNeeded];
+      for (NSString *key in @[@"titleClipView", @"closeButton"]) {
+        NSView *content = [tab valueForKey:key];
+        NSRect contentRect = [content convertRect:content.bounds toView:tab];
+        AssertClose(NSMidY(contentRect), NSMidY(tab.bounds) + tab.palette.tabContentVerticalOffset,
+                    @"laid-out content moves upward in the tab's unflipped coordinates");
+      }
+      CALayer *separator = [tab valueForKey:@"leadingSeparatorLayer"];
+      AssertClose(NSMinY(separator.frame), tab.palette.space5 + 1, @"separator moves up without changing height");
       tab.icon = @"\U0001F310";
       AssertOffset(tab, tab.palette.space2, @"Emoji fallback keeps its offset");
 

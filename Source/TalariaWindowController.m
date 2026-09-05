@@ -5578,10 +5578,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.contentShadowView.borderEdges = TLBorderEdgeNone;
   self.contentShadowView.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
   self.contentShadowView.layer.masksToBounds = NO;
-  self.contentShadowView.layer.shadowColor = TLCGColor(self.palette.contentShadow);
-  self.contentShadowView.layer.shadowOpacity = 1.0;
-  self.contentShadowView.layer.shadowRadius = self.palette.space5;
-  self.contentShadowView.layer.shadowOffset = NSMakeSize(self.palette.space0, -self.palette.space2);
+  // The unified workspace perimeter owns the content + selected-tab shadow.
+  self.contentShadowView.layer.shadowOpacity = 0.0;
   self.contentHost.fillColor = self.palette.tabBackground;
   self.workspaceOutline.palette = self.palette;
   self.contentHost.layer.masksToBounds = YES;

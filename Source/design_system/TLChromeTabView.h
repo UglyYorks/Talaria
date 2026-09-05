@@ -30,6 +30,8 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 - (void)chromeTabViewDidEndDragging:(TLChromeTabView *)tabView;
 - (void)chromeTabViewHoverStateDidChange:(TLChromeTabView *)tabView;
 - (void)chromeTabViewDidRequestCloseOtherTabs:(TLChromeTabView *)tabView;
+@optional
+- (BOOL)chromeTabViewShouldOpenContextMenu:(TLChromeTabView *)tabView;
 @end
 
 @interface TLChromeTabView : NSControl

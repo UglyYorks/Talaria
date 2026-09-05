@@ -40,13 +40,19 @@ static void TestUnifiedWorkspaceOutline(void) {
   [selection setSelectionFrame:selectedRect leadingFlareOutset:palette.tabFlareRadius
     animated:NO fromFrame:selectedRect duration:0];
   CAShapeLayer *layer = [outline valueForKey:@"outlineLayer"];
+  CALayer *shadow = [outline valueForKey:@"shadowLayer"];
+  CAShapeLayer *shadowMask = [outline valueForKey:@"shadowMask"];
+  Check(CGPathEqualToPath(shadow.shadowPath, layer.path), @"shadow follows the unified workspace silhouette");
+  Check(!CGPathContainsPoint(shadowMask.path, NULL, CGPointMake(180, 220), true), @"shadow cannot shade the tab/content join");
+  Check(CGPathContainsPoint(shadowMask.path, NULL, CGPointMake(10, 100), true), @"shadow remains visible outside content");
+  Check(shadow.shadowRadius == palette.workspaceShadowRadius, @"workspace shadow uses tight themed blur");
   Check(fabs(layer.opacity - 1.0 / 3.0) < 0.0001,
         @"workspace outline is one-third opacity without changing shared border colors");
   CGPathRef stroke = CGPathCreateCopyByStrokingPath(layer.path, NULL, layer.lineWidth,
     kCGLineCapButt, kCGLineJoinRound, 0);
   Check(!CGPathContainsPoint(stroke, NULL, CGPointMake(180, 220), false), @"joined border has no seam below selected tab");
   Check(CGPathContainsPoint(stroke, NULL, CGPointMake(60, 220), false), @"content top border remains outside selection");
-  Check(CGPathContainsPoint(stroke, NULL, CGPointMake(180, 254), false), @"border follows selected tab top");
+  Check(CGPathContainsPoint(stroke, NULL, CGPointMake(180, 220 + palette.tabHeight - palette.tabActiveHeightReduction), false), @"border follows selected tab top");
   Check(CGPathContainsPoint(stroke, NULL, CGPointMake(20, 100), false), @"border wraps content side");
   Check(!CGPathContainsPoint(layer.path, NULL, CGPointMake(20.5, 20.5), false), @"content corner remains rounded");
   CGPathRelease(stroke);
@@ -58,17 +64,28 @@ static void TestUnifiedWorkspaceOutline(void) {
   selectedRect.origin.x = 200;
   [selection setSelectionFrame:selectedRect leadingFlareOutset:palette.tabFlareRadius
     animated:NO fromFrame:selectedRect duration:0];
+  Check(CGPathEqualToPath(shadow.shadowPath, layer.path), @"shadow moves with the selected tab on the same tick");
   stroke = CGPathCreateCopyByStrokingPath(layer.path, NULL, layer.lineWidth, kCGLineCapButt, kCGLineJoinRound, 0);
   Check(!CGPathContainsPoint(stroke, NULL, CGPointMake(140, 254), false), @"moving selection removes old tab outline");
-  Check(CGPathContainsPoint(stroke, NULL, CGPointMake(280, 254), false), @"moving selection updates outline on the same tick");
+  Check(CGPathContainsPoint(stroke, NULL, CGPointMake(280, 220 + palette.tabHeight - palette.tabActiveHeightReduction), false), @"moving selection updates outline on the same tick");
   CGPathRelease(stroke);
   selection.hidden = YES;
   Check(CGRectGetMaxY(CGPathGetBoundingBox(layer.path)) == 220, @"hidden selection leaves only the content perimeter");
   outline.palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
+  Check(CGColorEqualToColor(shadow.shadowColor, TLCGColor(outline.palette.contentShadow)), @"unified shadow follows theme changes");
   Check(CGColorEqualToColor(layer.strokeColor, TLCGColor(outline.palette.controlBorder)), @"outline follows theme border color");
   content.topLeftCornerRadius = 0;
   [outline updateOutline];
   Check(CGPathContainsPoint(layer.path, NULL, CGPointMake(20.5, 219.5), false), @"outline respects connected first-tab corner geometry");
+  selection.hidden = NO;
+  NSRect edgeTab = NSMakeRect(20, 220 + 0.000001, 160, palette.tabHeight);
+  [selection setSelectionFrame:edgeTab leadingFlareOutset:0 animated:NO fromFrame:edgeTab duration:0];
+  [outline updateOutline];
+  stroke = CGPathCreateCopyByStrokingPath(layer.path, NULL, layer.lineWidth,
+    kCGLineCapButt, kCGLineJoinRound, 0);
+  Check(!CGPathContainsPoint(stroke, NULL, CGPointMake(100, 220), false),
+        @"subpixel layout rounding must not create an internal seam under the first selected tab");
+  CGPathRelease(stroke);
   // Sidebar layout changes move content and the tab strip together. Rebuilding
   // after both frames settle must leave no outline at their previous position.
   selection.hidden = NO;

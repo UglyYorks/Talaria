@@ -339,7 +339,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   // One batch can remove and insert together (for example when persisting a
   // draft). Both halves share the track, so neither cancels the other's cleanup.
   BOOL openingOnly = insertedTabViews.count > 0 && transitions.count == 0;
-  [self.transitionCoordinator startTransitionForKey:@"lifecycle" duration:[self lifecycleDuration]
+  NSTimeInterval duration = [self lifecycleDuration];
+  if (insertedTabViews.count == 0 && duration > 0) duration = self.palette.tabClosingTransitionDuration;
+  [self.transitionCoordinator startTransitionForKey:@"lifecycle" duration:duration
     curve:openingOnly ? TLTransitionCurveEaseOut : TLTransitionCurveEaseInOut
     update:^(CGFloat progress) {
       TLWorkspaceTabsController *owner = weakSelf;
@@ -368,16 +370,8 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
       }
       CGFloat ratio = owner.palette.tabLifecycleCollapsedWidthRatio;
       CGFloat widthRatio = ratio + (1.0 - ratio) * progress;
-      // Preserve the delayed fade's timing while travel uses selection's ease-out.
-      CGFloat fadeProgress = progress;
-      if (openingOnly) {
-        CGFloat timeProgress = 1.0 - cbrt(MAX(0.0, 1.0 - progress));
-        fadeProgress = timeProgress * timeProgress * (3.0 - 2.0 * timeProgress);
-      }
-      CGFloat opacity = MIN(1.0, MAX(0.0, (fadeProgress - owner.palette.tabInsertionFadeStartProgress) /
-        MAX(0.001, owner.palette.tabInsertionFadeEndProgress - owner.palette.tabInsertionFadeStartProgress)));
       for (TLChromeTabView *view in insertedTabViews) {
-        [view setLifecycleVisibleWidth:NSWidth(view.bounds) * widthRatio contentOpacity:opacity];
+        [view setLifecycleVisibleWidth:NSWidth(view.bounds) * widthRatio contentOpacity:1.0];
       }
       if (insertedTabViews.count > 0) {
         for (TLChromeTabView *view in owner.tabViews) {
@@ -739,16 +733,21 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 
   CGFloat tabCount = (CGFloat)self.tabWidthConstraints.count;
   CGFloat sharedBoundaryCount = MAX(self.palette.space0, tabCount - 1.0);
-  CGFloat maximumOverlap = TLChromeTabInterTabOverlapForWidth(self.palette.tabMaxWidth, self.palette);
-  CGFloat equalWidth = (availableWidth + sharedBoundaryCount * maximumOverlap) / tabCount;
-  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(equalWidth, self.palette);
-  if (overlap < maximumOverlap) {
-    equalWidth = availableWidth / (tabCount - 0.27 * sharedBoundaryCount);
+  // Solve against the actual overlap function, including its partially
+  // compressed flare range, so spacing changes never expand the window.
+  CGFloat lowerWidth = self.palette.space0;
+  CGFloat upperWidth = self.palette.tabMaxWidth;
+  for (NSUInteger iteration = 0; iteration < 48; iteration++) {
+    CGFloat candidate = (lowerWidth + upperWidth) * 0.5;
+    CGFloat occupiedWidth = tabCount * candidate - sharedBoundaryCount *
+      TLChromeTabInterTabOverlapForWidth(candidate, self.palette);
+    if (occupiedWidth <= availableWidth) lowerWidth = candidate;
+    else upperWidth = candidate;
   }
-  equalWidth = MIN(self.palette.tabMaxWidth, MAX(self.palette.space0, equalWidth));
+  CGFloat equalWidth = lowerWidth;
   // A smaller window may still compress tabs, but closing tabs cannot grow them.
   if (self.preservedTabWidth > 0) equalWidth = MIN(equalWidth, self.preservedTabWidth);
-  overlap = TLChromeTabInterTabOverlapForWidth(equalWidth, self.palette);
+  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(equalWidth, self.palette);
   self.tabStack.spacing = -overlap;
   for (NSLayoutConstraint *constraint in self.tabWidthConstraints) {
     constraint.constant = equalWidth;
@@ -845,6 +844,14 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   NSRect startFrame = self.hasPendingSelectionAnimation
     ? self.pendingSelectionStartFrame
     : [self visibleSelectionFrameWithFallback:targetFrame];
+  BOOL neighboringTabs = self.hasPendingSelectionAnimation &&
+    self.pendingSelectionStartIndex != NSNotFound && self.pendingSelectionTargetIndex != NSNotFound &&
+    labs((NSInteger)self.pendingSelectionStartIndex - (NSInteger)self.pendingSelectionTargetIndex) == 1;
+  NSTimeInterval duration = neighboringTabs ? self.palette.tabNeighborSelectionSlideDuration : self.palette.tabSelectionSlideDuration;
+  BOOL teleports = self.hasPendingSelectionAnimation &&
+    self.pendingSelectionStartIndex != NSNotFound && self.pendingSelectionTargetIndex < self.tabViews.count &&
+    labs((NSInteger)self.pendingSelectionStartIndex - (NSInteger)self.pendingSelectionTargetIndex) > 2;
+  if (teleports) duration = self.palette.tabTeleportSelectionSlideDuration;
   BOOL shouldAnimate = animated && !self.selectionView.hidden && self.tabStack.window &&
     self.palette.tabSelectionSlideDuration > 0.0 &&
     !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion &&
@@ -856,7 +863,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   [self.selectionView layoutSubtreeIfNeeded];
   __weak typeof(self) weakSelf = self;
   [self.transitionCoordinator startTransitionForKey:@"selection"
-    duration:shouldAnimate ? self.palette.tabSelectionSlideDuration : 0.0
+    duration:shouldAnimate ? duration : 0.0
     curve:TLTransitionCurveEaseOut
     update:^(CGFloat progress) {
       TLWorkspaceTabsController *owner = weakSelf;
@@ -913,7 +920,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     NSMinX(firstTabView.frame) + firstTabView.reorderTranslationX - leadingEdge);
   firstTabView.leadingFlareOutset = MIN(self.palette.tabFlareRadius, firstTabDistance);
   CGFloat distance = MAX(self.palette.space0, NSMinX(self.selectionView.selectionFrame) - leadingEdge);
-  self.selectionView.leadingFlareOutset = MIN(self.palette.tabFlareRadius, distance);
+  self.selectionView.leadingFlareOutset = MIN(self.palette.tabActiveFlareRadius, distance);
   CGFloat radius = [self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]
     ? MIN(self.palette.space5, distance) : self.palette.space5;
   NSRect contentBounds = [self.delegate workspaceTabsControllerContentDragBoundsInWindow:self];
@@ -1019,6 +1026,10 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   }];
 }
 
+- (BOOL)chromeTabViewShouldOpenContextMenu:(TLChromeTabView *)tabView {
+  return !self.draggedTab && !self.settlingDrop;
+}
+
 - (CGFloat)chromeTabView:(TLChromeTabView *)tabView
 constrainedHorizontalTranslationForEvent:(NSEvent *)event
      proposedTranslation:(CGFloat)translationX {
@@ -1116,7 +1127,7 @@ constrainedHorizontalTranslationForEvent:(NSEvent *)event
       CGFloat draggedMinX = NSMinX(tabFrame) + draggedTabView.dragTranslationX;
       CGFloat distanceToEdge = MAX(0.0, draggedMinX - NSMinX(contentBounds));
       contentRadius = MIN(self.palette.space5, distanceToEdge);
-      draggedTabView.leadingFlareOutset = MIN(self.palette.tabFlareRadius, distanceToEdge);
+      draggedTabView.leadingFlareOutset = MIN(self.palette.tabActiveFlareRadius, distanceToEdge);
     }
   } else if (draggedTabView != firstTabView) {
     firstTabView.leadingFlareOutset = self.palette.space0;
