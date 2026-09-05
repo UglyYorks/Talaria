@@ -10,6 +10,7 @@
 @end
 
 @interface TLWorkspaceTabsController (TabSelectionTesting)
+- (void)mouseExited:(NSEvent *)event;
 - (void)updateSelectionIndicatorAnimated:(BOOL)animated;
 - (void)performPendingSelectionAnimation;
 - (void)updateSeparatorVisibility;
@@ -17,6 +18,14 @@
 - (CGFloat)chromeTabView:(TLChromeTabView *)tabView constrainedHorizontalTranslationForEvent:(NSEvent *)event proposedTranslation:(CGFloat)translationX;
 - (void)chromeTabViewDidEndDragging:(TLChromeTabView *)tabView;
 - (void)chromeTabViewDidRequestCloseOtherTabs:(TLChromeTabView *)tabView;
+@end
+
+@interface TLTabPointerWindow : NSWindow
+@property (nonatomic) NSPoint testPointer;
+@end
+@implementation TLTabPointerWindow
+- (NSPoint)mouseLocationOutsideOfEventStream { return self.testPointer; }
+- (BOOL)isVisible { return YES; }
 @end
 
 @interface TLTabContextMenuHarness : NSObject
@@ -355,6 +364,75 @@ static void TestClosingActiveTabAnimatesToFallback(TLThemePalette *palette) {
     exit(1);
   }
   [controller performPendingSelectionAnimation];
+}
+
+static void TestClosePreservesWidthsUntilPointerLeaves(TLThemePalette *palette) {
+  TLTabPointerWindow *window = [[TLTabPointerWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, palette.tabHeight)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  NSStackView *stack = [[NSStackView alloc] initWithFrame:window.contentView.bounds];
+  [window.contentView addSubview:stack];
+  TLTabContextMenuHarness *harness = [[TLTabContextMenuHarness alloc] init];
+  NSMutableArray *models = [NSMutableArray array];
+  for (NSInteger index = 1; index <= 4; index++) {
+    [models addObject:[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:index
+      title:@"Tab" toolTip:@"" URL:nil closeable:YES]];
+  }
+  harness.tabs = models.copy;
+  harness.activeTabID = 1;
+  TLTransitionCoordinator *timeline = [[TLTransitionCoordinator alloc]
+    initWithClock:^NSTimeInterval { return 0; } automaticallyAdvances:NO];
+  TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc]
+    initWithTabStack:stack target:harness delegate:(id)harness palette:palette transitionCoordinator:timeline];
+  [controller reloadTabs];
+  [controller updateTabWidthsForAvailableWidth:400];
+  NSArray<TLChromeTabView *> *views = [[controller valueForKey:@"tabViews"] copy];
+  CGFloat width = NSWidth(views[1].frame);
+  NSButton *close = [views[1] valueForKey:@"closeButton"];
+  [views[1] layoutSubtreeIfNeeded];
+  NSPoint closePoint = [close convertPoint:NSMakePoint(NSMidX(close.bounds), NSMidY(close.bounds)) toView:nil];
+  window.testPointer = closePoint;
+  harness.tabs = @[models[0], models[2], models[3]];
+  [controller reloadTabs];
+  [controller updateTabWidthsForAvailableWidth:400];
+  [timeline finishAllTransitions];
+  AssertClose(NSWidth(views[2].frame), width, @"closing a tab preserves surviving widths under the pointer");
+  NSButton *nextClose = [views[2] valueForKey:@"closeButton"];
+  [views[2] layoutSubtreeIfNeeded];
+  NSPoint nextClosePoint = [nextClose convertPoint:NSMakePoint(NSMidX(nextClose.bounds), NSMidY(nextClose.bounds)) toView:nil];
+  AssertClose(nextClosePoint.x, closePoint.x, @"next close button arrives under the unchanged pointer");
+  NSTrackingArea *area = [controller valueForKey:@"widthPreservationTrackingArea"];
+  harness.tabs = @[models[0], models[3]];
+  [controller reloadTabs];
+  [controller updateTabWidthsForAvailableWidth:400];
+  [timeline finishAllTransitions];
+  AssertClose(NSWidth(views[3].frame), width, @"repeated close keeps the same widths");
+  [controller reloadTabs];
+  [controller updateTabWidthsForAvailableWidth:400];
+  AssertClose(NSWidth(views[3].frame), width, @"metadata refresh cannot expand held tabs");
+  if (area != [controller valueForKey:@"widthPreservationTrackingArea"]) {
+    NSLog(@"FAIL shrinking tabs must retain the original hover area"); exit(1);
+  }
+  window.testPointer = NSMakePoint(410, -10);
+  NSEvent *exitEvent = [NSEvent enterExitEventWithType:NSEventTypeMouseExited location:window.testPointer
+    modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 trackingNumber:0 userData:NULL];
+  [controller mouseExited:exitEvent];
+  AssertClose(NSWidth(views[3].frame), palette.tabMaxWidth, @"leaving the strip restores normal tab width calculation");
+  if ([window.contentView.trackingAreas containsObject:area]) {
+    NSLog(@"FAIL leaving strip must remove temporary width tracking"); exit(1);
+  }
+  // A keyboard/programmatic close outside the strip must not create a hold.
+  harness.tabs = models.copy;
+  [controller reloadTabs]; [timeline finishAllTransitions];
+  [controller updateTabWidthsForAvailableWidth:400];
+  harness.tabs = @[models[0], models[2], models[3]];
+  [controller reloadTabs]; [controller updateTabWidthsForAvailableWidth:400];
+  [timeline finishAllTransitions];
+  NSArray *constraints = [controller valueForKey:@"tabWidthConstraints"];
+  AssertClose(((NSLayoutConstraint *)constraints.firstObject).constant,
+              (400 + 2 * TLChromeTabInterTabOverlapForWidth(palette.tabMaxWidth, palette)) / 3,
+              @"closing outside the strip immediately recalculates widths");
+  [window close];
 }
 
 static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette) {
@@ -912,6 +990,7 @@ int main(void) {
       TestMouseDownSelectsBeforeMouseUpAndPreservesDragView(tab.palette);
       TestClosingActiveTabAnimatesToFallback(tab.palette);
       TestTabRemovalUsesClipMaskAndClosesLayoutGap(tab.palette);
+      TestClosePreservesWidthsUntilPointerLeaves(tab.palette);
       TestDraggedTabOpensInsertionGap(tab.palette);
       TestInactiveFirstTabPadding(tab.palette);
       TestInactiveSeparatorCentering(tab.palette);

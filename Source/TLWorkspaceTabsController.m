@@ -46,6 +46,10 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 @property (nonatomic) NSUInteger draggedStartIndex;
 @property (nonatomic) NSUInteger draggedCurrentIndex;
 @property (nonatomic) BOOL newTabButtonHovered;
+@property (nonatomic) CGFloat preservedTabWidth;
+@property (nonatomic) CGFloat latestAvailableWidth;
+@property (nonatomic, strong) NSTrackingArea *widthPreservationTrackingArea;
+@property (nonatomic, weak) NSView *widthPreservationHost;
 
 - (void)configureWorkspaceTabView:(TLChromeTabView *)tabView
                            forTab:(TLWorkspaceTab *)tab
@@ -97,6 +101,17 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 
 - (void)reloadTabs {
   NSArray<TLWorkspaceTab *> *tabs = [self.delegate workspaceTabsForTabsController:self];
+  NSMutableSet *incomingIDs = [NSMutableSet set];
+  NSMutableSet *previousIDs = [NSMutableSet set];
+  for (TLWorkspaceTab *tab in tabs) [incomingIDs addObject:TLTabIdentity(tab)];
+  for (TLChromeTabView *view in self.tabViews) [previousIDs addObject:TLTabIdentity(view.representedObject)];
+  BOOL hasInsertion = ![incomingIDs isSubsetOfSet:previousIDs];
+  BOOL hasRemoval = ![previousIDs isSubsetOfSet:incomingIDs];
+  if (hasInsertion || tabs.count == 0) {
+    [self clearPreservedTabWidth];
+  } else if (hasRemoval) {
+    [self preserveTabWidthWhileHovered];
+  }
   BOOL structureChanged = tabs.count != self.tabViews.count;
   for (NSUInteger index = 0; !structureChanged && index < tabs.count; index += 1) {
     structureChanged = ![TLTabIdentity(tabs[index]) isEqual:TLTabIdentity(self.tabViews[index].representedObject)];
@@ -523,7 +538,53 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   }
 }
 
+- (void)dealloc {
+  [_widthPreservationHost removeTrackingArea:_widthPreservationTrackingArea];
+}
+
+- (void)clearPreservedTabWidth {
+  if (self.widthPreservationTrackingArea) {
+    [self.widthPreservationHost removeTrackingArea:self.widthPreservationTrackingArea];
+  }
+  self.widthPreservationTrackingArea = nil;
+  self.widthPreservationHost = nil;
+  self.preservedTabWidth = 0;
+}
+
+- (BOOL)isPointerInsidePreservedTabArea {
+  NSView *host = self.widthPreservationHost;
+  if (!host.window.isVisible || host.isHiddenOrHasHiddenAncestor) return NO;
+  NSPoint point = [host convertPoint:host.window.mouseLocationOutsideOfEventStream fromView:nil];
+  return NSPointInRect(point, self.widthPreservationTrackingArea.rect);
+}
+
+- (void)preserveTabWidthWhileHovered {
+  if (self.preservedTabWidth > 0) return;
+  NSView *host = self.tabStack.superview;
+  if (!host.window.isVisible || self.tabStack.isHiddenOrHasHiddenAncestor || self.tabViews.count == 0) return;
+  NSRect area = [self.tabStack convertRect:self.tabStack.bounds toView:host];
+  NSPoint point = [host convertPoint:host.window.mouseLocationOutsideOfEventStream fromView:nil];
+  if (!NSPointInRect(point, area)) return;
+  self.preservedTabWidth = NSWidth(self.tabViews.firstObject.frame);
+  self.widthPreservationHost = host;
+  // Track the original strip on its stable parent, not the shrinking stack:
+  // closing a tab must not itself count as the pointer leaving the area.
+  self.widthPreservationTrackingArea = [[NSTrackingArea alloc] initWithRect:area
+    options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingAssumeInside
+    owner:self userInfo:nil];
+  [host addTrackingArea:self.widthPreservationTrackingArea];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+  if (!self.widthPreservationTrackingArea || [self isPointerInsidePreservedTabArea]) return;
+  [self clearPreservedTabWidth];
+  [self.transitionCoordinator finishAllTransitions];
+  [self updateTabWidthsForAvailableWidth:self.latestAvailableWidth];
+}
+
 - (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth {
+  self.latestAvailableWidth = availableWidth;
+  if (self.preservedTabWidth > 0 && ![self isPointerInsidePreservedTabArea]) [self clearPreservedTabWidth];
   if (self.tabWidthConstraints.count == 0 || availableWidth <= self.palette.space0) {
     return;
   }
@@ -537,6 +598,8 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     equalWidth = availableWidth / (tabCount - 0.27 * sharedBoundaryCount);
   }
   equalWidth = MIN(self.palette.tabMaxWidth, MAX(self.palette.borderWidth, equalWidth));
+  // A smaller window may still compress tabs, but closing tabs cannot grow them.
+  if (self.preservedTabWidth > 0) equalWidth = MIN(equalWidth, self.preservedTabWidth);
   overlap = TLChromeTabInterTabOverlapForWidth(equalWidth, self.palette);
   self.tabStack.spacing = -overlap;
   for (NSLayoutConstraint *constraint in self.tabWidthConstraints) {
