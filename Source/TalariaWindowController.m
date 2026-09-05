@@ -1,3 +1,4 @@
+#import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
 #import "AgentOrchestrator.h"
@@ -204,7 +205,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @property (nonatomic, strong) TLButton *createChatButton;
 @property (nonatomic, strong) TLButton *sidebarToggleButton;
-@property (nonatomic, strong) TLTokenView *slashCommandListView;
+@property (nonatomic, strong) TLInputSuggestionPanelView *slashCommandListView;
 @property (nonatomic, strong) TLInputSuggestionListView *slashCommandScrollView;
 @property (nonatomic, strong) NSTimer *slashCommandUpdateTimer;
 @property (nonatomic) BOOL renderingSlashCommands;
@@ -2163,7 +2164,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (NSView *)buildSlashCommandListView {
-  self.slashCommandListView = [[TLTokenView alloc] init];
+  self.slashCommandListView = [[TLInputSuggestionPanelView alloc] init];
   self.slashCommandListView.translatesAutoresizingMaskIntoConstraints = NO;
   self.slashCommandListView.hidden = YES;
   self.slashCommandListView.wantsLayer = YES;
@@ -2190,9 +2191,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (!self.slashCommandListView) {
     return;
   }
-  self.slashCommandListView.fillColor = self.palette.controlSurface;
-  self.slashCommandListView.cornerRadius = self.palette.slashCommandListCornerRadius;
-  self.slashCommandListView.borderWidth = self.palette.space0;
+  self.slashCommandListView.palette = self.palette;
   self.slashCommandScrollView.palette = self.palette;
   self.slashCommandListBottomConstraint.constant = -self.palette.space5;
 }

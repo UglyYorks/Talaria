@@ -1,3 +1,4 @@
+#import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLMessageInput.h"
 #import <AppKit/AppKit.h>
@@ -947,7 +948,18 @@ static void TestSuggestionTypingAndVirtualization(void) {
         [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == -1,
         @"arrow keys cannot select the error message");
   Check(!list.scrollingEnabled && !list.hasVerticalScroller, @"one error message has no scrollbar");
-  Check([pane isKindOfClass:TLTokenView.class] && ![pane isKindOfClass:TLGlassPaneView.class], @"suggestions use a plain surface without glass treatment");
+  Check([pane isKindOfClass:TLInputSuggestionPanelView.class] && ![pane isKindOfClass:TLGlassPaneView.class], @"suggestions use background blur without glass treatment");
+  TLInputSuggestionPanelView *backdrop = (TLInputSuggestionPanelView *)pane;
+  Check(backdrop.blendingMode == NSVisualEffectBlendingModeWithinWindow, @"suggestions blur the content behind them");
+  for (NSNumber *preference in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    TLThemePalette *theme = [TLThemePalette paletteForPreference:preference.integerValue];
+    backdrop.palette = theme;
+    NSColor *tint = [theme.suggestionBackdropTint colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    CGFloat expected = preference.integerValue == TLThemePreferenceDark ? 0 : 1;
+    Check(fabs(tint.redComponent - expected) < 0.01 && fabs(tint.greenComponent - expected) < 0.01 &&
+          fabs(tint.blueComponent - expected) < 0.01 && tint.alphaComponent > 0 && tint.alphaComponent < 1,
+          @"backdrop tint is translucent black in dark mode and white in light mode");
+  }
   [controller setValue:nil forKey:@"hermesCommandsError"];
   for (NSUInteger count = 1; count <= 9; count++) {
     [controller setValue:[commands subarrayWithRange:NSMakeRange(0, count)] forKey:@"hermesCommands"];
