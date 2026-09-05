@@ -222,6 +222,7 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (void)sendMessage:(id)sender;
 - (NSStackView *)buildSidebarTileGrid;
 - (void)rebuildSidebarAgents;
+- (NSView *)buildDebugTabContent;
 - (void)installAppStateBindings;
 - (void)renderWorkspaceTabs;
 - (void)updateWorkspaceMode;
@@ -325,6 +326,48 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   Check(stack.arrangedSubviews.count == 0 && [[controller valueForKey:@"messageMarkdownViews"] count] == 0,
         @"theme and conversation resets discard the old renderers");
   [window close];
+}
+
+static NSButton *FindResetButton(NSView *view) {
+  if ([view isKindOfClass:NSButton.class] && ((NSButton *)view).action == NSSelectorFromString(@"resetApp:")) return (NSButton *)view;
+  for (NSView *child in view.subviews) {
+    NSButton *button = FindResetButton(child);
+    if (button) return button;
+  }
+  return nil;
+}
+
+static void TestDebugResetLayout(void) {
+  TalariaWindowController *controller = [[TalariaWindowController alloc] initWithWindow:nil];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [controller setValue:palette forKey:@"palette"];
+    NSScrollView *view = (NSScrollView *)[controller buildDebugTabContent];
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 640, 480)
+      styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed = NO;
+    [window.contentView addSubview:view];
+    [NSLayoutConstraint activateConstraints:@[
+      [view.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+      [view.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+      [view.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+      [view.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+    ]];
+    NSButton *resetButton = FindResetButton(view);
+    Check(resetButton != nil && [resetButton.title isEqualToString:@"Reset everything…"], @"debug screen exposes the reset action");
+    Check([resetButton.bezelColor isEqual:palette.primaryActionSurface], @"reset action follows the active palette");
+    for (NSNumber *width in @[@640, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 240)];
+      [window.contentView layoutSubtreeIfNeeded];
+      NSView *document = view.documentView;
+      NSRect buttonRect = [resetButton convertRect:resetButton.bounds toView:document];
+      Check(NSWidth(document.frame) <= width.doubleValue && NSWidth(document.frame) > 0, [NSString stringWithFormat:@"debug content fits a narrow window: window %@ scroll %@ document %@", NSStringFromRect(window.contentView.bounds), NSStringFromRect(view.frame), NSStringFromRect(document.frame)]);
+      Check(NSContainsRect(document.bounds, buttonRect), @"reset button stays inside the scrollable document");
+      [document scrollRectToVisible:buttonRect];
+      Check(NSIntersectsRect(document.visibleRect, buttonRect), @"reset button is reachable by scrolling");
+    }
+    [window close];
+  }
 }
 
 /// Keep service/rendering side effects out of this navigation/state regression.
@@ -1489,6 +1532,7 @@ int main(void) {
     TestRealSidebarAgents();
     TestSuggestionTypingAndVirtualization();
     TestRunningAgentRepairAction();
+    TestDebugResetLayout();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();

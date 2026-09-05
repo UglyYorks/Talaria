@@ -3084,18 +3084,28 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (NSView *)buildDebugTabContent {
   TLThemePalette *palette = self.palette;
-  TLTokenView *content = [[TLTokenView alloc] init];
+  NSScrollView *scrollView = [[NSScrollView alloc] init];
+  scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+  scrollView.hasVerticalScroller = YES;
+  scrollView.autohidesScrollers = YES;
+  scrollView.drawsBackground = YES;
+  scrollView.backgroundColor = palette.tabBackground;
+  TLFlippedView *content = [[TLFlippedView alloc] init];
   content.translatesAutoresizingMaskIntoConstraints = NO;
-  content.fillColor = palette.tabBackground;
+  scrollView.documentView = content;
 
   NSTextField *titleLabel = [self labelWithString:@"Debug" font:palette.titleFont color:palette.appText];
-  NSTextField *subtitleLabel = [self labelWithString:@"Inspect the active agent VM from a private shell session."
+  NSTextField *subtitleLabel = [self labelWithString:@"Inspect the agent VM or reset Talaria for a fresh start."
                                                 font:palette.bodyFont
                                                color:palette.textMuted];
+  subtitleLabel.usesSingleLineMode = NO;
+  subtitleLabel.maximumNumberOfLines = 0;
+  subtitleLabel.lineBreakMode = NSLineBreakByWordWrapping;
   NSTextField *terminalLabel = [self labelWithString:@"VM terminal" font:palette.labelFont color:palette.labelText];
   NSTextField *terminalDescription = [self labelWithString:@"Open a terminal window for commands such as pwd, ls, cd, and cat. Commands run inside the VM, not on your Mac."
                                                      font:palette.bodyFont
                                                     color:palette.textMuted];
+  terminalDescription.usesSingleLineMode = NO;
   terminalDescription.maximumNumberOfLines = 0;
   terminalDescription.lineBreakMode = NSLineBreakByWordWrapping;
 
@@ -3122,11 +3132,37 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   for (NSView *view in @[terminalLabel, terminalDescription, openButton]) {
     [card addSubview:view];
   }
-  for (NSView *view in @[titleLabel, subtitleLabel, closeButton, card]) {
+  NSTextField *resetLabel = [self labelWithString:@"Nuclear reset" font:palette.labelFont color:palette.labelText];
+  NSTextField *resetDescription = [self labelWithString:@"Permanently erase all chats, settings, saved API token, browser data, and Talaria VMs and their files. Restart at onboarding. This affects every copy of Talaria on this Mac."
+                                                  font:palette.bodyFont color:palette.textMuted];
+  resetDescription.usesSingleLineMode = NO;
+  resetDescription.maximumNumberOfLines = 0;
+  resetDescription.lineBreakMode = NSLineBreakByWordWrapping;
+  NSButton *resetButton = [NSButton buttonWithTitle:@"Reset everything…" target:NSApp.delegate action:@selector(resetApp:)];
+  resetButton.translatesAutoresizingMaskIntoConstraints = NO;
+  resetButton.bezelStyle = NSBezelStyleRounded;
+  resetButton.controlSize = NSControlSizeLarge;
+  resetButton.font = palette.labelFont;
+  resetButton.bezelColor = palette.primaryActionSurface;
+  resetButton.contentTintColor = palette.primaryActionText;
+  TLTokenView *resetCard = [[TLTokenView alloc] init];
+  resetCard.translatesAutoresizingMaskIntoConstraints = NO;
+  resetCard.fillColor = palette.controlSurface;
+  resetCard.cornerRadius = palette.radiusMedium;
+  for (NSView *view in @[resetLabel, resetDescription, resetButton]) [resetCard addSubview:view];
+  for (NSView *view in @[titleLabel, subtitleLabel, closeButton, card, resetCard]) {
     [content addSubview:view];
   }
 
+  for (NSView *view in @[subtitleLabel, terminalDescription, resetDescription, openButton, resetButton]) {
+    [self allowHorizontalWindowExpansionForView:view];
+  }
   [NSLayoutConstraint activateConstraints:@[
+    [content.leadingAnchor constraintEqualToAnchor:scrollView.contentView.leadingAnchor],
+    [content.topAnchor constraintEqualToAnchor:scrollView.contentView.topAnchor],
+    [content.widthAnchor constraintEqualToAnchor:scrollView.contentView.widthAnchor],
+    [content.heightAnchor constraintGreaterThanOrEqualToAnchor:scrollView.contentView.heightAnchor],
+    [content.bottomAnchor constraintGreaterThanOrEqualToAnchor:resetCard.bottomAnchor constant:palette.space11],
     [titleLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:palette.space12],
     [titleLabel.topAnchor constraintEqualToAnchor:content.topAnchor constant:palette.space11],
     [closeButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
@@ -3134,7 +3170,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
     [closeButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
     [subtitleLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:closeButton.leadingAnchor constant:-palette.space8],
+    [subtitleLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
     [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:palette.space2],
     [card.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
     [card.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
@@ -3148,10 +3184,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [openButton.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-palette.space8],
     [openButton.topAnchor constraintEqualToAnchor:terminalDescription.bottomAnchor constant:palette.space6],
     [openButton.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-palette.space8],
-    [openButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
     [openButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
+    [resetCard.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+    [resetCard.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+    [resetCard.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:palette.space8],
+    [resetLabel.leadingAnchor constraintEqualToAnchor:resetCard.leadingAnchor constant:palette.space8],
+    [resetLabel.topAnchor constraintEqualToAnchor:resetCard.topAnchor constant:palette.space8],
+    [resetDescription.leadingAnchor constraintEqualToAnchor:resetLabel.leadingAnchor],
+    [resetDescription.trailingAnchor constraintEqualToAnchor:resetCard.trailingAnchor constant:-palette.space8],
+    [resetDescription.topAnchor constraintEqualToAnchor:resetLabel.bottomAnchor constant:palette.space3],
+    [resetButton.leadingAnchor constraintEqualToAnchor:resetLabel.leadingAnchor],
+    [resetButton.trailingAnchor constraintEqualToAnchor:resetDescription.trailingAnchor],
+    [resetButton.topAnchor constraintEqualToAnchor:resetDescription.bottomAnchor constant:palette.space6],
+    [resetButton.bottomAnchor constraintEqualToAnchor:resetCard.bottomAnchor constant:-palette.space8],
+    [resetButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
   ]];
-  return content;
+  return scrollView;
 }
 
 - (NSView *)buildAgentsTabContent {

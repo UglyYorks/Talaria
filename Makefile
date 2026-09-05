@@ -251,8 +251,9 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	test -s "$(AGENT_LINUX_INITRD)"
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
-test: $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+test: $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
 	"$(BUILD_DIR)/ChatAttachmentTests"
+	"$(BUILD_DIR)/AppResetTests"
 	"$(TEST_EXECUTABLE)"
 	"$(TAB_LAYOUT_TEST_EXECUTABLE)"
 	"$(NOTCH_VIEW_TEST_EXECUTABLE)"
@@ -346,3 +347,7 @@ $(BUILD_DIR)/TabShortcutTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OB
 .PHONY: test-hermes-gateway
 test-hermes-gateway:
 	python3 -B -m unittest discover -s Tests -p "test_*.py"
+
+$(BUILD_DIR)/AppResetTests: Source/TLAppReset.m Source/TalariaModels.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Tests/AppResetTests.m
+	mkdir -p "$(BUILD_DIR)"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework Security -lsqlite3 -o "$@"

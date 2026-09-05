@@ -7,6 +7,7 @@
 #import "Database.h"
 #import "TalariaWindowController.h"
 #import "Theme.h"
+#import "TLAppReset.h"
 
 @interface TLAppDelegate ()
 
@@ -15,6 +16,7 @@
 @property (nonatomic, strong) TLAppStateManager *appStateManager;
 @property (nonatomic, strong) TalariaWindowController *windowController;
 @property (nonatomic, strong) NSStatusItem *statusItem;
+@property (nonatomic) BOOL resetInProgress;
 
 @end
 
@@ -23,6 +25,21 @@
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   [self installMainMenu];
+
+  TLAppReset *reset = [[TLAppReset alloc] init];
+  while (reset.resetPending) {
+    NSError *resetError = nil;
+    if (![self hasOtherRunningInstance] && [reset performPendingReset:&resetError]) break;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Talaria reset could not finish";
+    alert.informativeText = resetError.localizedDescription ?: @"Quit all other copies of Talaria, then retry. No app data can be cleared while another copy is running.";
+    [alert addButtonWithTitle:@"Retry"];
+    [alert addButtonWithTitle:@"Quit"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) {
+      [NSApp terminate:nil];
+      return;
+    }
+  }
 
   NSError *error = nil;
   self.database = [[TLDatabase alloc] initWithURL:TLDatabase.defaultDatabaseURL error:&error];
@@ -65,6 +82,58 @@
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
   [TLChromiumBrowserController.sharedController shutdown];
+}
+
+- (BOOL)hasOtherRunningInstance {
+  for (NSRunningApplication *app in [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.talaria.chat"]) {
+    if (app.processIdentifier != NSProcessInfo.processInfo.processIdentifier && !app.terminated) return YES;
+  }
+  return NO;
+}
+
+- (void)resetApp:(id)sender {
+  if (self.resetInProgress) return;
+  NSAlert *alert = [[NSAlert alloc] init];
+  alert.alertStyle = NSAlertStyleCritical;
+  alert.messageText = @"Completely reset Talaria?";
+  alert.informativeText = @"This permanently deletes all Talaria chats, settings, saved API token, browser data, and every Talaria VM and its files. Talaria will quit and reopen at onboarding. This affects all copies of Talaria on this Mac and cannot be undone.";
+  [alert addButtonWithTitle:@"Cancel"];
+  [alert addButtonWithTitle:@"Reset everything"];
+  [alert beginSheetModalForWindow:self.windowController.window completionHandler:^(NSModalResponse response) {
+    if (response != NSAlertSecondButtonReturn) return;
+    if ([self hasOtherRunningInstance]) {
+      NSAlert *otherAppAlert = [[NSAlert alloc] init];
+      otherAppAlert.messageText = @"Quit other copies of Talaria first";
+      otherAppAlert.informativeText = @"Another copy is using the same app data. Quit it, then reset again.";
+      [otherAppAlert beginSheetModalForWindow:self.windowController.window completionHandler:nil];
+      return;
+    }
+    TLAppReset *reset = [[TLAppReset alloc] init];
+    NSError *error = nil;
+    if (![reset requestReset:&error]) {
+      [NSApp presentError:error];
+      return;
+    }
+    // Wait for this process to exit, releasing every VM and database handle.
+    // Pass the bundle path as an argument, never interpolate it into shell code.
+    NSTask *relauncher = [[NSTask alloc] init];
+    relauncher.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
+    relauncher.arguments = @[@"-c", @"while /bin/kill -0 \"$1\" 2>/dev/null; do /bin/sleep 0.2; done; /usr/bin/open -n \"$2\"", @"talaria-reset",
+      [NSString stringWithFormat:@"%d", NSProcessInfo.processInfo.processIdentifier], NSBundle.mainBundle.bundleURL.path];
+    relauncher.standardInput = NSFileHandle.fileHandleWithNullDevice;
+    relauncher.standardOutput = NSFileHandle.fileHandleWithNullDevice;
+    relauncher.standardError = NSFileHandle.fileHandleWithNullDevice;
+    if (![relauncher launchAndReturnError:&error]) {
+      NSError *cancelError = nil;
+      if (![reset cancelReset:&cancelError]) {
+        [NSApp presentError:cancelError];
+      }
+      [NSApp presentError:error];
+      return;
+    }
+    self.resetInProgress = YES;
+    [NSApp terminate:self];
+  }];
 }
 
 - (void)openChat:(id)sender {
