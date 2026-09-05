@@ -18,6 +18,10 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                      agentClient:(id<TLAgentStreaming>)agentClient
                        vmService:(TLAgentVMService *)vmService NS_DESIGNATED_INITIALIZER;
 
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent;
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent;
+- (NSString *)displayStatusForAgent:(TLAgentRecord *)agent;
+
 - (nullable NSArray<TLAgentRecord *> *)listAgents:(NSError **)error;
 - (nullable TLAgentRecord *)createAgentWithName:(NSString *)name error:(NSError **)error;
 - (nullable TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
@@ -42,12 +46,24 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                                    messages:(NSArray<TLChatMessage *> *)messages
                                       delta:(TLAgentStreamDeltaHandler)delta
                                  completion:(TLAgentStreamCompletionHandler)completion;
+- (void)generateTextWithDefaultAgentRequestID:(NSString *)requestID
+                                       token:(NSString *)token
+                                       model:(NSString *)model
+                                instructions:(NSString *)instructions
+                                       input:(NSString *)input
+                                       delta:(TLAgentStreamDeltaHandler)delta
+                                  completion:(TLAgentStreamCompletionHandler)completion;
 - (void)createFreshHermesAgentWithProgress:(TLHermesInstallProgressHandler)progress
                                 completion:(TLAgentOperationCompletionHandler)completion;
 - (void)runShellCommandWithDefaultAgentSessionID:(NSString *)sessionID
                                          command:(NSString *)command
                                           output:(void (^)(NSString *text))output
                                       completion:(TLAgentStreamCompletionHandler)completion;
+// Last successful TUI discovery for the current agent; never starts a VM.
+- (nullable NSDictionary *)cachedHermesCommands;
+- (void)fetchHermesCommandsWithToken:(NSString *)token
+                               model:(NSString *)model
+                          completion:(void (^)(NSDictionary *_Nullable catalogue, NSError *_Nullable error))completion;
 - (void)fetchModelCatalogueWithToken:(NSString *)token
                            completion:(TLAgentModelCatalogueHandler)completion;
 

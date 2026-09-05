@@ -86,8 +86,34 @@
   [NSApp terminate:self];
 }
 
-- (void)closeActiveTabOrWindow:(id)sender {
-  [self.windowController closeActiveTabOrWindow:sender];
+- (BOOL)workspaceAcceptsTabCommands {
+  NSWindow *window = self.windowController.window;
+  return window && NSApp.keyWindow == window && !window.attachedSheet && !NSApp.modalWindow;
+}
+
+- (BOOL)handleTabShortcutEvent:(NSEvent *)event {
+  TLTabCommand command = TLTabCommandForEvent(event);
+  if (command == TLTabCommandNone || ![self workspaceAcceptsTabCommands] ||
+      (event.window && event.window != self.windowController.window)) return NO;
+  // Consume recognized but disabled shortcuts too: a page must not act on them.
+  if ((!event.isARepeat || TLTabCommandAllowsRepeat(command)) &&
+      [self.windowController canPerformTabCommand:command]) {
+    [self.windowController performTabCommand:command];
+  }
+  return YES;
+}
+
+- (void)performTabMenuCommand:(NSMenuItem *)sender {
+  if ([self workspaceAcceptsTabCommands] && [self.windowController canPerformTabCommand:sender.tag]) {
+    [self.windowController performTabCommand:sender.tag];
+  }
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+  if (item.action == @selector(performTabMenuCommand:)) {
+    return [self workspaceAcceptsTabCommands] && [self.windowController canPerformTabCommand:item.tag];
+  }
+  return YES;
 }
 
 - (void)installMainMenu {
@@ -118,12 +144,15 @@
   [editMenu addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
   editMenuItem.submenu = editMenu;
 
+  NSMenuItem *tabMenuItem = [[NSMenuItem alloc] initWithTitle:@"Tab" action:nil keyEquivalent:@""];
+  tabMenuItem.submenu = TLCreateTabMenu(self, @selector(performTabMenuCommand:));
+  [mainMenu addItem:tabMenuItem];
+
   NSMenuItem *windowMenuItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
   [mainMenu addItem:windowMenuItem];
   NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
   [windowMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
-  NSMenuItem *closeItem = [windowMenu addItemWithTitle:@"Close" action:@selector(closeActiveTabOrWindow:) keyEquivalent:@"w"];
-  closeItem.target = self;
+
   windowMenuItem.submenu = windowMenu;
   NSApp.windowsMenu = windowMenu;
 

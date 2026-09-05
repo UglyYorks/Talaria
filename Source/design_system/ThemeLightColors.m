@@ -14,6 +14,7 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.topbarBorder = TLColorWithAlpha(palette.gray400, 0.38);
   palette.brandMark = palette.gray700;
   palette.agentRunningIndicator = palette.green500;
+  palette.agentSetupRequiredIndicator = TLColorFromHex(0xca8a04);
   palette.statusItemIcon = palette.black;
   palette.textMuted = palette.gray500;
   palette.labelText = palette.gray600;
@@ -61,8 +62,10 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.markdownTableHeaderSurface = palette.gray100;
   palette.markdownTableAlternateRowSurface = TLColorWithAlpha(palette.markdownTableHeaderSurface, 0.40);
   palette.markdownLinkText = palette.blue600;
+  palette.chatInputBackdrop = TLColorWithAlpha(palette.tabBackground, 0.90);
   palette.composerBorder = TLColorWithAlpha(palette.gray400, 0.38);
   palette.composerSurface = palette.gray50;
+  palette.suggestionBackdropTint = TLColorWithAlpha(palette.tabBackground, 0.70);
   palette.slashCommandItemSurface = palette.transparentSurface;
   palette.slashCommandItemText = palette.appText;
   palette.slashCommandItemHighlightedSurface = palette.chromeHoverSurface;

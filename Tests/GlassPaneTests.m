@@ -190,6 +190,25 @@ static void TestBrowserChatPane(void) {
   [window orderOut:nil];
 }
 
+static void TestHermesSuggestions(void) {
+  NSDictionary *catalogue = @{
+    @"pairs": @[@[@"/help", @"Help"], @[@"/model", @"Switch model"], @[@"/new-skill", @"Installed skill"],
+                @[@"/help", @"Duplicate"], @[@"invalid", @"Malformed"], @[@42, @"Malformed"], @[]],
+    @"canon": @{@"/h": @"/help", @"/help": @"/help", @"/missing": @"/absent"},
+    @"commands": @{@"/model": @{@"argument_mode": @"mixed"}, @"/help": @{@"argument_mode": NSNull.null}}
+  };
+  NSArray *commands = [TLInputSuggestions hermesCommandsFromCatalogue:catalogue];
+  Check([[[TLInputSuggestions slashCommandsForInput:@"/h" commands:commands] firstObject][@"command"] isEqualToString:@"/h"], @"exact alias ranks before longer prefix matches");
+  Check(commands.count == 4, @"dynamic catalogue includes skills and aliases, ignores malformed and duplicate rows");
+  Check([commands[1][@"argument_mode"] isEqualToString:@"mixed"], @"retains Hermes argument metadata");
+  Check([TLInputSuggestions slashCommandsForInput:@"/" commands:commands].count == 4, @"slash shows every discovered command");
+  Check([TLInputSuggestions slashCommandsForInput:@"/MO" commands:commands].count == 1, @"case-insensitive command filtering");
+  Check([TLInputSuggestions slashCommandsForInput:@"/model " commands:commands].count == 0, @"space enters arguments without reselecting a command");
+  Check([TLInputSuggestions slashCommandsForInput:@"/model openai/test" commands:commands].count == 0, @"arguments never trigger URL suggestions or replace command text");
+  Check([TLInputSuggestions slashCommandsForInput:@"hello" commands:commands].count == 0, @"normal messages are not slash commands");
+  Check([TLInputSuggestions hermesCommandsFromCatalogue:@{}].count == 0, @"missing catalogue has no invented commands");
+}
+
 static void TestURLSuggestions(void) {
   for (NSString *input in @[@"https://example.com/path?q=1#top", @"example.com", @"www.example.com",
                             @"localhost:3000", @"127.0.0.1:8080/path", @"HTTP://EXAMPLE.COM", @"example.c"]) {
@@ -581,6 +600,7 @@ int main(void) {
       [NSRunLoop.mainRunLoop runMode:mode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
       Check(calls == 1, @"CEF work runs once in normal, termination-modal, and event-tracking modes");
     }
+    TestHermesSuggestions();
     TestURLSuggestions();
     TestBrowserChatPane();
     TestNativeMessageComposer();

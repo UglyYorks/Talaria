@@ -1,6 +1,6 @@
 #import "AgentClient.h"
 #import "AgentVMService.h"
-#import "OpenRouterParsing.h"
+#import "AgentModel.h"
 #import <Virtualization/Virtualization.h>
 
 static NSString * const TLAgentClientErrorDomain = @"Talaria.AgentClient";
@@ -11,12 +11,6 @@ static NSError *TLAgentClientError(NSString *message) {
   return [NSError errorWithDomain:TLAgentClientErrorDomain
                              code:1
                          userInfo:@{NSLocalizedDescriptionKey: message ?: @""}];
-}
-
-static BOOL TLAgentClientShouldUseHostNetworkFallback(NSError *error) {
-  NSString *message = error.localizedDescription.lowercaseString;
-  return [message containsString:@"could not read openrouter stream:"] ||
-         [message containsString:@"could not load openrouter models:"];
 }
 
 typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
@@ -33,21 +27,19 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 @property (nonatomic, copy, nullable) TLAgentModelCatalogueHandler modelCompletion;
 @property (nonatomic, copy) TLBundledAgentRequestReleaseHandler releaseHandler;
 @property (nonatomic) BOOL finished;
-@property (nonatomic) BOOL cancelled;
 @property (nonatomic) BOOL receivedTerminalEvent;
 
 - (BOOL)startWithConnection:(VZVirtioSocketConnection *)connection
                     payload:(NSDictionary *)payload
                   operation:(NSString *)operation
                       error:(NSError **)error;
-- (void)finishWithError:(NSError *)error models:(NSArray<TLOpenRouterModel *> *)models;
+- (void)finishWithError:(NSError *)error models:(NSArray<TLAgentModel *> *)models;
 
 @end
 
 @interface TLBundledAgentClient ()
 
 @property (nonatomic, strong) TLAgentVMService *vmService;
-@property (nonatomic, strong) TLOpenRouterClient *hostNetworkClient;
 @property (nonatomic, strong) NSMutableSet<TLBundledAgentRequest *> *activeRequests;
 
 @end
@@ -168,7 +160,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   }
 
   if ([type isEqualToString:@"models"]) {
-    NSArray<TLOpenRouterModel *> *models = [self modelsFromEvent:event error:&error];
+    NSArray<TLAgentModel *> *models = [self modelsFromEvent:event error:&error];
     [self finishWithError:error models:models];
     return;
   }
@@ -201,7 +193,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   });
 }
 
-- (NSArray<TLOpenRouterModel *> *)modelsFromEvent:(NSDictionary *)event error:(NSError **)error {
+- (NSArray<TLAgentModel *> *)modelsFromEvent:(NSDictionary *)event error:(NSError **)error {
   NSDictionary *response = [event[@"response"] isKindOfClass:NSDictionary.class] ? event[@"response"] : nil;
   if (!response) {
     if (error) {
@@ -215,10 +207,10 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     return nil;
   }
 
-  return TLParseOpenRouterModelsResponse(responseData, error);
+  return TLParseHermesModelOptions(responseData, error);
 }
 
-- (void)finishWithError:(NSError *)error models:(NSArray<TLOpenRouterModel *> *)models {
+- (void)finishWithError:(NSError *)error models:(NSArray<TLAgentModel *> *)models {
   @synchronized (self) {
     if (self.finished) {
       return;
@@ -256,10 +248,34 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   self = [super init];
   if (self) {
     _vmService = vmService;
-    _hostNetworkClient = [[TLOpenRouterClient alloc] init];
     _activeRequests = [NSMutableSet set];
   }
   return self;
+}
+
+- (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent
+                              token:(NSString *)token
+                              model:(NSString *)model
+                         completion:(void (^)(NSDictionary *, NSError *))completion {
+  NSString *requestID = NSUUID.UUID.UUIDString;
+  NSMutableString *response = [NSMutableString string];
+  [self startWorkerWithAgent:agent
+                    payload:@{@"operation": @"hermes_commands", @"request_id": requestID,
+                              @"token": token ?: @"", @"model": model ?: @""}
+                  operation:@"hermes_commands"
+                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
+    if ([deltaID isEqualToString:requestID]) [response appendString:text];
+  } streamCompletion:^(NSError *error) {
+    if (error) { completion(nil, error); return; }
+    NSError *parseError = nil;
+    id catalogue = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
+                                                 options:0 error:&parseError];
+    if (![catalogue isKindOfClass:NSDictionary.class] || ![catalogue[@"pairs"] isKindOfClass:NSArray.class]) {
+      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned an invalid command catalogue."));
+      return;
+    }
+    completion(catalogue, nil);
+  } modelCompletion:nil];
 }
 
 - (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent
@@ -312,66 +328,28 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                        delta:output streamCompletion:completion modelCompletion:nil];
 }
 
-- (void)streamChatWithAgent:(TLAgentRecord *)agent
-                  requestID:(NSString *)requestID
-                      token:(NSString *)token
-                      model:(NSString *)model
-                   messages:(NSArray<TLChatMessage *> *)messages
-                      delta:(TLAgentStreamDeltaHandler)delta
-                 completion:(TLAgentStreamCompletionHandler)completion {
-  NSDictionary *payload = @{
-    @"operation": @"stream_chat",
-    @"request_id": requestID ?: @"",
-    @"token": token ?: @"",
-    @"model": model ?: @"",
-    @"agent": [self dictionaryForAgent:agent],
-    @"messages": [self dictionariesForMessages:messages],
-  };
-
-  __block BOOL receivedDelta = NO;
-  TLAgentStreamDeltaHandler VMDelta = ^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
-    receivedDelta = YES;
-    delta(deltaRequestID, kind, text);
-  };
-  [self startWorkerWithAgent:agent
-                     payload:payload
-                   operation:@"stream_chat"
-                       delta:VMDelta
-            streamCompletion:^(NSError *error) {
-    for (TLBundledAgentRequest *request in self.activeRequests) {
-      if ([request.requestID isEqualToString:requestID] && request.cancelled) {
-        completion([NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
-        return;
-      }
-    }
-    if (!error || receivedDelta || !TLAgentClientShouldUseHostNetworkFallback(error)) {
-      completion(error);
-      return;
-    }
-
-    [self.hostNetworkClient streamChatWithRequestID:requestID
-                                              token:token
-                                              model:model
-                                           messages:messages
-                                              delta:^(NSString *deltaRequestID, TLOpenRouterDeltaKind kind, NSString *text) {
-      TLAgentStreamDeltaKind agentKind = kind == TLOpenRouterDeltaKindThinking
-        ? TLAgentStreamDeltaKindThinking
-        : TLAgentStreamDeltaKindContent;
-      delta(deltaRequestID, agentKind, text);
-    } completion:completion];
-  }
-             modelCompletion:nil];
+- (void)generateHermesTextWithAgent:(TLAgentRecord *)agent
+                          requestID:(NSString *)requestID
+                              token:(NSString *)token
+                              model:(NSString *)model
+                       instructions:(NSString *)instructions
+                              input:(NSString *)input
+                              delta:(TLAgentStreamDeltaHandler)delta
+                         completion:(TLAgentStreamCompletionHandler)completion {
+  NSDictionary *payload = @{@"operation": @"hermes_generate_text", @"request_id": requestID ?: @"",
+                            @"token": token ?: @"", @"model": model ?: @"",
+                            @"instructions": instructions ?: @"", @"input": input ?: @""};
+  [self startWorkerWithAgent:agent payload:payload operation:@"hermes_generate_text"
+                      delta:delta streamCompletion:completion modelCompletion:nil];
 }
 
 - (void)cancelChatWithRequestID:(NSString *)requestID {
   for (TLBundledAgentRequest *request in self.activeRequests.copy) {
     if ([request.requestID isEqualToString:requestID]) {
-      request.cancelled = YES;
       // Closing this request's socket signals cancellation to the guest worker.
       [request finishWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil] models:nil];
     }
   }
-  [self.hostNetworkClient cancelChatWithRequestID:requestID];
 }
 
 - (void)fetchModelCatalogueWithAgent:(TLAgentRecord *)agent
@@ -388,13 +366,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                    operation:@"models"
                        delta:nil
             streamCompletion:nil
-             modelCompletion:^(NSArray<TLOpenRouterModel *> *models, NSError *error) {
-    if (!error || !TLAgentClientShouldUseHostNetworkFallback(error)) {
-      completion(models, error);
-      return;
-    }
-    [self.hostNetworkClient fetchModelCatalogueWithToken:token completion:completion];
-  }];
+             modelCompletion:completion];
 }
 
 - (void)startWorkerWithAgent:(TLAgentRecord *)agent
@@ -437,7 +409,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 
 - (void)completeStreamCompletion:(TLAgentStreamCompletionHandler)streamCompletion
                  modelCompletion:(TLAgentModelCatalogueHandler)modelCompletion
-                          models:(NSArray<TLOpenRouterModel *> *)models
+                          models:(NSArray<TLAgentModel *> *)models
                            error:(NSError *)error {
   dispatch_async(dispatch_get_main_queue(), ^{
     if (modelCompletion) {
@@ -457,14 +429,6 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     @"status": agent.status ?: @"",
     @"vm_directory": agent.vmDirectory ?: @"",
   };
-}
-
-- (NSArray<NSDictionary<NSString *, NSString *> *> *)dictionariesForMessages:(NSArray<TLChatMessage *> *)messages {
-  NSMutableArray<NSDictionary<NSString *, NSString *> *> *dictionaries = [NSMutableArray arrayWithCapacity:messages.count];
-  for (TLChatMessage *message in messages) {
-    [dictionaries addObject:[message requestDictionary]];
-  }
-  return dictionaries;
 }
 
 @end
