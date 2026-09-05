@@ -31,6 +31,25 @@ static void TestBasicLifecycle(void) {
     Check(progress == 1 && finished == 3 && !timeline.hasTransitions, @"finish flushes final geometry and cleanup");
 }
 
+static void TestEaseOutCurve(void) {
+  __block NSTimeInterval now = 0;
+  __block CGFloat selection = -1, lifecycle = -1;
+  TLTransitionCoordinator *timeline = [[TLTransitionCoordinator alloc]
+    initWithClock:^NSTimeInterval { return now; } automaticallyAdvances:NO];
+  [timeline startTransitionForKey:@"selection" duration:1 curve:TLTransitionCurveEaseOut
+    update:^(CGFloat p) { selection = p; } completion:nil];
+  [timeline startTransitionForKey:@"lifecycle" duration:1
+    update:^(CGFloat p) { lifecycle = p; } completion:nil];
+  Check(selection == 0, @"ease-out starts exactly at its origin");
+  now = 0.25; [timeline advance];
+  Check(fabs(selection - 0.578125) < 0.0001, @"ease-out starts quickly without acceleration");
+  Check(fabs(lifecycle - 0.15625) < 0.0001, @"default lifecycle easing is unchanged");
+  now = 0.5; [timeline advance];
+  Check(fabs(selection - 0.875) < 0.0001, @"ease-out slows as it approaches its destination");
+  now = 1; [timeline advance];
+  Check(selection == 1 && !timeline.hasTransitions, @"ease-out finishes at the exact destination");
+}
+
 static void TestSharedClock(void) {
   __block NSTimeInterval now = 0;
   __block NSUInteger clockReads = 0;
@@ -219,6 +238,7 @@ static void TestTimerDoesNotRetainOwner(void) {
 int main(void) {
   @autoreleasepool {
     TestBasicLifecycle();
+    TestEaseOutCurve();
     TestSharedClock();
     TestBoundaries();
     TestReplacementDuringInitialUpdate();

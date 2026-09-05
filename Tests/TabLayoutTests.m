@@ -785,8 +785,8 @@ static void TestSelectionSlabSlidesBetweenTabs(TLThemePalette *palette) {
     AssertClose(NSMinX(selectionView.selectionFrame), NSMinX(left.frame), @"selection begins at previous tab");
     now = palette.tabSelectionSlideDuration * 0.5;
     [timeline advance];
-    AssertClose(NSMinX(selectionView.selectionFrame), (NSMinX(left.frame) + NSMinX(right.frame)) * 0.5,
-                @"selection progresses on the shared clock");
+    AssertClose(NSMinX(selectionView.selectionFrame), NSMinX(left.frame) + (NSMinX(right.frame) - NSMinX(left.frame)) * 0.875,
+                @"selection eases out without a slow ease-in start");
     [controller updateSelectionIndicatorAnimated:NO];
     if (![timeline hasTransitionForKey:@"selection"]) {
       NSLog(@"FAIL duplicate reload cancels the selection transition"); exit(1);

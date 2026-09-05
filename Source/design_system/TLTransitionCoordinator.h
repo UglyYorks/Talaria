@@ -6,6 +6,11 @@ typedef NSTimeInterval (^TLTransitionClock)(void);
 typedef void (^TLTransitionUpdate)(CGFloat progress);
 typedef void (^TLTransitionCompletion)(BOOL finished);
 
+typedef NS_ENUM(NSUInteger, TLTransitionCurve) {
+  TLTransitionCurveEaseInOut,
+  TLTransitionCurveEaseOut,
+};
+
 // One clock owns all tracks and cancellation. Renderers receive eased progress
 // and update geometry/opacity together, without scheduling their own cleanup.
 // Use on the main thread. Reentrant replacements win over older requests;
@@ -15,6 +20,11 @@ typedef void (^TLTransitionCompletion)(BOOL finished);
 - (instancetype)initWithClock:(TLTransitionClock)clock automaticallyAdvances:(BOOL)automaticallyAdvances;
 - (void)startTransitionForKey:(NSString *)key
                     duration:(NSTimeInterval)duration
+                      update:(TLTransitionUpdate)update
+                  completion:(nullable TLTransitionCompletion)completion;
+- (void)startTransitionForKey:(NSString *)key
+                    duration:(NSTimeInterval)duration
+                       curve:(TLTransitionCurve)curve
                       update:(TLTransitionUpdate)update
                   completion:(nullable TLTransitionCompletion)completion;
 - (BOOL)hasTransitionForKey:(NSString *)key;

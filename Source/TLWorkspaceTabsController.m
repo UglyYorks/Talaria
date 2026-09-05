@@ -629,6 +629,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   __weak typeof(self) weakSelf = self;
   [self.transitionCoordinator startTransitionForKey:@"selection"
     duration:shouldAnimate ? self.palette.tabSelectionSlideDuration : 0.0
+    curve:TLTransitionCurveEaseOut
     update:^(CGFloat progress) {
       TLWorkspaceTabsController *owner = weakSelf;
       if (!owner) return;

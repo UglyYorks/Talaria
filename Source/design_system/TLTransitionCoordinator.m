@@ -5,6 +5,7 @@
 @interface TLTransitionTrack : NSObject
 @property (nonatomic) NSTimeInterval start;
 @property (nonatomic) NSTimeInterval duration;
+@property (nonatomic) TLTransitionCurve curve;
 @property (nonatomic, copy) TLTransitionUpdate update;
 @property (nonatomic, copy) TLTransitionCompletion completion;
 @property (nonatomic) BOOL updating;
@@ -40,12 +41,19 @@
 - (BOOL)hasTransitionForKey:(NSString *)key { return self.tracks[key] != nil; }
 - (void)startTransitionForKey:(NSString *)key duration:(NSTimeInterval)duration
                       update:(TLTransitionUpdate)update completion:(TLTransitionCompletion)completion {
+  [self startTransitionForKey:key duration:duration curve:TLTransitionCurveEaseInOut
+                       update:update completion:completion];
+}
+- (void)startTransitionForKey:(NSString *)key duration:(NSTimeInterval)duration
+                       curve:(TLTransitionCurve)curve
+                      update:(TLTransitionUpdate)update completion:(TLTransitionCompletion)completion {
   NSParameterAssert(key);
   NSParameterAssert(update);
   TLTransitionTrack *previous = self.tracks[key];
   TLTransitionTrack *track = [[TLTransitionTrack alloc] init];
   track.start = self.clock();
   track.duration = isfinite(duration) && duration > 0.0 ? duration : 0.0;
+  track.curve = curve;
   track.update = update;
   track.completion = completion;
   // Register first so a newer start inside the previous cancellation callback
@@ -98,7 +106,10 @@
     TLTransitionTrack *track = tracks[key];
     if (self.tracks[key] != track) continue;
     CGFloat progress = track.duration == 0.0 ? 1.0 : MIN(1.0, MAX(0.0, (now - track.start) / track.duration));
-    CGFloat eased = progress * progress * (3.0 - 2.0 * progress);
+    CGFloat remaining = 1.0 - progress;
+    CGFloat eased = track.curve == TLTransitionCurveEaseOut
+      ? 1.0 - remaining * remaining * remaining
+      : progress * progress * (3.0 - 2.0 * progress);
     [self updateTrack:track forKey:key progress:eased finished:progress == 1.0];
   }
   [CATransaction commit];
