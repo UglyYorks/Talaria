@@ -412,9 +412,9 @@ static void TestSettingsThemeAndLateCatalogue(void) {
   TLModelPickerView *picker = [controller valueForKey:@"mainModelPicker"];
   NSSearchField *search = [picker valueForKey:@"searchField"];
   NSPopUpButton *theme = [controller valueForKey:@"themePopup"];
-  NSMutableArray<TLOpenRouterModel *> *models = [NSMutableArray array];
+  NSMutableArray<TLAgentModel *> *models = [NSMutableArray array];
   for (NSUInteger index = 0; index < 40; index += 1) {
-    TLOpenRouterModel *model = [[TLOpenRouterModel alloc] init];
+    TLAgentModel *model = [[TLAgentModel alloc] init];
     model.modelID = [NSString stringWithFormat:@"test/model-%lu", (unsigned long)index];
     model.name = model.modelID;
     [models addObject:model];

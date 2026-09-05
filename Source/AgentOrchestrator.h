@@ -40,6 +40,13 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                                    messages:(NSArray<TLChatMessage *> *)messages
                                       delta:(TLAgentStreamDeltaHandler)delta
                                  completion:(TLAgentStreamCompletionHandler)completion;
+- (void)generateTextWithDefaultAgentRequestID:(NSString *)requestID
+                                       token:(NSString *)token
+                                       model:(NSString *)model
+                                instructions:(NSString *)instructions
+                                       input:(NSString *)input
+                                       delta:(TLAgentStreamDeltaHandler)delta
+                                  completion:(TLAgentStreamCompletionHandler)completion;
 - (void)createFreshHermesAgentWithProgress:(TLHermesInstallProgressHandler)progress
                                 completion:(TLAgentOperationCompletionHandler)completion;
 - (void)runShellCommandWithDefaultAgentSessionID:(NSString *)sessionID

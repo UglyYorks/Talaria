@@ -283,15 +283,38 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
       return;
     }
 
-    if (sessionID.length > 0 &&
-        [self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:delta:completion:)]) {
-      [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
-                                               token:token model:model prompt:TLHermesInputFromMessages(messages)
-                                               delta:delta completion:completion];
+    if (sessionID.length == 0) {
+      [self completeStreamWithError:TLAgentOrchestratorError(@"A Hermes session is required for conversation turns.") completion:completion];
       return;
     }
-    [self.agentClient streamChatWithAgent:agent requestID:requestID token:token model:model
-                                 messages:messages delta:delta completion:completion];
+    if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:delta:completion:)]) {
+      [self completeStreamWithError:TLAgentOrchestratorError(@"The Hermes TUI gateway is required. Update the agent runtime.") completion:completion];
+      return;
+    }
+    [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
+                                             token:token model:model prompt:TLHermesInputFromMessages(messages)
+                                             delta:delta completion:completion];
+  }];
+}
+
+- (void)generateTextWithDefaultAgentRequestID:(NSString *)requestID
+                                       token:(NSString *)token
+                                       model:(NSString *)model
+                                instructions:(NSString *)instructions
+                                       input:(NSString *)input
+                                       delta:(TLAgentStreamDeltaHandler)delta
+                                  completion:(TLAgentStreamCompletionHandler)completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) {
+      [self completeStreamWithError:error ?: TLAgentOrchestratorError(@"Could not open an agent VM.") completion:completion];
+      return;
+    }
+    if (![self.agentClient respondsToSelector:@selector(generateHermesTextWithAgent:requestID:token:model:instructions:input:delta:completion:)]) {
+      [self completeStreamWithError:TLAgentOrchestratorError(@"The Hermes TUI gateway is required for supporting-model tasks.") completion:completion];
+      return;
+    }
+    [self.agentClient generateHermesTextWithAgent:agent requestID:requestID token:token model:model
+                                   instructions:instructions input:input delta:delta completion:completion];
   }];
 }
 

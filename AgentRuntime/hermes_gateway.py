@@ -92,6 +92,38 @@ class HermesGateway:
             raise RuntimeError("This Hermes version does not provide a command catalogue. Update Hermes and retry.")
         return result
 
+    def model_options(self):
+        result = self.call("model.options", {"explicit_only": True})
+        if not isinstance(result.get("providers"), list):
+            raise RuntimeError("Hermes returned an invalid model catalogue.")
+        return result
+
+    def generate_text(self, model, instructions, user_input):
+        # A private draft runtime supplies the chosen supporting model to llm.oneshot.
+        # No prompt.submit, conversation history, or persistent Talaria mapping is used.
+        created = self.call("session.create", {"model": model, "provider": "openrouter", "source": "talaria", "hidden": True})
+        sid = created.get("session_id")
+        if not sid:
+            raise RuntimeError("Hermes did not create a supporting-model session.")
+        try:
+            # Bare model + --session waits for the lazy agent build and explicitly avoids
+            # persisting a global model change. oneshot can then inherit its runtime.
+            configured = self.call("config.set", {"session_id": sid, "key": "model", "value": model + " --session"})
+            if configured.get("confirm_required"):
+                raise RuntimeError(configured.get("confirm_message") or "Hermes requires confirmation of the supporting model.")
+            result = self.call("llm.oneshot", {"session_id": sid, "instructions": instructions,
+                                               "input": user_input, "max_tokens": 1024})
+            text = result.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise RuntimeError("Hermes returned an empty text-generation response.")
+            return text
+        finally:
+            # Cleanup must not conceal the original inference error.
+            try:
+                self.call("session.close", {"session_id": sid})
+            except (OSError, RuntimeError):
+                pass
+
     def _remember(self, chat_id, result, model):
         sid = result.get("session_id")
         stored = result.get("stored_session_id") or result.get("session_key") or result.get("resumed")

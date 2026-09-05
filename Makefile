@@ -236,7 +236,7 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	  --kernel-output "$(AGENT_LINUX_KERNEL)" \
 	  --base-initrd "$(AGENT_LINUX_BASE_INITRD)" \
 	  --modloop "$(AGENT_LINUX_MODLOOP)" \
-	  --agent-script AgentRuntime/openrouter_agent.py \
+	  --agent-script AgentRuntime/talaria_agent.py \
 	  --init-script AgentRuntime/talaria-init \
 	  --cache-dir "$(AGENT_LINUX_APK_CACHE)" \
 	  --output "$(AGENT_LINUX_INITRD)"
@@ -272,7 +272,7 @@ $(TAB_LAYOUT_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedCo
 audit-theme-colors:
 	python3 Scripts/audit-theme-colors.py
 
-$(TEST_EXECUTABLE): Source/TalariaModels.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/OpenRouterSupport.m Source/OpenRouterParsing.m Source/OpenRouterRequestFactory.m Source/OpenRouterStream.m Source/OpenRouterClient.m Source/ChatIconGenerator.m Source/AgentClient.m Source/AgentVMService.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Source/WorkspaceState.m Source/AppStateManager.m Tests/PromptBuilderTests.m
+$(TEST_EXECUTABLE): Source/TalariaModels.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/AgentVMService.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Source/WorkspaceState.m Source/AppStateManager.m Tests/PromptBuilderTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ $(TEST_FRAMEWORKS) -o "$@"
 

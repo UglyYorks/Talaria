@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'AgentRuntime'))
 from hermes_gateway import HermesGateway, RPCError
-import openrouter_agent as worker
+import talaria_agent as worker
 
 
 class GatewayTests(unittest.TestCase):
@@ -217,6 +217,88 @@ for line in sys.stdin:
                 gateway.process.stdin.close()
                 gateway.process.wait(timeout=5)
                 gateway.process.stdout.close()
+
+
+class TUIOnlyTests(unittest.TestCase):
+    def test_model_discovery_uses_tui_rpc(self):
+        gateway = HermesGateway.__new__(HermesGateway)
+        gateway.call = Mock(return_value={'providers': [{'slug': 'openrouter', 'models': ['test']}]})
+        self.assertEqual(gateway.model_options()['providers'][0]['models'], ['test'])
+        gateway.call.assert_called_once_with('model.options', {'explicit_only': True})
+
+    def test_invalid_model_catalogue_reports_an_error(self):
+        gateway = HermesGateway.__new__(HermesGateway)
+        gateway.call = Mock(return_value={'models': []})
+        with self.assertRaisesRegex(RuntimeError, 'invalid model catalogue'):
+            gateway.model_options()
+
+    def test_missing_helper_session_never_runs_inference(self):
+        gateway = HermesGateway.__new__(HermesGateway)
+        gateway.call = Mock(return_value={})
+        with self.assertRaisesRegex(RuntimeError, 'did not create'):
+            gateway.generate_text('support/model', 'instructions', 'input')
+        self.assertEqual(gateway.call.call_count, 1)
+
+    def test_auxiliary_request_uses_selected_model_without_chat_history(self):
+        gateway = HermesGateway.__new__(HermesGateway)
+        gateway.call = Mock(side_effect=[{'session_id': 'helper'}, {}, {'text': 'test response'}, {}])
+        self.assertEqual(gateway.generate_text('support/model', 'Native instructions', 'Native input'), 'test response')
+        from unittest.mock import call
+        self.assertEqual(gateway.call.call_args_list, [
+            call('session.create', {'model': 'support/model', 'provider': 'openrouter', 'source': 'talaria', 'hidden': True}),
+            call('config.set', {'session_id': 'helper', 'key': 'model', 'value': 'support/model --session'}),
+            call('llm.oneshot', {'session_id': 'helper', 'instructions': 'Native instructions', 'input': 'Native input', 'max_tokens': 1024}),
+            call('session.close', {'session_id': 'helper'})])
+
+    def test_auxiliary_failure_closes_runtime_without_http_fallback(self):
+        gateway = HermesGateway.__new__(HermesGateway)
+        gateway.call = Mock(side_effect=[{'session_id': 'helper'}, {}, RPCError({'code': -32601, 'message': 'method unavailable'}), {}])
+        with self.assertRaisesRegex(RPCError, 'method unavailable'):
+            gateway.generate_text('support/model', 'instructions', 'input')
+        gateway.call.assert_called_with('session.close', {'session_id': 'helper'})
+
+    def test_legacy_http_operation_is_rejected(self):
+        output = io.BytesIO()
+        with patch.object(worker.urllib.request, 'urlopen') as http:
+            self.assertEqual(worker.handle_request({'operation': 'stream_chat'}, output), 1)
+            http.assert_not_called()
+        self.assertEqual(json.loads(output.getvalue())['type'], 'error')
+
+    def test_worker_routes_models_and_supporting_tasks_through_tui(self):
+        with patch.object(worker, 'tui_gateway') as gateway:
+            gateway.return_value.model_options.return_value = {'providers': []}
+            output = io.BytesIO()
+            worker.handle_request({'operation': 'models', 'token': 'test'}, output)
+            self.assertEqual(json.loads(output.getvalue())['response'], {'providers': []})
+            gateway.return_value.generate_text.return_value = 'answer'
+            output = io.BytesIO()
+            worker.handle_request({'operation': 'hermes_generate_text', 'request_id': 'r', 'token': 'test', 'model': 'test',
+                                   'instructions': 'native instructions', 'input': 'native input'}, output)
+            gateway.return_value.generate_text.assert_called_once_with('test', 'native instructions', 'native input')
+            self.assertEqual([json.loads(line)['type'] for line in output.getvalue().splitlines()], ['delta', 'complete'])
+
+    def test_no_direct_ai_http_transport_in_application(self):
+        root = Path(__file__).resolve().parents[1]
+        # Downloads for installation are allowed; all provider/session traffic belongs
+        # to Hermes. Check production code so stale fallbacks cannot silently return.
+        forbidden = ('chat/completions', '/chat/stream', 'api/v1/models', 'hostNetworkClient',
+                     'TLOpenRouterClient', 'streamChatWithAgent:', 'def stream_chat(')
+        for directory in ('Source', 'AgentRuntime'):
+            for path in (root / directory).rglob('*'):
+                if path.suffix not in {'.h', '.m', '.mm', '.py'}:
+                    continue
+                source = path.read_text()
+                for needle in forbidden:
+                    self.assertNotIn(needle, source, f'{path.relative_to(root)} reintroduces {needle}')
+        # Every Python URL-open must remain confined to bootstrap installation.
+        import ast
+        tree = ast.parse((root / 'AgentRuntime/talaria_agent.py').read_text())
+        for function in tree.body:
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)) or function.name == 'install_hermes':
+                continue
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    self.assertNotEqual(node.func.attr, 'urlopen', f'HTTP request in {function.name}')
 
 
 if __name__ == '__main__':

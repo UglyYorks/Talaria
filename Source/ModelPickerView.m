@@ -1,7 +1,7 @@
 #import "ModelPickerView.h"
 
-static TLOpenRouterModel *TLFallbackModel(NSString *modelID) {
-  TLOpenRouterModel *model = [[TLOpenRouterModel alloc] init];
+static TLAgentModel *TLFallbackModel(NSString *modelID) {
+  TLAgentModel *model = [[TLAgentModel alloc] init];
   model.modelID = modelID ?: @"";
   model.name = model.modelID.length > 0 ? model.modelID : @"OpenRouter model";
   return model;
@@ -11,8 +11,8 @@ static TLOpenRouterModel *TLFallbackModel(NSString *modelID) {
 
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSArray<TLOpenRouterModel *> *allModels;
-@property (nonatomic, copy) NSArray<TLOpenRouterModel *> *filteredModels;
+@property (nonatomic, copy) NSArray<TLAgentModel *> *allModels;
+@property (nonatomic, copy) NSArray<TLAgentModel *> *filteredModels;
 @property (nonatomic, strong) NSTextField *titleLabel;
 @property (nonatomic, strong) NSTextField *selectedLabel;
 @property (nonatomic, strong) NSTextField *statusLabel;
@@ -104,20 +104,20 @@ static TLOpenRouterModel *TLFallbackModel(NSString *modelID) {
   ]];
 }
 
-- (void)setModels:(NSArray<TLOpenRouterModel *> *)models {
-  NSMutableArray<TLOpenRouterModel *> *nextModels = [NSMutableArray arrayWithArray:models ?: @[]];
+- (void)setModels:(NSArray<TLAgentModel *> *)models {
+  NSMutableArray<TLAgentModel *> *nextModels = [NSMutableArray arrayWithArray:models ?: @[]];
   [self includeSelectedModelIfNeededInModels:nextModels];
   self.allModels = nextModels;
   [self applyFilter];
 }
 
-- (void)includeSelectedModelIfNeededInModels:(NSMutableArray<TLOpenRouterModel *> *)models {
+- (void)includeSelectedModelIfNeededInModels:(NSMutableArray<TLAgentModel *> *)models {
   NSString *selected = [self.selectedModelID stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   if (selected.length == 0) {
     return;
   }
 
-  for (TLOpenRouterModel *model in models) {
+  for (TLAgentModel *model in models) {
     if ([model.modelID isEqualToString:selected]) {
       return;
     }
@@ -139,8 +139,8 @@ static TLOpenRouterModel *TLFallbackModel(NSString *modelID) {
   if (query.length == 0) {
     self.filteredModels = self.allModels;
   } else {
-    NSMutableArray<TLOpenRouterModel *> *matches = [NSMutableArray array];
-    for (TLOpenRouterModel *model in self.allModels) {
+    NSMutableArray<TLAgentModel *> *matches = [NSMutableArray array];
+    for (TLAgentModel *model in self.allModels) {
       NSString *haystack = [[NSString stringWithFormat:@"%@\n%@\n%@",
                                                         [model displayTitle],
                                                         model.modelID ?: @"",
@@ -228,7 +228,7 @@ static TLOpenRouterModel *TLFallbackModel(NSString *modelID) {
     detailLabel = [cell viewWithTag:201];
   }
 
-  TLOpenRouterModel *model = self.filteredModels[row];
+  TLAgentModel *model = self.filteredModels[row];
   titleLabel.stringValue = [model displayTitle];
   titleLabel.font = self.palette.labelFont;
   titleLabel.textColor = self.palette.appText;

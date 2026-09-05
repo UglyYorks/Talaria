@@ -4921,7 +4921,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
 
     [strongSelf.chatIconRequests removeObject:requestKey];
-    if (error || icon.length == 0) {
+    if (error) {
+      [strongSelf presentErrorMessage:[NSString stringWithFormat:@"Could not generate the chat icon: %@", error.localizedDescription]];
+      return;
+    }
+    if (icon.length == 0) {
       return;
     }
 

@@ -12,14 +12,11 @@
 #import "Database.h"
 #import "DatabaseMigrator.h"
 #import "NotchOverlayState.h"
-#import "OpenRouterClient.h"
+#import "AgentModel.h"
 #import "PromptBuilder.h"
 #import "PromptMessages.h"
 #import "StreamingBlockBuffer.h"
 #import "WorkspaceState.h"
-
-NSDictionary<NSString *, NSString *> *TLParseOpenRouterStreamDelta(NSString *data, NSError **error);
-NSArray<TLOpenRouterModel *> *TLParseOpenRouterModelsResponse(NSData *data, NSError **error);
 
 static NSUInteger TLFailureCount = 0;
 
@@ -73,25 +70,28 @@ static NSUInteger TLFailureCount = 0;
   return self;
 }
 
-- (void)streamChatWithAgent:(TLAgentRecord *)agent
-                  requestID:(NSString *)requestID
-                      token:(NSString *)token
-                      model:(NSString *)model
-                   messages:(NSArray<TLChatMessage *> *)messages
-                      delta:(TLAgentStreamDeltaHandler)delta
-                 completion:(TLAgentStreamCompletionHandler)completion {
+- (void)generateHermesTextWithAgent:(TLAgentRecord *)agent
+                          requestID:(NSString *)requestID
+                              token:(NSString *)token
+                              model:(NSString *)model
+                       instructions:(NSString *)instructions
+                              input:(NSString *)input
+                              delta:(TLAgentStreamDeltaHandler)delta
+                         completion:(TLAgentStreamCompletionHandler)completion {
   self.capturedAgent = [agent copy];
   self.capturedToken = token;
   self.capturedModel = model;
-  self.capturedMessages = [messages copy];
-  if (self.streamError) {
-    completion(self.streamError);
-    return;
-  }
-
-  delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
+  self.capturedSessionID = nil;
+  self.capturedMessages = @[[TLChatMessage messageWithRole:TLRoleSystem content:instructions thinking:nil],
+                            [TLChatMessage messageWithRole:TLRoleUser content:input thinking:nil]];
+  if (self.streamError) { completion(self.streamError); return; }
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
   completion(nil);
+}
+
+- (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent token:(NSString *)token model:(NSString *)model
+                         completion:(void (^)(NSDictionary *, NSError *))completion {
+  completion(@{@"pairs": @[]}, nil);
 }
 
 - (void)fetchModelCatalogueWithAgent:(TLAgentRecord *)agent
@@ -347,37 +347,20 @@ static void TestStreamingBlockBuffer(void) {
   TLAssertEqualObjects([code appendText:@"```\n\n"], @"```objc\nint a = 1;\n\n```\n\n", @"commits fenced code after its closing blank line");
 }
 
-static void TestOpenRouterReasoningParsing(void) {
-  NSString *duplicatedFields = @"{\"choices\":[{\"delta\":{\"content\":\"answer\",\"reasoning\":\"thought\",\"reasoning_content\":\"thought\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"thought\"}]}}]}";
+static void TestHermesModelParsing(void) {
+  NSDictionary *catalogue = @{@"providers": @[
+    @{@"slug": @"openrouter", @"name": @"OpenRouter", @"models": @[@"openai/gpt-4", @"openai/gpt-4", @"", @42],
+      @"pricing": @{@"openai/gpt-4": @{@"input": @"$30", @"output": @"$60"}}},
+    @{@"slug": @"other", @"models": @[@"other-model"]}
+  ]};
+  NSData *data = [NSJSONSerialization dataWithJSONObject:catalogue options:0 error:nil];
   NSError *error = nil;
-  NSDictionary<NSString *, NSString *> *parts = TLParseOpenRouterStreamDelta(duplicatedFields, &error);
-  TLAssertTrue(error == nil, @"parses OpenRouter stream delta with reasoning fields");
-  TLAssertEqualObjects(parts[@"content"], @"answer", @"keeps streamed content");
-  TLAssertEqualObjects(parts[@"thinking"], @"thought", @"uses one reasoning source per stream delta");
-
-  NSString *legacyReasoning = @"{\"choices\":[{\"delta\":{\"reasoning_content\":\"legacy thought\"}}]}";
-  error = nil;
-  parts = TLParseOpenRouterStreamDelta(legacyReasoning, &error);
-  TLAssertTrue(error == nil, @"parses legacy reasoning_content stream delta");
-  TLAssertEqualObjects(parts[@"thinking"], @"legacy thought", @"keeps legacy reasoning_content as fallback");
-}
-
-static void TestOpenRouterModelParsing(void) {
-  NSString *json = @"{\"data\":["
-    "{\"id\":\"openai/gpt-4\",\"name\":\"GPT-4\",\"description\":\"Flagship model\",\"context_length\":8192,"
-    "\"architecture\":{\"output_modalities\":[\"text\"]},"
-    "\"pricing\":{\"prompt\":\"0.00003\",\"completion\":\"0.00006\"}},"
-    "{\"id\":\"image/model\",\"name\":\"Image Model\",\"architecture\":{\"output_modalities\":[\"image\"]}}"
-  "]}";
-  NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
-  NSError *error = nil;
-  NSArray<TLOpenRouterModel *> *models = TLParseOpenRouterModelsResponse(data, &error);
-  TLAssertTrue(error == nil, @"parses OpenRouter model catalogue");
-  TLAssertTrue(models.count == 1, @"keeps text output models only");
-  TLAssertEqualObjects(models[0].modelID, @"openai/gpt-4", @"keeps model id");
-  TLAssertEqualObjects([models[0] displayTitle], @"GPT-4", @"keeps model display name");
-  TLAssertTrue([[models[0] detailText] containsString:@"8,192 context"], @"formats model context");
-  TLAssertTrue([[models[0] detailText] containsString:@"$30/M input"], @"formats prompt pricing");
+  NSArray<TLAgentModel *> *models = TLParseHermesModelOptions(data, &error);
+  TLAssertTrue(error == nil && models.count == 1, @"parses Hermes provider rows and removes duplicates and malformed models");
+  TLAssertEqualObjects(models[0].modelID, @"openai/gpt-4", @"keeps the Hermes model identifier");
+  TLAssertTrue([[models[0] detailText] containsString:@"$30/M input"], @"uses Hermes pricing without multiplying it again");
+  data = [@"{\"data\":[]}" dataUsingEncoding:NSUTF8StringEncoding];
+  TLAssertTrue(TLParseHermesModelOptions(data, &error) == nil && error != nil, @"rejects the removed HTTP catalogue shape");
 }
 
 static void TestDatabasePersistence(void) {
@@ -620,6 +603,7 @@ static void TestChatIconGenerator(void) {
   TLAssertEqualObjects(icon, @"\U0001F52D", @"returns generated emoji");
   TLAssertEqualObjects(client.capturedToken, @"token", @"trims token for icon generation");
   TLAssertEqualObjects(client.capturedModel, @"small/model", @"uses supporting model for icon generation");
+  TLAssertTrue(client.capturedSessionID == nil, @"icon generation uses isolated Hermes text generation, not a conversation");
   TLAssertTrue(client.capturedMessages.count == 2, @"builds system and user icon prompts");
   TLAssertTrue([client.capturedMessages[0].content containsString:@"exactly one emoji"], @"requests one emoji");
   TLAssertTrue([client.capturedMessages[1].content containsString:@"Space photos"], @"includes chat title in icon prompt");
@@ -646,7 +630,7 @@ static void TestAgentOrchestrator(void) {
   TLAssertTrue([NSFileManager.defaultManager fileExistsAtPath:agent.vmDirectory], @"orchestrator prepares VM storage");
   TLAssertTrue([orchestrator listAgents:&error].count == 1, @"orchestrator lists created agents");
   __block BOOL modelCatalogueCompleted = NO;
-  [orchestrator fetchModelCatalogueWithToken:@"token" completion:^(NSArray<TLOpenRouterModel *> *models, NSError *modelError) {
+  [orchestrator fetchModelCatalogueWithToken:@"token" completion:^(NSArray<TLAgentModel *> *models, NSError *modelError) {
     modelCatalogueCompleted = YES;
     TLAssertTrue(modelError == nil, @"auto-starts the default agent VM before model requests");
   }];
@@ -1140,8 +1124,7 @@ int main(int argc, const char *argv[]) {
     TestPromptBuilder();
     TestPromptMessages();
     TestStreamingBlockBuffer();
-    TestOpenRouterReasoningParsing();
-    TestOpenRouterModelParsing();
+    TestHermesModelParsing();
     TestDatabasePersistence();
     TestCompatibleVersion5Database();
     TestMessageDeletion();
