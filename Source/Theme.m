@@ -273,6 +273,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.notchOverlayDropGlareDuration = 0.65;
   self.notchOverlayDropGlareOpacity = 0.75;
 
+  self.agentListAvatarFont = [NSFont systemFontOfSize:28.0 weight:NSFontWeightRegular];
   self.bodyFont = [NSFont systemFontOfSize:13.0 weight:NSFontWeightRegular];
   self.messageBodyFont = [NSFont systemFontOfSize:15.0 weight:NSFontWeightRegular];
   self.smallFont = [NSFont systemFontOfSize:11.8 weight:NSFontWeightRegular];

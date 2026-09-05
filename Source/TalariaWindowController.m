@@ -14,10 +14,13 @@
 #import "TLMainWindow.h"
 #import "TLOnboardingDemoWindowController.h"
 #import "TLHermesOnboardingWindowController.h"
+#import "TLAgentCreationWindowController.h"
+#import "TLAgentFolderAccessWindowController.h"
 #import "TLVMDebugTerminalWindowController.h"
 #import "TLWorkspaceTabsController.h"
 #import "UIComponents.h"
 #import "design_system/TLWorkspaceOutlineView.h"
+#import "design_system/TLAgentTableCells.h"
 #import "design_system/TLTransitionCoordinator.h"
 #import "design_system/TLChromeTabView.h"
 #import "WorkspaceState.h"
@@ -188,6 +191,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSButton *createAgentButton;
 @property (nonatomic, strong) NSButton *startAgentButton;
 @property (nonatomic, strong) NSButton *stopAgentButton;
+@property (nonatomic, strong) NSButton *agentSettingsButton;
+@property (nonatomic, strong) TLAgentCreationWindowController *agentSettingsWindowController;
+@property (nonatomic, strong) NSButton *folderAccessButton;
+@property (nonatomic, strong) TLAgentFolderAccessWindowController *agentFolderAccessWindowController;
 @property (nonatomic, strong) NSButton *deleteAgentButton;
 @property (nonatomic, strong) NSButton *closeAgentsButton;
 @property (nonatomic, strong) NSScrollView *messageScrollView;
@@ -215,6 +222,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListBottomConstraint;
 @property (nonatomic, strong) TLOnboardingDemoWindowController *onboardingDemoWindowController;
 @property (nonatomic, strong) TLHermesOnboardingWindowController *hermesOnboardingWindowController;
+@property (nonatomic, strong) TLAgentCreationWindowController *agentCreationWindowController;
 @property (nonatomic, strong) TLVMDebugTerminalWindowController *debugTerminalWindowController;
 @property (nonatomic, strong, nullable) TLASCIIPlanetScreensaverView *screensaverView;
 @property (nonatomic) NSRect mainWindowFrameBeforeOnboarding;
@@ -664,39 +672,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   TLHoverStackView *tileGrid = [[TLHoverStackView alloc] init];
   tileGrid.translatesAutoresizingMaskIntoConstraints = NO;
   tileGrid.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  tileGrid.alignment = NSLayoutAttributeHeight;
+  tileGrid.alignment = NSLayoutAttributeCenterY;
   tileGrid.distribution = NSStackViewDistributionFill;
   tileGrid.spacing = self.palette.space5;
 
-  TLIconTileView *planetTile = [[TLIconTileView alloc] init];
-  planetTile.palette = self.palette;
-  planetTile.image = [self sidebarPlanetImage];
-  if (!planetTile.image) {
-    planetTile.systemIconName = @"globe.europe.africa.fill";
-  }
-  planetTile.selected = YES;
-  planetTile.imageSize = self.palette.space12 + self.palette.space2;
-  planetTile.toolTip = @"Jupiter";
-
-  TLIconTileView *saturnTile = [[TLIconTileView alloc] init];
-  saturnTile.palette = self.palette;
-  saturnTile.image = [self sidebarSaturnImage];
-  saturnTile.imageSize = planetTile.imageSize;
-  saturnTile.toolTip = @"Saturn - shared";
-  saturnTile.badgeSystemIconName = @"person.2.fill";
-
-  [tileGrid addArrangedSubview:planetTile];
-  [tileGrid addArrangedSubview:saturnTile];
-  NSView *remainingSpace = [[NSView alloc] init];
-  [tileGrid addArrangedSubview:remainingSpace];
-  NSLayoutConstraint *preferredWidth = [planetTile.widthAnchor constraintEqualToConstant:self.palette.sidebarAgentTileMaximumWidth];
-  preferredWidth.priority = NSLayoutPriorityDefaultHigh;
-  [NSLayoutConstraint activateConstraints:@[
-    preferredWidth,
-    [planetTile.widthAnchor constraintLessThanOrEqualToConstant:self.palette.sidebarAgentTileMaximumWidth],
-    [saturnTile.widthAnchor constraintEqualToAnchor:planetTile.widthAnchor],
-    [remainingSpace.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.space0],
-  ]];
   __weak typeof(self) weakSelf = self;
   tileGrid.hoverChanged = ^(BOOL hovered) {
     if (hovered) {
@@ -708,136 +687,73 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return tileGrid;
 }
 
-- (NSImage *)sidebarSaturnImage {
-  CGFloat size = self.palette.space16 + self.palette.space6;
-  NSAttributedString *planet = [[NSAttributedString alloc] initWithString:@"\U0001FA90"
+- (NSImage *)avatarImageForAgent:(TLAgentRecord *)agent {
+  CGFloat size = self.palette.agentMenuAvatarSize;
+  NSAttributedString *emoji = [[NSAttributedString alloc] initWithString:agent.avatar.length ? agent.avatar : @"🤖"
     attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:self.palette.space16]}];
   return [NSImage imageWithSize:NSMakeSize(size, size) flipped:NO drawingHandler:^BOOL(NSRect bounds) {
-    NSSize textSize = planet.size;
-    [planet drawAtPoint:NSMakePoint((NSWidth(bounds) - textSize.width) / 2.0,
-                                   (NSHeight(bounds) - textSize.height) / 2.0)];
+    NSSize textSize = emoji.size;
+    [emoji drawAtPoint:NSMakePoint((NSWidth(bounds) - textSize.width) / 2,
+                                   (NSHeight(bounds) - textSize.height) / 2)];
     return YES;
   }];
 }
 
-- (NSView *)sidebarAgentRowWithName:(NSString *)name
-                            shared:(BOOL)shared
-                            avatar:(NSImage *)avatar
-                          selected:(BOOL)selected
-                          services:(NSArray<NSImage *> *)services
-                      serviceNames:(NSArray<NSString *> *)serviceNames {
-  TLSelectionStackView *row = [[TLSelectionStackView alloc] init];
-  row.palette = self.palette;
-  row.selected = selected;
-  row.wantsLayer = YES;
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-  row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  row.alignment = NSLayoutAttributeCenterY;
-  row.distribution = NSStackViewDistributionFill;
-  row.spacing = self.palette.space8;
-  row.edgeInsets = NSEdgeInsetsMake(self.palette.space8, self.palette.space6,
-                                    self.palette.space8, self.palette.space6);
-
-  NSImageView *avatarView = [[NSImageView alloc] init];
-  avatarView.translatesAutoresizingMaskIntoConstraints = NO;
-  avatarView.image = avatar;
-  avatarView.imageScaling = NSImageScaleProportionallyUpOrDown;
-  NSView *avatarSlot = [[NSView alloc] init];
-  avatarSlot.translatesAutoresizingMaskIntoConstraints = NO;
-  [avatarSlot addSubview:avatarView];
-  [NSLayoutConstraint activateConstraints:@[
-    [avatarSlot.widthAnchor constraintEqualToConstant:self.palette.agentMenuAvatarSize],
-    [avatarSlot.heightAnchor constraintEqualToConstant:self.palette.space16],
-    [avatarView.widthAnchor constraintEqualToConstant:self.palette.agentMenuAvatarSize],
-    [avatarView.heightAnchor constraintEqualToConstant:self.palette.agentMenuAvatarSize],
-    [avatarView.centerXAnchor constraintEqualToAnchor:avatarSlot.centerXAnchor],
-    [avatarView.centerYAnchor constraintEqualToAnchor:avatarSlot.centerYAnchor],
-  ]];
-  [row addArrangedSubview:avatarSlot];
-  [row setCustomSpacing:self.palette.space5 afterView:avatarSlot];
-
-  NSStackView *details = [[NSStackView alloc] init];
-  details.orientation = NSUserInterfaceLayoutOrientationVertical;
-  details.alignment = NSLayoutAttributeLeading;
-  details.distribution = NSStackViewDistributionFill;
-  details.spacing = self.palette.space5;
-  NSStackView *heading = [[NSStackView alloc] init];
-  heading.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  heading.alignment = NSLayoutAttributeCenterY;
-  heading.distribution = NSStackViewDistributionFill;
-  heading.spacing = self.palette.space5;
-  [heading addArrangedSubview:[self labelWithString:name font:self.palette.labelFont color:self.palette.appText]];
-  if (shared) {
-    NSStackView *sharedLabel = [[NSStackView alloc] init];
-    sharedLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    sharedLabel.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    sharedLabel.alignment = NSLayoutAttributeCenterY;
-    sharedLabel.distribution = NSStackViewDistributionFill;
-    sharedLabel.spacing = self.palette.space2;
-    NSImageView *sharedIcon = [[NSImageView alloc] init];
-    sharedIcon.translatesAutoresizingMaskIntoConstraints = NO;
-    sharedIcon.image = [NSImage imageWithSystemSymbolName:@"person.2" accessibilityDescription:nil];
-    sharedIcon.contentTintColor = self.palette.textMuted;
-    sharedIcon.imageScaling = NSImageScaleProportionallyUpOrDown;
-    [sharedIcon.widthAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-    [sharedIcon.heightAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-    NSView *iconSlot = [[NSView alloc] init];
-    iconSlot.translatesAutoresizingMaskIntoConstraints = NO;
-    [iconSlot addSubview:sharedIcon];
-    [NSLayoutConstraint activateConstraints:@[
-      [iconSlot.widthAnchor constraintEqualToAnchor:sharedIcon.widthAnchor],
-      [iconSlot.heightAnchor constraintEqualToAnchor:sharedIcon.heightAnchor],
-      [sharedIcon.leadingAnchor constraintEqualToAnchor:iconSlot.leadingAnchor],
-      [sharedIcon.centerYAnchor constraintEqualToAnchor:iconSlot.centerYAnchor constant:self.palette.agentSharedIconDownwardOffset],
-    ]];
-    [sharedLabel addArrangedSubview:iconSlot];
-    [sharedLabel addArrangedSubview:[self labelWithString:@"shared" font:self.palette.smallFont color:self.palette.textMuted]];
-    NSView *sharedSlot = [[NSView alloc] init];
-    sharedSlot.translatesAutoresizingMaskIntoConstraints = NO;
-    [sharedSlot addSubview:sharedLabel];
-    [NSLayoutConstraint activateConstraints:@[
-      [sharedSlot.widthAnchor constraintEqualToAnchor:sharedLabel.widthAnchor],
-      [sharedSlot.heightAnchor constraintEqualToAnchor:sharedLabel.heightAnchor],
-      [sharedLabel.leadingAnchor constraintEqualToAnchor:sharedSlot.leadingAnchor],
-      [sharedLabel.centerYAnchor constraintEqualToAnchor:sharedSlot.centerYAnchor constant:self.palette.agentSharedLabelDownwardOffset],
-    ]];
-    [heading addArrangedSubview:sharedSlot];
+- (void)rebuildSidebarAgents {
+  if (!self.sidebarTileGrid) return;
+  [self.sidebarAgentPaneSurface removeFromSuperview];
+  self.sidebarAgentPaneSurface = nil;
+  self.sidebarAgentPane = nil;
+  for (NSView *view in self.sidebarTileGrid.arrangedSubviews.copy) {
+    [self.sidebarTileGrid removeArrangedSubview:view];
+    [view removeFromSuperview];
   }
-  [details addArrangedSubview:heading];
-
-  NSStackView *serviceRow = [[NSStackView alloc] init];
-  serviceRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  serviceRow.distribution = NSStackViewDistributionFill;
-  serviceRow.spacing = self.palette.space5;
-  for (NSUInteger index = 0; index < services.count; index++) {
-    NSImageView *icon = [[NSImageView alloc] init];
-    icon.translatesAutoresizingMaskIntoConstraints = NO;
-    icon.image = services[index];
-    icon.imageScaling = NSImageScaleProportionallyUpOrDown;
-    icon.toolTip = serviceNames[index];
-    [icon setAccessibilityLabel:serviceNames[index]];
-    [icon.widthAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-    [icon.heightAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-    [serviceRow addArrangedSubview:icon];
+  NSScrollView *scroll = [[NSScrollView alloc] init];
+  scroll.translatesAutoresizingMaskIntoConstraints = NO;
+  scroll.drawsBackground = NO;
+  scroll.hasHorizontalScroller = YES;
+  scroll.autohidesScrollers = YES;
+  NSStackView *tiles = [[NSStackView alloc] init];
+  tiles.translatesAutoresizingMaskIntoConstraints = NO;
+  tiles.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  tiles.alignment = NSLayoutAttributeCenterY;
+  tiles.spacing = self.palette.space5;
+  NSInteger currentID = self.database.currentAgentID;
+  TLIconTileView *currentTile = nil;
+  for (TLAgentRecord *agent in self.agents) {
+    TLIconTileView *tile = [[TLIconTileView alloc] init];
+    tile.palette = self.palette;
+    tile.image = [self avatarImageForAgent:agent];
+    tile.imageSize = self.palette.space12 + self.palette.space2;
+    tile.selected = agent.agentID == currentID;
+    tile.toolTip = [NSString stringWithFormat:@"%@%@ — Local Hermes", agent.name, tile.selected ? @" (Current)" : @""];
+    tile.accessibilityLabel = tile.toolTip;
+    tile.accessibilitySelected = tile.selected;
+    tile.tag = agent.agentID;
+    tile.target = self;
+    tile.action = @selector(activateSidebarAgent:);
+    [tiles addArrangedSubview:tile];
+    [tile.widthAnchor constraintEqualToConstant:self.palette.sidebarAgentTileMaximumWidth].active = YES;
+    [tile.heightAnchor constraintEqualToAnchor:tiles.heightAnchor].active = YES;
+    if (tile.selected) currentTile = tile;
   }
-  [details addArrangedSubview:serviceRow];
-  [row addArrangedSubview:details];
-  NSView *spacer = [[NSView alloc] init];
-  [spacer.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.space0].active = YES;
-  [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-  [details setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-  [row addArrangedSubview:spacer];
-  NSImageView *selectionIcon = [[NSImageView alloc] init];
-  selectionIcon.translatesAutoresizingMaskIntoConstraints = NO;
-  selectionIcon.image = selected
-    ? [NSImage imageWithSystemSymbolName:@"checkmark.circle.fill" accessibilityDescription:@"Selected agent"]
-    : nil;
-  selectionIcon.contentTintColor = self.palette.appText;
-  selectionIcon.imageScaling = NSImageScaleProportionallyUpOrDown;
-  [selectionIcon.widthAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-  [selectionIcon.heightAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-  [row addArrangedSubview:selectionIcon];
-  return row;
+  scroll.documentView = tiles;
+  [self.sidebarTileGrid addArrangedSubview:scroll];
+  [scroll.widthAnchor constraintEqualToAnchor:self.sidebarTileGrid.widthAnchor].active = YES;
+  [scroll.heightAnchor constraintEqualToAnchor:self.sidebarTileGrid.heightAnchor].active = YES;
+  [tiles.heightAnchor constraintEqualToAnchor:scroll.contentView.heightAnchor].active = YES;
+  [self.sidebarTileGrid layoutSubtreeIfNeeded];
+  if (currentTile) [tiles scrollRectToVisible:currentTile.frame];
+}
+
+- (void)activateSidebarAgent:(NSControl *)sender {
+  if (self.isSending) return;
+  NSError *error = nil;
+  if (![self.database setCurrentAgentID:sender.tag error:&error]) {
+    [self presentErrorMessage:error.localizedDescription];
+    return;
+  }
+  [self refreshAgents];
 }
 
 - (void)showSidebarAgentPane {
@@ -852,24 +768,30 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   pane.spacing = self.palette.space2;
   pane.edgeInsets = NSEdgeInsetsMake(self.palette.space3, self.palette.space3,
                                      self.palette.space5, self.palette.space3);
-  [pane addArrangedSubview:[self sidebarAgentRowWithName:@"Jupiter" shared:NO
-    avatar:[self sidebarPlanetImage]
-    selected:((TLIconTileView *)self.sidebarTileGrid.arrangedSubviews[0]).selected
-    services:@[[self inboxIconNamed:@"gmail"], [self inboxIconNamed:@"google-calendar"]]
-    serviceNames:@[@"Gmail", @"Google Calendar"]]];
-  [pane addArrangedSubview:[self sidebarAgentRowWithName:@"Saturn" shared:YES
-    avatar:[self sidebarSaturnImage]
-    selected:((TLIconTileView *)self.sidebarTileGrid.arrangedSubviews[1]).selected
-    services:@[[self inboxIconNamed:@"slack"], [self browserBookmarkIconNamed:@"github"]]
-    serviceNames:@[@"Slack", @"GitHub"]]];
+  NSInteger currentID = self.database.currentAgentID;
+  for (TLAgentRecord *agent in self.agents) {
+    NSString *title = [NSString stringWithFormat:@"%@  %@%@", agent.avatar, agent.name,
+      agent.agentID == currentID ? @"  ✓" : @""];
+    NSButton *row = [NSButton buttonWithTitle:title target:self action:@selector(activateSidebarAgent:)];
+    row.tag = agent.agentID;
+    row.bordered = NO;
+    row.alignment = NSTextAlignmentLeft;
+    row.font = self.palette.labelFont;
+    row.contentTintColor = self.palette.appText;
+    row.enabled = !self.isSending;
+    row.toolTip = [NSString stringWithFormat:@"%@ — Local Hermes%@", agent.name,
+      agent.agentID == currentID ? @" (Current)" : @""];
+    [pane addArrangedSubview:row];
+    [row.heightAnchor constraintEqualToConstant:self.palette.settingsActionHeight].active = YES;
+  }
   NSButton *addButton = [[NSButton alloc] init];
-  TLSpacedButtonCell *addCell = [[TLSpacedButtonCell alloc] initTextCell:@"Create agent"];
+  TLSpacedButtonCell *addCell = [[TLSpacedButtonCell alloc] initTextCell:@"Manage Agents"];
   addCell.imageTitleSpacing = self.palette.menuActionIconTextSpacing;
   addCell.imageUpwardOffset = self.palette.menuActionIconUpwardOffset;
   addButton.cell = addCell;
   addButton.target = self;
   addButton.action = @selector(openAgentsFromSidebarPane:);
-  addButton.image = [NSImage imageWithSystemSymbolName:@"person.badge.plus" accessibilityDescription:@"Create agent"];
+  addButton.image = [NSImage imageWithSystemSymbolName:@"person.2" accessibilityDescription:@"Manage Agents"];
   addButton.imagePosition = NSImageLeft;
   addButton.imageHugsTitle = YES;
   addButton.bordered = NO;
@@ -1533,6 +1455,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.palette = [TLThemePalette paletteForPreference:self.settings.theme];
   self.chats = [loadedChats mutableCopy];
   self.agents = [loadedAgents mutableCopy];
+  [self rebuildSidebarAgents];
 
   if (self.appStateManager.snapshot.workspaceTabs.count > 0) {
     [self hydrateWorkspaceTabsFromAppState];
@@ -2708,9 +2631,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
         completed.onboardingCompleted = YES;
         TLAppSettings *completedSettings = [strongSelf.database saveAppSettings:completed error:nil];
         if (completedSettings) strongSelf.settings = completedSettings;
-        NSArray<TLAgentRecord *> *agents = [strongSelf.agentOrchestrator listAgents:nil];
-        if (agents) strongSelf.agents = [agents mutableCopy];
-        [strongSelf.agentsTableView reloadData];
+        [strongSelf refreshAgents];
       }
       [strongSelf.hermesOnboardingWindowController finishWithError:installError];
     }];
@@ -3197,6 +3118,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.createAgentButton = [self buttonWithTitle:@"New" action:@selector(createAgent:)];
   self.startAgentButton = [self buttonWithTitle:@"Start" action:@selector(startSelectedAgent:)];
   self.stopAgentButton = [self buttonWithTitle:@"Stop" action:@selector(stopSelectedAgent:)];
+  self.agentSettingsButton = [self buttonWithTitle:@"Settings…" action:@selector(editSelectedAgentSettings:)];
+  self.folderAccessButton = [self buttonWithTitle:@"Folder Access…" action:@selector(manageSelectedAgentFolders:)];
   self.deleteAgentButton = [self buttonWithTitle:@"Delete" action:@selector(deleteSelectedAgent:)];
   self.closeAgentsButton = [self buttonWithTitle:@"Close" action:@selector(closeAgentsTab:)];
 
@@ -3208,6 +3131,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   agentActionStack.spacing = palette.space4;
   for (NSButton *button in @[
     self.createAgentButton,
+    self.agentSettingsButton,
+    self.folderAccessButton,
     self.startAgentButton,
     self.stopAgentButton,
     self.deleteAgentButton,
@@ -3229,16 +3154,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   NSArray<NSArray<NSString *> *> *columns = @[
     @[@"name", @"Name"],
-    @[@"guest", @"Guest"],
-    @[@"runtime", @"Runtime"],
-    @[@"status", @"Status"],
     @[@"vm", @"VM directory"],
+    @[@"status", @"Status"],
   ];
   for (NSArray<NSString *> *columnSpec in columns) {
     NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:columnSpec[0]];
     column.title = columnSpec[1];
     column.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
     column.width = [column.identifier isEqualToString:@"vm"] ? palette.controlMinWidth * 4.0 : palette.controlMinWidth * 1.4;
+    if ([column.identifier isEqualToString:@"name"]) {
+      column.minWidth = palette.controlMinWidth * 1.8;
+      column.width = palette.controlMinWidth * 2.5;
+    } else if ([column.identifier isEqualToString:@"status"]) {
+      column.minWidth = palette.controlMinWidth * 1.6;
+      column.width = column.minWidth;
+      column.resizingMask = NSTableColumnUserResizingMask;
+    }
     [self.agentsTableView addTableColumn:column];
   }
 
@@ -3278,6 +3209,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self styleButton:self.createAgentButton background:palette.primaryActionSurface foreground:palette.primaryActionText];
   [self styleButton:self.startAgentButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   [self styleButton:self.stopAgentButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
+  [self styleButton:self.agentSettingsButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
+  [self styleButton:self.folderAccessButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   [self styleButton:self.deleteAgentButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   [self styleButton:self.closeAgentsButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   [self refreshAgents];
@@ -3300,6 +3233,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.agents = [loadedAgents mutableCopy];
+  [self rebuildSidebarAgents];
   [self.agentsTableView reloadData];
   if (selectedAgentID > 0) {
     for (NSUInteger index = 0; index < self.agents.count; index += 1) {
@@ -3332,22 +3266,57 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)createAgent:(id)sender {
-  NSString *name = [NSString stringWithFormat:@"Agent %lu", (unsigned long)self.agents.count + 1];
-  NSError *error = nil;
-  TLAgentRecord *agent = [self.agentOrchestrator createAgentWithName:name error:&error];
-  if (!agent) {
-    [self presentErrorMessage:error.localizedDescription ?: @"Could not create agent."];
-  }
+  if (self.widgetbookMode || self.isSending || self.window.attachedSheet) return;
+  [self.sidebarAgentPaneSurface removeFromSuperview];
+  self.sidebarAgentPaneSurface = nil;
+  self.sidebarAgentPane = nil;
+  self.agentCreationWindowController = [[TLAgentCreationWindowController alloc]
+    initWithPalette:self.palette orchestrator:self.agentOrchestrator];
+  __weak typeof(self) weakSelf = self;
+  self.agentCreationWindowController.agentCreatedHandler = ^(TLAgentRecord *agent) {
+    TalariaWindowController *strongSelf = weakSelf;
+    [strongSelf initializeAgentWithID:agent.agentID];
+    [strongSelf showAgents:nil];
+    [strongSelf selectAgentWithID:agent.agentID];
+  };
+  [self.agentCreationWindowController showFromWindow:self.window];
+}
 
+- (void)editSelectedAgentSettings:(id)sender {
+  TLAgentRecord *agent = [self selectedAgent];
+  if (!agent || self.window.attachedSheet) return;
+  self.agentSettingsWindowController = [[TLAgentCreationWindowController alloc]
+    initWithAgent:agent palette:self.palette orchestrator:self.agentOrchestrator];
+  __weak typeof(self) weakSelf = self;
+  self.agentSettingsWindowController.agentUpdatedHandler = ^(TLAgentRecord *updatedAgent) { [weakSelf refreshAgents]; };
+  [self.agentSettingsWindowController showFromWindow:self.window];
+}
+
+- (void)manageSelectedAgentFolders:(id)sender {
+  TLAgentRecord *agent = [self selectedAgent];
+  if (!agent || self.window.attachedSheet) return;
+  self.agentFolderAccessWindowController = [[TLAgentFolderAccessWindowController alloc]
+    initWithAgent:agent palette:self.palette orchestrator:self.agentOrchestrator];
+  __weak typeof(self) weakSelf = self;
+  self.agentFolderAccessWindowController.savedHandler = ^{ [weakSelf refreshAgents]; };
+  [self.agentFolderAccessWindowController showFromWindow:self.window];
+}
+
+- (void)initializeAgentWithID:(NSInteger)agentID {
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator installHermesForAgentWithID:agentID progress:^(NSString *text) {}
+    completion:^(TLAgentRecord *agent, NSError *error) { [weakSelf refreshAgents]; }];
   [self refreshAgents];
-  if (agent) {
-    [self selectAgentWithID:agent.agentID];
-  }
 }
 
 - (void)startSelectedAgent:(id)sender {
   TLAgentRecord *agent = [self selectedAgent];
   if (!agent) {
+    return;
+  }
+
+  if ([agent.status isEqualToString:TLAgentStatusError]) {
+    [self initializeAgentWithID:agent.agentID];
     return;
   }
 
@@ -3451,6 +3420,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   NSString *identifier = tableColumn.identifier;
+  TLAgentRecord *agent = self.agents[(NSUInteger)row];
+  if ([identifier isEqualToString:@"name"]) {
+    TLAgentNameCellView *cell = [tableView makeViewWithIdentifier:identifier owner:self];
+    if (!cell) cell = [[TLAgentNameCellView alloc] initWithPalette:self.palette];
+    cell.identifier = identifier;
+    [cell configureWithName:agent.name avatar:agent.avatar current:agent.agentID == self.database.currentAgentID palette:self.palette];
+    return cell;
+  }
+  if ([identifier isEqualToString:@"status"]) {
+    TLAgentStatusCellView *cell = [tableView makeViewWithIdentifier:identifier owner:self];
+    if (!cell) cell = [[TLAgentStatusCellView alloc] initWithPalette:self.palette];
+    cell.identifier = identifier;
+    [cell configureWithStatus:TLAgentDisplayStatus(agent.status) running:[agent.status isEqualToString:TLAgentStatusRunning] initializing:[agent.status isEqualToString:TLAgentStatusInitializing] palette:self.palette];
+    cell.textField.toolTip = agent.lastError.length > 0 ? agent.lastError : cell.textField.stringValue;
+    return cell;
+  }
   NSTableCellView *cell = [tableView makeViewWithIdentifier:identifier owner:self];
   if (!cell) {
     cell = [[NSTableCellView alloc] init];
@@ -3466,14 +3451,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     ]];
   }
 
-  TLAgentRecord *agent = self.agents[(NSUInteger)row];
-  NSString *value = [self tableValueForAgent:agent columnIdentifier:identifier];
-  cell.textField.stringValue = value;
+  cell.textField.stringValue = agent.vmDirectory;
   cell.textField.font = self.palette.bodyFont;
-  cell.textField.textColor = [agent.status isEqualToString:TLAgentStatusError] && [identifier isEqualToString:@"status"]
-    ? self.palette.thinkingText
-    : self.palette.appText;
-  cell.textField.toolTip = agent.lastError.length > 0 ? agent.lastError : value;
+  cell.textField.textColor = self.palette.appText;
+  cell.textField.toolTip = agent.vmDirectory;
   return cell;
 }
 
@@ -3483,26 +3464,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 }
 
-- (NSString *)tableValueForAgent:(TLAgentRecord *)agent columnIdentifier:(NSString *)identifier {
-  if ([identifier isEqualToString:@"name"]) {
-    return agent.name;
-  }
-  if ([identifier isEqualToString:@"guest"]) {
-    return TLAgentDisplayGuestKind(agent.guestKind);
-  }
-  if ([identifier isEqualToString:@"runtime"]) {
-    return TLAgentDisplayRuntime(agent.runtime);
-  }
-  if ([identifier isEqualToString:@"status"]) {
-    return TLAgentDisplayStatus(agent.status);
-  }
-  if ([identifier isEqualToString:@"vm"]) {
-    return agent.vmDirectory;
-  }
-
-  return @"";
-}
-
 - (void)updateAgentControlStates {
   BOOL controlsAllowed = !self.isSending && !self.widgetbookMode && self.agentsTab != nil;
   TLAgentRecord *agent = [self selectedAgent];
@@ -3510,17 +3471,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   BOOL starting = [agent.status isEqualToString:TLAgentStatusStarting];
   BOOL running = [agent.status isEqualToString:TLAgentStatusRunning];
   BOOL stopping = [agent.status isEqualToString:TLAgentStatusStopping];
-  BOOL busy = starting || stopping;
+  BOOL busy = starting || stopping || [agent.status isEqualToString:TLAgentStatusInitializing];
+  self.startAgentButton.title = [agent.status isEqualToString:TLAgentStatusError] ? @"Retry setup" : @"Start";
 
   self.createAgentButton.enabled = controlsAllowed;
   self.startAgentButton.enabled = controlsAllowed && hasAgent && !running && !busy;
   self.stopAgentButton.enabled = controlsAllowed && hasAgent && running;
   self.deleteAgentButton.enabled = controlsAllowed && hasAgent && !running && !busy;
+  self.agentSettingsButton.enabled = controlsAllowed && hasAgent && !busy;
+  self.folderAccessButton.enabled = controlsAllowed && hasAgent;
   self.closeAgentsButton.enabled = controlsAllowed;
 
   [self updateButtonAlpha:self.createAgentButton];
   [self updateButtonAlpha:self.startAgentButton];
   [self updateButtonAlpha:self.stopAgentButton];
+  [self updateButtonAlpha:self.agentSettingsButton];
+  [self updateButtonAlpha:self.folderAccessButton];
   [self updateButtonAlpha:self.deleteAgentButton];
   [self updateButtonAlpha:self.closeAgentsButton];
 }
@@ -5620,6 +5586,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.stopAgentButton) {
     [self styleButton:self.stopAgentButton background:self.palette.secondaryActionSurface foreground:self.palette.secondaryActionText];
   }
+  if (self.agentSettingsButton) {
+    [self styleButton:self.agentSettingsButton background:self.palette.secondaryActionSurface foreground:self.palette.secondaryActionText];
+  }
+  if (self.folderAccessButton) {
+    [self styleButton:self.folderAccessButton background:self.palette.secondaryActionSurface foreground:self.palette.secondaryActionText];
+  }
   if (self.deleteAgentButton) {
     [self styleButton:self.deleteAgentButton background:self.palette.secondaryActionSurface foreground:self.palette.secondaryActionText];
   }
@@ -5667,11 +5639,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)applySidebarTilePalette {
-  for (NSView *view in self.sidebarTileGrid.arrangedSubviews) {
-    if ([view isKindOfClass:TLIconTileView.class]) {
-      ((TLIconTileView *)view).palette = self.palette;
-    }
-  }
+  [self rebuildSidebarAgents];
+  [self.agentCreationWindowController applyPalette:self.palette];
+  [self.agentFolderAccessWindowController applyPalette:self.palette];
+  [self.agentSettingsWindowController applyPalette:self.palette];
   [self styleSidebarActionButtons];
 }
 

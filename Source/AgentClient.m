@@ -274,6 +274,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     @"token": token ?: @"",
     @"model": model ?: @"",
     @"prompt": prompt ?: @"",
+    @"soul": agent.soul ?: @"",
   };
   [self startWorkerWithAgent:agent payload:payload operation:@"hermes_session_chat"
                        delta:delta streamCompletion:completion modelCompletion:nil];
@@ -285,6 +286,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                     completion:(TLAgentStreamCompletionHandler)completion {
   NSDictionary *payload = @{
     @"operation": @"install_hermes",
+    @"soul": agent.soul ?: @"",
     @"request_id": requestID ?: @"install",
   };
   [self startWorkerWithAgent:agent payload:payload operation:@"install_hermes"

@@ -117,5 +117,19 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     version = 4;
   }
 
+  if (version < 5) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      const char *sql =
+        "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT '🤖';"
+        "ALTER TABLE agents ADD COLUMN soul TEXT NOT NULL DEFAULT '';"
+        "ALTER TABLE agents ADD COLUMN folder_paths TEXT NOT NULL DEFAULT '[]';"
+        "CREATE UNIQUE INDEX agents_vm_directory ON agents(vm_directory);";
+      return [connection executeSQL:sql error:transactionError] &&
+        TLDatabaseSetSchemaVersion(connection, 5, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 5;
+  }
+
   return version == targetVersion;
 }

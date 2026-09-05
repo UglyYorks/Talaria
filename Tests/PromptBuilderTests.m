@@ -55,6 +55,10 @@ static NSUInteger TLFailureCount = 0;
 @property (nonatomic, copy) NSString *contentDelta;
 @property (nonatomic, copy) NSString *thinkingDelta;
 @property (nonatomic, strong, nullable) NSError *streamError;
+@property (nonatomic, strong, nullable) NSError *installError;
+@property (nonatomic) NSUInteger installCount;
+@property (nonatomic) BOOL deferInstall;
+@property (nonatomic, copy) TLAgentStreamCompletionHandler pendingInstallCompletion;
 @end
 
 @implementation TLFakeAgentClient
@@ -117,6 +121,15 @@ static NSUInteger TLFailureCount = 0;
   delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
   completion(nil);
+}
+
+- (void)installHermesWithAgent:(TLAgentRecord *)agent requestID:(NSString *)requestID
+                       progress:(TLAgentStreamDeltaHandler)progress completion:(TLAgentStreamCompletionHandler)completion {
+  self.installCount += 1;
+  self.capturedAgent = [agent copy];
+  progress(requestID, TLAgentStreamDeltaKindContent, @"Installing Hermes");
+  if (self.deferInstall) self.pendingInstallCompletion = completion;
+  else completion(self.installError);
 }
 
 - (void)runShellCommandWithAgent:(TLAgentRecord *)agent
@@ -478,7 +491,7 @@ static void TestDatabasePersistence(void) {
                @"deleted chats cannot be loaded");
 
   database = nil;
-  TLAssertTrue(TLReadSQLiteUserVersion(url) == 4, @"sets database schema user_version");
+  TLAssertTrue(TLReadSQLiteUserVersion(url) == 5, @"sets database schema user_version");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
 
@@ -603,6 +616,139 @@ static void TestAgentOrchestrator(void) {
   TLAssertTrue([orchestrator deleteAgentWithID:agent.agentID error:&error], @"orchestrator deletes agents");
   TLAssertTrue(![NSFileManager.defaultManager fileExistsAtPath:agent.vmDirectory], @"orchestrator removes VM storage");
 
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
+}
+
+static void TestAgentProfileMigration(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"AgentProfileMigration");
+  sqlite3 *connection = NULL;
+  sqlite3_open(url.path.fileSystemRepresentation, &connection);
+  const char *legacy =
+    "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    "CREATE TABLE agents (id INTEGER PRIMARY KEY, name TEXT NOT NULL, guest_kind TEXT NOT NULL, runtime TEXT NOT NULL,"
+    "status TEXT NOT NULL, vm_directory TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
+    "INSERT INTO agents VALUES (7, 'Existing agent', 'linux', 'python', 'stopped', '/tmp/existing-vm', NULL, 'created', 'updated');"
+    "PRAGMA user_version = 4;";
+  TLAssertTrue(sqlite3_exec(connection, legacy, NULL, NULL, NULL) == SQLITE_OK, @"creates v4 migration fixture");
+  sqlite3_close(connection);
+  NSError *error = nil;
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
+  TLAssertTrue(database != nil && error == nil, @"migrates existing agents without recreating VMs");
+  TLAgentRecord *agent = [database agentWithID:7 error:&error];
+  TLAssertEqualObjects(agent.vmDirectory, @"/tmp/existing-vm", @"migration preserves VM directory");
+  TLAssertEqualObjects(agent.name, @"Existing agent", @"migration preserves name");
+  TLAssertEqualObjects(agent.avatar, @"🤖", @"legacy agent receives emoji avatar");
+  TLAssertTrue(agent.soul.length == 0 && agent.folderPaths.count == 0, @"migration grants no new folder access");
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+}
+
+static void TestAgentProfilesAndSelection(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"AgentProfiles");
+  NSURL *agentsURL = TLTemporaryDirectoryURL(@"AgentProfileVMs");
+  NSURL *runtimeURL = TLTemporaryDirectoryURL(@"AgentProfileRuntime");
+  [NSFileManager.defaultManager createDirectoryAtURL:agentsURL withIntermediateDirectories:YES attributes:nil error:nil];
+  NSError *error = nil;
+  TLFakeTestCredentialStore *credentials = [[TLFakeTestCredentialStore alloc] init];
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:credentials error:&error];
+  TLFakeAgentClient *client = [[TLFakeAgentClient alloc] init];
+  TLFakeAgentVMService *vm = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:agentsURL runtimeBundleURL:runtimeURL];
+  TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:client vmService:vm];
+  TLAssertTrue([orchestrator createAgentWithName:@"  " avatar:@"🤖" soul:@"" folderPaths:@[] error:&error] == nil,
+               @"blank names do not provision agents");
+  TLAssertTrue([orchestrator listAgents:nil].count == 0, @"invalid profile has no persistent side effects");
+  error = nil;
+  TLAgentRecord *first = [orchestrator createAgentWithName:@"Atlas" avatar:@"🦊" soul:@"Be curious.\nTreat `$(text)` literally."
+    folderPaths:@[agentsURL.path, agentsURL.path] error:&error];
+  TLAssertTrue(first != nil && error == nil, @"creates a local profile");
+  TLAssertEqualObjects(first.folderPaths, @[agentsURL.path], @"folder access list removes duplicates");
+  TLAgentRecord *second = [orchestrator createAgentWithName:@"Atlas" avatar:@"🌙" soul:@"Be concise." folderPaths:@[] error:&error];
+  TLAssertTrue(second.agentID != first.agentID && ![second.vmDirectory isEqual:first.vmDirectory], @"same-name agents get independent VMs");
+  TLAssertTrue(database.currentAgentID == first.agentID, @"pending creation does not steal current agent");
+  TLAssertTrue([database createAgentWithName:@"Duplicate" avatar:@"🤖" soul:@"" folderPaths:@[] vmDirectory:first.vmDirectory error:&error] == nil,
+               @"enforces one agent per VM directory");
+  error = nil;
+  client.deferInstall = YES;
+  client.installError = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Offline"}];
+  __block BOOL completed = NO;
+  [orchestrator installHermesForAgentWithID:second.agentID progress:^(NSString *text) {} completion:^(TLAgentRecord *agent, NSError *failure) {
+    completed = YES;
+    TLAssertTrue(failure != nil && agent.agentID == second.agentID, @"failed setup retains its agent for retry");
+  }];
+  NSString *(^setupStatus)(void) = ^{
+    for (TLAgentRecord *listed in [orchestrator listAgents:nil]) if (listed.agentID == second.agentID) return listed.status;
+    return @"";
+  };
+  TLAssertEqualObjects(setupStatus(), TLAgentStatusInitializing, @"initializing is visible before VM startup finishes");
+  NSDate *installDeadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while (!client.pendingInstallCompletion && installDeadline.timeIntervalSinceNow > 0)
+    [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:installDeadline];
+  TLAssertTrue(client.pendingInstallCompletion != nil && !completed, @"installation continues asynchronously after VM startup");
+  TLAssertEqualObjects(setupStatus(), TLAgentStatusInitializing, @"running VM stays initializing until Hermes installation completes");
+  TLAssertTrue(![orchestrator deleteAgentWithID:second.agentID error:nil], @"initializing VM cannot be deleted during installation");
+  __block BOOL duplicateRejected = NO;
+  [orchestrator installHermesForAgentWithID:second.agentID progress:^(NSString *text) {} completion:^(TLAgentRecord *agent, NSError *failure) {
+    duplicateRejected = failure != nil;
+  }];
+  client.pendingInstallCompletion(client.installError);
+  client.pendingInstallCompletion = nil;
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while (!completed && deadline.timeIntervalSinceNow > 0) [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:deadline];
+  TLAssertTrue(completed && database.currentAgentID == first.agentID, @"failed setup leaves previous selection intact");
+  TLAssertEqualObjects([database agentWithID:second.agentID error:nil].status, TLAgentStatusError, @"persists setup failure");
+  TLAssertTrue(duplicateRejected && client.installCount == 1, @"duplicate setup is rejected without interrupting the original");
+  client.deferInstall = NO;
+  client.installError = nil;
+  completed = NO;
+  [orchestrator installHermesForAgentWithID:second.agentID progress:^(NSString *text) {} completion:^(TLAgentRecord *agent, NSError *failure) {
+    completed = YES;
+    TLAssertTrue(failure == nil, @"retry completes setup");
+  }];
+  deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while (!completed && deadline.timeIntervalSinceNow > 0) [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:deadline];
+  TLAssertTrue(completed && client.installCount == 2 && [orchestrator listAgents:nil].count == 2, @"retry reuses the same VM and record");
+  TLAssertEqualObjects(client.capturedAgent.soul, second.soul, @"installer receives this agent's soul");
+  TLAssertTrue(database.currentAgentID == second.agentID, @"successful setup selects new agent");
+  [database setCurrentAgentID:first.agentID error:&error];
+  [orchestrator fetchModelCatalogueWithToken:@"token" completion:^(NSArray *models, NSError *failure) {}];
+  TLAssertTrue(client.capturedAgent.agentID == first.agentID, @"requests follow explicit selection rather than newest agent");
+  TLDatabase *reopened = [[TLDatabase alloc] initWithURL:url credentialStore:credentials error:&error];
+  TLAgentRecord *loaded = [reopened agentWithID:first.agentID error:&error];
+  TLAssertEqualObjects(loaded.avatar, first.avatar, @"emoji survives reopening database");
+  TLAssertEqualObjects(loaded.soul, first.soul, @"multiline soul survives reopening database");
+  TLAssertEqualObjects(loaded.folderPaths, first.folderPaths, @"folder choices survive reopening database");
+  TLAssertEqualObjects(((TLAgentRecord *)[loaded copy]).folderPaths, first.folderPaths, @"copy retains profile metadata");
+  TLAssertTrue(reopened.currentAgentID == first.agentID, @"current agent survives reopening database");
+  TLAgentRecord *profileBefore = [database agentWithID:first.agentID error:nil];
+  TLAgentRecord *edited = [orchestrator updateAgentWithID:first.agentID name:@"  Nova  " avatar:@"🌟" soul:@"New soul\nBe precise." error:&error];
+  TLAssertEqualObjects(edited.name, @"Nova", @"profile edits trim the name");
+  TLAssertEqualObjects(edited.avatar, @"🌟", @"profile edits save the emoji");
+  TLAssertEqualObjects([reopened agentWithID:first.agentID error:nil].soul, @"New soul\nBe precise.", @"edited soul persists across database connections");
+  TLAssertEqualObjects(edited.vmDirectory, profileBefore.vmDirectory, @"editing settings keeps the existing VM");
+  TLAssertEqualObjects(edited.status, profileBefore.status, @"editing settings preserves running status");
+  TLAssertEqualObjects(edited.folderPaths, profileBefore.folderPaths, @"profile changes preserve folder permissions");
+  TLAssertTrue([orchestrator updateAgentWithID:first.agentID name:@"  " avatar:@"🦊" soul:@"discard" error:&error] == nil, @"blank names cannot overwrite an existing profile");
+  TLAssertEqualObjects([reopened agentWithID:first.agentID error:nil].name, @"Nova", @"invalid settings leave the saved profile intact");
+  [orchestrator updateAgentWithID:first.agentID name:@"Nova" avatar:@"🌟" soul:@"" error:&error];
+  TLAssertEqualObjects([reopened agentWithID:first.agentID error:nil].soul, @"", @"user can explicitly clear a soul");
+  TLAgentRecord *beforeFolders = [database agentWithID:first.agentID error:nil];
+  TLAgentRecord *savedFolders = [orchestrator updateAgentWithID:first.agentID folderPaths:@[agentsURL.path, agentsURL.path] error:&error];
+  TLAssertEqualObjects(savedFolders.folderPaths, @[agentsURL.path], @"folder updates normalize duplicates");
+  TLAssertEqualObjects(savedFolders.status, beforeFolders.status, @"folder updates preserve running state");
+  TLAssertEqualObjects(savedFolders.soul, beforeFolders.soul, @"folder updates preserve the agent profile");
+  TLAssertEqualObjects(savedFolders.vmDirectory, beforeFolders.vmDirectory, @"folder updates preserve the same VM");
+  TLAssertTrue([orchestrator updateAgentWithID:first.agentID folderPaths:@[@"/missing-talaria-folder-123456"] error:&error] == nil,
+    @"invalid folder updates fail without persisting");
+  TLAssertEqualObjects([reopened agentWithID:first.agentID error:nil].folderPaths, @[agentsURL.path], @"failed update leaves saved access intact across connections");
+  savedFolders = [orchestrator updateAgentWithID:first.agentID folderPaths:@[] error:&error];
+  TLAssertTrue(savedFolders != nil && [reopened agentWithID:first.agentID error:nil].folderPaths.count == 0, @"removing all folders persists an empty permission list");
+  TLAssertEqualObjects([reopened agentWithID:second.agentID error:nil].folderPaths, second.folderPaths, @"editing one agent leaves other agents unchanged");
+  TLAssertTrue(reopened.currentAgentID == first.agentID, @"folder edits preserve the current agent");
+  [reopened deleteAgentWithID:first.agentID error:&error];
+  TLAssertTrue(reopened.currentAgentID == second.agentID, @"deleting current agent selects a remaining agent");
+  [reopened deleteAgentWithID:second.agentID error:&error];
+  TLAssertTrue(reopened.currentAgentID == 0, @"empty agent list has no current agent");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
   [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];
   [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
@@ -944,6 +1090,8 @@ int main(int argc, const char *argv[]) {
     TestMessageDeletion();
     TestChatIconGenerator();
     TestAgentOrchestrator();
+    TestAgentProfilesAndSelection();
+    TestAgentProfileMigration();
     TestAssistantTurnRunner();
     TestBrowserConversation();
     TestNotchOverlayState();

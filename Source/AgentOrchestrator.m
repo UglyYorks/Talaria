@@ -8,6 +8,20 @@ static NSError *TLAgentOrchestratorError(NSString *message) {
                          userInfo:@{NSLocalizedDescriptionKey: message ?: @""}];
 }
 
+static NSArray<NSString *> *TLValidatedAgentFolders(NSArray<NSString *> *folderPaths, NSError **error) {
+  NSMutableOrderedSet<NSString *> *folders = [NSMutableOrderedSet orderedSet];
+  for (NSString *path in folderPaths) {
+    NSString *normalized = path.stringByStandardizingPath;
+    BOOL directory = NO;
+    if (!normalized.isAbsolutePath || ![NSFileManager.defaultManager fileExistsAtPath:normalized isDirectory:&directory] || !directory) {
+      if (error) *error = TLAgentOrchestratorError(@"Choose existing local folders for this agent.");
+      return nil;
+    }
+    [folders addObject:normalized];
+  }
+  return folders.array;
+}
+
 static NSString *TLAgentOrchestratorTrim(NSString *value) {
   return [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
 }
@@ -33,6 +47,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 @property (nonatomic, strong) TLDatabase *database;
 @property (nonatomic, strong) id<TLAgentStreaming> agentClient;
 @property (nonatomic, strong) TLAgentVMService *vmService;
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *initializingAgentIDs;
 
 - (void)withDefaultRunningAgent:(TLAgentReadyCompletionHandler)completion;
 - (void)completeDefaultAgent:(TLAgentRecord *)agent
@@ -51,6 +66,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     _database = database;
     _agentClient = agentClient;
     _vmService = vmService;
+    _initializingAgentIDs = [NSMutableSet set];
   }
   return self;
 }
@@ -64,18 +80,39 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (NSArray<TLAgentRecord *> *)listAgents:(NSError **)error {
-  return [self.database listAgents:error];
+  NSArray<TLAgentRecord *> *agents = [self.database listAgents:error];
+  for (TLAgentRecord *agent in agents) {
+    if ([self isInitializingAgentWithID:agent.agentID]) agent.status = TLAgentStatusInitializing;
+  }
+  return agents;
+}
+
+- (BOOL)isInitializingAgentWithID:(NSInteger)agentID {
+  @synchronized (self.initializingAgentIDs) {
+    return [self.initializingAgentIDs containsObject:@(agentID)];
+  }
 }
 
 - (TLAgentRecord *)createAgentWithName:(NSString *)name error:(NSError **)error {
-  NSString *trimmedName = TLAgentOrchestratorTrim(name ?: @"");
-  NSString *agentName = trimmedName.length > 0 ? trimmedName : @"Agent";
+  return [self createAgentWithName:name avatar:@"🤖" soul:@"" folderPaths:@[] error:error];
+}
+
+- (TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
+                                 soul:(NSString *)soul folderPaths:(NSArray<NSString *> *)folderPaths
+                                error:(NSError **)error {
+  NSString *agentName = TLAgentOrchestratorTrim(name ?: @"");
+  if (!agentName.length) {
+    if (error) *error = TLAgentOrchestratorError(@"Give your agent a name.");
+    return nil;
+  }
+  NSArray<NSString *> *folders = TLValidatedAgentFolders(folderPaths, error);
+  if (!folders) return nil;
+  // Preserve the previous selection while the new VM is being provisioned.
+  NSInteger currentID = self.database.currentAgentID;
+  if (currentID > 0 && ![self.database setCurrentAgentID:currentID error:error]) return nil;
   NSString *vmDirectory = [self.vmService newVMDirectoryPathForAgentName:agentName];
-  TLAgentRecord *agent = [self.database createAgentWithName:agentName
-                                                  guestKind:TLAgentGuestKindLinux
-                                                    runtime:TLAgentRuntimePython
-                                                vmDirectory:vmDirectory
-                                                      error:error];
+  TLAgentRecord *agent = [self.database createAgentWithName:agentName avatar:avatar soul:soul
+                                               folderPaths:folders vmDirectory:vmDirectory error:error];
   if (!agent) {
     return nil;
   }
@@ -102,6 +139,10 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }
 
   if (agents.count > 0) {
+    NSInteger currentID = self.database.currentAgentID;
+    for (TLAgentRecord *agent in agents) {
+      if (agent.agentID == currentID) return agent;
+    }
     return agents.lastObject;
   }
 
@@ -109,6 +150,14 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (void)startAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion {
+  if ([self isInitializingAgentWithID:agentID]) {
+    [self completeAgentOperationWithAgent:nil error:TLAgentOrchestratorError(@"This agent is still initializing.") completion:completion];
+    return;
+  }
+  [self startVMForAgentWithID:agentID completion:completion];
+}
+
+- (void)startVMForAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion {
   NSError *loadError = nil;
   TLAgentRecord *agent = [self.database agentWithID:agentID error:&loadError];
   if (!agent) {
@@ -146,6 +195,10 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (void)stopAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion {
+  if ([self isInitializingAgentWithID:agentID]) {
+    [self completeAgentOperationWithAgent:nil error:TLAgentOrchestratorError(@"This agent is still initializing.") completion:completion];
+    return;
+  }
   NSError *loadError = nil;
   TLAgentRecord *agent = [self.database agentWithID:agentID error:&loadError];
   if (!agent) {
@@ -182,7 +235,27 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }];
 }
 
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)folderPaths error:(NSError **)error {
+  NSArray<NSString *> *folders = TLValidatedAgentFolders(folderPaths, error);
+  if (!folders) return nil;
+  return [self.database updateAgentWithID:agentID folderPaths:folders error:error];
+}
+
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name
+                             avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error {
+  NSString *agentName = TLAgentOrchestratorTrim(name ?: @"");
+  if (!agentName.length) {
+    if (error) *error = TLAgentOrchestratorError(@"Give your agent a name.");
+    return nil;
+  }
+  return [self.database updateAgentWithID:agentID name:agentName avatar:avatar soul:soul error:error];
+}
+
 - (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error {
+  if ([self isInitializingAgentWithID:agentID]) {
+    if (error) *error = TLAgentOrchestratorError(@"This agent is still initializing.");
+    return NO;
+  }
   TLAgentRecord *agent = [self.database agentWithID:agentID error:error];
   if (!agent) {
     return NO;
@@ -228,22 +301,42 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     [self completeAgentOperationWithAgent:nil error:createError completion:completion];
     return;
   }
-  [self startAgentWithID:agent.agentID completion:^(TLAgentRecord *runningAgent, NSError *startError) {
-    if (!runningAgent || startError) {
-      if (completion) completion(runningAgent, startError);
+  [self installHermesForAgentWithID:agent.agentID progress:progress completion:completion];
+}
+
+- (void)installHermesForAgentWithID:(NSInteger)agentID progress:(TLHermesInstallProgressHandler)progress
+                        completion:(TLAgentOperationCompletionHandler)completion {
+  @synchronized (self.initializingAgentIDs) {
+    if ([self.initializingAgentIDs containsObject:@(agentID)]) {
+      [self completeAgentOperationWithAgent:nil error:TLAgentOrchestratorError(@"This agent is already initializing.") completion:completion];
       return;
     }
+    [self.initializingAgentIDs addObject:@(agentID)];
+  }
+  // Keep provisioning alive independently of the creation sheet, and clear it on every terminal path.
+  TLAgentOperationCompletionHandler finish = ^(TLAgentRecord *agent, NSError *installError) {
+    NSError *saveError = nil;
+    TLAgentRecord *updatedAgent = agent;
+    if (agent) {
+      updatedAgent = [self.database updateAgentWithID:agentID
+        status:installError ? TLAgentStatusError : TLAgentStatusRunning
+        lastError:installError.localizedDescription error:&saveError] ?: agent;
+      if (!installError && !saveError) [self.database setCurrentAgentID:agentID error:&saveError];
+    }
+    @synchronized (self.initializingAgentIDs) { [self.initializingAgentIDs removeObject:@(agentID)]; }
+    [self completeAgentOperationWithAgent:updatedAgent error:installError ?: saveError completion:completion];
+  };
+  [self startVMForAgentWithID:agentID completion:^(TLAgentRecord *runningAgent, NSError *startError) {
+    if (!runningAgent || startError) { finish(runningAgent, startError); return; }
     if (![self.agentClient respondsToSelector:@selector(installHermesWithAgent:requestID:progress:completion:)]) {
-      if (completion) completion(runningAgent, TLAgentOrchestratorError(@"This VM runtime cannot install Hermes Agent."));
+      finish(runningAgent, TLAgentOrchestratorError(@"This VM runtime cannot install Hermes Agent."));
       return;
     }
     NSString *requestID = NSUUID.UUID.UUIDString;
     [self.agentClient installHermesWithAgent:runningAgent requestID:requestID
                                     progress:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
       if (progress && [deltaRequestID isEqualToString:requestID]) progress(text);
-    } completion:^(NSError *installError) {
-      if (completion) completion(runningAgent, installError);
-    }];
+    } completion:^(NSError *installError) { finish(runningAgent, installError); }];
   }];
 }
 
@@ -293,6 +386,11 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     [self completeDefaultAgent:nil
                          error:agentError ?: TLAgentOrchestratorError(@"Could not create a default agent.")
                     completion:completion];
+    return;
+  }
+
+  if ([self isInitializingAgentWithID:agent.agentID]) {
+    [self completeDefaultAgent:nil error:TLAgentOrchestratorError(@"This agent is still initializing. Try again when setup finishes.") completion:completion];
     return;
   }
 

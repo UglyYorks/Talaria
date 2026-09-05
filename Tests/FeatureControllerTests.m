@@ -7,6 +7,10 @@
 #import "ModelPickerView.h"
 #import "UIComponents.h"
 #import "TalariaWindowController.h"
+#import "TLAgentCreationWindowController.h"
+#import "TLAgentFolderAccessWindowController.h"
+#import "design_system/TLEmojiPicker.h"
+#import "design_system/TLFolderAccessPicker.h"
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLButton.h"
 #import "design_system/TLWorkspaceOutlineView.h"
@@ -209,6 +213,8 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 }
 
 @interface TalariaWindowController (FeatureControllerTests)
+- (NSStackView *)buildSidebarTileGrid;
+- (void)rebuildSidebarAgents;
 - (void)installAppStateBindings;
 - (void)renderWorkspaceTabs;
 - (void)updateWorkspaceMode;
@@ -517,9 +523,332 @@ static void TestBrowserOwnsCallbacksAndSession(void) {
   Check(releasedController == nil, @"browser callbacks do not retain their controller");
 }
 
+@interface TLAgentSelectionStoreMock : NSObject
+@property (nonatomic) NSInteger currentAgentID;
+@end
+@implementation TLAgentSelectionStoreMock
+@end
+
+static void TestRealSidebarAgents(void) {
+  TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 320, 64)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TalariaWindowController *controller = [[TalariaWindowController alloc] initWithWindow:window];
+  [controller setValue:palette forKey:@"palette"];
+  TLAgentSelectionStoreMock *store = [TLAgentSelectionStoreMock new];
+  store.currentAgentID = 12;
+  [controller setValue:store forKey:@"database"];
+  NSMutableArray *agents = [NSMutableArray array];
+  for (NSInteger index = 10; index < 15; index++) {
+    TLAgentRecord *agent = [TLAgentRecord new];
+    agent.agentID = index;
+    agent.name = [NSString stringWithFormat:@"Agent %ld", (long)index];
+    agent.avatar = @[@"🦊", @"🐼", @"🌙", @"🐙", @"🦉"][(NSUInteger)(index - 10)];
+    [agents addObject:agent];
+  }
+  [controller setValue:agents forKey:@"agents"];
+  NSStackView *grid = [controller buildSidebarTileGrid];
+  [controller setValue:grid forKey:@"sidebarTileGrid"];
+  [window.contentView addSubview:grid];
+  [NSLayoutConstraint activateConstraints:@[
+    [grid.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [grid.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [grid.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [grid.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+  ]];
+  [window.contentView layoutSubtreeIfNeeded];
+  [controller rebuildSidebarAgents];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSScrollView *scroll = (NSScrollView *)grid.arrangedSubviews.firstObject;
+  NSStackView *tiles = (NSStackView *)scroll.documentView;
+  Check(tiles.arrangedSubviews.count == 5, @"sidebar contains only persisted agents");
+  NSUInteger selected = 0;
+  for (TLIconTileView *tile in tiles.arrangedSubviews) {
+    if (tile.selected) selected++;
+    Check(NSWidth(tile.bounds) > 0 && NSHeight(tile.bounds) > 0, @"agent tiles remain visible in scrolling sidebar");
+  }
+  Check(selected == 1 && ((TLIconTileView *)tiles.arrangedSubviews[2]).selected, @"sidebar marks actual selected agent");
+  Check(NSWidth(tiles.bounds) > NSWidth(scroll.bounds), @"extra agents remain horizontally scrollable");
+  NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_SIDEBAR_PREVIEW"];
+  if (preview.length) {
+    NSBitmapImageRep *bitmap = [window.contentView bitmapImageRepForCachingDisplayInRect:window.contentView.bounds];
+    [window.contentView cacheDisplayInRect:window.contentView.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:preview atomically:YES];
+  }
+  [controller setValue:@[] forKey:@"agents"];
+  [controller rebuildSidebarAgents];
+  scroll = (NSScrollView *)grid.arrangedSubviews.firstObject;
+  tiles = (NSStackView *)scroll.documentView;
+  Check(tiles.arrangedSubviews.count == 0, @"empty sidebar contains no placeholder or creation tiles");
+  [window close];
+}
+
+static void TestNativeEmojiInput(void) {
+  TLEmojiPicker *picker = [[TLEmojiPicker alloc] init];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 200, 100)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  [window.contentView addSubview:picker];
+  Check([window makeFirstResponder:picker] && window.firstResponder == picker && picker.inputContext.client == picker,
+        @"native emoji input targets the avatar control instead of another form field");
+  __block NSUInteger changes = 0;
+  picker.emojiChangedHandler = ^(NSString *emoji) { changes++; };
+  for (NSString *emoji in @[@"🥹", @"👩🏽‍💻", @"🏳️‍🌈", @"🇦🇺", @"1️⃣", @"👨‍👩‍👧‍👦"]) {
+    [picker insertText:[[NSAttributedString alloc] initWithString:emoji] replacementRange:NSMakeRange(NSNotFound, 0)];
+    Check([picker.emoji isEqual:emoji] && [picker.title isEqual:emoji], @"native picker commits a complete emoji, including compound sequences");
+  }
+  Check(changes == 6, @"native selection updates the avatar");
+  NSString *previous = picker.emoji;
+  for (NSString *invalid in @[@"", @"hello", @"1", @"#", @"*", @"🦊🐼"]) {
+    [picker insertText:invalid replacementRange:picker.selectedRange];
+  }
+  Check([picker.emoji isEqual:previous] && changes == 6, @"non-emoji text and multiple emojis preserve the avatar");
+  [picker setMarkedText:@"search" selectedRange:NSMakeRange(6, 0) replacementRange:picker.selectedRange];
+  Check(picker.hasMarkedText && [picker.emoji isEqual:previous], @"composition does not replace the avatar before commit");
+  [picker unmarkText];
+  Check(!picker.hasMarkedText && [picker.emoji isEqual:previous], @"cancelled selection preserves the avatar");
+  picker.enabled = NO;
+  [picker insertText:@"🦊" replacementRange:picker.selectedRange];
+  Check([picker.emoji isEqual:previous], @"disabled picker cannot change an agent during provisioning");
+  [window close];
+}
+
+static void TestFolderAccessTable(void) {
+  TLFolderAccessPicker *picker = [[TLFolderAccessPicker alloc] init];
+  Check([picker.tableView isKindOfClass:NSTableView.class] && picker.folderPaths.count == 0,
+        @"folder access starts with an empty native table");
+  NSArray<NSButton *> *shortcuts = [picker valueForKey:@"shortcutButtons"];
+  Check(shortcuts.count == 5, @"offers disk, home, desktop, documents and downloads shortcuts");
+  [shortcuts[0] performClick:nil];
+  [shortcuts[1] performClick:nil];
+  [shortcuts[1] performClick:nil];
+  NSString *home = NSFileManager.defaultManager.homeDirectoryForCurrentUser.path.stringByStandardizingPath;
+  Check([picker.folderPaths isEqual:@[@"/", home]], @"disk and home shortcuts add real paths without duplicates");
+  [shortcuts[2] performClick:nil];
+  [shortcuts[3] performClick:nil];
+  [shortcuts[4] performClick:nil];
+  Check(picker.folderPaths.count == 5 && picker.tableView.numberOfRows == 5, @"common location shortcuts populate native rows");
+  [picker.tableView selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(1, 3)] byExtendingSelection:NO];
+  [picker setPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  Check(picker.tableView.selectedRowIndexes.count == 3, @"theme changes preserve folder selection");
+  NSButton *remove = [picker valueForKey:@"removeButton"];
+  Check(remove.enabled, @"remove becomes available for selected folders");
+  [remove performClick:nil];
+  Check(picker.folderPaths.count == 2 && [picker.folderPaths.firstObject isEqual:@"/"], @"removes all selected rows while preserving remaining paths");
+  NSArray *remaining = picker.folderPaths;
+  picker.enabled = NO;
+  [shortcuts[1] performClick:nil];
+  Check([picker.folderPaths isEqual:remaining] && !remove.enabled && !shortcuts[1].enabled,
+        @"folder permissions cannot be changed during provisioning");
+  picker.enabled = YES;
+  [picker.tableView selectAll:nil];
+  [remove performClick:nil];
+  Check(picker.folderPaths.count == 0 && !remove.enabled && ![[picker valueForKey:@"emptyLabel"] isHidden],
+        @"removing every folder restores the empty state");
+}
+
+@interface TLAgentCreationStoreMock : NSObject
+@property (nonatomic) NSUInteger creationCount;
+@property (nonatomic, strong) TLAgentRecord *savedProfile;
+@end
+@implementation TLAgentCreationStoreMock
+- (TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar soul:(NSString *)soul
+                         folderPaths:(NSArray<NSString *> *)paths error:(NSError **)error {
+  if (!name.length) {
+    if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Give your agent a name."}];
+    return nil;
+  }
+  self.creationCount++;
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = 42;
+  agent.name = name;
+  return agent;
+}
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error {
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = agentID;
+  agent.name = name;
+  agent.avatar = avatar;
+  agent.soul = soul;
+  self.savedProfile = agent;
+  return agent;
+}
+@end
+
+static void TestAgentCreationForm(void) {
+  TLThemePalette *dark = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  TLAgentCreationWindowController *controller = [[TLAgentCreationWindowController alloc] initWithPalette:dark orchestrator:(id)[TLAgentCreationStoreMock new]];
+  NSWindow *window = controller.window;
+  [window.contentView layoutSubtreeIfNeeded];
+  NSTextField *name = [controller valueForKey:@"nameField"];
+  NSTextView *soul = [controller valueForKey:@"soulView"];
+  TLEmojiPicker *avatar = [controller valueForKey:@"avatarPicker"];
+  name.stringValue = @"Atlas";
+  soul.string = @"My agent's soul";
+  avatar.emoji = @"🦊";
+  [controller applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  Check([name.stringValue isEqual:@"Atlas"] && [soul.string isEqual:@"My agent's soul"] && [avatar.emoji isEqual:@"🦊"],
+        @"theme changes preserve the agent profile draft");
+  Check([[controller valueForKey:@"folderPaths"] count] == 0, @"agent creation defaults to no folder access");
+  Check(NSWidth(name.bounds) > 0 && NSHeight(soul.bounds) > 0, @"profile fields are laid out");
+  NSButton *create = [controller valueForKey:@"createButton"];
+  NSRect buttonFrame = [create convertRect:create.bounds toView:window.contentView];
+  Check(NSContainsRect(window.contentView.bounds, buttonFrame), @"creation action stays visible below the native form");
+  TLFolderAccessPicker *folders = [controller valueForKey:@"folderPicker"];
+  folders.folderPaths = @[@"/", NSFileManager.defaultManager.homeDirectoryForCurrentUser.path,
+    [NSFileManager.defaultManager.homeDirectoryForCurrentUser.path stringByAppendingPathComponent:@"Documents"]];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSRect tableFrame = [folders.tableView.enclosingScrollView convertRect:folders.tableView.enclosingScrollView.bounds toView:window.contentView];
+  Check(NSContainsRect(window.contentView.bounds, tableFrame) && NSMinY(tableFrame) > NSMaxY(buttonFrame),
+        @"folder table fits above the footer without an outer scrollbar");
+  NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_FORM_PREVIEW"];
+  if (preview.length) {
+    for (NSNumber *darkMode in @[@YES, @NO]) {
+      [controller applyPalette:[TLThemePalette paletteForPreference:darkMode.boolValue ? TLThemePreferenceDark : TLThemePreferenceLight]];
+      [window.contentView layoutSubtreeIfNeeded];
+      NSBitmapImageRep *bitmap = [window.contentView bitmapImageRepForCachingDisplayInRect:window.contentView.bounds];
+      [window.contentView cacheDisplayInRect:window.contentView.bounds toBitmapImageRep:bitmap];
+      NSString *path = darkMode.boolValue ? preview : [preview.stringByDeletingPathExtension stringByAppendingString:@"-light.png"];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+    }
+  }
+  NSWindow *parent = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 700)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  parent.releasedWhenClosed = NO;
+  [controller showFromWindow:parent];
+  name.stringValue = @"";
+  [create performClick:nil];
+  Check([controller valueForKey:@"createdAgentID"] && [[controller valueForKey:@"createdAgentID"] integerValue] == 0,
+        @"validation failure does not submit an agent");
+  Check(window.sheetParent == parent, @"invalid profile stays in the creation sheet");
+  name.stringValue = @"Atlas";
+  __block NSUInteger submissions = 0;
+  controller.agentCreatedHandler = ^(TLAgentRecord *agent) {
+    submissions++;
+    Check(!window.visible && agent.agentID == 42, @"creation sheet closes before background initialization is handed off");
+  };
+  [create performClick:nil];
+  [create performClick:nil];
+  Check(submissions == 1, @"creation hands off exactly once without waiting for an installer");
+  [parent close];
+  [window close];
+}
+
+static void TestAgentSettingsForm(void) {
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = 17;
+  agent.name = @"Atlas";
+  agent.avatar = @"🦊";
+  agent.soul = @"Be thoughtful and curious.";
+  TLAgentCreationStoreMock *store = [TLAgentCreationStoreMock new];
+  TLAgentCreationWindowController *controller = [[TLAgentCreationWindowController alloc] initWithAgent:agent
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark] orchestrator:(id)store];
+  NSTextField *name = [controller valueForKey:@"nameField"];
+  TLEmojiPicker *avatar = [controller valueForKey:@"avatarPicker"];
+  NSTextView *soul = [controller valueForKey:@"soulView"];
+  Check([name.stringValue isEqual:agent.name] && [avatar.emoji isEqual:agent.avatar] && [soul.string isEqual:agent.soul], @"settings preload the selected agent profile");
+  [controller.window.contentView layoutSubtreeIfNeeded];
+  NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_SETTINGS_PREVIEW"];
+  if (preview.length) {
+    NSView *view = controller.window.contentView;
+    NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+    [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:preview atomically:YES];
+  }
+  name.stringValue = @"Nova";
+  avatar.emoji = @"🌟";
+  soul.string = @"";
+  [controller applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  NSButton *cancel = [controller valueForKey:@"cancelButton"];
+  [cancel performClick:nil];
+  Check(store.savedProfile == nil, @"cancel does not mutate the profile");
+  __block BOOL saved = NO;
+  controller.agentUpdatedHandler = ^(TLAgentRecord *updated) { saved = YES; };
+  NSButton *save = [controller valueForKey:@"createButton"];
+  [save performClick:nil];
+  Check(saved && store.savedProfile.agentID == 17 && store.creationCount == 0, @"editing saves the selected agent without provisioning another VM");
+  Check([store.savedProfile.name isEqual:@"Nova"] && [store.savedProfile.avatar isEqual:@"🌟"] && store.savedProfile.soul.length == 0,
+    @"profile draft survives theme changes and saves all three fields");
+  [controller.window close];
+}
+
+@interface TLFolderAccessStoreMock : NSObject
+@property (nonatomic, copy) NSArray<NSString *> *savedPaths;
+@property (nonatomic) NSInteger savedAgentID;
+@property (nonatomic) BOOL failSave;
+@end
+@implementation TLFolderAccessStoreMock
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)paths error:(NSError **)error {
+  if (self.failSave) {
+    if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Folder unavailable"}];
+    return nil;
+  }
+  self.savedPaths = paths;
+  self.savedAgentID = agentID;
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = agentID;
+  return agent;
+}
+@end
+
+static void TestAgentFolderEditing(void) {
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = 72;
+  agent.name = @"Atlas";
+  agent.avatar = @"🦊";
+  agent.folderPaths = @[@"/", NSFileManager.defaultManager.homeDirectoryForCurrentUser.path];
+  TLFolderAccessStoreMock *store = [TLFolderAccessStoreMock new];
+  TLAgentFolderAccessWindowController *controller = [[TLAgentFolderAccessWindowController alloc]
+    initWithAgent:agent palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark] orchestrator:(id)store];
+  TLFolderAccessPicker *picker = [controller valueForKey:@"folderPicker"];
+  Check([picker.folderPaths isEqual:agent.folderPaths], @"folder editor opens the selected agent's saved folders");
+  [controller.window.contentView layoutSubtreeIfNeeded];
+  NSRect frame = [picker convertRect:picker.bounds toView:controller.window.contentView];
+  Check(NSContainsRect(controller.window.contentView.bounds, frame), @"folder editor table fits inside its sheet");
+  NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_FOLDERS_PREVIEW"];
+  if (preview.length) {
+    [NSApp activateIgnoringOtherApps:YES];
+    [controller.window makeKeyAndOrderFront:nil];
+    for (NSNumber *dark in @[@YES, @NO]) {
+      [controller applyPalette:[TLThemePalette paletteForPreference:dark.boolValue ? TLThemePreferenceDark : TLThemePreferenceLight]];
+      [controller.window.contentView layoutSubtreeIfNeeded];
+      [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+      NSView *view = controller.window.contentView;
+      NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+      [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+      NSString *path = dark.boolValue ? preview : [preview.stringByDeletingPathExtension stringByAppendingString:@"-light.png"];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+    }
+  }
+  picker.folderPaths = @[];
+  [controller applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  Check(picker.folderPaths.count == 0 && agent.folderPaths.count == 2 && store.savedPaths == nil,
+    @"theme changes preserve the draft without modifying saved agent folders");
+  NSButton *cancel = [controller valueForKey:@"cancelButton"];
+  [cancel performClick:nil];
+  Check(store.savedPaths == nil, @"cancel leaves the saved folder list untouched");
+  __block BOOL saved = NO;
+  controller.savedHandler = ^{ saved = YES; };
+  store.failSave = YES;
+  NSButton *save = [controller valueForKey:@"saveButton"];
+  [save performClick:nil];
+  Check(!saved && [[controller valueForKey:@"statusLabel"] stringValue].length > 0, @"save failure reports an error and preserves the draft");
+  store.failSave = NO;
+  [save performClick:nil];
+  Check(saved && store.savedAgentID == 72 && store.savedPaths.count == 0, @"save removes all folders only for the selected agent");
+  [controller.window close];
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestNativeEmojiInput();
+    TestFolderAccessTable();
+    TestAgentCreationForm();
+    TestAgentFolderEditing();
+    TestAgentSettingsForm();
+    TestRealSidebarAgents();
     TestNotesThemePreservesEditing();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();

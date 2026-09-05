@@ -2,7 +2,7 @@
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 
-static NSInteger const TLDatabaseSchemaVersion = 4;
+static NSInteger const TLDatabaseSchemaVersion = 5;
 
 typedef BOOL (^TLDatabaseTransactionBlock)(NSError **error);
 
@@ -426,7 +426,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 - (NSArray<TLAgentRecord *> *)listAgents:(NSError **)error {
   @synchronized (self) {
     const char *sql =
-      "SELECT id, name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at "
+      "SELECT id, name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at, avatar, soul, folder_paths "
       "FROM agents "
       "ORDER BY id ASC";
 
@@ -456,11 +456,26 @@ static NSString *TLTitleFromMessage(NSString *content) {
                                runtime:(NSString *)runtime
                            vmDirectory:(NSString *)vmDirectory
                                  error:(NSError **)error {
+  if (![self isValidAgentGuestKind:guestKind] || ![self isValidAgentRuntime:runtime]) {
+    TLSetDatabaseError(error, @"Only local Linux agents are supported.");
+    return nil;
+  }
+  return [self createAgentWithName:name avatar:@"🤖" soul:@"" folderPaths:@[] vmDirectory:vmDirectory error:error];
+}
+
+- (TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
+                                 soul:(NSString *)soul folderPaths:(NSArray<NSString *> *)folderPaths
+                          vmDirectory:(NSString *)vmDirectory error:(NSError **)error {
   @synchronized (self) {
     NSString *agentName = TLNonBlank(name, @"Agent");
-    NSString *agentGuestKind = TLNonBlank(guestKind, TLAgentGuestKindLinux);
-    NSString *agentRuntime = TLNonBlank(runtime, TLAgentRuntimePython);
-    NSString *agentVMDirectory = TLNonBlank(vmDirectory, @"");
+    NSString *agentGuestKind = TLAgentGuestKindLinux;
+    NSString *agentRuntime = TLAgentRuntimePython;
+    NSString *agentVMDirectory = vmDirectory.stringByStandardizingPath;
+    NSData *folderData = [NSJSONSerialization dataWithJSONObject:folderPaths options:0 error:error];
+    if (!folderData || !agentVMDirectory.isAbsolutePath) {
+      TLSetDatabaseError(error, @"An agent requires its own local VM directory.");
+      return nil;
+    }
 
     if (![self isValidAgentGuestKind:agentGuestKind]) {
       TLSetDatabaseError(error, @"Agent guest kind is not supported.");
@@ -474,8 +489,8 @@ static NSString *TLTitleFromMessage(NSString *content) {
     __block sqlite3_int64 agentID = 0;
     BOOL created = [self performTransaction:^BOOL(NSError **transactionError) {
       const char *sql =
-        "INSERT INTO agents (name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at) "
-        "VALUES (?1, ?2, ?3, ?4, ?5, NULL, datetime('now'), datetime('now'))";
+        "INSERT INTO agents (name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at, avatar, soul, folder_paths) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, NULL, datetime('now'), datetime('now'), ?6, ?7, ?8)";
 
       TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
       if (!statement) {
@@ -487,6 +502,9 @@ static NSString *TLTitleFromMessage(NSString *content) {
       [statement bindText:agentRuntime atIndex:3];
       [statement bindText:TLAgentStatusStopped atIndex:4];
       [statement bindText:agentVMDirectory atIndex:5];
+      [statement bindText:TLNonBlank(avatar, @"🤖") atIndex:6];
+      [statement bindText:soul ?: @"" atIndex:7];
+      [statement bindText:[[NSString alloc] initWithData:folderData encoding:NSUTF8StringEncoding] atIndex:8];
       if (![statement stepDone:transactionError]) {
         return NO;
       }
@@ -499,6 +517,24 @@ static NSString *TLTitleFromMessage(NSString *content) {
     }
 
     return [self loadAgentWithID:agentID error:error];
+  }
+}
+
+- (NSInteger)currentAgentID {
+  @synchronized (self) {
+    NSInteger savedID = [[self settingForKey:@"currentAgentID" error:nil] integerValue];
+    NSArray<TLAgentRecord *> *agents = [self listAgents:nil];
+    for (TLAgentRecord *agent in agents) {
+      if (agent.agentID == savedID) return savedID;
+    }
+    return agents.lastObject.agentID;
+  }
+}
+
+- (BOOL)setCurrentAgentID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    if (![self loadAgentWithID:agentID error:error]) return NO;
+    return [self setSetting:@"currentAgentID" value:[@(agentID) stringValue] error:error];
   }
 }
 
@@ -541,6 +577,37 @@ static NSString *TLTitleFromMessage(NSString *content) {
       return nil;
     }
 
+    return [self loadAgentWithID:agentID error:error];
+  }
+}
+
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)folderPaths error:(NSError **)error {
+  @synchronized (self) {
+    if (![self loadAgentWithID:agentID error:error]) return nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:folderPaths options:0 error:error];
+    if (!data) return nil;
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "UPDATE agents SET folder_paths = ?1, updated_at = datetime('now') WHERE id = ?2" error:error];
+    if (!statement) return nil;
+    [statement bindText:[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] atIndex:1];
+    [statement bindInt64:agentID atIndex:2];
+    if (![statement stepDone:error]) return nil;
+    return [self loadAgentWithID:agentID error:error];
+  }
+}
+
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name
+                             avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error {
+  @synchronized (self) {
+    if (![self loadAgentWithID:agentID error:error]) return nil;
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "UPDATE agents SET name = ?1, avatar = ?2, soul = ?3, updated_at = datetime('now') WHERE id = ?4" error:error];
+    if (!statement) return nil;
+    [statement bindText:name atIndex:1];
+    [statement bindText:avatar atIndex:2];
+    [statement bindText:soul atIndex:3];
+    [statement bindInt64:agentID atIndex:4];
+    if (![statement stepDone:error]) return nil;
     return [self loadAgentWithID:agentID error:error];
   }
 }
@@ -658,7 +725,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 
 - (TLAgentRecord *)loadAgentWithID:(NSInteger)agentID error:(NSError **)error {
   const char *sql =
-    "SELECT id, name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at "
+    "SELECT id, name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at, avatar, soul, folder_paths "
     "FROM agents "
     "WHERE id = ?1";
 
@@ -689,6 +756,11 @@ static NSString *TLTitleFromMessage(NSString *content) {
   agent.lastError = TLNullableStringFromColumn(statement, 6);
   agent.createdAt = TLStringFromColumn(statement, 7);
   agent.updatedAt = TLStringFromColumn(statement, 8);
+  agent.avatar = TLStringFromColumn(statement, 9);
+  agent.soul = TLStringFromColumn(statement, 10);
+  NSData *folderData = [TLStringFromColumn(statement, 11) dataUsingEncoding:NSUTF8StringEncoding];
+  id paths = [NSJSONSerialization JSONObjectWithData:folderData options:0 error:nil];
+  agent.folderPaths = [paths isKindOfClass:NSArray.class] ? paths : @[];
   return agent;
 }
 
