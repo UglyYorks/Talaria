@@ -358,176 +358,170 @@ static void TestClosingActiveTabAnimatesToFallback(TLThemePalette *palette) {
 }
 
 static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette) {
-  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500.0, palette.tabHeight)
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500, palette.tabHeight)
     styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
   NSStackView *stack = [[NSStackView alloc] initWithFrame:window.contentView.bounds];
   stack.wantsLayer = YES;
   [window.contentView addSubview:stack];
-  TLWorkspaceTab *firstTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat
-                                                   tabID:71
-                                                   title:@"First"
-                                                 toolTip:@""
-                                                      URL:nil
-                                                closeable:YES];
-  TLWorkspaceTab *secondTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat
-                                                    tabID:72
-                                                    title:@"Second"
-                                                  toolTip:@""
-                                                       URL:nil
-                                                 closeable:YES];
+  __block NSTimeInterval now = 0;
+  TLTransitionCoordinator *timeline = [[TLTransitionCoordinator alloc]
+    initWithClock:^NSTimeInterval { return now; } automaticallyAdvances:NO];
   TLTabContextMenuHarness *harness = [[TLTabContextMenuHarness alloc] init];
-  harness.tabs = @[firstTab, secondTab];
-  harness.activeTabID = firstTab.tabID;
+  TLWorkspaceTab *first = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:71
+    title:@"First" toolTip:@"" URL:nil closeable:YES];
+  TLWorkspaceTab *second = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:72
+    title:@"Second" toolTip:@"" URL:nil closeable:YES];
+  harness.tabs = @[first, second];
+  harness.activeTabID = first.tabID;
   TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc]
-    initWithTabStack:stack
-              target:harness
-            delegate:(id<TLWorkspaceTabsControllerDelegate>)harness
-             palette:palette];
-  harness.controller = controller;
+    initWithTabStack:stack target:harness delegate:(id)harness palette:palette transitionCoordinator:timeline];
   [controller reloadTabs];
-  [controller updateTabWidthsForAvailableWidth:NSWidth(stack.bounds)];
-  [stack layoutSubtreeIfNeeded];
-  TLChromeTabView *removedTabView = ((NSArray<TLChromeTabView *> *)[controller valueForKey:@"tabViews"])[0];
-  TLChromeTabView *originalSurvivingTabView = ((NSArray<TLChromeTabView *> *)[controller valueForKey:@"tabViews"])[1];
-  NSRect removedFrame = removedTabView.frame;
-  NSRect survivingStartFrame = originalSurvivingTabView.frame;
-
-  harness.tabs = @[secondTab];
+  [controller updateTabWidthsForAvailableWidth:500];
+  TLChromeTabView *closing = ((NSArray *)[controller valueForKey:@"tabViews"])[0];
+  TLChromeTabView *surviving = ((NSArray *)[controller valueForKey:@"tabViews"])[1];
+  NSRect closingFrame = closing.frame;
+  CGFloat survivingStartX = NSMinX(surviving.frame);
+  harness.tabs = @[second];
+  harness.activeTabID = second.tabID;
   [controller reloadTabs];
-  harness.activeTabID = secondTab.tabID;
-  [controller reloadTabs];
-  [controller updateTabWidthsForAvailableWidth:NSWidth(stack.bounds)];
-
+  [controller performPendingSelectionAnimation];
+  TLChromeTabSelectionView *selection = [controller valueForKey:@"selectionView"];
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
-    TLChromeTabView *survivingTabView = ((NSArray<TLChromeTabView *> *)[controller valueForKey:@"tabViews"])[0];
-    id removalTransition = ((NSArray *)[controller valueForKey:@"removalTransitions"]).firstObject;
-    NSView *removalPlaceholder = [removalTransition valueForKey:@"placeholderView"];
-    if ([stack.subviews indexOfObjectIdenticalTo:removedTabView] <=
-        [stack.subviews indexOfObjectIdenticalTo:survivingTabView]) {
-      NSLog(@"FAIL an internal removed-tab overlay is covered by a surviving tab after refresh");
-      exit(1);
+    now += palette.tabLifecycleTransitionDuration * 0.5;
+    [timeline advance];
+    id transition = ((NSArray *)[controller valueForKey:@"removalTransitions"]).firstObject;
+    NSView *placeholder = [transition valueForKey:@"placeholderView"];
+    CGFloat targetWidth = MAX(0, -stack.spacing);
+    CGFloat expectedWidth = (NSWidth(closingFrame) + targetWidth) * 0.5;
+    AssertClose(NSWidth(placeholder.frame), expectedWidth, @"closing slot contracts at shared progress");
+    AssertClose(closing.lifecycleVisibleWidth, expectedWidth, @"mask exactly matches the moving layout boundary");
+    AssertClose(NSWidth(closing.frame), NSWidth(closingFrame), @"content geometry is not scaled");
+    AssertClose(NSMinX(selection.selectionFrame), NSMinX(closingFrame), @"background stays in the closing slot");
+    AssertClose(NSMinX(surviving.frame), survivingStartX - (NSWidth(closingFrame) - expectedWidth),
+                @"neighbor moves with the closing slot");
+    if (selection.layer.mask || closing.drawsActiveBackground) {
+      NSLog(@"FAIL closing content clips or duplicates the selection background"); exit(1);
     }
-    if (removedTabView.superview != stack || removedTabView.drawsActiveBackground ||
-        !NSEqualRects(removedTabView.frame, removedFrame)) {
-      NSLog(@"FAIL removed tab duplicates the selected background while closing");
-      exit(1);
+    // A metadata-only update must not restart/cancel the transition or replace views.
+    second.title = @"Renamed";
+    [controller reloadTabs];
+    if (((NSArray *)[controller valueForKey:@"tabViews"])[0] != surviving) {
+      NSLog(@"FAIL metadata reload replaced the surviving view"); exit(1);
     }
-    TLChromeTabSelectionView *selectionView = [controller valueForKey:@"selectionView"];
-    if (selectionView.layer.mask) {
-      NSLog(@"FAIL shared selection slab is clipped during a lifecycle animation");
-      exit(1);
+    AssertClose(closing.lifecycleVisibleWidth, expectedWidth, @"metadata update preserves animation progress");
+    now += palette.tabLifecycleTransitionDuration;
+    [timeline advance];
+  }
+  if (closing.superview || ((NSArray *)[controller valueForKey:@"removalTransitions"]).count) {
+    NSLog(@"FAIL removal completion leaves a view or placeholder behind"); exit(1);
+  }
+  // Creation prepares before first paint; closing during creation starts from
+  // the currently visible mask/opacity and retires the old completion.
+  harness.tabs = @[second, first];
+  harness.activeTabID = first.tabID;
+  [controller reloadTabs];
+  TLChromeTabView *inserted = ((NSArray *)[controller valueForKey:@"tabViews"])[1];
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    AssertClose(inserted.lifecycleVisibleWidth, NSWidth(inserted.bounds) * palette.tabLifecycleCollapsedWidthRatio,
+                @"new tab starts clipped before the first tick");
+    AssertClose(inserted.lifecycleContentOpacity, 0.0, @"new tab starts transparent");
+    now += palette.tabLifecycleTransitionDuration * 0.25;
+    [timeline advance];
+    CGFloat interruptedWidth = inserted.lifecycleVisibleWidth;
+    CGFloat interruptedOpacity = inserted.lifecycleContentOpacity;
+    harness.tabs = @[second];
+    harness.activeTabID = second.tabID;
+    [controller reloadTabs];
+    AssertClose(inserted.lifecycleVisibleWidth, interruptedWidth, @"closing preserves interrupted creation mask");
+    AssertClose(inserted.lifecycleContentOpacity, interruptedOpacity, @"closing preserves interrupted creation opacity");
+    now += palette.tabLifecycleTransitionDuration * 2;
+    [timeline advance];
+    if (inserted.superview) { NSLog(@"FAIL interrupted insertion leaves a ghost tab"); exit(1); }
+  }
+  [timeline finishAllTransitions];
+
+  // Replacing a draft identity removes and inserts in the same render batch.
+  // Both must remain alive until the shared lifecycle finishes.
+  harness.tabs = @[first, second];
+  harness.activeTabID = first.tabID;
+  [controller reloadTabs];
+  [controller performPendingSelectionAnimation];
+  [timeline finishAllTransitions];
+  TLChromeTabView *replaced = ((NSArray *)[controller valueForKey:@"tabViews"])[0];
+  CGFloat replacedWidth = NSWidth(replaced.frame);
+  TLWorkspaceTab *replacement = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:73
+    title:@"Persisted draft" toolTip:@"" URL:nil closeable:YES];
+  harness.tabs = @[replacement, second];
+  harness.activeTabID = replacement.tabID;
+  [controller reloadTabs];
+  [controller performPendingSelectionAnimation];
+  TLChromeTabView *appearing = ((NSArray *)[controller valueForKey:@"tabViews"])[0];
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    if (!replaced.superview || ((NSArray *)[controller valueForKey:@"removalTransitions"]).count != 1 ||
+        ((NSArray *)[controller valueForKey:@"insertingTabViews"]).count != 1) {
+      NSLog(@"FAIL same-batch insertion cancels the closing tab"); exit(1);
     }
-    CGFloat removalTargetWidth = MAX(palette.space0, -stack.spacing);
-    NSView *removedContentContainer = [removedTabView valueForKey:@"contentContainer"];
-    NSView *removedTitleClipView = [removedTabView valueForKey:@"titleClipView"];
-    NSDate *transitionStartDeadline = [NSDate dateWithTimeIntervalSinceNow:
-      MIN(0.05, palette.tabLifecycleTransitionDuration * 0.25)];
-    while (![removedContentContainer.layer.mask animationForKey:@"tab-removal-clip"] &&
-           [transitionStartDeadline timeIntervalSinceNow] > 0.0) {
-      [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:transitionStartDeadline];
-    }
-    CABasicAnimation *removalFade = (CABasicAnimation *)[removedTitleClipView.layer
-      animationForKey:@"tab-removal-content-fade"];
-    CABasicAnimation *removalClip = (CABasicAnimation *)[removedContentContainer.layer.mask
-      animationForKey:@"tab-removal-clip"];
-    CGPathRef removalEndPath = removalClip ? (__bridge CGPathRef)removalClip.toValue : nil;
-    CGRect removalEndBounds = removalEndPath ? CGPathGetBoundingBox(removalEndPath) : CGRectZero;
-    if (!removalClip || removedTabView.layer.mask ||
-        !removalFade ||
-        fabs(removalFade.duration - palette.tabLifecycleTransitionDuration *
-             palette.tabLifecycleContentFadeDurationRatio) > 0.001 ||
-        [removedTabView.layer animationForKey:@"tab-removal-fade"] ||
-        fabs(CGRectGetMinX(removalEndBounds) - NSMinX(removedContentContainer.bounds)) > 0.001 ||
-        fabs(CGRectGetWidth(removalEndBounds) - removalTargetWidth) > 0.001 ||
-        fabs(removedTabView.layer.opacity - 1.0) > 0.001) {
-      NSLog(@"FAIL removed tab is not the content-only reverse of insertion");
-      exit(1);
-    }
-    NSDate *sampleDeadline = [NSDate dateWithTimeIntervalSinceNow:
-      palette.tabLifecycleTransitionDuration * 0.50];
-    while ([sampleDeadline timeIntervalSinceNow] > 0.0) {
-      [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:sampleDeadline];
-    }
-    CALayer *visiblePlaceholderLayer = removalPlaceholder.layer.presentationLayer ?: removalPlaceholder.layer;
-    CGFloat visibleRemovalWidth = CGRectGetWidth(visiblePlaceholderLayer.frame);
-    if (visibleRemovalWidth >= NSWidth(removedFrame) - 0.1 ||
-        visibleRemovalWidth <= removalTargetWidth + 0.1) {
-      NSLog(@"FAIL closing tab slot does not remain in flight for the lifecycle duration");
-      exit(1);
-    }
-    CAShapeLayer *removalMask = (CAShapeLayer *)removedContentContainer.layer.mask;
-    CAShapeLayer *visibleRemovalMask = (CAShapeLayer *)(removalMask.presentationLayer ?: removalMask);
-    CGFloat visibleMaskWidth = visibleRemovalMask.path
-      ? CGRectGetWidth(CGPathGetBoundingBox(visibleRemovalMask.path))
-      : NSWidth(removedContentContainer.bounds);
-    // AppKit layout and Core Animation presentation snapshots can be one refresh
-    // apart; scale the sampling tolerance to the transition speed.
-    CGFloat samplingTolerance = NSWidth(removedFrame) * 2.0 *
-      ((1.0 / 60.0) / palette.tabLifecycleTransitionDuration);
-    if (visibleMaskWidth > visibleRemovalWidth + samplingTolerance) {
-      NSLog(@"FAIL closing tab content mask does not stay behind the moving layout boundary: mask=%g slot=%g", visibleMaskWidth, visibleRemovalWidth);
-      exit(1);
-    }
-    if (fabs(NSWidth(removedTabView.frame) - NSWidth(removedFrame)) > 0.001) {
-      NSLog(@"FAIL closing tab content geometry shrinks faster than its lifecycle mask");
-      exit(1);
-    }
-    CALayer *visibleSurvivingLayer = survivingTabView.layer.presentationLayer ?: survivingTabView.layer;
-    if (CGRectGetMinX(visibleSurvivingLayer.frame) >= NSMinX(survivingStartFrame) - 0.1) {
-      NSLog(@"FAIL tab to the right does not move with the contracting closing slot");
-      exit(1);
-    }
-    if (!removedContentContainer.layer.masksToBounds) {
-      NSLog(@"FAIL closing tab content can escape its contracting layout slot");
-      exit(1);
-    }
-    AssertClose(NSMinX(selectionView.selectionFrame), NSMinX(removedFrame),
-                @"selected background stays in the closing slot while the next tab moves into it");
-    if (!CATransform3DIsIdentity(removedTabView.layer.transform)) {
-      NSLog(@"FAIL removal animation transforms the closing tab layer");
-      exit(1);
-    }
-    TLChromeTabView *insertedTabView = [[TLChromeTabView alloc] initWithFrame:removedFrame];
-    insertedTabView.palette = palette;
-    [stack addSubview:insertedTabView];
-    [insertedTabView layoutSubtreeIfNeeded];
-    [insertedTabView prepareForInsertionAnimation];
-    NSView *insertedContentContainer = [insertedTabView valueForKey:@"contentContainer"];
-    NSView *insertedTitleClipView = [insertedTabView valueForKey:@"titleClipView"];
-    CGPathRef preparedPath = ((CAShapeLayer *)insertedContentContainer.layer.mask).path;
-    CGRect preparedBounds = preparedPath ? CGPathGetBoundingBox(preparedPath) : CGRectZero;
-    if (insertedTabView.layer.mask ||
-        fabs(CGRectGetWidth(preparedBounds) - NSWidth(removedFrame) *
-             palette.tabLifecycleCollapsedWidthRatio) > 0.001 ||
-        fabs(insertedTitleClipView.layer.opacity) > 0.001) {
-      NSLog(@"FAIL inserted tab is visible at full width or opacity before its first animation frame");
-      exit(1);
-    }
-    [insertedTabView animateInsertionWithDuration:palette.tabLifecycleTransitionDuration completion:^{}];
-    CABasicAnimation *insertionClip = (CABasicAnimation *)[insertedContentContainer.layer.mask
-      animationForKey:@"tab-insertion-clip"];
-    CGPathRef insertionStartPath = insertionClip
-      ? (__bridge CGPathRef)insertionClip.fromValue
-      : nil;
-    CGRect initialBounds = insertionStartPath ? CGPathGetBoundingBox(insertionStartPath) : CGRectZero;
-    CABasicAnimation *insertionFade = (CABasicAnimation *)[insertedTitleClipView.layer
-      animationForKey:@"tab-insertion-content-fade"];
-    if (!insertionClip ||
-        insertedTabView.layer.mask ||
-        [insertedTabView.layer animationForKey:@"tab-insertion-fade"] ||
-        !insertionFade ||
-        fabs(insertionFade.duration - palette.tabLifecycleTransitionDuration *
-             palette.tabLifecycleContentFadeDurationRatio) > 0.001 ||
-        fabs(CGRectGetMinX(initialBounds) - NSMinX(insertedContentContainer.bounds)) > 0.001 ||
-        fabs(CGRectGetWidth(initialBounds) - NSWidth(removedFrame) * palette.tabLifecycleCollapsedWidthRatio) > 0.001 ||
-        fabs(insertedTabView.layer.opacity - 1.0) > 0.001 ||
-        !NSEqualRects(insertedTabView.frame, removedFrame) ||
-        !CATransform3DIsIdentity(insertedTabView.layer.transform)) {
-      NSLog(@"FAIL inserted tab does not expand from the themed width while fading only its content");
-      exit(1);
+    AssertClose(appearing.lifecycleContentOpacity, 0.0, @"same-batch replacement starts hidden");
+    now += palette.tabLifecycleTransitionDuration * 0.5;
+    [timeline advance];
+    id removal = ((NSArray *)[controller valueForKey:@"removalTransitions"]).firstObject;
+    NSView *placeholder = [removal valueForKey:@"placeholderView"];
+    CGFloat collapsedWidth = MAX(0, -stack.spacing);
+    AssertClose(NSWidth(placeholder.frame), (replacedWidth + collapsedWidth) * 0.5,
+                @"same-batch replacement contracts the outgoing slot at shared midpoint");
+    AssertClose(replaced.lifecycleVisibleWidth, NSWidth(placeholder.frame),
+                @"same-batch replacement keeps the outgoing mask aligned");
+    AssertClose(appearing.lifecycleVisibleWidth,
+                NSWidth(appearing.frame) * (1.0 + palette.tabLifecycleCollapsedWidthRatio) * 0.5,
+                @"same-batch replacement reveals incoming content on the same timeline");
+    if (!replaced.superview || appearing.lifecycleContentOpacity <= 0.0) {
+      NSLog(@"FAIL replacement does not animate both outgoing and incoming content"); exit(1);
     }
   }
+  [timeline finishAllTransitions];
+  if (replaced.superview || ((NSArray *)[controller valueForKey:@"removalTransitions"]).count ||
+      ((NSArray *)[controller valueForKey:@"insertingTabViews"]).count) {
+    NSLog(@"FAIL same-batch replacement leaves lifecycle state behind"); exit(1);
+  }
+  AssertClose(appearing.lifecycleVisibleWidth, NSWidth(appearing.frame), @"replacement finishes at full content width");
+  AssertClose(appearing.lifecycleContentOpacity, 1.0, @"replacement finishes at full content opacity");
+
+  // In a batched close, later removed tabs must move with their own slots while
+  // keeping their original content width and clipping at the slot's right edge.
+  harness.tabs = @[first, second, replacement];
+  harness.activeTabID = replacement.tabID;
+  [controller reloadTabs];
+  [controller performPendingSelectionAnimation];
+  [timeline finishAllTransitions];
+  TLChromeTabView *laterClosing = ((NSArray *)[controller valueForKey:@"tabViews"])[1];
+  NSRect laterClosingFrame = laterClosing.frame;
+  harness.tabs = @[replacement];
+  [controller reloadTabs];
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    now += palette.tabLifecycleTransitionDuration * 0.5;
+    [timeline advance];
+    id laterRemoval = ((NSArray *)[controller valueForKey:@"removalTransitions"])[1];
+    NSView *laterPlaceholder = [laterRemoval valueForKey:@"placeholderView"];
+    AssertClose(NSMinX(laterClosing.frame), NSMinX(laterPlaceholder.frame), @"later closing content follows its moving slot");
+    AssertClose(NSWidth(laterClosing.frame), NSWidth(laterClosingFrame), @"batched closure does not scale content geometry");
+    AssertClose(laterClosing.lifecycleVisibleWidth, NSWidth(laterPlaceholder.frame), @"later closing mask follows slot width");
+    if (NSMinX(laterClosing.frame) >= NSMinX(laterClosingFrame)) {
+      NSLog(@"FAIL later closing tab did not move with earlier collapsing slot"); exit(1);
+    }
+  }
+  [timeline finishAllTransitions];
+  harness.tabs = @[first, replacement];
+  harness.activeTabID = replacement.tabID;
+  [controller reloadTabs];
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    now += palette.tabLifecycleTransitionDuration * 0.5;
+    [timeline advance];
+    TLChromeTabView *retainedActive = ((NSArray *)[controller valueForKey:@"tabViews"])[1];
+    AssertClose(NSMinX(selection.selectionFrame), NSMinX(retainedActive.frame) + retainedActive.reorderTranslationX,
+                @"selection follows retained active content while a neighbor appears");
+  }
+  [timeline finishAllTransitions];
   [window close];
 }
 
@@ -749,10 +743,13 @@ static void TestSelectionSlabSlidesBetweenTabs(TLThemePalette *palette) {
   NSStackView *stack = [[NSStackView alloc] initWithFrame:window.contentView.bounds];
   stack.wantsLayer = YES;
   [window.contentView addSubview:stack];
+  __block NSTimeInterval now = 0;
+  TLTransitionCoordinator *timeline = [[TLTransitionCoordinator alloc]
+    initWithClock:^NSTimeInterval { return now; } automaticallyAdvances:NO];
   TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc] initWithTabStack:stack
                                                                                        target:nil
                                                                                      delegate:nil
-                                                                                      palette:palette];
+                                                                                      palette:palette transitionCoordinator:timeline];
   TLChromeTabView *left = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, palette.tabMaxWidth, palette.tabHeight)];
   TLChromeTabView *right = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(palette.tabMaxWidth, 0,
                                                                             palette.tabMaxWidth,
@@ -775,34 +772,21 @@ static void TestSelectionSlabSlidesBetweenTabs(TLThemePalette *palette) {
   [controller setValue:[NSValue valueWithRect:left.frame] forKey:@"pendingSelectionStartFrame"];
   [controller setValue:@YES forKey:@"hasPendingSelectionAnimation"];
   [controller performPendingSelectionAnimation];
-  if (!NSEqualRects(selectionView.selectionFrame, right.frame)) {
-    NSLog(@"FAIL selection slab does not finish behind the newly active tab");
-    exit(1);
-  }
-  CAShapeLayer *backgroundLayer = [selectionView valueForKey:@"backgroundLayer"];
-  CABasicAnimation *slide = (CABasicAnimation *)[backgroundLayer animationForKey:@"tab-selection-slide"];
-  if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
-    if (slide) {
-      NSLog(@"FAIL selection slab animates when Reduce Motion is enabled");
-      exit(1);
-    }
-  } else {
-    if (!slide) {
-      NSLog(@"FAIL selection slab transition has no animation");
-      exit(1);
-    }
-    AssertClose(slide.duration, palette.tabSelectionSlideDuration,
-                @"selection slab uses the themed slide duration");
-    CGRect startBounds = CGPathGetBoundingBox((__bridge CGPathRef)slide.fromValue);
-    CGRect endBounds = CGPathGetBoundingBox((__bridge CGPathRef)slide.toValue);
-    AssertClose(NSMidX(startBounds), NSMidX(left.frame), @"selection slab animation begins at the previous tab");
-    AssertClose(NSMidX(endBounds), NSMidX(right.frame), @"selection slab animation ends at the newly active tab");
-
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    AssertClose(NSMinX(selectionView.selectionFrame), NSMinX(left.frame), @"selection begins at previous tab");
+    now = palette.tabSelectionSlideDuration * 0.5;
+    [timeline advance];
+    AssertClose(NSMinX(selectionView.selectionFrame), (NSMinX(left.frame) + NSMinX(right.frame)) * 0.5,
+                @"selection progresses on the shared clock");
     [controller updateSelectionIndicatorAnimated:NO];
-    if (![backgroundLayer animationForKey:@"tab-selection-slide"]) {
-      NSLog(@"FAIL duplicate active-tab reload cancels the in-flight selection slab animation");
-      exit(1);
+    if (![timeline hasTransitionForKey:@"selection"]) {
+      NSLog(@"FAIL duplicate reload cancels the selection transition"); exit(1);
     }
+    now = palette.tabSelectionSlideDuration;
+    [timeline advance];
+  }
+  if (!NSEqualRects(selectionView.selectionFrame, right.frame) || timeline.hasTransitions) {
+    NSLog(@"FAIL selection transition does not finish behind the active tab"); exit(1);
   }
 
   [right setValue:@35.0 forKey:@"dragTranslationX"];
@@ -828,10 +812,13 @@ static void TestLongSelectionJumpStartsNearDestination(TLThemePalette *palette) 
   NSStackView *stack = [[NSStackView alloc] initWithFrame:window.contentView.bounds];
   stack.wantsLayer = YES;
   [window.contentView addSubview:stack];
+  __block NSTimeInterval now = 0;
+  TLTransitionCoordinator *timeline = [[TLTransitionCoordinator alloc]
+    initWithClock:^NSTimeInterval { return now; } automaticallyAdvances:NO];
   TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc] initWithTabStack:stack
                                                                                        target:nil
                                                                                      delegate:nil
-                                                                                      palette:palette];
+                                                                                      palette:palette transitionCoordinator:timeline];
   NSMutableArray<TLChromeTabView *> *tabs = [NSMutableArray array];
   for (NSUInteger index = 0; index < 5; index += 1) {
     TLChromeTabView *tab = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(index * palette.tabMaxWidth,
@@ -858,18 +845,16 @@ static void TestLongSelectionJumpStartsNearDestination(TLThemePalette *palette) 
 
   [controller performPendingSelectionAnimation];
   TLChromeTabSelectionView *selectionView = [controller valueForKey:@"selectionView"];
-  CAShapeLayer *backgroundLayer = [selectionView valueForKey:@"backgroundLayer"];
   if (selectionView.layer.zPosition <= tabs[2].layer.zPosition ||
       selectionView.layer.zPosition >= tabs.lastObject.layer.zPosition) {
     NSLog(@"FAIL selection background must cover inactive separators beneath selected content");
     exit(1);
   }
-  CABasicAnimation *slide = (CABasicAnimation *)[backgroundLayer animationForKey:@"tab-selection-slide"];
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
-    CGRect startBounds = CGPathGetBoundingBox((__bridge CGPathRef)slide.fromValue);
-    AssertClose(NSMidX(startBounds), NSMidX(tabs[3].frame),
+    AssertClose(NSMidX(selectionView.selectionFrame), NSMidX(tabs[3].frame),
                 @"long selection jump starts one tab away from its destination");
   }
+  [timeline finishAllTransitions];
   [window close];
 }
 

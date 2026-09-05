@@ -53,6 +53,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 @interface TLDatabase ()
 
 @property (nonatomic, strong) TLSQLiteConnection *sqliteConnection;
+@property (nonatomic, strong) id<TLCredentialStore> credentialStore;
 
 - (BOOL)executeSQL:(const char *)sql error:(NSError **)error;
 - (BOOL)performTransaction:(TLDatabaseTransactionBlock)block error:(NSError **)error;
@@ -69,10 +70,15 @@ static NSString *TLTitleFromMessage(NSString *content) {
 }
 
 - (instancetype)initWithURL:(NSURL *)url error:(NSError **)error {
+  return [self initWithURL:url credentialStore:[[TLKeychainCredentialStore alloc] init] error:error];
+}
+
+- (instancetype)initWithURL:(NSURL *)url credentialStore:(id<TLCredentialStore>)credentialStore error:(NSError **)error {
   self = [super init];
   if (!self) {
     return nil;
   }
+  _credentialStore = credentialStore;
 
   NSURL *directoryURL = [url URLByDeletingLastPathComponent];
   if (![NSFileManager.defaultManager createDirectoryAtURL:directoryURL
@@ -96,16 +102,30 @@ static NSString *TLTitleFromMessage(NSString *content) {
 
 - (TLAppSettings *)appSettings:(NSError **)error {
   @synchronized (self) {
-    NSString *rememberValue = [self settingForKey:@"rememberOpenRouterToken" error:error] ?: @"false";
-    BOOL remember = [rememberValue isEqualToString:@"true"];
+    NSDictionary<NSString *, NSString *> *values = [self storedSettings:error];
+    if (!values) {
+      return nil;
+    }
+    BOOL remember = [values[@"rememberOpenRouterToken"] isEqualToString:@"true"];
+    if (![self migrateLegacyCredentialWithRemember:remember error:error]) {
+      return nil;
+    }
+
+    NSError *credentialError = nil;
+    NSString *token = remember ? [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount
+                                                                    error:&credentialError] : nil;
+    if (credentialError) {
+      if (error) { *error = credentialError; }
+      return nil;
+    }
 
     TLAppSettings *settings = [[TLAppSettings alloc] init];
     settings.rememberOpenRouterToken = remember;
-    settings.openRouterToken = remember ? ([self settingForKey:@"openRouterToken" error:error] ?: @"") : @"";
-    settings.selectedModel = [self settingForKey:@"selectedModel" error:error] ?: TLDefaultModelID;
-    settings.supportingModel = [self settingForKey:@"supportingModel" error:error] ?: TLDefaultSupportingModelID;
-    settings.theme = TLThemePreferenceFromString([self settingForKey:@"theme" error:error] ?: @"system");
-    settings.onboardingCompleted = [[self settingForKey:@"onboardingCompleted" error:error] isEqualToString:@"true"];
+    settings.openRouterToken = token ?: @"";
+    settings.selectedModel = values[@"selectedModel"] ?: TLDefaultModelID;
+    settings.supportingModel = values[@"supportingModel"] ?: TLDefaultSupportingModelID;
+    settings.theme = TLThemePreferenceFromString(values[@"theme"] ?: @"system");
+    settings.onboardingCompleted = [values[@"onboardingCompleted"] isEqualToString:@"true"];
     return settings;
   }
 }
@@ -115,7 +135,16 @@ static NSString *TLTitleFromMessage(NSString *content) {
     NSString *selectedModel = TLNonBlank(settings.selectedModel, TLDefaultModelID);
     NSString *supportingModel = TLNonBlank(settings.supportingModel, TLDefaultSupportingModelID);
     NSString *theme = TLStringFromThemePreference(settings.theme);
+    NSString *token = settings.rememberOpenRouterToken ? TLTrimmedString(settings.openRouterToken) : nil;
+    NSError *credentialError = nil;
+    NSString *previousToken = [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount error:&credentialError];
+    if (credentialError) {
+      if (error) { *error = credentialError; }
+      return nil;
+    }
+    __block BOOL credentialChanged = NO;
 
+    NSError *saveError = nil;
     BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
       if (![self setSetting:@"rememberOpenRouterToken" value:settings.rememberOpenRouterToken ? @"true" : @"false" error:transactionError]) {
         return NO;
@@ -132,11 +161,27 @@ static NSString *TLTitleFromMessage(NSString *content) {
       if (![self setSetting:@"onboardingCompleted" value:settings.onboardingCompleted ? @"true" : @"false" error:transactionError]) {
         return NO;
       }
-      return [self setSetting:@"openRouterToken"
-                        value:settings.rememberOpenRouterToken ? TLTrimmedString(settings.openRouterToken) : @""
-                        error:transactionError];
-    } error:error];
+      if (![self removeLegacyCredential:transactionError]) {
+        return NO;
+      }
+      if ([previousToken isEqualToString:token] || (!previousToken && !token)) {
+        return YES;
+      }
+      credentialChanged = [self storeToken:token error:transactionError];
+      return credentialChanged;
+    } error:&saveError];
     if (!saved) {
+      // SQLite and Keychain cannot share a transaction. If COMMIT failed after
+      // changing Keychain, restore its prior value before reporting the failure.
+      NSError *restoreError = nil;
+      if (credentialChanged && ![self storeToken:previousToken error:&restoreError]) {
+        saveError = [NSError errorWithDomain:TLSQLiteErrorDomain code:2 userInfo:@{
+          NSLocalizedDescriptionKey: @"Settings could not be saved, and the previous Keychain credential could not be restored. Please save the token again.",
+          NSUnderlyingErrorKey: saveError ?: restoreError,
+          @"credentialRestoreError": restoreError
+        }];
+      }
+      if (error) { *error = saveError; }
       return nil;
     }
 
@@ -512,7 +557,8 @@ static NSString *TLTitleFromMessage(NSString *content) {
 }
 
 - (BOOL)initializeSchema:(NSError **)error {
-  if (![self executeSQL:"PRAGMA foreign_keys = ON" error:error]) {
+  // Erase removed legacy secrets from SQLite pages as well as the settings row.
+  if (![self executeSQL:"PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON" error:error]) {
     return NO;
   }
 
@@ -666,6 +712,61 @@ static NSString *TLTitleFromMessage(NSString *content) {
   message.thinking = TLNullableStringFromColumn(statement, 3);
   message.createdAt = TLStringFromColumn(statement, 4);
   return message;
+}
+
+- (NSDictionary<NSString *, NSString *> *)storedSettings:(NSError **)error {
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+    "SELECT key, value FROM settings WHERE key != 'openRouterToken'" error:error];
+  if (!statement) {
+    return nil;
+  }
+  NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
+  int result;
+  while ((result = [statement step]) == SQLITE_ROW) {
+    values[[statement stringAtColumn:0]] = [statement stringAtColumn:1];
+  }
+  if (result != SQLITE_DONE) {
+    [self.sqliteConnection setCurrentError:error];
+    return nil;
+  }
+  return values;
+}
+
+- (BOOL)storeToken:(NSString *)token error:(NSError **)error {
+  if (token) {
+    return [self.credentialStore setCredential:token forAccount:TLOpenRouterTokenCredentialAccount error:error];
+  }
+  return [self.credentialStore removeCredentialForAccount:TLOpenRouterTokenCredentialAccount error:error];
+}
+
+- (BOOL)removeLegacyCredential:(NSError **)error {
+  return [self executeSQL:"DELETE FROM settings WHERE key = 'openRouterToken'" error:error];
+}
+
+- (BOOL)migrateLegacyCredentialWithRemember:(BOOL)remember error:(NSError **)error {
+  NSError *readError = nil;
+  NSString *legacyToken = [self settingForKey:@"openRouterToken" error:&readError];
+  if (readError) {
+    if (error) { *error = readError; }
+    return NO;
+  }
+  if (!legacyToken) {
+    return YES;
+  }
+  if (remember && legacyToken.length > 0) {
+    NSString *currentToken = [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount error:&readError];
+    if (readError) {
+      if (error) { *error = readError; }
+      return NO;
+    }
+    // A previous interrupted migration may already have saved a credential.
+    // Keep that value, which may have been updated since the SQLite copy.
+    if (![self storeToken:currentToken ?: TLTrimmedString(legacyToken) error:error]) {
+      return NO;
+    }
+  }
+  // If deletion fails, keep the secure copy and retry deletion on the next read.
+  return [self removeLegacyCredential:error];
 }
 
 - (NSString *)settingForKey:(NSString *)key error:(NSError **)error {

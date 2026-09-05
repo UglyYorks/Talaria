@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import "TalariaModels.h"
+#import "TLCredentialStore.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -7,6 +8,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (NSURL *)defaultDatabaseURL;
 - (nullable instancetype)initWithURL:(NSURL *)url error:(NSError **)error;
+- (nullable instancetype)initWithURL:(NSURL *)url
+                    credentialStore:(id<TLCredentialStore>)credentialStore
+                              error:(NSError **)error;
 
 - (nullable TLAppSettings *)appSettings:(NSError **)error;
 - (nullable TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error;

@@ -56,10 +56,10 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 - (void)setReorderTranslationX:(CGFloat)translationX animated:(BOOL)animated;
 - (void)setReorderTranslationX:(CGFloat)translationX animated:(BOOL)animated duration:(NSTimeInterval)duration;
 - (void)prepareForInsertionAnimation;
-- (void)animateRemovalWithDuration:(NSTimeInterval)duration
-                 targetMaskWidth:(CGFloat)targetMaskWidth
-                       completion:(dispatch_block_t)completion;
-- (void)animateInsertionWithDuration:(NSTimeInterval)duration completion:(dispatch_block_t)completion;
+@property (nonatomic, readonly) CGFloat lifecycleVisibleWidth;
+@property (nonatomic, readonly) CGFloat lifecycleContentOpacity;
+- (void)setLifecycleVisibleWidth:(CGFloat)width contentOpacity:(CGFloat)opacity;
+- (void)resetLifecycleAppearance;
 
 @end
 

@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "Theme.h"
 #import "WorkspaceState.h"
+#import "design_system/TLTransitionCoordinator.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -30,11 +31,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, weak, nullable) id target;
 @property (nonatomic, weak, nullable) id<TLWorkspaceTabsControllerDelegate> delegate;
+@property (nonatomic, strong, readonly) TLTransitionCoordinator *transitionCoordinator;
 
 - (instancetype)initWithTabStack:(NSStackView *)tabStack
                           target:(nullable id)target
                         delegate:(nullable id<TLWorkspaceTabsControllerDelegate>)delegate
-                         palette:(TLThemePalette *)palette;
+                          palette:(TLThemePalette *)palette;
+- (instancetype)initWithTabStack:(NSStackView *)tabStack
+                          target:(nullable id)target
+                        delegate:(nullable id<TLWorkspaceTabsControllerDelegate>)delegate
+                         palette:(TLThemePalette *)palette
+           transitionCoordinator:(TLTransitionCoordinator *)transitionCoordinator;
 - (void)reloadTabs;
 - (void)setNewTabButtonHovered:(BOOL)hovered;
 - (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth;

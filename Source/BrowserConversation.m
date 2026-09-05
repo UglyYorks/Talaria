@@ -8,6 +8,7 @@
 @property NSMutableArray<TLChatMessage *> *messages;
 @property (nonatomic, readwrite) BOOL busy;
 @property (nonatomic, readwrite) NSUInteger responseCount;
+@property (nonatomic, strong, readwrite) TLAssistantTurnResult *lastTurnResult;
 @property NSString *errorText;
 @property NSUInteger turnStart;
 @end
@@ -36,10 +37,11 @@
   return [responses componentsJoinedByString:@"\n\n---\n\n"];
 }
 - (BOOL)sendPrompt:(NSString *)prompt token:(NSString *)token model:(NSString *)model pageReader:(TLBrowserPageReader)reader {
-  if (self.busy) return NO;
+  if (self.busy || !reader) return NO;
   self.busy = YES;
   self.minimized = NO;
   self.errorText = nil;
+  self.lastTurnResult = nil;
   self.turnStart = self.messages.count;
   [self changed];
   NSError *error = nil;
@@ -62,11 +64,16 @@
     NSError *startError = nil;
     BOOL started = [self.runner startTurnWithChat:self.chat token:token model:model messages:self.messages nextPrompt:prompt
       updateHandler:^{ [self changed]; }
-      completionHandler:^(NSError *saveError) {
+      completionHandler:^(TLAssistantTurnResult *result) {
         self.busy = NO;
-        NSString *response = self.messages.lastObject.content;
-        if (response.length && self.runner.lastTurnSucceeded) self.responseCount += 1;
-        self.errorText = saveError.localizedDescription;
+        self.lastTurnResult = result;
+        if (result.assistantMessage.content.length && result.generationStatus == TLAssistantTurnGenerationStatusSucceeded) {
+          self.responseCount += 1;
+        }
+        NSMutableArray<NSString *> *errors = [NSMutableArray array];
+        if (result.generationError) [errors addObject:[NSString stringWithFormat:@"Request failed: %@", result.generationError.localizedDescription]];
+        if (result.persistenceError) [errors addObject:[NSString stringWithFormat:@"Could not save conversation: %@", result.persistenceError.localizedDescription]];
+        self.errorText = [errors componentsJoinedByString:@"\n\n"];
         [self changed];
       } error:&startError];
     if (started) {

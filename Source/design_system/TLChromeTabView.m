@@ -2,8 +2,6 @@
 #import "TLTabIconView.h"
 #import <QuartzCore/QuartzCore.h>
 
-static const NSTimeInterval TLTabRemovalMaskLeadTime = 2.0 / 60.0;
-
 CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palette) {
   CGFloat flareOutset = MIN(palette.tabFlareRadius, width * 0.18);
   CGFloat tightening = MIN(palette.space2, flareOutset * 0.5);
@@ -1033,146 +1031,45 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [self.layer addAnimation:slide forKey:@"tab-reorder-slide"];
 }
 
-- (void)animateRemovalWithDuration:(NSTimeInterval)duration
-                 targetMaskWidth:(CGFloat)targetMaskWidth
-                       completion:(dispatch_block_t)completion {
-  BOOL shouldAnimate = self.window && duration > 0.0 &&
-    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
-  if (!shouldAnimate) {
-    completion();
-    return;
+- (CGFloat)lifecycleVisibleWidth {
+  CAShapeLayer *mask = (CAShapeLayer *)self.contentContainer.layer.mask;
+  return mask ? CGRectGetWidth(CGPathGetBoundingBox(mask.path)) : NSWidth(self.bounds);
+}
+
+- (CGFloat)lifecycleContentOpacity { return self.titleClipView.layer.opacity; }
+
+- (void)setLifecycleVisibleWidth:(CGFloat)width contentOpacity:(CGFloat)opacity {
+  [self layoutSubtreeIfNeeded];
+  CAShapeLayer *mask = [self.contentContainer.layer.mask isKindOfClass:CAShapeLayer.class]
+    ? (CAShapeLayer *)self.contentContainer.layer.mask : [CAShapeLayer layer];
+  NSRect visibleRect = self.contentContainer.bounds;
+  visibleRect.size.width = MIN(NSWidth(visibleRect), MAX(0.0, width));
+  CGPathRef path = TLCreateTabLifecycleMaskPath(visibleRect);
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  mask.frame = self.contentContainer.bounds;
+  mask.path = path;
+  self.contentContainer.layer.mask = mask;
+  for (NSView *view in @[self.tabIconView, self.titleClipView, self.closeButton]) {
+    view.layer.opacity = MIN(1.0, MAX(0.0, opacity));
   }
+  [CATransaction commit];
+  CGPathRelease(path);
+}
 
-  CAShapeLayer *clipMask = [CAShapeLayer layer];
-  clipMask.frame = self.contentContainer.bounds;
-  CGPathRef fullPath = TLCreateTabLifecycleMaskPath(self.bounds);
-  CGFloat collapsedWidth = MIN(NSWidth(self.bounds), MAX(self.palette.space0, targetMaskWidth));
-  NSRect collapsedRect = NSMakeRect(NSMinX(self.bounds),
-                                    NSMinY(self.bounds),
-                                    collapsedWidth,
-                                    NSHeight(self.bounds));
-  CGPathRef collapsedPath = TLCreateTabLifecycleMaskPath(collapsedRect);
-  clipMask.path = collapsedPath;
-  self.contentContainer.layer.mask = clipMask;
-
-  CABasicAnimation *collapse = [CABasicAnimation animationWithKeyPath:@"path"];
-  collapse.fromValue = (__bridge id)fullPath;
-  collapse.toValue = (__bridge id)collapsedPath;
-  // AppKit begins the constraint animation slightly before Core Animation presents
-  // this explicit mask animation. Lead by two display frames so closing content
-  // never draws over the neighboring tab as the layout slot contracts.
-  collapse.duration = MAX(0.0, duration - TLTabRemovalMaskLeadTime);
-  collapse.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-  [clipMask addAnimation:collapse forKey:@"tab-removal-clip"];
-
-  NSArray<NSView *> *contentViews = @[self.tabIconView, self.titleClipView, self.closeButton];
-  NSTimeInterval fadeDuration = duration * self.palette.tabLifecycleContentFadeDurationRatio;
-  for (NSView *contentView in contentViews) {
-    contentView.wantsLayer = YES;
-    CGFloat visibleOpacity = (contentView.layer.presentationLayer ?: contentView.layer).opacity;
-    CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
-    fade.fromValue = @(visibleOpacity);
-    fade.toValue = @0.0;
-    fade.duration = fadeDuration;
-    fade.beginTime = [contentView.layer convertTime:CACurrentMediaTime() fromLayer:nil] +
-      (duration - fadeDuration);
-    fade.fillMode = kCAFillModeBackwards;
-    fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [contentView.layer addAnimation:fade forKey:@"tab-removal-content-fade"];
+- (void)resetLifecycleAppearance {
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.contentContainer.layer.mask = nil;
+  for (NSView *view in @[self.tabIconView, self.titleClipView, self.closeButton]) {
+    view.layer.opacity = 1.0;
   }
-  CGPathRelease(fullPath);
-  CGPathRelease(collapsedPath);
-
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)),
-                 dispatch_get_main_queue(), ^{
-    self.contentContainer.layer.mask = nil;
-    completion();
-  });
+  [CATransaction commit];
 }
 
 - (void)prepareForInsertionAnimation {
-  [self layoutSubtreeIfNeeded];
-  CGFloat initialWidth = NSWidth(self.contentContainer.bounds) *
-    self.palette.tabLifecycleCollapsedWidthRatio;
-  NSRect initialRect = NSMakeRect(NSMinX(self.contentContainer.bounds),
-                                  NSMinY(self.contentContainer.bounds),
-                                  initialWidth,
-                                  NSHeight(self.contentContainer.bounds));
-  CGPathRef initialPath = TLCreateTabLifecycleMaskPath(initialRect);
-  CAShapeLayer *clipMask = [CAShapeLayer layer];
-  clipMask.frame = self.contentContainer.bounds;
-  clipMask.path = initialPath;
-
-  [CATransaction begin];
-  [CATransaction setDisableActions:YES];
-  self.contentContainer.layer.mask = clipMask;
-  for (NSView *contentView in @[self.tabIconView, self.titleClipView, self.closeButton]) {
-    contentView.wantsLayer = YES;
-    contentView.layer.opacity = 0.0;
-  }
-  [CATransaction commit];
-  CGPathRelease(initialPath);
-}
-
-- (void)animateInsertionWithDuration:(NSTimeInterval)duration completion:(dispatch_block_t)completion {
-  BOOL shouldAnimate = self.window && duration > 0.0 &&
-    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
-  if (!shouldAnimate) {
-    self.contentContainer.layer.mask = nil;
-    for (NSView *contentView in @[self.tabIconView, self.titleClipView, self.closeButton]) {
-      contentView.layer.opacity = 1.0;
-    }
-    completion();
-    return;
-  }
-
-  CAShapeLayer *clipMask = [self.contentContainer.layer.mask isKindOfClass:CAShapeLayer.class]
-    ? (CAShapeLayer *)self.contentContainer.layer.mask
-    : [CAShapeLayer layer];
-  clipMask.frame = self.contentContainer.bounds;
-  CGPathRef fullPath = TLCreateTabLifecycleMaskPath(self.contentContainer.bounds);
-  CGFloat initialWidth = NSWidth(self.contentContainer.bounds) * self.palette.tabLifecycleCollapsedWidthRatio;
-  NSRect initialRect = NSMakeRect(NSMinX(self.contentContainer.bounds),
-                                  NSMinY(self.contentContainer.bounds),
-                                  initialWidth,
-                                  NSHeight(self.contentContainer.bounds));
-  CGPathRef initialPath = TLCreateTabLifecycleMaskPath(initialRect);
-  [CATransaction begin];
-  [CATransaction setDisableActions:YES];
-  clipMask.path = fullPath;
-  self.contentContainer.layer.mask = clipMask;
-  [CATransaction commit];
-
-  CABasicAnimation *expansion = [CABasicAnimation animationWithKeyPath:@"path"];
-  expansion.fromValue = (__bridge id)initialPath;
-  expansion.toValue = (__bridge id)fullPath;
-  expansion.duration = duration;
-  expansion.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-  [clipMask addAnimation:expansion forKey:@"tab-insertion-clip"];
-
-  NSArray<NSView *> *contentViews = @[self.tabIconView, self.titleClipView, self.closeButton];
-  NSTimeInterval fadeDuration = duration * self.palette.tabLifecycleContentFadeDurationRatio;
-  for (NSView *contentView in contentViews) {
-    contentView.wantsLayer = YES;
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    contentView.layer.opacity = 1.0;
-    [CATransaction commit];
-    CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
-    fade.fromValue = @0.0;
-    fade.toValue = @1.0;
-    fade.duration = fadeDuration;
-    fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [contentView.layer addAnimation:fade forKey:@"tab-insertion-content-fade"];
-  }
-  CGPathRelease(fullPath);
-  CGPathRelease(initialPath);
-
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)),
-                 dispatch_get_main_queue(), ^{
-    self.contentContainer.layer.mask = nil;
-    completion();
-  });
+  [self setLifecycleVisibleWidth:NSWidth(self.bounds) * self.palette.tabLifecycleCollapsedWidthRatio
+                 contentOpacity:0.0];
 }
 
 - (NSMenu *)menuForEvent:(NSEvent *)event {
