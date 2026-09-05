@@ -3117,13 +3117,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   openButton.palette = palette;
   openButton.primary = YES;
 
-  TLThemedButton *closeButton = [TLThemedButton buttonWithTitle:@"Close" target:self action:@selector(closeDebugTab:)];
-  closeButton.translatesAutoresizingMaskIntoConstraints = NO;
-  closeButton.bezelStyle = NSBezelStyleRounded;
-  closeButton.controlSize = NSControlSizeLarge;
-  closeButton.palette = palette;
-  closeButton.primary = NO;
-
   TLTokenView *card = [[TLTokenView alloc] init];
   card.translatesAutoresizingMaskIntoConstraints = NO;
   card.fillColor = palette.controlSurface;
@@ -3148,7 +3141,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   resetCard.fillColor = palette.controlSurface;
   resetCard.cornerRadius = palette.radiusMedium;
   for (NSView *view in @[resetLabel, resetDescription, resetButton]) [resetCard addSubview:view];
-  for (NSView *view in @[titleLabel, subtitleLabel, closeButton, card, resetCard]) {
+  for (NSView *view in @[titleLabel, subtitleLabel, card, resetCard]) {
     [content addSubview:view];
   }
 
@@ -3163,15 +3156,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [content.bottomAnchor constraintGreaterThanOrEqualToAnchor:resetCard.bottomAnchor constant:palette.space11],
     [titleLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:palette.space12],
     [titleLabel.topAnchor constraintEqualToAnchor:content.topAnchor constant:palette.space11],
-    [closeButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
-    [closeButton.centerYAnchor constraintEqualToAnchor:titleLabel.centerYAnchor],
-    [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
-    [closeButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
     [subtitleLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
     [subtitleLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
     [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:palette.space2],
     [card.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [card.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
+    [card.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
     [card.topAnchor constraintEqualToAnchor:subtitleLabel.bottomAnchor constant:palette.space10],
     [terminalLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:palette.space8],
     [terminalLabel.topAnchor constraintEqualToAnchor:card.topAnchor constant:palette.space8],
