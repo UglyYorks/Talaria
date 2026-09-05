@@ -57,6 +57,7 @@ NSString *TLAgentDisplayStatus(NSString *status);
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *icon;
 @property (nonatomic, copy) NSString *model;
+@property (nonatomic, copy) NSString *supportingModel;
 @property (nonatomic, copy) NSString *hermesSessionID;
 @property (nonatomic, copy) NSString *createdAt;
 @property (nonatomic, copy) NSString *updatedAt;

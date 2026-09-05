@@ -282,6 +282,7 @@
 @property (nonatomic, strong) NSTextView *textView;
 @property (nonatomic, strong) NSTextField *placeholderLabel;
 @property (nonatomic, strong) TLGlassButton *sendButton;
+@property (nonatomic, strong) TLGlassButton *settingsButton;
 @property (nonatomic, strong) NSLayoutConstraint *heightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sendButtonWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sendButtonHeightConstraint;
@@ -423,6 +424,8 @@
   self.placeholderLabel.font = self.palette.bodyFont;
   self.placeholderLabel.textColor = self.palette.messageInputPlaceholderText;
   self.textView.textContainer.lineFragmentPadding = self.palette.space0;
+  self.settingsButton.palette = self.palette;
+  self.settingsButton.contentTintColor = self.palette.labelText;
   self.sendButton.palette = self.palette;
   self.sendButton.contentTintColor = self.palette.labelText;
   self.maximumExpandedHeight = self.palette.messageInputMaxHeight;
@@ -500,6 +503,31 @@
     self.textLeadingConstraint,
     self.textTrailingConstraint,
   ]];
+}
+
+- (void)setShowsSettingsButton:(BOOL)visible {
+  _showsSettingsButton = visible;
+  if (visible && !self.settingsButton) {
+    self.settingsButton = [[TLGlassButton alloc] initWithUsesGlassEffect:NO];
+    self.settingsButton.hoverSurfaceOnly = YES;
+    self.settingsButton.image = [NSImage imageWithSystemSymbolName:@"switch.2" accessibilityDescription:@"Chat model settings"];
+    self.settingsButton.toolTip = @"Chat model settings";
+    [self.settingsButton setAccessibilityLabel:@"Chat model settings"];
+    [self.contentView addSubview:self.settingsButton];
+    [NSLayoutConstraint activateConstraints:@[
+      [self.settingsButton.widthAnchor constraintEqualToAnchor:self.sendButton.widthAnchor],
+      [self.settingsButton.heightAnchor constraintEqualToAnchor:self.sendButton.heightAnchor],
+      [self.settingsButton.trailingAnchor constraintEqualToAnchor:self.sendButton.leadingAnchor],
+      [self.settingsButton.centerYAnchor constraintEqualToAnchor:self.sendButton.centerYAnchor],
+    ]];
+  }
+  self.settingsButton.hidden = !visible;
+  self.textTrailingConstraint.active = NO;
+  self.textTrailingConstraint = [self.textScrollView.trailingAnchor constraintEqualToAnchor:
+    visible ? self.settingsButton.leadingAnchor : self.sendButton.leadingAnchor constant:-self.palette.space4];
+  self.textTrailingConstraint.active = YES;
+  [self applyPalette];
+  [self recalculateHeight];
 }
 
 - (void)setShowsStopButton:(BOOL)showsStopButton {

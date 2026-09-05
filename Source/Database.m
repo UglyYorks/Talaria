@@ -2,7 +2,7 @@
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 
-static NSInteger const TLDatabaseSchemaVersion = 7;
+static NSInteger const TLDatabaseSchemaVersion = 8;
 
 typedef BOOL (^TLDatabaseTransactionBlock)(NSError **error);
 
@@ -196,7 +196,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 - (NSArray<TLChatSummary *> *)listChats:(NSError **)error {
   @synchronized (self) {
     const char *sql =
-      "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id "
+      "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model "
       "FROM chats "
       "ORDER BY datetime(updated_at) DESC, id DESC";
 
@@ -223,11 +223,18 @@ static NSString *TLTitleFromMessage(NSString *content) {
 
 - (TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error {
   @synchronized (self) {
+    NSString *small = [self settingForKey:@"supportingModel" error:error] ?: TLDefaultSupportingModelID;
+    return [self createChatWithModel:model supportingModel:small error:error];
+  }
+}
+
+- (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
+  @synchronized (self) {
     __block sqlite3_int64 chatID = 0;
     BOOL created = [self performTransaction:^BOOL(NSError **transactionError) {
       const char *sql =
-        "INSERT INTO chats (title, model, hermes_session_id, created_at, updated_at) "
-        "VALUES ('New chat', ?1, ?2, datetime('now'), datetime('now'))";
+        "INSERT INTO chats (title, model, hermes_session_id, supporting_model, created_at, updated_at) "
+        "VALUES ('New chat', ?1, ?2, ?3, datetime('now'), datetime('now'))";
 
       TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
       if (!statement) {
@@ -236,6 +243,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 
       [statement bindText:TLNonBlank(model, TLDefaultModelID) atIndex:1];
       [statement bindText:[@"talaria_" stringByAppendingString:NSUUID.UUID.UUIDString.lowercaseString] atIndex:2];
+      [statement bindText:TLNonBlank(supportingModel, TLDefaultSupportingModelID) atIndex:3];
       if (![statement stepDone:transactionError]) {
         return NO;
       }
@@ -248,6 +256,29 @@ static NSString *TLTitleFromMessage(NSString *content) {
     }
 
     return [self loadChatWithID:chatID error:error];
+  }
+}
+
+- (BOOL)saveModelsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
+  @synchronized (self) {
+    if (!TLTrimmedString(model).length || !TLTrimmedString(supportingModel).length) {
+      TLSetDatabaseError(error, @"Choose both a large and small model.");
+      return NO;
+    }
+    return [self performTransaction:^BOOL(NSError **transactionError) {
+      if (chatID > 0) {
+        if (![self loadChatSummaryWithID:chatID error:transactionError]) return NO;
+        TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+          "UPDATE chats SET model = ?1, supporting_model = ?2 WHERE id = ?3" error:transactionError];
+        if (!statement) return NO;
+        [statement bindText:model atIndex:1];
+        [statement bindText:supportingModel atIndex:2];
+        [statement bindInt64:chatID atIndex:3];
+        if (![statement stepDone:transactionError]) return NO;
+      }
+      return [self setSetting:@"selectedModel" value:model error:transactionError] &&
+        [self setSetting:@"supportingModel" value:supportingModel error:transactionError];
+    } error:error];
   }
 }
 
@@ -636,7 +667,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 }
 
 - (TLChatRecord *)loadChatWithID:(NSInteger)chatID error:(NSError **)error {
-  const char *chatSQL = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id FROM chats WHERE id = ?1";
+  const char *chatSQL = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model FROM chats WHERE id = ?1";
 
   TLSQLiteStatement *chatStatement = [self.sqliteConnection prepareSQL:chatSQL error:error];
   if (!chatStatement) {
@@ -657,6 +688,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
   chat.title = summary.title;
   chat.icon = summary.icon;
   chat.model = summary.model;
+  chat.supportingModel = summary.supportingModel;
   chat.createdAt = summary.createdAt;
   chat.updatedAt = summary.updatedAt;
   chat.hermesSessionID = summary.hermesSessionID;
@@ -689,7 +721,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
 }
 
 - (TLChatSummary *)loadChatSummaryWithID:(NSInteger)chatID error:(NSError **)error {
-  const char *sql = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id FROM chats WHERE id = ?1";
+  const char *sql = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model FROM chats WHERE id = ?1";
 
   TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
   if (!statement) {
@@ -776,6 +808,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
   summary.createdAt = TLStringFromColumn(statement, 4);
   summary.updatedAt = TLStringFromColumn(statement, 5);
   summary.hermesSessionID = TLStringFromColumn(statement, 6);
+  summary.supportingModel = TLStringFromColumn(statement, 7);
   return summary;
 }
 

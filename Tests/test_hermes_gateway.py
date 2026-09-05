@@ -8,7 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'AgentRuntime'))
 from hermes_gateway import HermesGateway, RPCError
@@ -27,21 +27,43 @@ class GatewayTests(unittest.TestCase):
         self.gateway.listeners = {}
         self.gateway.pending = {}
         self.gateway.mappings = {}
-        self.gateway.mapping_path = Path(self.temp.name) / 'sessions.json'
+        self.gateway.home = Path(self.temp.name)
+        self.gateway.mapping_path = self.gateway.home / 'sessions.json'
         self.gateway.call = Mock()
 
     def catalogue(self, names, aliases=None):
         return {'pairs': [[name, name + ' description'] for name in names], 'canon': aliases or {}}
 
     def test_resume_preserves_existing_http_session_identity(self):
-        self.gateway.call.return_value = {'session_id': 'runtime', 'resumed': 'talaria_1', 'session_key': 'talaria_1'}
+        self.gateway.call.side_effect = [
+            {'session_id': 'runtime', 'resumed': 'talaria_1', 'session_key': 'talaria_1'},
+            {'value': 'model'}, {'output': 'Model: model (openrouter)'}]
         self.assertEqual(self.gateway.session('talaria_1', 'model'), 'runtime')
-        self.gateway.call.assert_called_once_with('session.resume', {'session_id': 'talaria_1'})
+        self.gateway.call.assert_has_calls([
+            call('session.resume', {'session_id': 'talaria_1'}),
+            call('config.set', {'session_id': 'runtime', 'key': 'model', 'value': 'model --session'})])
         self.assertEqual(json.loads(self.gateway.mapping_path.read_text()), {'talaria_1': 'talaria_1'})
+
+    def test_composer_switch_is_local_and_retried_after_failure(self):
+        self.gateway.sessions['a'] = {'id': 'a', 'model': 'old'}
+        self.gateway.sessions['b'] = {'id': 'b', 'model': 'other'}
+        self.gateway.call.return_value = {'confirm_required': True, 'confirm_message': 'Confirm switch'}
+        with self.assertRaisesRegex(RuntimeError, 'Confirm switch'):
+            self.gateway.session('a', 'new')
+        self.assertEqual(self.gateway.sessions['a']['model'], 'old')
+        self.gateway.call.side_effect = [{'value': 'new'}, {'output': 'Model: new (openrouter)'}]
+        self.assertEqual(self.gateway.session('a', 'new'), 'a')
+        self.gateway.call.assert_any_call('config.set', {'session_id': 'a', 'key': 'model',
+                                                          'value': 'new --session'})
+        self.assertEqual(self.gateway.sessions['b']['model'], 'other')
+        self.gateway.call.reset_mock()
+        self.gateway.session('a', 'new')
+        self.gateway.call.assert_not_called()
 
     def test_create_only_on_missing_session(self):
         self.gateway.call.side_effect = [RPCError({'code': 4007, 'message': 'session not found'}),
-                                        {'session_id': 'runtime', 'stored_session_id': 'saved'}]
+                                        {'session_id': 'runtime', 'stored_session_id': 'saved'},
+                                        {'value': 'model'}, {'output': 'Model: model (openrouter)'}]
         self.assertEqual(self.gateway.session('talaria_1', 'model'), 'runtime')
         self.assertEqual(self.gateway.mappings['talaria_1'], 'saved')
         self.gateway.call.reset_mock(side_effect=True)
@@ -49,6 +71,30 @@ class GatewayTests(unittest.TestCase):
         with self.assertRaisesRegex(RPCError, 'database unavailable'):
             self.gateway.session('talaria_2', 'model')
         self.assertEqual(self.gateway.call.call_count, 1)
+
+    def test_switch_does_not_cache_an_acknowledged_but_inactive_model(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'old'}
+        self.gateway.call.side_effect = [{'value': 'new'}, {'output': 'Model: old (openrouter)'}]
+        with self.assertRaisesRegex(RuntimeError, 'has not activated'):
+            self.gateway.select_model('chat', 'new')
+        self.assertEqual(self.gateway.sessions['chat']['model'], 'old')
+
+    def test_switch_button_always_contacts_hermes_without_a_prompt(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'new'}
+        self.gateway.call.side_effect = [{'value': 'new'}, {'output': 'Model: new (openrouter)'}]
+        self.gateway.select_model('chat', 'new')
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list], ['config.set', 'session.status'])
+        audit = json.loads((self.gateway.home / 'talaria-model-switches.jsonl').read_text())
+        self.assertEqual(audit['model'], 'new')
+        self.assertTrue(audit['verified'])
+
+    def test_switch_button_refuses_a_concurrent_turn(self):
+        lock = threading.Lock()
+        lock.acquire()
+        self.gateway.session_locks['chat'] = lock
+        with self.assertRaisesRegex(RuntimeError, 'current response'):
+            self.gateway.select_model('chat', 'new')
+        self.gateway.call.assert_not_called()
 
     def test_builtin_falls_back_only_on_dispatcher_miss(self):
         self.gateway.call.side_effect = [self.catalogue(['/status']),

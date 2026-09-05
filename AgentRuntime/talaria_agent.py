@@ -316,6 +316,18 @@ def stream_hermes_session(request, output=None, cancellation=None):
         error(f"Could not run the Hermes session: {exc}", output)
 
 
+def select_hermes_model(request, output=None):
+    token, model, session_id = (trim(request.get(key)) for key in ("token", "model", "session_id"))
+    if not token or not model or not session_id:
+        error("Token, model, and Hermes session are required to switch models.", output)
+        return
+    try:
+        tui_gateway(token, model).select_model(session_id, model)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not switch Hermes model: {exc}", output)
+
+
 def fetch_models(request, output=None):
     try:
         catalogue = tui_gateway(trim(request.get("token"))).model_options()
@@ -352,6 +364,9 @@ def handle_request(request, output=None, cancellation=None):
         return 0
     if operation == "hermes_session_chat":
         stream_hermes_session(request, output, cancellation)
+        return 0
+    if operation == "hermes_select_model":
+        select_hermes_model(request, output)
         return 0
     if operation == "models":
         fetch_models(request, output)

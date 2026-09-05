@@ -323,6 +323,17 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   completion([NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
 }
 
+- (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID token:(NSString *)token
+        completion:(TLAgentStreamCompletionHandler)completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent) { completion(error ?: TLAgentOrchestratorError(@"Could not open the agent VM.")); return; }
+    if (![self.agentClient respondsToSelector:@selector(selectHermesModelWithAgent:sessionID:token:model:completion:)]) {
+      completion(TLAgentOrchestratorError(@"Update the agent runtime to switch models.")); return;
+    }
+    [self.agentClient selectHermesModelWithAgent:agent sessionID:sessionID token:token model:model completion:completion];
+  }];
+}
+
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
                                   sessionID:(NSString *)sessionID
                                       token:(NSString *)token

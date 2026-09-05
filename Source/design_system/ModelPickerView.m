@@ -1,12 +1,5 @@
 #import "ModelPickerView.h"
 
-static TLAgentModel *TLFallbackModel(NSString *modelID) {
-  TLAgentModel *model = [[TLAgentModel alloc] init];
-  model.modelID = modelID ?: @"";
-  model.name = model.modelID.length > 0 ? model.modelID : @"OpenRouter model";
-  return model;
-}
-
 @interface TLModelPickerView () <NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate>
 
 @property (nonatomic, strong) TLThemePalette *palette;
@@ -29,6 +22,7 @@ static TLAgentModel *TLFallbackModel(NSString *modelID) {
     _title = [title copy];
     _palette = palette;
     _selectedModelID = [selectedModelID copy] ?: @"";
+    _userInteractionEnabled = YES;
     _allModels = @[];
     _filteredModels = @[];
     [self buildInterface];
@@ -63,7 +57,7 @@ static TLAgentModel *TLFallbackModel(NSString *modelID) {
   self.tableView.headerView = nil;
   self.tableView.dataSource = self;
   self.tableView.delegate = self;
-  self.tableView.rowHeight = 48.0;
+  self.tableView.rowHeight = self.palette.composerButtonHeight;
   self.tableView.selectionHighlightStyle = NSTableViewSelectionHighlightStyleRegular;
   self.tableView.backgroundColor = self.palette.transparentSurface;
   NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"model"];
@@ -106,24 +100,22 @@ static TLAgentModel *TLFallbackModel(NSString *modelID) {
 
 - (void)setModels:(NSArray<TLAgentModel *> *)models {
   NSMutableArray<TLAgentModel *> *nextModels = [NSMutableArray arrayWithArray:models ?: @[]];
-  [self includeSelectedModelIfNeededInModels:nextModels];
+
   self.allModels = nextModels;
   [self applyFilter];
 }
 
-- (void)includeSelectedModelIfNeededInModels:(NSMutableArray<TLAgentModel *> *)models {
-  NSString *selected = [self.selectedModelID stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (selected.length == 0) {
-    return;
+- (BOOL)hasSelectableModel {
+  for (TLAgentModel *model in self.allModels) {
+    if ([model.modelID isEqualToString:self.selectedModelID]) return YES;
   }
-
-  for (TLAgentModel *model in models) {
-    if ([model.modelID isEqualToString:selected]) {
-      return;
-    }
-  }
-
-  [models insertObject:TLFallbackModel(selected) atIndex:0];
+  return NO;
+}
+- (void)focusSearch { [self.window makeFirstResponder:self.searchField]; }
+- (void)setUserInteractionEnabled:(BOOL)enabled {
+  _userInteractionEnabled = enabled;
+  self.searchField.enabled = enabled;
+  self.tableView.enabled = enabled;
 }
 
 - (void)searchChanged:(id)sender {
@@ -168,6 +160,7 @@ static TLAgentModel *TLFallbackModel(NSString *modelID) {
 
 - (void)setStatusText:(NSString *)statusText {
   self.statusLabel.stringValue = statusText ?: @"";
+  self.statusLabel.toolTip = statusText;
 }
 
 - (void)updateSelectedLabel {
@@ -245,6 +238,7 @@ static TLAgentModel *TLFallbackModel(NSString *modelID) {
   }
 
   self.selectedModelID = self.filteredModels[selectedRow].modelID;
+  if (self.selectionChangeHandler) self.selectionChangeHandler(self.selectedModelID);
   [self updateSelectedLabel];
 }
 
@@ -261,6 +255,8 @@ static TLAgentModel *TLFallbackModel(NSString *modelID) {
   self.statusLabel.font = palette.smallFont;
   self.statusLabel.textColor = palette.textMuted;
   self.searchField.font = palette.bodyFont;
+  self.searchField.textColor = palette.controlText;
+  self.searchField.backgroundColor = palette.controlSurface;
   self.tableView.backgroundColor = palette.transparentSurface;
   [self.tableView reloadData];
   [self setNeedsDisplay:YES];

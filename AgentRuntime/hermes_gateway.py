@@ -137,23 +137,48 @@ class HermesGateway:
             temporary.replace(self.mapping_path)
         return sid
 
-    def session(self, chat_id, model):
-        if chat_id in self.sessions:
-            state = self.sessions[chat_id]
-            if state["model"] != model:
-                result = self.call("config.set", {"session_id": state["id"], "key": "model",
-                                                 "value": f"{model} --provider openrouter"})
-                if result.get("confirm_required"):
-                    raise RuntimeError(result.get("confirm_message") or "Hermes requires confirmation of this model change.")
-                state["model"] = model
-            return state["id"]
+    def _apply_session_model(self, sid, model):
+        # A bare model waits for Hermes' lazy agent build. Supplying --provider
+        # skips that wait and can race a resumed agent loading its old model.
+        result = self.call("config.set", {"session_id": sid, "key": "model",
+                                          "value": f"{model} --session"})
+        if result.get("confirm_required"):
+            raise RuntimeError(result.get("confirm_message") or "Hermes requires confirmation of this model change.")
+        if result.get("value") != model:
+            raise RuntimeError(f"Hermes did not accept the requested model {model}.")
+        status = self.call("session.status", {"session_id": sid})
+        if f"Model: {model} (openrouter)" not in status.get("output", "").splitlines():
+            raise RuntimeError(f"Hermes has not activated {model}. Wait for the current response to finish and retry.")
+        # This audit contains model identifiers only, never prompts or credentials.
+        with (self.home / "talaria-model-switches.jsonl").open("a") as log:
+            log.write(json.dumps({"session_id": sid, "model": model, "verified": True, "time": time.time()}) + "\n")
+
+    def session(self, chat_id, model, force_model=False):
+        if chat_id not in self.sessions:
+            try:
+                result = self.call("session.resume", {"session_id": self.mappings.get(chat_id, chat_id)})
+            except RPCError as exc:
+                if exc.code != 4007:
+                    raise
+                result = self.call("session.create", {"model": model, "provider": "openrouter", "source": "talaria"})
+            # Both create and resume are lazy. Pin and verify after loading before
+            # remembering a selection, including the very first turn.
+            self._remember(chat_id, result, "")
+        state = self.sessions[chat_id]
+        if force_model or state["model"] != model:
+            self._apply_session_model(state["id"], model)
+            state["model"] = model
+        return state["id"]
+
+    def select_model(self, chat_id, model):
+        with self.lock:
+            session_lock = self.session_locks.setdefault(chat_id, threading.Lock())
+        if not session_lock.acquire(blocking=False):
+            raise RuntimeError("Wait for the current response to finish before switching models.")
         try:
-            result = self.call("session.resume", {"session_id": self.mappings.get(chat_id, chat_id)})
-        except RPCError as exc:
-            if exc.code != 4007:  # Never replace history after a transport/auth/database failure.
-                raise
-            result = self.call("session.create", {"model": model, "provider": "openrouter", "source": "talaria"})
-        return self._remember(chat_id, result, model)
+            return self.session(chat_id, model, force_model=True)
+        finally:
+            session_lock.release()
 
     def command(self, chat_id, sid, text, model, depth=0):
         if depth >= 8:

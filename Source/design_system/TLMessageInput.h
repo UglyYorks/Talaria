@@ -9,6 +9,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong, readonly) NSTextView *textView;
 @property (nonatomic, strong, readonly) TLGlassButton *sendButton;
+// Opt-in model/settings control immediately before Send.
+@property (nonatomic) BOOL showsSettingsButton;
+@property (nonatomic, strong, readonly) TLGlassButton *settingsButton;
 @property (nonatomic) CGFloat sendButtonSize;
 @property (nonatomic) CGFloat sendButtonInset;
 @property (nonatomic) CGFloat maximumExpandedHeight;

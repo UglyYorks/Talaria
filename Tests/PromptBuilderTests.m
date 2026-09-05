@@ -429,6 +429,19 @@ static void TestDatabasePersistence(void) {
   TLAssertEqualObjects(chat.icon, @"", @"new chats start without a generated icon");
   TLAssertTrue([chat.hermesSessionID hasPrefix:@"talaria_"], @"gives each chat a Hermes session id");
 
+  TLChatRecord *otherModelChat = [database createChatWithModel:@"other/large" supportingModel:@"other/small" error:&error];
+  TLAssertTrue([database saveModelsForChatID:chat.chatID model:@"chosen/large" supportingModel:@"chosen/small" error:&error], @"saves per-chat models");
+  TLChatRecord *modelChat = [database chatWithID:chat.chatID error:&error];
+  TLAssertEqualObjects(modelChat.model, @"chosen/large", @"large model survives reload");
+  TLAssertEqualObjects(modelChat.supportingModel, @"chosen/small", @"small model survives reload");
+  TLAssertEqualObjects(modelChat.hermesSessionID, chat.hermesSessionID, @"switch keeps Hermes session identity");
+  TLAssertEqualObjects([database chatWithID:otherModelChat.chatID error:&error].supportingModel, @"other/small", @"other chat keeps its small model");
+  TLAssertTrue([database saveModelsForChatID:0 model:@"draft/large" supportingModel:@"draft/small" error:&error], @"draft model selection saves defaults without creating a chat");
+  TLAssertEqualObjects([database appSettings:&error].selectedModel, @"draft/large", @"new-chat defaults remember last choice");
+  [database deleteChatWithID:otherModelChat.chatID error:&error];
+  // Restore original fixture expectations for the remaining conversation tests.
+  [database saveModelsForChatID:chat.chatID model:@"openai/gpt-4" supportingModel:@"chosen/small" error:&error];
+
   TLChatSummary *titleSummary = [database saveChatTitle:@"  AWS Oregon Outage  " chatID:chat.chatID error:&error];
   TLAssertTrue(titleSummary != nil && error == nil, @"saves a chat title");
   TLAssertEqualObjects(titleSummary.title, @"AWS Oregon Outage", @"trims and persists a chat title");
@@ -483,7 +496,7 @@ static void TestDatabasePersistence(void) {
                @"deleted chats cannot be loaded");
 
   database = nil;
-  TLAssertTrue(TLReadSQLiteUserVersion(url) == 7, @"sets database schema user_version");
+  TLAssertTrue(TLReadSQLiteUserVersion(url) == 8, @"sets database schema user_version");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
 
@@ -526,7 +539,7 @@ static void TestCompatibleVersion5Database(void) {
       TLAssertEqualObjects([check stringAtColumn:1], @"keep", @"preserves newer agent instructions");
       TLAssertEqualObjects([check stringAtColumn:2], @"[\"/tmp/keep\"]", @"preserves newer agent folders");
     }
-    TLAssertTrue(TLReadSQLiteUserVersion(url) == 7, @"upgrades both version-5 variants without downgrading data");
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 8, @"upgrades both version-5 variants without downgrading data");
     [connection executeSQL:"PRAGMA user_version = 6" error:&error];
     error = nil;
     TLAssertTrue(!TLDatabaseMigrate(connection, 4, &error) && error != nil, @"rejects unknown future versions");
