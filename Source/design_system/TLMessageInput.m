@@ -73,19 +73,32 @@
 }
 @end
 
+// NSButton's intrinsic width does not inset its image/title drawing. Apply the
+// same padding to the cell's content frame so neither edge touches the pill.
+@interface TLAttachmentChipCell : NSButtonCell
+@property (nonatomic) CGFloat horizontalPadding;
+@end
+@implementation TLAttachmentChipCell
+- (void)drawInteriorWithFrame:(NSRect)cellFrame inView:(NSView *)controlView {
+  [super drawInteriorWithFrame:NSInsetRect(cellFrame, self.horizontalPadding, 0) inView:controlView];
+}
+@end
+
 @interface TLAttachmentChipButton : TLHoverIconButton
 @property (nonatomic) BOOL attachmentHovered;
 @end
 @implementation TLAttachmentChipButton
++ (Class)cellClass { return TLAttachmentChipCell.class; }
 - (NSSize)intrinsicContentSize {
   NSSize size = [super intrinsicContentSize];
-  size.width += self.palette.space4 * 2;
+  size.width += self.palette.space6 * 2;
   size.height = MAX(size.height, self.palette.fieldHeight);
   return size;
 }
 - (void)applyChipPalette {
   self.wantsLayer = YES;
-  self.layer.cornerRadius = self.palette.radiusMedium;
+  self.layer.cornerRadius = MIN(self.palette.radiusPill, NSHeight(self.bounds) / 2);
+  ((TLAttachmentChipCell *)self.cell).horizontalPadding = self.palette.space6;
   self.layer.backgroundColor = TLCGColor(self.attachmentHovered && self.enabled ? self.palette.chromeHoverSurface : self.palette.controlSurface);
   self.layer.borderColor = TLCGColor(self.palette.composerBorder);
   self.layer.borderWidth = self.palette.borderWidth;
@@ -403,8 +416,8 @@
 - (void)buildAttachmentInterface {
   self.attachButton = [[TLGlassButton alloc] initWithUsesGlassEffect:NO];
   self.attachButton.hoverSurfaceOnly = YES;
-  self.attachButton.image = [NSImage imageWithSystemSymbolName:@"paperclip" accessibilityDescription:@"Attach files or folders"];
-  self.attachButton.toolTip = @"Attach files or folders";
+  self.attachButton.image = [NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:@"Add files or folders"];
+  self.attachButton.toolTip = @"Add files or folders";
   self.attachButton.target = self;
   self.attachButton.action = @selector(chooseAttachments:);
   [self.contentView addSubview:self.attachButton];
