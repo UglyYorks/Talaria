@@ -36,6 +36,7 @@ TAB_LAYOUT_TEST_EXECUTABLE := $(BUILD_DIR)/TabLayoutTests
 NOTCH_VIEW_TEST_EXECUTABLE := $(BUILD_DIR)/NotchOverlayViewTests
 GLASS_PANE_TEST_EXECUTABLE := $(BUILD_DIR)/GlassPaneTests
 MARKDOWN_IT := Vendor/markdown-it/markdown-it.min.js
+CODE_RESOURCES := Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js Vendor/highlight.js/LICENSE
 MATH_RESOURCES := Source/MarkdownMath.js $(shell find Vendor/katex -type f)
 MARKDOWN_RESOURCES_STAMP := $(BUILD_DIR)/.markdown-resources.stamp
 READABILITY_FILES := Vendor/readability/Readability.js Vendor/readability/LICENSE.md
@@ -115,7 +116,7 @@ $(SIGNING_CONFIG): FORCE | check-signing-identity
 	@printf '%s\n' '$(CODE_SIGN_IDENTITY)' > "$@.tmp"
 	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
 
-$(APP_BUILD_STAMP): Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
+$(APP_BUILD_STAMP): Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources" "$(APP_BUNDLE)/Contents/Frameworks"
 	xcrun clang++ $(APP_OBJECTS) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(APP_EXECUTABLE)"
@@ -126,6 +127,8 @@ $(APP_BUILD_STAMP): Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist Chromiu
 	ditto "assets/browser-bookmarks" "$(APP_BUNDLE)/Contents/Resources/browser-bookmarks"
 	cp "$(MARKDOWN_IT)" "$(APP_BUNDLE)/Contents/Resources/markdown-it.min.js"
 	cp Source/MarkdownMath.js "$(APP_BUNDLE)/Contents/Resources/MarkdownMath.js"
+	cp Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js "$(APP_BUNDLE)/Contents/Resources/"
+	cp Vendor/highlight.js/LICENSE "$(APP_BUNDLE)/Contents/Resources/highlight-LICENSE"
 	ditto Vendor/katex "$(APP_BUNDLE)/Contents/Resources/katex"
 	cp Vendor/readability/Readability.js "$(APP_BUNDLE)/Contents/Resources/Readability.js"
 	cp Vendor/readability/LICENSE.md "$(APP_BUNDLE)/Contents/Resources/Readability-LICENSE.md"
@@ -262,13 +265,18 @@ test: $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(
 	"$(BUILD_DIR)/TabShortcutTests"
 	python3 Tests/AgentRuntimeTests.py
 	"$(BUILD_DIR)/MarkdownMathTests"
+	"$(BUILD_DIR)/MarkdownCodeTests"
 
-test: $(BUILD_DIR)/MarkdownMathTests
+test: $(BUILD_DIR)/MarkdownMathTests $(BUILD_DIR)/MarkdownCodeTests
 
-$(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES)
+$(BUILD_DIR)/MarkdownCodeTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Tests/MarkdownCodeTests.m $(MARKDOWN_RESOURCES_STAMP)
+	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
+
+$(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES)
 	mkdir -p "$(BUILD_DIR)"
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
 	cp Source/MarkdownMath.js "$(BUILD_DIR)/MarkdownMath.js"
+	cp Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js "$(BUILD_DIR)/"
 	ditto Vendor/katex "$(BUILD_DIR)/katex"
 	touch "$@"
 

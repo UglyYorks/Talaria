@@ -1,0 +1,7 @@
+Highlight.js 11.11.1 (@highlightjs/cdn-assets), BSD-3-Clause.
+Source: https://registry.npmjs.org/@highlightjs/cdn-assets/-/cdn-assets-11.11.1.tgz
+Archive SHA-256: 28a06bf6ebcc2218c6e842bdb4f1c8353508a8cada59e85110f91892f5726195
+Bundle: highlight.min.js, newline, then all package/languages/*.min.js
+in filename order, separated by newlines. No upstream styles are used.
+Language modules: 192
+Bundle SHA-256: 9206482a75b34cfa08470e3bb56db363e8c57b9c5bc4bc075a2dda2d40245a0a
