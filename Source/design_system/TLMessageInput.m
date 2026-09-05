@@ -1,5 +1,7 @@
 #import "TLMessageInput.h"
 #import <math.h>
+#import <QuickLookThumbnailing/QuickLookThumbnailing.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 @interface TLComposerTextView : NSTextView
 @property (nonatomic) BOOL selectsAllOnFocus;
@@ -86,6 +88,9 @@
 
 @interface TLAttachmentChipButton : TLHoverIconButton
 @property (nonatomic) BOOL attachmentHovered;
+@property (nonatomic, strong) QLThumbnailGenerationRequest *thumbnailRequest;
+@property (nonatomic, strong) NSURL *previewURL;
+@property (nonatomic) BOOL previewSecurityScope;
 @end
 @implementation TLAttachmentChipButton
 + (Class)cellClass { return TLAttachmentChipCell.class; }
@@ -100,10 +105,49 @@
   self.layer.cornerRadius = MIN(self.palette.radiusPill, NSHeight(self.bounds) / 2);
   ((TLAttachmentChipCell *)self.cell).horizontalPadding = self.palette.space6;
   self.layer.backgroundColor = TLCGColor(self.attachmentHovered && self.enabled ? self.palette.chromeHoverSurface : self.palette.controlSurface);
-  self.layer.borderColor = TLCGColor(self.palette.composerBorder);
-  self.layer.borderWidth = self.palette.borderWidth;
+  self.layer.borderWidth = self.palette.space0;
   self.font = self.palette.smallFont;
   self.contentTintColor = self.palette.controlText;
+}
+- (void)loadPreviewForURL:(NSURL *)URL {
+  UTType *type = nil;
+  [URL getResourceValue:&type forKey:NSURLContentTypeKey error:nil];
+  type = type ?: [UTType typeWithFilenameExtension:URL.pathExtension];
+  if (![type conformsToType:UTTypeImage] && ![type conformsToType:UTTypePDF]) return;
+  self.previewURL = URL;
+  self.previewSecurityScope = [URL startAccessingSecurityScopedResource];
+  CGFloat size = self.palette.space11;
+  CGFloat scale = self.window.backingScaleFactor ?: NSScreen.mainScreen.backingScaleFactor ?: 1.0;
+  QLThumbnailGenerationRequest *request = [[QLThumbnailGenerationRequest alloc] initWithFileAtURL:URL
+    size:CGSizeMake(size, size) scale:scale representationTypes:QLThumbnailGenerationRequestRepresentationTypeThumbnail];
+  self.thumbnailRequest = request;
+  __weak typeof(self) weakSelf = self;
+  [QLThumbnailGenerator.sharedGenerator generateBestRepresentationForRequest:request
+    completionHandler:^(QLThumbnailRepresentation *thumbnail, NSError *error) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        TLAttachmentChipButton *button = weakSelf;
+        if (!button || button.thumbnailRequest != request) return;
+        button.thumbnailRequest = nil;
+        if (button.previewSecurityScope) {
+          [button.previewURL stopAccessingSecurityScopedResource];
+          button.previewSecurityScope = NO;
+        }
+        // Keep the file icon if macOS cannot generate a thumbnail.
+        if (!thumbnail) return;
+        NSImage *image = [thumbnail.NSImage copy];
+        CGFloat longestSide = MAX(image.size.width, image.size.height);
+        if (longestSide <= 0) return;
+        image.size = NSMakeSize(image.size.width * size / longestSide, image.size.height * size / longestSide);
+        image.template = NO;
+        button.image = image;
+        [button invalidateIntrinsicContentSize];
+        button.needsDisplay = YES;
+      });
+    }];
+}
+- (void)dealloc {
+  if (_thumbnailRequest) [QLThumbnailGenerator.sharedGenerator cancelRequest:_thumbnailRequest];
+  if (_previewSecurityScope) [_previewURL stopAccessingSecurityScopedResource];
 }
 - (void)setPalette:(TLThemePalette *)palette { [super setPalette:palette]; [self applyChipPalette]; [self invalidateIntrinsicContentSize]; }
 - (void)mouseEntered:(NSEvent *)event { self.attachmentHovered = YES; [self applyChipPalette]; }
@@ -457,8 +501,10 @@
   self.attachButton.layer.backgroundColor = TLCGColor(self.palette.chromeHoverSurface);
   self.attachButton.layer.cornerRadius = self.sendButtonSize / 2;
   NSImage *plus = [NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:@"Add files or folders"];
-  NSImageSymbolConfiguration *configuration = [NSImageSymbolConfiguration configurationWithPointSize:self.palette.space11
-                                                                                           weight:NSFontWeightRegular];
+  // The original symbol inherited TLGlassButton's smallFont. Increase that
+  // point size by 30%; resizing NSImage alone does not scale an SF Symbol.
+  NSImageSymbolConfiguration *configuration = [NSImageSymbolConfiguration
+    configurationWithPointSize:self.palette.smallFont.pointSize * 1.3 weight:NSFontWeightRegular];
   self.attachButton.image = [plus imageWithSymbolConfiguration:configuration] ?: plus;
   self.attachLeadingConstraint.constant = self.sendButtonInset;
   self.attachWidthConstraint.constant = self.sendButtonSize;
@@ -504,6 +550,7 @@
     button.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [button.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth / 3].active = YES;
     [self.attachmentStack addArrangedSubview:button];
+    [button loadPreviewForURL:URL];
   }
   [self applyAttachmentPalette];
   [self recalculateHeight];

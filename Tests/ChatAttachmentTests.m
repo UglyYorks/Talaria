@@ -163,7 +163,49 @@ static void TestComposer(void) {
   [pasteboard releaseGlobally];
 }
 
+static void TestSystemAttachmentThumbnails(void) {
+  NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+  [NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:nil error:nil];
+  NSURL *imageURL = [base URLByAppendingPathComponent:@"Image.png"];
+  NSURL *pdfURL = [base URLByAppendingPathComponent:@"Document.pdf"];
+  NSURL *asset = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"assets/Talaria-icon.png"]];
+  Check([NSFileManager.defaultManager copyItemAtURL:asset toURL:imageURL error:nil], @"creates image preview fixture");
+  NSView *page = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 96, 128)];
+  NSTextField *label = [NSTextField labelWithString:@"Preview"];
+  label.frame = NSMakeRect(8, 80, 80, 24);
+  [page addSubview:label];
+  Check([[page dataWithPDFInsideRect:page.bounds] writeToURL:pdfURL atomically:YES], @"creates PDF preview fixture");
+  NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 600, 200)];
+  TLMessageInput *input = [[TLMessageInput alloc] init];
+  [root addSubview:input];
+  [NSLayoutConstraint activateConstraints:@[[input.widthAnchor constraintEqualToConstant:600],
+    [input.leadingAnchor constraintEqualToAnchor:root.leadingAnchor], [input.topAnchor constraintEqualToAnchor:root.topAnchor]]];
+  input.palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  input.attachmentsEnabled = YES;
+  input.attachmentURLs = @[imageURL, pdfURL];
+  NSStackView *stack = [input valueForKey:@"attachmentStack"];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+  while (deadline.timeIntervalSinceNow > 0) {
+    BOOL pending = NO;
+    for (NSButton *button in stack.arrangedSubviews) pending |= [button valueForKey:@"thumbnailRequest"] != nil;
+    if (!pending) break;
+    [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+  }
+  for (NSButton *button in stack.arrangedSubviews) {
+    Check(button.image && !button.image.template, @"Quick Look supplies content thumbnails for images and PDFs");
+    Check([button valueForKey:@"thumbnailRequest"] == nil, @"completed thumbnail requests are released");
+  }
+  [root layoutSubtreeIfNeeded];
+  [input recalculateHeight];
+  [root layoutSubtreeIfNeeded];
+  NSBitmapImageRep *render = [input bitmapImageRepForCachingDisplayInRect:input.bounds];
+  [input cacheDisplayInRect:input.bounds toBitmapImageRep:render];
+  [[render representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@"/tmp/talaria-system-previews.png" atomically:YES];
+  input.attachmentURLs = @[];
+  [NSFileManager.defaultManager removeItemAtURL:base error:nil];
+}
+
 int main(void) {
-  @autoreleasepool { TestAttachmentMigrationCollision(); TestStorageAndPersistence(); TestComposer(); NSLog(@"ChatAttachmentTests passed"); }
+  @autoreleasepool { TestAttachmentMigrationCollision(); TestStorageAndPersistence(); TestComposer(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
   return 0;
 }

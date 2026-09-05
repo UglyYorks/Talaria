@@ -65,7 +65,7 @@ CEF_DEFINES := -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -DCEF_USE_SANDBOX
 CEF_INCLUDE_FLAGS := -I$(CEF_ROOT)
 CEF_CXXFLAGS := $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-strict-aliasing -fstack-protector -funwind-tables -fvisibility=hidden -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-narrowing -Wsign-compare -Wno-undefined-var-template -O3 -mmacosx-version-min=13.0
 APP_OBJCXXFLAGS := $(OBJCFLAGS) $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-sign-compare -Wno-nullability-completeness -Wno-missing-field-initializers
-APP_FRAMEWORKS := -framework AppKit -framework Foundation -framework QuartzCore -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
+APP_FRAMEWORKS := -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -framework AppKit -framework Foundation -framework QuartzCore -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
 TEST_FRAMEWORKS := -framework Foundation -framework AppKit -framework Virtualization -framework Security -lsqlite3
 
 .PHONY: all build test audit-theme-colors clean run widgetbook close-running-app check-signing-identity FORCE
@@ -261,7 +261,7 @@ test: $(BUILD_DIR)/ChatAttachmentTests audit-theme-colors $(TEST_EXECUTABLE) $(T
 $(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLGlassButton.m Source/design_system/TLBrowserChatPane.m Source/MarkdownRenderer.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
 	mkdir -p "$(BUILD_DIR)"
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework WebKit -o "$@"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework WebKit -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -o "$@"
 
 $(NOTCH_VIEW_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/NotchOverlayState.m Source/NotchOverlayController.m Tests/NotchOverlayViewTests.m
 	mkdir -p "$(BUILD_DIR)"
@@ -312,4 +312,4 @@ $(BUILD_DIR)/FeatureControllerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(
 
 $(BUILD_DIR)/ChatAttachmentTests: Source/ChatAttachmentStore.m Source/TalariaModels.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/PromptMessages.m Source/PromptBuilder.m Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/TLMessageInput.m Source/design_system/TLGlassButton.m Tests/ChatAttachmentTests.m
 	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework AppKit -framework QuartzCore -framework Security -lsqlite3 -o "$@"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework AppKit -framework QuartzCore -framework Security -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -lsqlite3 -o "$@"
