@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) CGFloat sendButtonInset;
 @property (nonatomic) CGFloat maximumExpandedHeight;
 @property (nonatomic) BOOL selectsAllOnFocus;
+@property (nonatomic) BOOL showsStopButton;
 @property (nonatomic, strong, nullable) NSView *backgroundView;
 @property (nonatomic, copy, nullable) void (^textChangeHandler)(void);
 @property (nonatomic, copy, nullable) void (^heightChangeHandler)(CGFloat height);

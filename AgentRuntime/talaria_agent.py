@@ -256,7 +256,42 @@ def fetch_hermes_commands(request, output=None):
         error(f"Could not load Hermes commands: {exc}", output)
 
 
-def stream_hermes_session(request, output=None):
+class StreamCancellation:
+    """Per-connection cancellation; callbacks also run if registered after Stop."""
+    def __init__(self):
+        self.event = threading.Event()
+        self.lock = threading.Lock()
+        self.callbacks = []
+        self.finished = False
+
+    def finish(self):
+        with self.lock:
+            self.finished = True
+            self.callbacks = []
+
+    def cancelled(self):
+        return self.event.is_set()
+
+    def on_cancel(self, callback):
+        with self.lock:
+            cancelled = self.cancelled()
+            if not cancelled:
+                self.callbacks.append(callback)
+        if cancelled:
+            callback()
+
+    def cancel(self):
+        with self.lock:
+            if self.cancelled() or self.finished:
+                return
+            self.event.set()
+            callbacks, self.callbacks = self.callbacks, []
+        for callback in callbacks:
+            callback()
+
+
+def stream_hermes_session(request, output=None, cancellation=None):
+    cancellation = cancellation or StreamCancellation()
     request_id = trim(request.get("request_id"))
     session_id = trim(request.get("session_id"))
     token = trim(request.get("token"))
@@ -266,12 +301,18 @@ def stream_hermes_session(request, output=None):
         error("Hermes session, OpenRouter token, model, request ID, and prompt are required.", output)
         return
     try:
+        if cancellation.cancelled():
+            return
         save_agent_soul(request)
         gateway = tui_gateway(token, model)
         gateway.run(session_id, model, prompt, lambda kind, text: emit(
-            {"type": "delta", "request_id": request_id, "kind": kind, "text": text}, output))
-        emit({"type": "complete"}, output)
+            {"type": "delta", "request_id": request_id, "kind": kind, "text": text}, output), cancellation=cancellation)
+        cancellation.finish()
+        if not cancellation.cancelled():
+            emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError) as exc:
+        if cancellation.cancelled():
+            return
         error(f"Could not run the Hermes session: {exc}", output)
 
 
@@ -298,7 +339,7 @@ def generate_hermes_text(request, output=None):
         error(f"Could not generate text through Hermes: {exc}", output)
 
 
-def handle_request(request, output=None):
+def handle_request(request, output=None, cancellation=None):
     operation = request.get("operation")
     if operation == "shell_command":
         run_shell_command(request, output)
@@ -310,7 +351,7 @@ def handle_request(request, output=None):
         fetch_hermes_commands(request, output)
         return 0
     if operation == "hermes_session_chat":
-        stream_hermes_session(request, output)
+        stream_hermes_session(request, output, cancellation)
         return 0
     if operation == "models":
         fetch_models(request, output)
@@ -339,7 +380,37 @@ def handle_connection(connection):
             error(f"Agent socket read failed: {exc}", writer)
             return
 
-        handle_request(request, writer)
+        cancellation = StreamCancellation()
+        monitor = None
+        if request.get("operation") == "hermes_session_chat":
+            def monitor_disconnect():
+                try:
+                    # This connection carries one request. EOF means its caller stopped.
+                    while reader.read(1):
+                        pass
+                except (OSError, ValueError):
+                    pass  # A reset or read failure is also a disconnected caller.
+                try:
+                    cancellation.cancel()
+                except (OSError, ValueError, RuntimeError) as exc:
+                    print(f"Stream cancellation: {exc}", file=sys.stderr)
+            monitor = threading.Thread(target=monitor_disconnect, daemon=True)
+            monitor.start()
+        try:
+            handle_request(request, writer, cancellation)
+        except (BrokenPipeError, ConnectionResetError):
+            cancellation.cancel()
+        finally:
+            cancellation.finish()
+            # Wake the reader on normal completion without issuing an extra stop.
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            if monitor:
+                monitor.join(timeout=6)
+            reader.close()
+            writer.close()
 
 
 def serve_vsock(port):

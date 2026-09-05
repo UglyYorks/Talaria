@@ -215,7 +215,9 @@ class HermesGateway:
             return self.command(chat_id, sid, target + (" " + arg if arg else ""), model, depth + 1)
         return result
 
-    def run(self, chat_id, model, text, delta):
+    def run(self, chat_id, model, text, delta, cancellation=None):
+        if cancellation and cancellation.cancelled():
+            return
         with self.lock:
             session_lock = self.session_locks.setdefault(chat_id, threading.Lock())
         if not session_lock.acquire(blocking=False):
@@ -227,6 +229,8 @@ class HermesGateway:
             return
         try:
             sid = self.session(chat_id, model)
+            if cancellation and cancellation.cancelled():
+                return
             waiting = self.waiting.get(chat_id)
             if waiting:
                 sid, events, kind, payload = waiting
@@ -263,13 +267,24 @@ class HermesGateway:
                         raise RuntimeError("This Hermes session is already running in another chat.")
                     self.listeners[sid] = events
             try:
+                if cancellation and cancellation.cancelled():
+                    return
                 if not waiting:
                     self.call("prompt.submit", {"session_id": sid, "text": text})
+                if cancellation:
+                    # Bind only after submission; a Stop during submit is delivered here.
+                    # Drain its terminal event before releasing this session's lock, so
+                    # a following turn cannot receive the interrupted turn's events.
+                    cancellation.on_cancel(lambda: self.call("session.interrupt", {"session_id": sid}))
                 deadline = time.monotonic() + 600
                 streamed = ""
                 while True:
                     event = events.get(timeout=max(0.01, deadline - time.monotonic()))
                     kind, payload = event.get("type"), event.get("payload") or {}
+                    if cancellation and cancellation.cancelled():
+                        if kind in {"message.complete", "error"}:
+                            return
+                        continue
                     if kind == "message.delta":
                         chunk = payload.get("text", "")
                         streamed += chunk

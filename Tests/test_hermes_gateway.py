@@ -96,6 +96,35 @@ class GatewayTests(unittest.TestCase):
         self.gateway.command('chat', 'old-runtime', '/reset topic', 'model')
         self.assertEqual(self.gateway.mappings['chat'], 'new-stored')
 
+    def test_cancelling_one_concurrent_chat_does_not_interrupt_another(self):
+        self.gateway.sessions = {'a': {'id': 'a', 'model': 'model'}, 'b': {'id': 'b', 'model': 'model'}}
+        started = {sid: threading.Event() for sid in ('a', 'b')}
+        cancelled = worker.StreamCancellation()
+        output = {'a': [], 'b': []}
+        def call(method, params):
+            sid = params['session_id']
+            if method == 'prompt.submit':
+                started[sid].set()
+            elif method == 'session.interrupt':
+                self.assertEqual(sid, 'a')
+                self.gateway.listeners[sid].put({'type': 'message.complete', 'payload': {}})
+            return {}
+        self.gateway.call.side_effect = call
+        threads = [threading.Thread(target=self.gateway.run, args=(sid, 'model', 'hello',
+            lambda kind, text, sid=sid: output[sid].append(text)),
+            kwargs={'cancellation': cancelled if sid == 'a' else None}) for sid in ('a', 'b')]
+        for thread in threads: thread.start()
+        self.assertTrue(started['a'].wait(2) and started['b'].wait(2))
+        cancelled.cancel()
+        threads[0].join(2)
+        self.assertFalse(threads[0].is_alive())
+        self.assertTrue(threads[1].is_alive())
+        self.gateway.listeners['b'].put({'type': 'message.delta', 'payload': {'text': 'B continues'}})
+        self.gateway.listeners['b'].put({'type': 'message.complete', 'payload': {'text': 'B continues'}})
+        threads[1].join(2)
+        self.assertFalse(threads[1].is_alive())
+        self.assertEqual(output, {'a': [], 'b': ['B continues', '']})
+
     def test_stream_filters_reasoning_and_avoids_duplicate_final(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
         def call(method, params):

@@ -18,7 +18,6 @@
   if ((self = [super init])) {
     _database = database;
     _runner = [[TLAssistantTurnRunner alloc] initWithDatabase:database agentOrchestrator:orchestrator];
-    _runner.streamsPartialContent = YES;
     _messages = [NSMutableArray array];
   }
   return self;

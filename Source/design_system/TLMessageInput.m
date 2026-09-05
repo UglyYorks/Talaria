@@ -271,6 +271,15 @@
   ]];
 }
 
+- (void)setShowsStopButton:(BOOL)showsStopButton {
+  if (_showsStopButton == showsStopButton) return;
+  _showsStopButton = showsStopButton;
+  NSString *label = showsStopButton ? @"Stop response" : @"Send";
+  [self.sendButton setImage:[NSImage imageWithSystemSymbolName:showsStopButton ? @"stop.fill" : @"arrow.up"
+                                   accessibilityDescription:label] animated:YES];
+  self.sendButton.toolTip = label;
+}
+
 - (void)recalculateHeight {
   if (!self.textView || NSWidth(self.textScrollView.bounds) <= 0.0) {
     return;
