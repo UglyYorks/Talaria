@@ -24,6 +24,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL attachmentsEditable;
 @property (nonatomic, copy) NSArray<NSURL *> *attachmentURLs;
 @property (nonatomic, copy, nullable) void (^attachmentsChangeHandler)(void);
+// Use an immediate replacement when switching between conversation drafts.
+- (void)setAttachmentURLs:(NSArray<NSURL *> *)URLs animated:(BOOL)animated;
 - (void)addAttachmentURLs:(NSArray<NSURL *> *)URLs;
 - (void)recalculateHeight;
 

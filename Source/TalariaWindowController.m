@@ -281,7 +281,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.attachmentPromptDrafts[@(_activeChat.chatID)] = self.promptTextView.string ?: @"";
   }
   _activeChat = chat;
-  self.messageInput.attachmentURLs = chat ? self.attachmentDrafts[@(chat.chatID)] ?: @[] : @[];
+  [self.messageInput setAttachmentURLs:chat ? self.attachmentDrafts[@(chat.chatID)] ?: @[] : @[] animated:NO];
 }
 
 - (void)restoreAttachmentDraft:(NSArray<NSURL *> *)URLs prompt:(NSString *)prompt chatID:(NSInteger)chatID {

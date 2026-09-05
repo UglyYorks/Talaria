@@ -4,6 +4,7 @@
 #import "SQLiteConnection.h"
 #import "PromptMessages.h"
 #import "design_system/TLMessageInput.h"
+#import "design_system/TLTransitionCoordinator.h"
 
 static void Check(BOOL condition, NSString *message) {
   if (!condition) { NSLog(@"FAIL: %@", message); exit(1); }
@@ -221,6 +222,97 @@ static void TestComposer(void) {
   [pasteboard releaseGlobally];
 }
 
+static void TestAttachmentReconciliationAndAnimation(void) {
+  NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 600, 200)];
+  TLMessageInput *input = [[TLMessageInput alloc] init];
+  [root addSubview:input];
+  [NSLayoutConstraint activateConstraints:@[[input.widthAnchor constraintEqualToConstant:600],
+    [input.leadingAnchor constraintEqualToAnchor:root.leadingAnchor], [input.topAnchor constraintEqualToAnchor:root.topAnchor]]];
+  input.palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  input.attachmentsEnabled = YES;
+  __block NSTimeInterval now = 0;
+  TLTransitionCoordinator *transitions = [[TLTransitionCoordinator alloc] initWithClock:^NSTimeInterval { return now; } automaticallyAdvances:NO];
+  [input setValue:transitions forKey:@"attachmentTransitions"];
+  NSURL *a = [NSURL fileURLWithPath:@"/tmp/First attachment.pdf"];
+  NSURL *b = [NSURL fileURLWithPath:@"/tmp/Second attachment.mov"];
+  NSURL *c = [NSURL fileURLWithPath:@"/tmp/New attachment.txt"];
+  [input setAttachmentURLs:@[a, b] animated:NO];
+  [root layoutSubtreeIfNeeded];
+  NSStackView *stack = [input valueForKey:@"attachmentStack"];
+  NSView *first = stack.arrangedSubviews[0];
+  NSView *second = stack.arrangedSubviews[1];
+  id request = [first valueForKey:@"thumbnailRequest"];
+  id image = [first valueForKey:@"image"];
+  [input setAttachmentURLs:@[a, b, c] animated:YES];
+  Check(stack.arrangedSubviews[0] == first && stack.arrangedSubviews[1] == second, @"adding a file retains existing pill views");
+  Check([first valueForKey:@"thumbnailRequest"] == request && [first valueForKey:@"image"] == image,
+        @"adding a file retains preview image and in-flight request");
+  NSView *added = stack.arrangedSubviews[2];
+  NSView *content = [added valueForKey:@"chipContentView"];
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    Check(NSWidth(added.frame) == 0 && content.alphaValue == 0, @"new pill starts collapsed with invisible content");
+    now += input.palette.tabLifecycleTransitionDuration / 2;
+    [transitions advance];
+    [root layoutSubtreeIfNeeded];
+    Check(NSWidth(added.frame) > 0 && NSWidth(added.frame) < NSWidth(content.frame), @"pill grows while its content keeps full width");
+    Check(added.layer.masksToBounds && content.alphaValue > 0 && content.alphaValue < 1, @"pill masks content while fading it in");
+    NSBitmapImageRep *render = [input bitmapImageRepForCachingDisplayInRect:input.bounds];
+    [input cacheDisplayInRect:input.bounds toBitmapImageRep:render];
+    [[render representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@"/tmp/talaria-attachment-mid-animation.png" atomically:YES];
+  }
+  [transitions finishAllTransitions];
+  [input setAttachmentURLs:@[a, c] animated:YES];
+  NSButton *removedButton = [second valueForKey:@"closeButton"];
+  Check(!removedButton.enabled && removedButton.tag == -1, @"exiting pill cannot remove a different attachment");
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    now += input.palette.tabClosingTransitionDuration / 2;
+    [transitions advance];
+    CGFloat partial = [[second valueForKey:@"revealProgress"] doubleValue];
+    Check(partial > 0 && partial < 1, @"removed pill shrinks before leaving the row");
+    [input setAttachmentURLs:@[a, b, c] animated:YES];
+    Check(stack.arrangedSubviews[1] == second && [[second valueForKey:@"revealProgress"] doubleValue] == partial,
+          @"re-adding a closing pill reuses it and reverses smoothly");
+  }
+  [transitions finishAllTransitions];
+  [input setAttachmentURLs:@[c, a] animated:NO];
+  Check(stack.arrangedSubviews.count == 2 && stack.arrangedSubviews[0] == added && stack.arrangedSubviews[1] == first,
+        @"reordering and removing retain the correct pill identities");
+  Check([first valueForKey:@"image"] == image && [first valueForKey:@"thumbnailRequest"] == request, @"removal does not reload retained previews");
+  NSButton *firstButton = [first valueForKey:@"closeButton"];
+  [NSApp sendAction:firstButton.action to:firstButton.target from:firstButton];
+  Check([input.attachmentURLs isEqualToArray:@[c]], @"close action uses the updated index after reordering");
+  [input setAttachmentURLs:@[] animated:YES];
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
+    Check(!((NSScrollView *)[input valueForKey:@"attachmentScrollView"]).hidden, @"last pill stays visible through its exit");
+  [transitions finishAllTransitions];
+  [root layoutSubtreeIfNeeded];
+  Check(stack.arrangedSubviews.count == 0 && NSHeight(input.bounds) == input.palette.composerButtonHeight, @"last exit cleans up the row and restores composer height");
+  [input setAttachmentURLs:@[a] animated:YES];
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    now += input.palette.tabLifecycleTransitionDuration / 2;
+    [transitions advance];
+    NSView *interrupted = stack.arrangedSubviews.firstObject;
+    [input setAttachmentURLs:@[] animated:YES];
+    now += input.palette.tabClosingTransitionDuration / 2;
+    [transitions advance];
+    CGFloat closingProgress = [[interrupted valueForKey:@"revealProgress"] doubleValue];
+    [input setAttachmentURLs:@[b] animated:YES];
+    Check([[interrupted valueForKey:@"revealProgress"] doubleValue] == closingProgress,
+          @"adding a sibling does not restart an existing exit");
+    now += input.palette.tabClosingTransitionDuration / 2 + 0.001;
+    [transitions advance];
+    Check(![stack.arrangedSubviews containsObject:interrupted], @"removing during entry completes on the original exit schedule");
+  }
+  [transitions finishAllTransitions];
+  [input setAttachmentURLs:@[a, a] animated:NO];
+  NSArray *duplicates = stack.arrangedSubviews.copy;
+  [input setAttachmentURLs:@[a, a, b] animated:YES];
+  Check(stack.arrangedSubviews[0] == duplicates[0] && stack.arrangedSubviews[1] == duplicates[1], @"duplicate URL occurrences retain distinct pills");
+  [input setAttachmentURLs:@[c] animated:NO];
+  [transitions finishAllTransitions];
+  Check(stack.arrangedSubviews.count == 1 && [input.attachmentURLs isEqualToArray:@[c]], @"draft replacement cancels old lifecycle work without stale pills");
+}
+
 static void TestSystemAttachmentThumbnails(void) {
   NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
   [NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:nil error:nil];
@@ -269,6 +361,15 @@ static void TestSystemAttachmentThumbnails(void) {
     index++;
     Check([button valueForKey:@"thumbnailRequest"] == nil, @"completed thumbnail requests are released");
   }
+  NSArray *loadedPills = stack.arrangedSubviews.copy;
+  NSArray *loadedImages = [loadedPills valueForKey:@"image"];
+  NSArray *originalURLs = input.attachmentURLs;
+  [input addAttachmentURLs:@[base]];
+  for (NSUInteger i = 0; i < loadedPills.count; i++) {
+    Check(stack.arrangedSubviews[i] == loadedPills[i] && [loadedPills[i] valueForKey:@"image"] == loadedImages[i] &&
+          [loadedPills[i] valueForKey:@"thumbnailRequest"] == nil, @"completed previews stay cached when another file is added");
+  }
+  input.attachmentURLs = originalURLs;
   [root layoutSubtreeIfNeeded];
   [input recalculateHeight];
   [root layoutSubtreeIfNeeded];
@@ -280,6 +381,6 @@ static void TestSystemAttachmentThumbnails(void) {
 }
 
 int main(void) {
-  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestStorageAndPersistence(); TestComposer(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
+  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestStorageAndPersistence(); TestComposer(); TestAttachmentReconciliationAndAnimation(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
   return 0;
 }

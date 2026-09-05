@@ -1,4 +1,5 @@
 #import "TLMessageInput.h"
+#import "TLTransitionCoordinator.h"
 #import <math.h>
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
 
@@ -114,11 +115,24 @@
 @property (nonatomic, strong) NSURL *previewURL;
 @property (nonatomic) BOOL previewSecurityScope;
 @property (nonatomic) BOOL hasContentPreview;
+@property (nonatomic, strong) NSView *chipContentView;
+@property (nonatomic, strong) NSURL *attachmentURL;
+@property (nonatomic, copy) NSString *transitionKey;
+@property (nonatomic) CGFloat revealProgress;
+@property (nonatomic) BOOL removing;
+@property (nonatomic) BOOL closingTransition;
 @end
 @implementation TLAttachmentChipView
 - (instancetype)initWithFrame:(NSRect)frame {
   self = [super initWithFrame:frame];
   if (self) {
+    _revealProgress = 1;
+    _transitionKey = NSUUID.UUID.UUIDString;
+    self.wantsLayer = YES;
+    self.layer.masksToBounds = YES;
+    _chipContentView = [[NSView alloc] init];
+    _chipContentView.wantsLayer = YES;
+    [self addSubview:_chipContentView];
     _imageView = [[NSImageView alloc] init];
     _imageView.imageScaling = NSImageScaleProportionallyDown;
     _imageView.wantsLayer = YES;
@@ -130,19 +144,28 @@
     _closeButton.hoverSurfaceOnly = YES;
     _closeButton.imagePosition = NSImageOnly;
     _closeButton.title = @"";
-    [self addSubview:_imageView];
-    [self addSubview:_label];
-    [self addSubview:_closeButton];
+    [self.chipContentView addSubview:_imageView];
+    [self.chipContentView addSubview:_label];
+    [self.chipContentView addSubview:_closeButton];
   }
   return self;
 }
 - (CGFloat)imageLeadingInset {
   return self.image && !self.image.template ? self.palette.space2 * 2 : self.palette.space6;
 }
-- (NSSize)intrinsicContentSize {
+- (CGFloat)expandedWidth {
   CGFloat width = self.imageLeadingInset + self.image.size.width + self.palette.space4 +
     self.label.intrinsicContentSize.width + self.palette.space4 + self.palette.space11 + self.palette.space3;
-  return NSMakeSize(ceil(width), self.palette.fieldHeight);
+  return MIN(ceil(width), self.palette.messageInputMaxWidth / 3);
+}
+- (NSSize)intrinsicContentSize {
+  return NSMakeSize(self.expandedWidth * self.revealProgress, self.palette.fieldHeight);
+}
+- (void)setRevealProgress:(CGFloat)progress {
+  _revealProgress = progress;
+  self.chipContentView.alphaValue = progress;
+  [self invalidateIntrinsicContentSize];
+  self.needsLayout = YES;
 }
 - (void)setImage:(NSImage *)image {
   _image = image;
@@ -181,7 +204,9 @@
   CGFloat inset = self.palette.space3;
   CGFloat diameter = height - inset * 2;
   self.layer.cornerRadius = height / 2;
-  self.closeButton.frame = NSMakeRect(NSWidth(self.bounds) - inset - diameter, inset, diameter, diameter);
+  // Content keeps its full width while the outer pill reveals/clips it.
+  self.chipContentView.frame = NSMakeRect(0, 0, self.expandedWidth, height);
+  self.closeButton.frame = NSMakeRect(self.expandedWidth - inset - diameter, inset, diameter, diameter);
   self.closeButton.layer.cornerRadius = diameter / 2;
   BOOL hasPreview = self.hasContentPreview;
   CGFloat imageHeight = self.image && !self.image.template ? self.image.size.height : self.palette.space11;
@@ -243,6 +268,7 @@
 @property (nonatomic, strong) TLGlassButton *attachButton;
 @property (nonatomic, strong) NSScrollView *attachmentScrollView;
 @property (nonatomic, strong) NSStackView *attachmentStack;
+@property (nonatomic, strong) TLTransitionCoordinator *attachmentTransitions;
 @property (nonatomic, strong) NSLayoutConstraint *textTopConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *attachmentHeightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *attachmentTopConstraint;
@@ -514,12 +540,17 @@
 }
 
 - (CGFloat)attachmentRowHeight {
-  return self.attachmentsEnabled && self.attachmentURLs.count ? self.palette.composerButtonHeight + self.palette.space3 : self.palette.space0;
+  return self.attachmentsEnabled && self.attachmentStack.arrangedSubviews.count ? self.palette.composerButtonHeight + self.palette.space3 : self.palette.space0;
 }
 
 - (void)setAttachmentsEnabled:(BOOL)enabled {
   _attachmentsEnabled = enabled;
-  if (enabled && !self.attachButton) [self buildAttachmentInterface];
+  if (enabled && !self.attachButton) {
+    [self buildAttachmentInterface];
+    NSArray *pendingURLs = _attachmentURLs;
+    _attachmentURLs = @[];
+    [self setAttachmentURLs:pendingURLs animated:NO];
+  }
   self.attachButton.hidden = !enabled;
   __weak typeof(self) weakSelf = self;
   ((TLComposerTextView *)self.textView).fileDropEnabled = ^BOOL{ return weakSelf.attachmentsEnabled && weakSelf.attachmentsEditable; };
@@ -537,10 +568,11 @@
 - (void)setAttachmentsEditable:(BOOL)editable {
   _attachmentsEditable = editable;
   self.attachButton.enabled = editable;
-  for (TLAttachmentChipView *chip in self.attachmentStack.arrangedSubviews) chip.enabled = editable;
+  for (TLAttachmentChipView *chip in self.attachmentStack.arrangedSubviews) chip.enabled = editable && !chip.removing;
 }
 
 - (void)buildAttachmentInterface {
+  self.attachmentTransitions = [[TLTransitionCoordinator alloc] init];
   self.attachButton = [[TLGlassButton alloc] initWithUsesGlassEffect:NO];
   self.attachButton.hoverSurfaceOnly = YES;
   self.attachButton.toolTip = @"Add files or folders";
@@ -597,38 +629,119 @@
   self.attachmentTrailingConstraint.constant = -self.palette.space5;
   self.attachmentHeightConstraint.constant = self.palette.composerButtonHeight;
   self.attachmentStack.spacing = self.palette.space3;
-  self.attachmentScrollView.hidden = !self.attachmentsEnabled || !self.attachmentURLs.count;
+  self.attachmentScrollView.hidden = !self.attachmentsEnabled || !self.attachmentStack.arrangedSubviews.count;
   for (TLAttachmentChipView *chip in self.attachmentStack.arrangedSubviews) chip.palette = self.palette;
 }
 
 - (void)setAttachmentURLs:(NSArray<NSURL *> *)URLs {
-  _attachmentURLs = [URLs copy] ?: @[];
-  for (NSView *view in self.attachmentStack.arrangedSubviews.copy) {
-    [self.attachmentStack removeArrangedSubview:view];
-    [view removeFromSuperview];
+  [self setAttachmentURLs:URLs animated:self.window != nil];
+}
+
+- (void)transitionAttachment:(TLAttachmentChipView *)chip visible:(BOOL)visible animated:(BOOL)animated {
+  CGFloat start = chip.revealProgress;
+  CGFloat end = visible ? 1 : 0;
+  NSTimeInterval duration = animated && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion
+    ? (visible ? self.palette.tabLifecycleTransitionDuration : self.palette.tabClosingTransitionDuration) : 0;
+  __weak typeof(self) weakSelf = self;
+  __weak TLAttachmentChipView *weakChip = chip;
+  [self.attachmentTransitions startTransitionForKey:chip.transitionKey duration:duration
+    update:^(CGFloat progress) {
+      weakChip.revealProgress = start + (end - start) * progress;
+      [weakSelf layoutSubtreeIfNeeded];
+    } completion:^(BOOL finished) {
+      TLMessageInput *input = weakSelf;
+      TLAttachmentChipView *view = weakChip;
+      if (!finished || !input || !view || !view.removing) return;
+      [input.attachmentStack removeArrangedSubview:view];
+      [view removeFromSuperview];
+      [input applyAttachmentPalette];
+      [input recalculateHeight];
+      [input layoutSubtreeIfNeeded];
+    }];
+}
+
+- (void)setAttachmentURLs:(NSArray<NSURL *> *)URLs animated:(BOOL)animated {
+  NSArray<NSURL *> *next = [URLs copy] ?: @[];
+  if ([next isEqualToArray:_attachmentURLs]) {
+    if (!animated) [self.attachmentTransitions finishAllTransitions];
+    return;
   }
-  NSUInteger index = 0;
-  for (NSURL *URL in _attachmentURLs) {
-    TLAttachmentChipView *button = [[TLAttachmentChipView alloc] init];
-    button.palette = self.palette;
-    BOOL directory = URL.hasDirectoryPath;
-    [NSFileManager.defaultManager fileExistsAtPath:URL.path isDirectory:&directory];
-    button.image = [NSImage imageWithSystemSymbolName:directory ? @"folder" : @"doc" accessibilityDescription:nil];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.title = URL.lastPathComponent;
-    button.toolTip = URL.path;
-    button.closeButton.toolTip = [@"Remove " stringByAppendingString:URL.lastPathComponent];
-    button.closeButton.accessibilityLabel = [@"Remove attachment " stringByAppendingString:URL.lastPathComponent];
-    button.closeButton.target = self;
-    button.closeButton.action = @selector(removeAttachment:);
-    button.closeButton.tag = index++;
-    button.enabled = self.attachmentsEditable;
-    [button.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth / 3].active = YES;
-    [self.attachmentStack addArrangedSubview:button];
-    [button loadPreviewForURL:URL];
+  _attachmentURLs = next;
+  if (!self.attachmentStack) return;
+  // Match individual occurrences so duplicate URLs and reversing an in-flight
+  // removal reuse the same view, decoded image and Quick Look request.
+  NSMutableArray<TLAttachmentChipView *> *unmatched = [self.attachmentStack.arrangedSubviews mutableCopy];
+  NSMutableArray<TLAttachmentChipView *> *active = [NSMutableArray array];
+  NSMutableArray<TLAttachmentChipView *> *entering = [NSMutableArray array];
+  for (NSURL *URL in next) {
+    NSUInteger match = [unmatched indexOfObjectPassingTest:^BOOL(TLAttachmentChipView *chip, NSUInteger index, BOOL *stop) {
+      return [chip.attachmentURL isEqual:URL];
+    }];
+    TLAttachmentChipView *chip;
+    if (match != NSNotFound) {
+      chip = unmatched[match];
+      [unmatched removeObjectAtIndex:match];
+      if (chip.removing) [entering addObject:chip];
+    } else {
+      chip = [[TLAttachmentChipView alloc] init];
+      chip.palette = self.palette;
+      chip.attachmentURL = URL;
+      BOOL directory = URL.hasDirectoryPath;
+      [NSFileManager.defaultManager fileExistsAtPath:URL.path isDirectory:&directory];
+      chip.image = [NSImage imageWithSystemSymbolName:directory ? @"folder" : @"doc" accessibilityDescription:nil];
+      chip.translatesAutoresizingMaskIntoConstraints = NO;
+      chip.title = URL.lastPathComponent;
+      chip.toolTip = URL.path;
+      chip.closeButton.toolTip = [@"Remove " stringByAppendingString:URL.lastPathComponent];
+      chip.closeButton.accessibilityLabel = [@"Remove attachment " stringByAppendingString:URL.lastPathComponent];
+      chip.closeButton.target = self;
+      chip.closeButton.action = @selector(removeAttachment:);
+      [chip.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth / 3].active = YES;
+      chip.revealProgress = animated ? 0 : 1;
+      [entering addObject:chip];
+      [chip loadPreviewForURL:URL];
+    }
+    chip.removing = NO;
+    chip.enabled = self.attachmentsEditable;
+    chip.closeButton.tag = active.count;
+    [active addObject:chip];
+  }
+  for (TLAttachmentChipView *chip in unmatched) {
+    chip.removing = YES;
+    chip.enabled = NO;
+    chip.closeButton.tag = -1;
+  }
+  // Keep exiting pills in their slots until they finish shrinking. Only move
+  // retained views if the caller actually changes the file order.
+  NSUInteger cursor = 0;
+  for (TLAttachmentChipView *chip in active) {
+    NSArray<TLAttachmentChipView *> *views = self.attachmentStack.arrangedSubviews;
+    while (cursor < views.count && views[cursor].removing) cursor++;
+    if ([views indexOfObjectIdenticalTo:chip] != cursor) {
+      if (chip.superview) {
+        [self.attachmentStack removeArrangedSubview:chip];
+        [chip removeFromSuperview];
+      }
+      [self.attachmentStack insertArrangedSubview:chip atIndex:MIN(cursor, self.attachmentStack.arrangedSubviews.count)];
+    }
+    cursor++;
   }
   [self applyAttachmentPalette];
   [self recalculateHeight];
+  [self layoutSubtreeIfNeeded];
+  for (TLAttachmentChipView *chip in entering) [self transitionAttachment:chip visible:YES animated:animated];
+  for (TLAttachmentChipView *chip in unmatched) {
+    if (!animated || ![self.attachmentTransitions hasTransitionForKey:chip.transitionKey])
+      [self transitionAttachment:chip visible:NO animated:animated];
+    else {
+      // An entering pill can be removed before its opening animation completes.
+      // Retarget only when its existing track was opening, not on every update.
+      if (!chip.closingTransition) [self transitionAttachment:chip visible:NO animated:animated];
+    }
+    chip.closingTransition = YES;
+  }
+  for (TLAttachmentChipView *chip in active) chip.closingTransition = NO;
+  if (!animated) [self.attachmentTransitions finishAllTransitions];
   if (self.attachmentsChangeHandler) self.attachmentsChangeHandler();
 }
 
