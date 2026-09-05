@@ -10,7 +10,6 @@
 #import "TLHistoryPanelController.h"
 #import "TLBrowserTabController.h"
 #import "TLSettingsTabController.h"
-#import "TLNotesTabController.h"
 #import "TLMainWindow.h"
 #import "TLOnboardingDemoWindowController.h"
 #import "TLHermesOnboardingWindowController.h"
@@ -119,7 +118,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong, nullable) TLWorkspaceTab *historyTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *settingsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *agentsTab;
-@property (nonatomic, strong, nullable) TLWorkspaceTab *notesTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *debugTab;
 @property (nonatomic, strong) TLChatRecord *activeChat;
 @property (nonatomic) NSInteger nextBrowserTabID;
@@ -158,8 +156,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSView *sidebarAgentPaneSurface;
 @property (nonatomic, strong) NSStackView *sidebarInboxStack;
 @property (nonatomic, strong) TLSidebarShortcutsView *sidebarShortcutsView;
-@property (nonatomic, strong) TLSidebarShortcutButton *notesShortcutButton;
-@property (nonatomic, strong) TLSidebarShortcutButton *historyShortcutButton;
+@property (nonatomic, strong) TLSidebarNavigationButton *historySidebarButton;
 @property (nonatomic, strong) TLSidebarInboxPaneView *sidebarInboxPaneView;
 @property (nonatomic, strong) TLSidebarInboxStackView *gmailInboxStackView;
 @property (nonatomic, strong) TLSidebarInboxStackView *slackInboxStackView;
@@ -180,7 +177,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @property (nonatomic, strong) TLHistoryPanelController *historyPanelController;
 @property (nonatomic, strong) TLTokenView *agentsView;
-@property (nonatomic, strong) TLNotesTabController *notesTabController;
 @property (nonatomic, strong) TLSettingsTabController *settingsTabController;
 @property (nonatomic, strong) NSTableView *agentsTableView;
 @property (nonatomic, strong) NSTextField *agentsStatusLabel;
@@ -465,7 +461,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self layoutTrafficLightButtons];
   [self updateSidebarLayoutAnimated:NO];
   [self updateMessageInputWidthForWindowWidth:NSWidth(self.window.frame)];
-  [self updateNotesMessageInputWidth];
 }
 
 - (NSSize)windowWillResize:(NSWindow *)sender toSize:(NSSize)frameSize {
@@ -948,24 +943,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.sidebarShortcutsView = [[TLSidebarShortcutsView alloc] init];
   self.sidebarShortcutsView.palette = self.palette;
 
-  self.notesShortcutButton = [[TLSidebarShortcutButton alloc] init];
-  self.notesShortcutButton.palette = self.palette;
-  self.notesShortcutButton.title = @"Notes";
-  self.notesShortcutButton.systemIconName = @"doc.text";
-  self.notesShortcutButton.shortcutKind = TLSidebarShortcutKindNotes;
-  self.notesShortcutButton.target = self;
-  self.notesShortcutButton.action = @selector(showNotes:);
-  [self.sidebarShortcutsView addShortcutButton:self.notesShortcutButton];
-
-  self.historyShortcutButton = [[TLSidebarShortcutButton alloc] init];
-  self.historyShortcutButton.palette = self.palette;
-  self.historyShortcutButton.title = @"History";
-  self.historyShortcutButton.systemIconName = @"clock";
-  self.historyShortcutButton.shortcutKind = TLSidebarShortcutKindHistory;
-  self.historyShortcutButton.target = self;
-  self.historyShortcutButton.action = @selector(showHistoryScreen:);
-  [self.sidebarShortcutsView addShortcutButton:self.historyShortcutButton];
-
   NSArray<NSDictionary<NSString *, NSString *> *> *bookmarks = @[
     @{@"title": @"Google", @"icon": @"google", @"URL": @"https://www.google.com/"},
     @{@"title": @"GitHub", @"icon": @"github", @"URL": @"https://github.com/"},
@@ -1074,8 +1051,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [actionStack setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                        forOrientation:NSLayoutConstraintOrientationVertical];
 
+  self.historySidebarButton = [[TLSidebarNavigationButton alloc] init];
+  self.historySidebarButton.palette = self.palette;
+  self.historySidebarButton.title = @"History";
+  self.historySidebarButton.systemIconName = @"clock";
+  self.historySidebarButton.target = self;
+  self.historySidebarButton.action = @selector(showHistoryScreen:);
+  self.historySidebarButton.toolTip = @"History";
   self.sidebarUserButton = [self sidebarUserButtonWithDisplayName:@"Yaroslav"];
 
+  [actionStack addArrangedSubview:self.historySidebarButton];
   [actionStack addArrangedSubview:self.sidebarUserButton];
   return actionStack;
 }
@@ -1570,18 +1555,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
           [self addWorkspaceContentView:runtime.contentView];
         }
         break;
-      case TLWorkspaceTabKindNotes:
-        self.notesTab = tab;
-        if (!runtime) {
-          runtime = [TLWorkspaceTabRuntime runtimeWithContentView:[self buildNotesTabContent]
-                                                       openAction:@selector(openNotesTab:)
-                                                      closeAction:@selector(closeNotesTab:)];
-          [self setRuntime:runtime forTab:tab];
-        }
-        if (runtime.contentView) {
-          [self addWorkspaceContentView:runtime.contentView];
-        }
-        break;
       case TLWorkspaceTabKindDebug:
         self.debugTab = tab;
         if (!runtime) {
@@ -1621,8 +1594,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self showSettings:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindAgents) {
     [self showAgents:self];
-  } else if (snapshot.activeTabKind == TLWorkspaceTabKindNotes) {
-    [self showNotes:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindDebug) {
     [self showDebug:self];
   }
@@ -2912,83 +2883,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.debugTerminalWindowController showFromWindow:self.window];
 }
 
-- (void)showNotes:(id)sender {
-  if (self.widgetbookMode) {
-    return;
-  }
-
-  if (!self.notesTab) {
-    NSView *contentView = [self buildNotesTabContent];
-    self.notesTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindNotes
-                                          tabID:0
-                                          title:@"Notes"
-                                        toolTip:@"Notes"
-                                            URL:nil
-                                      closeable:YES];
-    [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:contentView
-                                                        openAction:@selector(openNotesTab:)
-                                                       closeAction:@selector(closeNotesTab:)]
-              forTab:self.notesTab];
-    [self addWorkspaceContentView:contentView];
-    [self.appStateManager addWorkspaceTab:self.notesTab activate:NO];
-  }
-
-  [self activateTabKind:TLWorkspaceTabKindNotes tabID:self.notesTab.tabID];
-  [self updateWorkspaceMode];
-  [self reloadWorkspaceTabs];
-  [self updateControlStates];
-}
-
-- (void)openNotesTab:(id)sender {
-  if (self.widgetbookMode || !self.notesTab) {
-    return;
-  }
-
-  [self activateTabKind:TLWorkspaceTabKindNotes tabID:self.notesTab.tabID];
-  [self updateWorkspaceMode];
-  [self reloadWorkspaceTabs];
-  [self updateControlStates];
-}
-
-- (void)closeNotesTab:(id)sender {
-  if (!self.notesTab) {
-    return;
-  }
-  if ([self closeWindowIfOnlyWorkspaceTab:self.notesTab]) {
-    return;
-  }
-
-  [self.appStateManager removeWorkspaceTabWithKind:self.notesTab.kind tabID:self.notesTab.tabID];
-  [[self contentViewForTab:self.notesTab] removeFromSuperview];
-  [self removeRuntimeForKind:self.notesTab.kind tabID:self.notesTab.tabID];
-  self.notesTab = nil;
-  self.notesTabController = nil;
-
-
-  [self updateWorkspaceMode];
-  [self reloadWorkspaceTabs];
-  [self updateControlStates];
-}
-
-- (NSView *)buildNotesTabContent {
-  TLNotesTabController *controller = [[TLNotesTabController alloc] initWithPalette:self.palette];
-  self.notesTabController = controller;
-  controller.inputEnabled = !self.isSending && !self.widgetbookMode;
-  __weak typeof(self) weakSelf = self;
-  controller.sendPromptHandler = ^(NSString *prompt) {
-    TalariaWindowController *windowController = weakSelf;
-    if (!windowController || windowController.isSending || windowController.widgetbookMode) return;
-    if (!windowController.activeChat) {
-      [windowController startNewChatWithModel:windowController.settings.selectedModel focus:NO];
-    } else {
-      [windowController showChatWorkspace];
-    }
-    windowController.promptTextView.string = prompt;
-    [windowController sendMessage:windowController];
-  };
-  return controller.view;
-}
-
 - (void)rebuildDebugTabContentForCurrentPalette {
   if (!self.debugTab) {
     return;
@@ -3003,14 +2897,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [previousContentView removeFromSuperview];
   [self addWorkspaceContentView:nextContentView];
   nextContentView.hidden = ![self isWorkspaceTabActive:self.debugTab];
-}
-
-- (void)updateNotesMessageInputWidth {
-  [self.notesTabController updateNotesMessageInputWidth];
-}
-
-- (void)updateNotesPromptControlState {
-  self.notesTabController.inputEnabled = !self.isSending && !self.widgetbookMode;
 }
 
 - (NSView *)buildDebugTabContent {
@@ -4218,7 +4104,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     owner.sidebarView.hidden = hideAfterLayout;
     owner.sidebarResizeHandle.hidden = hideAfterLayout;
     owner.sidebarView.alphaValue = 1;
-    [owner updateNotesMessageInputWidth];
     [owner invalidateSidebarResizeCursorRects];
     [owner.workspaceOutline updateOutline];
   }];
@@ -4306,7 +4191,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
   if (tab.kind == TLWorkspaceTabKindSettings) runtime.featureController = self.settingsTabController;
-  if (tab.kind == TLWorkspaceTabKindNotes) runtime.featureController = self.notesTabController;
   self.workspaceTabRuntimes[TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID)] = runtime;
 }
 
@@ -4462,8 +4346,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return @"gearshape";
     case TLWorkspaceTabKindAgents:
       return @"cpu";
-    case TLWorkspaceTabKindNotes:
-      return @"doc.text";
     case TLWorkspaceTabKindDebug:
       return @"terminal";
     case TLWorkspaceTabKindChat:
@@ -4566,10 +4448,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindAgents &&
         self.agentsTab &&
         self.appStateManager.snapshot.activeTabID == self.agentsTab.tabID;
-    case TLWorkspaceTabKindNotes:
-      return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindNotes &&
-        self.notesTab &&
-        self.appStateManager.snapshot.activeTabID == self.notesTab.tabID;
     case TLWorkspaceTabKindDebug:
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindDebug &&
         self.debugTab &&
@@ -4583,7 +4461,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
   [self contentViewForTab:self.settingsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindSettings);
   [self contentViewForTab:self.agentsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindAgents);
-  [self contentViewForTab:self.notesTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindNotes);
   [self contentViewForTab:self.debugTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindDebug);
 
   for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
@@ -4640,8 +4517,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self updateSidebarContentInsets];
   self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
 
-  self.notesShortcutButton.palette = self.palette;
-  self.historyShortcutButton.palette = self.palette;
+  self.historySidebarButton.palette = self.palette;
+  self.historySidebarButton.selected = [self isHistoryScreenActive];
   self.sidebarUserButton.palette = self.palette;
   self.sidebarUserButton.displayName = @"Yaroslav";
 }
@@ -4751,7 +4628,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.notchOverlayController updatePalette:self.palette];
   [self layoutTrafficLightButtons];
   [self updateMessageInputWidthForWindowWidth:NSWidth(self.window.frame)];
-  [self updateNotesMessageInputWidth];
   [self updateMessageScrollInsets];
   [self invalidateThemeAppearanceForViewTree:self.window.contentView];
 }
@@ -4849,14 +4725,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)updateControlStates {
   [self.messageInput recalculateHeight];
-  [self updateNotesPromptControlState];
   [self updateMessageScrollInsets];
 
   if (self.widgetbookMode) {
     self.createChatButton.enabled = NO;
     self.sidebarToggleButton.enabled = NO;
-    self.notesShortcutButton.enabled = NO;
-    self.historyShortcutButton.enabled = NO;
+    self.historySidebarButton.enabled = NO;
     self.sidebarUserButton.enabled = NO;
     self.sendButton.enabled = NO;
     self.historyPanelController.enabled = NO;
@@ -4878,8 +4752,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
-  self.notesShortcutButton.enabled = YES;
-  self.historyShortcutButton.enabled = YES;
+  self.historySidebarButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
   self.sendButton.enabled = !self.isSending && chatActive && prompt.length > 0;
   self.historyPanelController.enabled = YES;

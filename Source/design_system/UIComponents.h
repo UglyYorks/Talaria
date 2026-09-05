@@ -65,8 +65,7 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 
 typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {
   TLSidebarShortcutKindWebsite = 0,
-  TLSidebarShortcutKindNotes,
-  TLSidebarShortcutKindHistory,
+  TLSidebarShortcutKindHistory = 2,
 };
 
 @interface TLSidebarShortcutButton : NSControl

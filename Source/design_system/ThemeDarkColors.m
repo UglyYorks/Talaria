@@ -31,7 +31,6 @@ void TLApplyDarkThemeColors(TLThemePalette *palette) {
   palette.sidebarUrgentNotificationPulseSurface = TLColorWithAlpha(palette.red500, 0.42);
   palette.sidebarUrgentNotificationBadgeSurface = palette.red500;
   palette.sidebarUrgentNotificationBadgeText = palette.white;
-  palette.sidebarNotesShortcutIcon = palette.labelText;
   palette.sidebarHistoryShortcutIcon = palette.labelText;
   palette.tabBorder = palette.controlBorder;
   palette.tabActiveBorder = palette.controlFocus;

@@ -2125,8 +2125,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 - (NSColor *)shortcutIconColor {
   switch (self.shortcutKind) {
-    case TLSidebarShortcutKindNotes:
-      return self.palette.sidebarNotesShortcutIcon;
     case TLSidebarShortcutKindHistory:
       return self.palette.sidebarHistoryShortcutIcon;
     case TLSidebarShortcutKindWebsite:

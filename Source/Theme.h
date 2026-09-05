@@ -69,7 +69,6 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic, strong) NSColor *sidebarUrgentNotificationPulseSurface;
 @property (nonatomic, strong) NSColor *sidebarUrgentNotificationBadgeSurface;
 @property (nonatomic, strong) NSColor *sidebarUrgentNotificationBadgeText;
-@property (nonatomic, strong) NSColor *sidebarNotesShortcutIcon;
 @property (nonatomic, strong) NSColor *sidebarHistoryShortcutIcon;
 @property (nonatomic, strong) NSColor *tabBorder;
 @property (nonatomic, strong) NSColor *tabActiveBorder;
