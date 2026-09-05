@@ -30,6 +30,7 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 @end
 
 @interface TLSlashCommandItemView : NSControl
+@property (nonatomic) BOOL selectionManagedExternally;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSString *command;
 @property (nonatomic, copy) NSString *commandDescription;

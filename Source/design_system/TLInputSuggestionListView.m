@@ -9,6 +9,7 @@
 
 @interface TLInputSuggestionListView () <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSTableView *table;
+@property (nonatomic, strong) NSTrackingArea *pointerTrackingArea;
 @end
 
 @implementation TLInputSuggestionListView
@@ -39,6 +40,23 @@
     self.palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
   }
   return self;
+}
+
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  if (self.pointerTrackingArea) [self removeTrackingArea:self.pointerTrackingArea];
+  self.pointerTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+    options:NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+    owner:self userInfo:nil];
+  [self addTrackingArea:self.pointerTrackingArea];
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+  // Only actual pointer movement takes selection from the keyboard. Enter/exit
+  // events caused by scrolling or recycled cells must not change selection.
+  NSPoint point = [self.table convertPoint:event.locationInWindow fromView:nil];
+  NSInteger row = [self.table rowAtPoint:point];
+  if (row >= 0 && [self isSuggestionEnabledAtIndex:(NSUInteger)row]) self.selectedIndex = row;
 }
 
 - (CGFloat)contentHeight {
@@ -89,17 +107,15 @@
 }
 
 - (void)setSelectedIndex:(NSInteger)index {
-  NSInteger previous = _selectedIndex;
   _selectedIndex = index >= 0 && [self isSuggestionEnabledAtIndex:(NSUInteger)index] ? index : -1;
-  if (previous >= 0 && previous < (NSInteger)self.suggestions.count) {
-    TLSlashCommandItemView *old = [self.table viewAtColumn:0 row:previous makeIfNecessary:NO];
-    old.selected = NO;
-  }
-  if (_selectedIndex >= 0) {
-    [self.table scrollRowToVisible:_selectedIndex];
-    TLSlashCommandItemView *view = [self.table viewAtColumn:0 row:_selectedIndex makeIfNecessary:NO];
-    view.selected = YES;
-  }
+  if (_selectedIndex >= 0) [self.table scrollRowToVisible:_selectedIndex];
+  [self.table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger rowIndex) {
+    NSView *cell = [self.table viewAtColumn:0 row:rowIndex makeIfNecessary:NO];
+    if ([cell isKindOfClass:TLSlashCommandItemView.class]) {
+      ((TLSlashCommandItemView *)cell).selected = rowIndex == self.selectedIndex;
+    }
+  }];
+  if (self.selectionHandler) self.selectionHandler(_selectedIndex);
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.suggestions.count; }
@@ -137,6 +153,7 @@
     // NSTableView owns the root cell frame; only its children use Auto Layout.
     view.translatesAutoresizingMaskIntoConstraints = YES;
   }
+  view.selectionManagedExternally = YES;
   view.palette = self.palette;
   view.command = item[@"command"] ?: @"";
   view.commandDescription = item[@"description"] ?: @"";

@@ -2176,6 +2176,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   self.slashCommandScrollView = [[TLInputSuggestionListView alloc] init];
   __weak typeof(self) weakSelf = self;
+  self.slashCommandScrollView.selectionHandler = ^(NSInteger index) { weakSelf.selectedSlashCommandIndex = index; };
   self.slashCommandScrollView.activationHandler = ^(NSUInteger index) { [weakSelf performInputSuggestionAtIndex:index]; };
   [self.slashCommandListView addSubview:self.slashCommandScrollView];
   [NSLayoutConstraint activateConstraints:@[
@@ -2207,7 +2208,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     availableInputWidth = self.palette.messageInputMaxWidth;
   }
 
-  return availableInputWidth;
+  return availableInputWidth * 0.9;
 }
 
 - (void)showSlashCommandListWithCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {

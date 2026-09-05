@@ -899,6 +899,25 @@ static void TestSuggestionTypingAndVirtualization(void) {
     TLSlashCommandItemView *last = [table viewAtColumn:0 row:commands.count - 1 makeIfNecessary:NO];
     Check(last.selected && [last.command isEqualToString:@"/model"], @"reused row reflects selection and current command");
   }
+  list.selectedIndex = 0;
+  [window.contentView layoutSubtreeIfNeeded];
+  TLSlashCommandItemView *pointerRow = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
+  NSPoint pointerPoint = [table convertPoint:NSMakePoint(NSMidX(table.bounds), NSMidY([table rectOfRow:1])) toView:nil];
+  NSEvent *move = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:pointerPoint modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
+  [list mouseMoved:move];
+  Check(list.selectedIndex == 1 && [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == 1, @"mouse selection updates the keyboard navigation index");
+  [controller textView:input.textView doCommandBySelector:@selector(moveDown:)];
+  [pointerRow mouseEntered:move];
+  Check(list.selectedIndex == 2 && !pointerRow.selected, @"stationary hover cannot override the latest keyboard selection");
+  Check(CGColorEqualToColor(pointerRow.layer.backgroundColor, TLCGColor(list.palette.slashCommandItemSurface)), @"hovered row does not retain a second highlight");
+  [list mouseMoved:move];
+  Check(list.selectedIndex == 1 && pointerRow.selected, @"actual mouse movement takes selection back from keyboard");
+  __block NSUInteger selectedRows = 0;
+  [table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger index) {
+    TLSlashCommandItemView *cell = [table viewAtColumn:0 row:index makeIfNecessary:NO];
+    if (cell.selected) selectedRows++;
+  }];
+  Check(selectedRows == 1, @"only one materialized suggestion is selected");
   NSUInteger previous = controller.refreshCount;
   input.textView.string = @"/co"; [controller textDidChange:nil];
   input.textView.string = @"/mod"; [controller textDidChange:nil];

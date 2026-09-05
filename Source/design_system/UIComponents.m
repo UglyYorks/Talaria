@@ -737,7 +737,7 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
 }
 
 - (void)applyCurrentState {
-  BOOL highlighted = self.enabled && (self.isHovered || self.isSelected);
+  BOOL highlighted = self.enabled && (self.isSelected || (!self.selectionManagedExternally && self.isHovered));
   self.layer.backgroundColor = TLCGColor(highlighted
     ? self.palette.slashCommandItemHighlightedSurface
     : self.palette.slashCommandItemSurface);
