@@ -1,7 +1,6 @@
 #import "TLMessageInput.h"
 #import <math.h>
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
-#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 @interface TLComposerTextView : NSTextView
 @property (nonatomic) BOOL selectsAllOnFocus;
@@ -114,6 +113,7 @@
 @property (nonatomic, strong) QLThumbnailGenerationRequest *thumbnailRequest;
 @property (nonatomic, strong) NSURL *previewURL;
 @property (nonatomic) BOOL previewSecurityScope;
+@property (nonatomic) BOOL hasContentPreview;
 @end
 @implementation TLAttachmentChipView
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -168,8 +168,8 @@
   self.closeButton.palette = palette;
   self.closeButton.contentTintColor = palette.controlText;
   self.closeButton.layer.borderWidth = palette.space0;
-  self.closeButton.idleSurfaceColor = palette.controlSurface;
-  self.closeButton.font = [NSFont systemFontOfSize:palette.space5];
+  self.closeButton.idleSurfaceColor = palette.sidebarSurface;
+  self.closeButton.font = [NSFont systemFontOfSize:palette.space2 * 2];
   ((TLAttachmentCloseButtonCell *)self.closeButton.cell).strokeWidth = palette.borderWidth;
   self.closeButton.needsDisplay = YES;
   [self invalidateIntrinsicContentSize];
@@ -183,8 +183,8 @@
   self.layer.cornerRadius = height / 2;
   self.closeButton.frame = NSMakeRect(NSWidth(self.bounds) - inset - diameter, inset, diameter, diameter);
   self.closeButton.layer.cornerRadius = diameter / 2;
-  BOOL hasPreview = self.image && !self.image.template;
-  CGFloat imageHeight = hasPreview ? self.image.size.height : self.palette.space11;
+  BOOL hasPreview = self.hasContentPreview;
+  CGFloat imageHeight = self.image && !self.image.template ? self.image.size.height : self.palette.space11;
   // Fit the clipping view to the thumbnail itself so landscape PDFs and images
   // also get rounded corners, without letterboxed space above or below them.
   self.imageView.frame = NSMakeRect(self.imageLeadingInset, (height - imageHeight) / 2,
@@ -196,16 +196,14 @@
     MAX(0, NSMinX(self.closeButton.frame) - self.palette.space4 - labelX), labelHeight)];
 }
 - (void)loadPreviewForURL:(NSURL *)URL {
-  UTType *type = nil;
-  [URL getResourceValue:&type forKey:NSURLContentTypeKey error:nil];
-  type = type ?: [UTType typeWithFilenameExtension:URL.pathExtension];
-  if (![type conformsToType:UTTypeImage] && ![type conformsToType:UTTypePDF]) return;
+  // Let Quick Look choose the provider for every file type, including videos,
+  // documents and formats supported by installed thumbnail extensions.
   self.previewURL = URL;
   self.previewSecurityScope = [URL startAccessingSecurityScopedResource];
   CGFloat size = self.palette.space11 - self.palette.borderWidth * 2;
   CGFloat scale = self.window.backingScaleFactor ?: NSScreen.mainScreen.backingScaleFactor ?: 1.0;
   QLThumbnailGenerationRequest *request = [[QLThumbnailGenerationRequest alloc] initWithFileAtURL:URL
-    size:CGSizeMake(size, size) scale:scale representationTypes:QLThumbnailGenerationRequestRepresentationTypeThumbnail];
+    size:CGSizeMake(size, size) scale:scale representationTypes:QLThumbnailGenerationRequestRepresentationTypeAll];
   self.thumbnailRequest = request;
   __weak typeof(self) weakSelf = self;
   [QLThumbnailGenerator.sharedGenerator generateBestRepresentationForRequest:request
@@ -218,13 +216,15 @@
           [button.previewURL stopAccessingSecurityScopedResource];
           button.previewSecurityScope = NO;
         }
-        // Keep the file icon if macOS cannot generate a thumbnail.
+        // Quick Look supplies a system file icon when no thumbnail is available;
+        // keep the existing generic icon if the request itself fails.
         if (!thumbnail) return;
         NSImage *image = [thumbnail.NSImage copy];
         CGFloat longestSide = MAX(image.size.width, image.size.height);
         if (longestSide <= 0) return;
         image.size = NSMakeSize(image.size.width * size / longestSide, image.size.height * size / longestSide);
         image.template = NO;
+        button.hasContentPreview = thumbnail.type != QLThumbnailRepresentationTypeIcon;
         button.image = image;
         [button invalidateIntrinsicContentSize];
         button.needsDisplay = YES;

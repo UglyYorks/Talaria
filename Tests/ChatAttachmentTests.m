@@ -226,6 +226,16 @@ static void TestSystemAttachmentThumbnails(void) {
   [NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:nil error:nil];
   NSURL *imageURL = [base URLByAppendingPathComponent:@"Image.png"];
   NSURL *pdfURL = [base URLByAppendingPathComponent:@"Document.pdf"];
+  NSURL *videoURL = [base URLByAppendingPathComponent:@"Video.mov"];
+  NSURL *textURL = [base URLByAppendingPathComponent:@"Notes.txt"];
+  NSURL *unknownURL = [base URLByAppendingPathComponent:@"Unknown.talariafixture"];
+  // Synthetic one-second H.264 fixture, generated with:
+  // ffmpeg -f lavfi -i testsrc2=size=64x48:rate=5 -t 1 -c:v libx264 -pix_fmt yuv420p -movflags +faststart attachment-preview.mov
+  NSURL *videoFixture = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath
+    stringByAppendingPathComponent:@"Tests/fixtures/attachment-preview.mov"]];
+  Check([NSFileManager.defaultManager copyItemAtURL:videoFixture toURL:videoURL error:nil], @"creates video preview fixture");
+  Check([@"Quick Look document preview" writeToURL:textURL atomically:YES encoding:NSUTF8StringEncoding error:nil], @"creates text preview fixture");
+  Check([[NSData dataWithBytes:"\0\1\2\3" length:4] writeToURL:unknownURL atomically:YES], @"creates unsupported file fixture");
   NSURL *asset = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"assets/Talaria-icon.png"]];
   Check([NSFileManager.defaultManager copyItemAtURL:asset toURL:imageURL error:nil], @"creates image preview fixture");
   NSView *page = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 96, 128)];
@@ -240,7 +250,7 @@ static void TestSystemAttachmentThumbnails(void) {
     [input.leadingAnchor constraintEqualToAnchor:root.leadingAnchor], [input.topAnchor constraintEqualToAnchor:root.topAnchor]]];
   input.palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
   input.attachmentsEnabled = YES;
-  input.attachmentURLs = @[imageURL, pdfURL];
+  input.attachmentURLs = @[imageURL, pdfURL, videoURL, textURL, unknownURL];
   NSStackView *stack = [input valueForKey:@"attachmentStack"];
   NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
   while (deadline.timeIntervalSinceNow > 0) {
@@ -249,9 +259,14 @@ static void TestSystemAttachmentThumbnails(void) {
     if (!pending) break;
     [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
   }
+  NSUInteger index = 0;
   for (NSView *button in stack.arrangedSubviews) {
     NSImage *image = [button valueForKey:@"image"];
-    Check(image && !image.template, @"Quick Look supplies content thumbnails for images and PDFs");
+    Check(image != nil, @"every file keeps a preview or fallback icon");
+    if (index < 4) Check([[button valueForKey:@"hasContentPreview"] boolValue],
+      [NSString stringWithFormat:@"Quick Look supplies a content thumbnail for %@", input.attachmentURLs[index].lastPathComponent]);
+    else Check(![[button valueForKey:@"hasContentPreview"] boolValue], @"unsupported files keep a system icon without thumbnail clipping");
+    index++;
     Check([button valueForKey:@"thumbnailRequest"] == nil, @"completed thumbnail requests are released");
   }
   [root layoutSubtreeIfNeeded];
