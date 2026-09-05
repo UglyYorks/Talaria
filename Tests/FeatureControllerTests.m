@@ -882,6 +882,14 @@ static void TestSuggestionTypingAndVirtualization(void) {
   Check(controller.refreshCount == 1 && !pane.hidden, @"suggestions appear after the input event");
   TLInputSuggestionListView *list = [controller valueForKey:@"slashCommandScrollView"];
   NSTableView *table = [list valueForKey:@"table"];
+  TLInputSuggestionListView *widthProbe = [[TLInputSuggestionListView alloc] init];
+  widthProbe.suggestions = @[@{@"command": @"Open river.ai"}, @{@"command": @"Send message"}];
+  CGFloat compactWidth = [widthProbe preferredWidthWithMaximum:700];
+  Check(compactWidth > 0 && compactWidth < 300, @"short suggestions hug their contents");
+  widthProbe.suggestions = @[@{@"command": @"Open river.ai", @"description": @"A description that needs additional room"}];
+  Check([widthProbe preferredWidthWithMaximum:700] > compactWidth, @"descriptions contribute to preferred width");
+  Check([widthProbe preferredWidthWithMaximum:100] == 100, @"content width stays within the available maximum");
+
   for (NSNumber *width in @[@200, @500]) {
     input.frame = NSMakeRect(0, 0, width.doubleValue, 60);
     [controller textDidChange:nil];

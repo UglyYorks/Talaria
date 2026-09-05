@@ -2209,7 +2209,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     availableInputWidth = self.palette.messageInputMaxWidth;
   }
 
-  return availableInputWidth * 0.9;
+  CGFloat maximum = availableInputWidth * 0.9;
+  CGFloat padding = self.palette.space3 * 2;
+  return MIN(maximum, padding + [self.slashCommandScrollView preferredWidthWithMaximum:MAX(0, maximum - padding)]);
 }
 
 - (void)showSlashCommandListWithCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {
@@ -2221,12 +2223,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.slashCommandScrollView.suggestions = commands;
   if (changed) self.selectedSlashCommandIndex = -1;
   [self applySlashCommandListPalette];
-  self.slashCommandListWidthConstraint.constant = [self slashCommandListWidthForCommands:commands];
   CGFloat availableHeight = MAX(rowHeight + padding * 2, NSHeight(self.rootView.bounds) * 0.4);
   CGFloat contentHeight = self.slashCommandScrollView.contentHeight;
   CGFloat heightLimit = MIN(availableHeight, (rowHeight + self.palette.space2) * 8 + padding * 2);
   self.slashCommandListHeightConstraint.constant = MIN(contentHeight + padding * 2, heightLimit);
   self.slashCommandScrollView.scrollingEnabled = contentHeight + padding * 2 > heightLimit;
+  self.slashCommandListWidthConstraint.constant = [self slashCommandListWidthForCommands:commands];
   self.slashCommandListView.hidden = NO;
   [self updateMessageScrollInsets];
 }

@@ -59,6 +59,26 @@
   if (row >= 0 && [self isSuggestionEnabledAtIndex:(NSUInteger)row]) self.selectedIndex = row;
 }
 
+- (CGFloat)preferredWidthWithMaximum:(CGFloat)maximum {
+  CGFloat widest = 0;
+  CGFloat scroller = self.scrollingEnabled ? [NSScroller scrollerWidthForControlSize:NSControlSizeRegular scrollerStyle:self.scrollerStyle] : 0;
+  for (NSDictionary *item in self.suggestions) {
+    BOOL status = [item[@"kind"] isEqualToString:@"status"];
+    NSFont *font = status ? self.palette.bodyFont : self.palette.suggestionCommandFont;
+    CGFloat width = [item[@"command"] ?: @"" sizeWithAttributes:@{NSFontAttributeName: font}].width;
+    width += self.palette.space8 * 2 + scroller;
+    if (!status) {
+      width += self.palette.sidebarActionIconSize + self.palette.space4;
+      NSString *description = item[@"description"] ?: @"";
+      if (description.length) width += self.palette.space6 + [description sizeWithAttributes:@{NSFontAttributeName: self.palette.bodyFont}].width;
+    }
+    widest = MAX(widest, ceil(width));
+    // Long catalogues need no further measurement once they fill the limit.
+    if (widest >= maximum) return maximum;
+  }
+  return MIN(maximum, widest);
+}
+
 - (CGFloat)contentHeight {
   // NSTableView includes intercell spacing in every row, including the last one.
   return ceil(self.suggestions.count * (self.table.rowHeight + self.table.intercellSpacing.height));

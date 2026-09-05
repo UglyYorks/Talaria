@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL scrollingEnabled;
 @property (nonatomic, copy, nullable) void (^selectionHandler)(NSInteger index);
 @property (nonatomic, copy, nullable) void (^activationHandler)(NSUInteger index);
+- (CGFloat)preferredWidthWithMaximum:(CGFloat)maximum;
 - (BOOL)isSuggestionEnabledAtIndex:(NSUInteger)index;
 @end
 
