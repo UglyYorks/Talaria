@@ -314,6 +314,7 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
   }
   TLWorkspaceTab *storedTab = [tab copy];
   TLWorkspaceTab *existing = [self workspaceTabWithKind:tab.kind tabID:tab.tabID];
+  if (existing) storedTab.presentationIdentity = existing.presentationIdentity;
   BOOL sameMetadata = existing && [existing.title isEqual:tab.title] &&
     [existing.toolTip isEqual:tab.toolTip] && existing.closeable == tab.closeable &&
     (existing.URL == tab.URL || [existing.URL isEqual:tab.URL]);
@@ -348,6 +349,8 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
     [self upsertWorkspaceTab:storedReplacementTab activate:activate];
     return;
   }
+  storedReplacementTab.presentationIdentity = previousTab.presentationIdentity ?:
+    [NSString stringWithFormat:@"%ld:%ld", (long)previousTab.kind, (long)previousTab.tabID];
 
   [self setState:^(TLMutableAppState *draft) {
     NSUInteger index = TLIndexOfWorkspaceTabInTabs(kind, tabID, draft.workspaceTabs);

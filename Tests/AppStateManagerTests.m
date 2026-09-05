@@ -181,6 +181,19 @@ static void TestReentrantNotificationOrdering(void) {
 
 int main(void) {
   @autoreleasepool {
+    TLAppStateManager *manager = [[TLAppStateManager alloc] init];
+    TLWorkspaceTab *draft = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:-1
+      title:@"New chat" toolTip:@"" URL:nil closeable:YES];
+    [manager upsertWorkspaceTab:draft activate:YES];
+    TLWorkspaceTab *saved = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:42
+      title:@"Conversation" toolTip:@"" URL:nil closeable:YES];
+    [manager replaceWorkspaceTabWithKind:TLWorkspaceTabKindChat tabID:-1 withTab:saved activate:YES];
+    NSString *identity = manager.snapshot.workspaceTabs.firstObject.presentationIdentity;
+    TLAssert([identity isEqual:@"0:-1"], @"persisting a draft retains its visual tab identity");
+    saved.title = @"Updated title";
+    [manager upsertWorkspaceTab:saved activate:NO];
+    TLAssert([manager.snapshot.workspaceTabs.firstObject.presentationIdentity isEqual:identity],
+      @"later metadata updates retain the draft's visual identity");
     TestActiveTabFallback();
     TestInactiveAndFinalTabClosure();
     TestReentrantNotificationOrdering();

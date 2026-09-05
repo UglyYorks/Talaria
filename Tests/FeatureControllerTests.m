@@ -40,6 +40,8 @@ static void TestUnifiedWorkspaceOutline(void) {
   [selection setSelectionFrame:selectedRect leadingFlareOutset:palette.tabFlareRadius
     animated:NO fromFrame:selectedRect duration:0];
   CAShapeLayer *layer = [outline valueForKey:@"outlineLayer"];
+  Check(fabs(layer.opacity - 1.0 / 3.0) < 0.0001,
+        @"workspace outline is one-third opacity without changing shared border colors");
   CGPathRef stroke = CGPathCreateCopyByStrokingPath(layer.path, NULL, layer.lineWidth,
     kCGLineCapButt, kCGLineJoinRound, 0);
   Check(!CGPathContainsPoint(stroke, NULL, CGPointMake(180, 220), false), @"joined border has no seam below selected tab");
@@ -67,6 +69,26 @@ static void TestUnifiedWorkspaceOutline(void) {
   content.topLeftCornerRadius = 0;
   [outline updateOutline];
   Check(CGPathContainsPoint(layer.path, NULL, CGPointMake(20.5, 219.5), false), @"outline respects connected first-tab corner geometry");
+  // Sidebar layout changes move content and the tab strip together. Rebuilding
+  // after both frames settle must leave no outline at their previous position.
+  selection.hidden = NO;
+  for (NSNumber *leading in @[@80, @140, @80, @20]) {
+    CGFloat x = leading.doubleValue;
+    content.frame = NSMakeRect(x, 20, 380 - x, 200);
+    selection.frame = NSMakeRect(x, 0, 400 - x, 280);
+    NSRect localTab = NSMakeRect(0, 220, 160, palette.tabHeight);
+    [selection setSelectionFrame:localTab leadingFlareOutset:0 animated:NO fromFrame:localTab duration:0];
+    [outline updateOutline];
+    stroke = CGPathCreateCopyByStrokingPath(layer.path, NULL, layer.lineWidth,
+      kCGLineCapButt, kCGLineJoinRound, 0);
+    Check(CGPathContainsPoint(stroke, NULL, CGPointMake(x, 100), false),
+          @"sidebar tick keeps outline on the current content edge");
+    Check(!CGPathContainsPoint(stroke, NULL, CGPointMake(x - 10, 100), false),
+          @"sidebar tick does not leave a stale content border");
+    Check(!CGPathContainsPoint(stroke, NULL, CGPointMake(x + 80, 220), false),
+          @"sidebar tick preserves the seamless selected-tab join");
+    CGPathRelease(stroke);
+  }
 }
 
 @interface TLButtonPointerWindow : NSWindow
@@ -102,6 +124,12 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
         [NSString stringWithFormat:@"click target remains larger than the visible background: target %@ bounds %@ surface %@",
           NSStringFromRect(clickTarget.frame), NSStringFromRect(button.bounds), NSStringFromRect(surface.frame)]);
   Check(clickTarget.image == icon && clickTarget.imageScaling == NSImageScaleNone, @"plus icon is not resized");
+  Check([[clickTarget.cell valueForKey:@"imageOffsetX"] doubleValue] == button.palette.compactButtonSurfaceOffsetX,
+        @"plus artwork follows the compact surface offset without moving the click target");
+  button.style = TLButtonStyleMinimal;
+  Check([[clickTarget.cell valueForKey:@"imageOffsetX"] doubleValue] == 0,
+        @"regular buttons retain centered artwork");
+  button.style = TLButtonStyleCompactMinimal;
 
   __block BOOL hovered = NO;
   button.hoverChanged = ^(BOOL value) { hovered = value; };
@@ -121,6 +149,14 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
   }
   Check([button hitTest:[button convertPoint:outerHitPoint toView:button.superview]] == clickTarget,
         @"invisible margin still receives clicks");
+  button.hoverSuppressed = YES;
+  Check(!hovered && surface.opacity == 0 && ![surface animationForKey:@"tab-decoration-fade"],
+        @"animation suppression clears hover immediately, including its fade");
+  Check(clickTarget.enabled, @"hover suppression keeps the plus button clickable");
+  [button updateTrackingAreas];
+  Check(!hovered && surface.opacity == 0, @"pointer events cannot restore suppressed hover");
+  button.hoverSuppressed = NO;
+  Check(hovered && surface.opacity == 1, @"hover resumes from the current pointer after animation");
 
   [button setFrameOrigin:NSMakePoint(100, 20)];
   Check(!hovered && surface.opacity == 0,
@@ -160,9 +196,60 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (void)renderWorkspaceTabs;
 - (void)updateWorkspaceMode;
 - (void)updateControlStates;
+- (void)startNewChatWithModel:(NSString *)model focus:(BOOL)focus;
 - (void)workspaceTabsController:(nullable TLWorkspaceTabsController *)controller
                        moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index;
 @end
+
+/// Keep service/rendering side effects out of this navigation/state regression.
+@interface TLSendingNavigationController : TalariaWindowController
+@end
+@implementation TLSendingNavigationController
+- (void)addChatToSessionIfNeeded:(NSInteger)chatID activate:(BOOL)activate {}
+- (void)showChatWorkspace {}
+- (void)resetMessageRowCache {}
+- (void)selectActiveChatInHistory {}
+- (void)renderMessages {}
+- (void)styleSidebarActionButtons {}
+- (void)updateAgentControlStates {}
+- (void)hideSlashCommandList {}
+- (BOOL)isChatWorkspaceActive { return YES; }
+@end
+
+static void TestNavigationWhileSendingPreservesTurn(void) {
+  TLSendingNavigationController *controller = [[TLSendingNavigationController alloc] initWithWindow:nil];
+  NSMutableArray *originalMessages = [NSMutableArray arrayWithObject:@"in-flight response"];
+  [controller setValue:originalMessages forKey:@"messages"];
+  [controller setValue:originalMessages forKey:@"sendingMessages"];
+  [controller setValue:@YES forKey:@"isSending"];
+  [controller setValue:@(-2) forKey:@"nextDraftChatID"];
+  [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
+  NSArray *headerKeys = @[@"createChatButton", @"sidebarToggleButton", @"agentWalletButton",
+                         @"taskStatusSidebarButton", @"notesShortcutButton", @"historyShortcutButton"];
+  for (NSString *key in headerKeys) {
+    TLButton *button = [[TLButton alloc] init];
+    button.enabled = NO;
+    [controller setValue:button forKey:key];
+  }
+  NSTextView *prompt = [[NSTextView alloc] init];
+  [controller setValue:prompt forKey:@"promptTextView"];
+  TLButton *send = [[TLButton alloc] init];
+  [controller setValue:send forKey:@"sendButton"];
+  [controller startNewChatWithModel:@"test-model" focus:NO];
+  Check([[controller valueForKeyPath:@"activeChat.chatID"] integerValue] == -2,
+        @"new tab can open while a response is running");
+  Check([controller valueForKey:@"messages"] != originalMessages && originalMessages.count == 1,
+        @"navigation replaces the display buffer without clearing the running turn");
+  Check([controller valueForKey:@"sendingMessages"] == originalMessages,
+        @"running turn keeps its own buffer");
+  for (NSString *key in headerKeys) {
+    Check([[controller valueForKey:key] isEnabled], @"header remains enabled while sending");
+  }
+  prompt.string = @"next draft";
+  [controller updateControlStates];
+  Check(prompt.editable && !send.enabled, @"draft editing stays available but concurrent sends remain blocked");
+  Check([[controller valueForKey:@"isSending"] boolValue], @"navigation does not cancel the turn");
+}
 
 /// Exercise the real state subscriptions and drag delegate without constructing app services or UI.
 @interface TLWorkspaceRenderRecorder : TalariaWindowController
@@ -420,6 +507,7 @@ int main(void) {
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();
+    TestNavigationWhileSendingPreservesTurn();
     TestCompactButtonHitAreaAndMovingHover();
     TestUnifiedWorkspaceOutline();
     NSLog(@"FeatureControllerTests passed");

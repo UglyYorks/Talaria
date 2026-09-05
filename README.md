@@ -1,4 +1,8 @@
 # Talaria
+
+> [!WARNING]
+> Talaria is under active development and is **not in a working state yet**. It is not ready for regular use.
+
 A new kind of browser. Explore the universe with your agent.
 
 

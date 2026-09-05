@@ -3,7 +3,7 @@
 #import <QuartzCore/QuartzCore.h>
 
 static NSString *TLTabIdentity(TLWorkspaceTab *tab) {
-  return [NSString stringWithFormat:@"%ld:%ld", (long)tab.kind, (long)tab.tabID];
+  return tab.presentationIdentity ?: [NSString stringWithFormat:@"%ld:%ld", (long)tab.kind, (long)tab.tabID];
 }
 
 static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) {
@@ -20,8 +20,12 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 @property (nonatomic) NSUInteger arrangedIndex;
 @property (nonatomic) NSRect originalTabFrame;
 @property (nonatomic, strong) TLChromeTabView *incomingSelectedTab;
+@property (nonatomic, strong) TLChromeTabView *selectedSuccessor;
 @property (nonatomic) CGFloat initialMaskWidth;
 @property (nonatomic) CGFloat initialOpacity;
+@property (nonatomic) BOOL clipsToSelection;
+@property (nonatomic) BOOL tracksTrailingButton;
+@property (nonatomic) CGFloat buttonSpacing;
 @end
 
 @implementation TLTabRemovalTransition
@@ -34,6 +38,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 @property (nonatomic, strong) NSMutableArray<NSLayoutConstraint *> *tabWidthConstraints;
 @property (nonatomic, strong) NSMutableArray<TLChromeTabView *> *removingTabViews;
 @property (nonatomic, strong) NSMutableArray<TLTabRemovalTransition *> *removalTransitions;
+@property (nonatomic) BOOL settlingDrop;
 @property (nonatomic, strong) TLChromeTabSelectionView *selectionView;
 @property (nonatomic) NSRect pendingSelectionStartFrame;
 @property (nonatomic) BOOL hasPendingSelectionAnimation;
@@ -46,7 +51,10 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 @property (nonatomic) NSUInteger draggedStartIndex;
 @property (nonatomic) NSUInteger draggedCurrentIndex;
 @property (nonatomic) BOOL newTabButtonHovered;
+@property (nonatomic) NSRect previousNewTabButtonFrame;
 @property (nonatomic) CGFloat preservedTabWidth;
+@property (nonatomic) BOOL restoringTabWidths;
+@property (nonatomic) BOOL completingTabLifecycle;
 @property (nonatomic) CGFloat latestAvailableWidth;
 @property (nonatomic) BOOL hasAvailableWidth;
 @property (nonatomic, strong) NSTrackingArea *widthPreservationTrackingArea;
@@ -121,7 +129,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   for (TLChromeTabView *view in self.tabViews) {
     [visibleAppearances setObject:@[@(view.lifecycleVisibleWidth), @(view.lifecycleContentOpacity)] forKey:view];
   }
+  NSRect previousButtonFrame = [self.delegate workspaceTabsControllerNewTabButtonBoundsInWindow:self];
   if (structureChanged) [self.transitionCoordinator finishAllTransitions];
+  self.previousNewTabButtonFrame = previousButtonFrame;
   [self.tabStack layoutSubtreeIfNeeded];
   NSArray<TLChromeTabView *> *previousTabViews = [self.tabViews copy];
   NSArray<NSLayoutConstraint *> *previousWidthConstraints = [self.tabWidthConstraints copy];
@@ -182,6 +192,13 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     }
     TLTabRemovalTransition *transition = [[TLTabRemovalTransition alloc] init];
     transition.tabView = removedTabView;
+    if (previousIndex + 1 < previousTabViews.count &&
+        previousTabViews[previousIndex + 1] == previousActiveView &&
+        [self.tabViews containsObject:previousActiveView]) {
+      transition.selectedSuccessor = previousActiveView;
+    }
+    transition.clipsToSelection = removedTabView == previousActiveView;
+    transition.tracksTrailingButton = transition.clipsToSelection && removedTabView == previousTabViews.lastObject;
     transition.placeholderView = [[NSView alloc] init];
     transition.placeholderView.translatesAutoresizingMaskIntoConstraints = NO;
     transition.placeholderView.wantsLayer = YES;
@@ -229,10 +246,20 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   }
   // Fit additions before any lifecycle layout can propagate their default
   // widths up to the window's fitting size.
+  TLChromeTabView *nextActiveView = [self activeTabView];
+  if (hasRemoval && previousActiveView && nextActiveView != previousActiveView && nextActiveView) {
+    // Reserve the old visual frame before the lifecycle's initial layout tick.
+    // Otherwise that tick paints the fallback tab before its slide is scheduled.
+    self.pendingSelectionStartFrame = previousSelectionFrame;
+    self.pendingSelectionStartIndex = previousActiveIndex;
+    self.pendingSelectionTargetIndex = [self.tabViews indexOfObject:nextActiveView];
+    self.hasPendingSelectionAnimation = YES;
+  }
   if (hasInsertion && self.hasAvailableWidth) [self applyTabWidthsForAvailableWidth:self.latestAvailableWidth];
   [self animateLifecycleWithRemovedTransitions:newRemovalTransitions
                              insertedTabViews:insertedTabViews
-                                previousFrames:previousFrames];
+                                previousFrames:previousFrames
+                           previousActiveIndex:previousActiveIndex];
   [self bringRemovingTabViewsToFront];
   TLChromeTabView *activeTabView = [self activeTabView];
   NSUInteger activeTabIndex = [self.tabViews indexOfObject:activeTabView];
@@ -240,7 +267,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     ? activeTabView.representedObject
     : nil;
   BOOL activeTabChanged = previousActiveTab && activeTab &&
-    (previousActiveTab.kind != activeTab.kind || previousActiveTab.tabID != activeTab.tabID);
+    ![TLTabIdentity(previousActiveTab) isEqual:TLTabIdentity(activeTab)];
   BOOL activeTabClosed = previousActiveTab && !activeTab;
   BOOL pendingCloseFoundFallback = !previousActiveTab && activeTab &&
     self.hasPendingSelectionAnimation && self.pendingSelectionTargetIndex == NSNotFound;
@@ -258,11 +285,16 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     }
     self.pendingSelectionTargetIndex = activeTabIndex;
     self.hasPendingSelectionAnimation = YES;
-    [self schedulePendingSelectionAnimation];
+    if (hasRemoval) [self performPendingSelectionAnimation];
+    else [self schedulePendingSelectionAnimation];
   } else if (!self.hasPendingSelectionAnimation) {
     [self updateSelectionIndicatorAnimated:NO];
   }
-  [self updateSeparatorVisibilityWithoutAnimation];
+  if (structureChanged) {
+    [self updateSeparatorVisibilityWithoutAnimation];
+  } else {
+    [self updateSeparatorVisibility];
+  }
   [self updateEdgeAttachmentState];
 }
 
@@ -271,9 +303,14 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     ? self.palette.tabLifecycleTransitionDuration : 0.0;
 }
 
+- (void)refreshAnimationActivity {
+  if (self.animationActivityChanged) self.animationActivityChanged(self.transitionCoordinator.hasTransitions);
+}
+
 - (void)animateLifecycleWithRemovedTransitions:(NSArray<TLTabRemovalTransition *> *)transitions
                              insertedTabViews:(NSArray<TLChromeTabView *> *)insertedTabViews
-                                previousFrames:(NSMapTable<TLChromeTabView *, NSValue *> *)previousFrames {
+                                previousFrames:(NSMapTable<TLChromeTabView *, NSValue *> *)previousFrames
+                           previousActiveIndex:(NSUInteger)previousActiveIndex {
   if (transitions.count == 0 && insertedTabViews.count == 0) return;
   for (TLTabRemovalTransition *transition in transitions) {
     TLChromeTabView *view = transition.tabView;
@@ -283,18 +320,34 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     [self.removingTabViews addObject:view];
     [self.tabStack addSubview:view positioned:NSWindowAbove relativeTo:nil];
   }
-  [self.tabStack layoutSubtreeIfNeeded];
+  NSView *layoutRoot = self.tabStack.superview ?: self.tabStack;
+  [layoutRoot layoutSubtreeIfNeeded];
+  CGFloat buttonSpacing = self.createTabButtonSpacingConstraint.constant;
+  for (TLTabRemovalTransition *transition in transitions) transition.buttonSpacing = buttonSpacing;
+  NSRect targetButtonFrame = [self.delegate workspaceTabsControllerNewTabButtonBoundsInWindow:self];
+  CGFloat buttonTranslation = insertedTabViews.count > 0 && !NSIsEmptyRect(self.previousNewTabButtonFrame)
+    ? NSMinX(self.previousNewTabButtonFrame) - NSMinX(targetButtonFrame) : 0;
   NSRect startSelection = self.selectionView.selectionFrame;
+  TLChromeTabView *insertedActive = [self activeTabView];
+  if ([insertedTabViews containsObject:insertedActive]) {
+    startSelection = [self selectionStartFrame:startSelection fromIndex:previousActiveIndex
+                                      toIndex:[self.tabViews indexOfObject:insertedActive]];
+  }
   self.insertingTabViews = insertedTabViews;
   for (TLChromeTabView *view in insertedTabViews) [view prepareForInsertionAnimation];
   __weak typeof(self) weakSelf = self;
   // One batch can remove and insert together (for example when persisting a
   // draft). Both halves share the track, so neither cancels the other's cleanup.
+  BOOL openingOnly = insertedTabViews.count > 0 && transitions.count == 0;
   [self.transitionCoordinator startTransitionForKey:@"lifecycle" duration:[self lifecycleDuration]
+    curve:openingOnly ? TLTransitionCurveEaseOut : TLTransitionCurveEaseInOut
     update:^(CGFloat progress) {
       TLWorkspaceTabsController *owner = weakSelf;
       if (!owner) return;
       CGFloat collapsedWidth = MAX(owner.palette.space0, -owner.tabStack.spacing);
+      [owner refreshAnimationActivity];
+      // Move the actual hit target and artwork together, not just its layer.
+      owner.createTabButtonSpacingConstraint.constant = buttonSpacing - buttonTranslation * (1.0 - progress);
       for (TLTabRemovalTransition *transition in transitions) {
         CGFloat startWidth = NSWidth(transition.originalTabFrame);
         transition.widthConstraint.constant = startWidth + (collapsedWidth - startWidth) * progress;
@@ -309,12 +362,20 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
         // The mask and neighboring layout use the same model frame on this tick.
         width = MIN(width, NSWidth(transition.placeholderView.frame));
         CGFloat fadeRatio = MAX(0.001, owner.palette.tabLifecycleContentFadeDurationRatio);
-        CGFloat opacity = transition.initialOpacity * MIN(1.0, (1.0 - progress) / fadeRatio);
+        // Fade during the opening part of closure, then finish shrinking the slot.
+        CGFloat opacity = transition.initialOpacity * (1.0 - MIN(1.0, progress / fadeRatio));
         [transition.tabView setLifecycleVisibleWidth:width contentOpacity:opacity];
       }
       CGFloat ratio = owner.palette.tabLifecycleCollapsedWidthRatio;
       CGFloat widthRatio = ratio + (1.0 - ratio) * progress;
-      CGFloat opacity = MIN(1.0, progress / MAX(0.001, owner.palette.tabLifecycleContentFadeDurationRatio));
+      // Preserve the delayed fade's timing while travel uses selection's ease-out.
+      CGFloat fadeProgress = progress;
+      if (openingOnly) {
+        CGFloat timeProgress = 1.0 - cbrt(MAX(0.0, 1.0 - progress));
+        fadeProgress = timeProgress * timeProgress * (3.0 - 2.0 * timeProgress);
+      }
+      CGFloat opacity = MIN(1.0, MAX(0.0, (fadeProgress - owner.palette.tabInsertionFadeStartProgress) /
+        MAX(0.001, owner.palette.tabInsertionFadeEndProgress - owner.palette.tabInsertionFadeStartProgress)));
       for (TLChromeTabView *view in insertedTabViews) {
         [view setLifecycleVisibleWidth:NSWidth(view.bounds) * widthRatio contentOpacity:opacity];
       }
@@ -328,19 +389,34 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
       if ([insertedTabViews containsObject:active]) {
         NSRect target = active.frame;
         target.size.width *= widthRatio;
-        CGFloat selectionProgress = MIN(1.0, progress * owner.palette.tabLifecycleTransitionDuration /
-                                        MAX(0.001, owner.palette.tabSelectionSlideDuration));
-        NSRect frame = TLInterpolateTabFrame(startSelection, target, selectionProgress);
+        // Keep travel synchronized with the + button on the lifecycle curve.
+        NSRect frame = TLInterpolateTabFrame(startSelection, target, progress);
         owner.selectionView.frame = owner.tabStack.bounds;
         owner.selectionView.hidden = NO;
         [owner.selectionView setSelectionFrame:frame leadingFlareOutset:active.leadingFlareOutset
                                       animated:NO fromFrame:frame duration:0.0];
+        if (active == owner.tabViews.lastObject) {
+          // Follow the growing slab's trailing edge, not only its horizontal travel.
+          CGFloat edgeSpacing = buttonSpacing + NSMaxX(active.frame) - NSMaxX(frame);
+          // If the selection started earlier in the strip, don't pull + over
+          // existing tabs; let the background catch up to the previous end first.
+          owner.createTabButtonSpacingConstraint.constant = MIN(edgeSpacing, buttonSpacing - buttonTranslation);
+          [layoutRoot layoutSubtreeIfNeeded];
+        }
       } else {
         [owner updateSelectionForLifecycle];
       }
+      [owner updateSelectionEdgeGeometry];
+      if ([insertedTabViews containsObject:active]) {
+        [active clipLifecycleContentToSelectionView:owner.selectionView];
+      }
+      [owner updateClosingContentBackgroundClips];
+      [owner updateTrailingButtonForRemoval];
     } completion:^(BOOL finished) {
       TLWorkspaceTabsController *owner = weakSelf;
       if (!owner) return;
+      owner.completingTabLifecycle = YES;
+      owner.createTabButtonSpacingConstraint.constant = buttonSpacing;
       for (TLTabRemovalTransition *transition in transitions) {
         [owner.tabStack removeArrangedSubview:transition.placeholderView];
         [transition.placeholderView removeFromSuperview];
@@ -354,10 +430,17 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
       [(owner.tabStack.superview ?: owner.tabStack) layoutSubtreeIfNeeded];
       [owner updateSelectionForLifecycle];
       [owner updateSeparatorVisibilityWithoutAnimation];
+      owner.completingTabLifecycle = NO;
+      if (finished && owner.preservedTabWidth > 0 && ![owner isPointerInsidePreservedTabArea]) {
+        [owner restoreNormalTabWidthsAnimated];
+      }
+      [owner refreshAnimationActivity];
     }];
 }
 
 - (void)updateSelectionForLifecycle {
+  if (self.settlingDrop) return;
+  if (self.hasPendingSelectionAnimation) return;
   if ([self.transitionCoordinator hasTransitionForKey:@"selection"]) return;
   TLChromeTabView *activeTabView = [self activeTabView];
   if (!activeTabView || [self.insertingTabViews containsObject:activeTabView]) return;
@@ -369,6 +452,26 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   self.selectionView.hidden = NO;
   [self.selectionView setSelectionFrame:frame leadingFlareOutset:activeTabView.leadingFlareOutset
                               animated:NO fromFrame:frame duration:0.0];
+  [self updateSelectionEdgeGeometry];
+}
+
+- (void)updateClosingContentBackgroundClips {
+  for (TLTabRemovalTransition *transition in self.removalTransitions) {
+    if (transition.clipsToSelection) {
+      [transition.tabView clipLifecycleContentToSelectionView:self.selectionView];
+    }
+  }
+}
+
+- (void)updateTrailingButtonForRemoval {
+  if (self.selectionView.hidden || ![self activeTabView]) return;
+  for (TLTabRemovalTransition *transition in self.removalTransitions) {
+    if (!transition.tracksTrailingButton) continue;
+    self.createTabButtonSpacingConstraint.constant = transition.buttonSpacing +
+      NSMaxX(self.tabStack.bounds) - NSMaxX(self.selectionView.selectionFrame);
+    [(self.tabStack.superview ?: self.tabStack) layoutSubtreeIfNeeded];
+    break;
+  }
 }
 
 - (void)bringRemovingTabViewsToFront {
@@ -400,10 +503,11 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
                              tabs:(NSArray<TLWorkspaceTab *> *)tabs {
   BOOL active = [self.delegate workspaceTabsController:self isTabActive:tab];
   tabView.palette = self.palette;
-  tabView.title = [self.delegate workspaceTabsController:self displayTitleForTab:tab];
-  tabView.image = [self.delegate workspaceTabsController:self displayImageForTab:tab];
-  tabView.icon = [self.delegate workspaceTabsController:self displayIconForTab:tab];
-  tabView.systemIconName = [self.delegate workspaceTabsController:self displaySystemIconNameForTab:tab];
+  [tabView updateTitle:[self.delegate workspaceTabsController:self displayTitleForTab:tab]
+    image:[self.delegate workspaceTabsController:self displayImageForTab:tab]
+    icon:[self.delegate workspaceTabsController:self displayIconForTab:tab]
+    systemIconName:[self.delegate workspaceTabsController:self displaySystemIconNameForTab:tab]
+    animated:tabView.representedObject != nil];
   tabView.toolTip = [self.delegate workspaceTabsController:self displayToolTipForTab:tab];
   tabView.tag = tab.tabID;
   tabView.target = self.target;
@@ -581,15 +685,55 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 
 - (void)mouseExited:(NSEvent *)event {
   if (!self.widthPreservationTrackingArea || [self isPointerInsidePreservedTabArea]) return;
+  [self restoreNormalTabWidthsAnimated];
+}
+
+- (void)restoreNormalTabWidthsAnimated {
+  // Keep the closing slot alive for its entire animation. The lifecycle
+  // completion rechecks the pointer and releases the held widths afterward.
+  if (self.completingTabLifecycle || self.hasPendingSelectionAnimation ||
+      [self.transitionCoordinator hasTransitionForKey:@"lifecycle"] ||
+      [self.transitionCoordinator hasTransitionForKey:@"selection"]) return;
   [self clearPreservedTabWidth];
-  [self.transitionCoordinator finishAllTransitions];
-  [self updateTabWidthsForAvailableWidth:self.latestAvailableWidth];
+  NSArray<NSLayoutConstraint *> *constraints = self.tabWidthConstraints.copy;
+  NSArray<NSNumber *> *startWidths = [constraints valueForKey:@"constant"];
+  CGFloat startSpacing = self.tabStack.spacing;
+  if (![self applyTabWidthsForAvailableWidth:self.latestAvailableWidth]) return;
+  NSArray<NSNumber *> *targetWidths = [constraints valueForKey:@"constant"];
+  CGFloat targetSpacing = self.tabStack.spacing;
+  self.restoringTabWidths = YES;
+  __weak typeof(self) weakSelf = self;
+  [self.transitionCoordinator startTransitionForKey:@"width-restoration" duration:[self lifecycleDuration]
+    update:^(CGFloat progress) {
+      TLWorkspaceTabsController *owner = weakSelf;
+      if (!owner) return;
+      for (NSUInteger index = 0; index < constraints.count; index++) {
+        CGFloat start = startWidths[index].doubleValue;
+        constraints[index].constant = start + (targetWidths[index].doubleValue - start) * progress;
+      }
+      [owner refreshAnimationActivity];
+      owner.tabStack.spacing = startSpacing + (targetSpacing - startSpacing) * progress;
+      // Layout the parent so tabs, separators, and the + hit target move together.
+      [(owner.tabStack.superview ?: owner.tabStack) layoutSubtreeIfNeeded];
+      [owner updateSelectionIndicatorAnimated:NO];
+      [owner updateEdgeAttachmentState];
+    } completion:^(BOOL finished) {
+      weakSelf.restoringTabWidths = NO;
+      [weakSelf refreshAnimationActivity];
+    }];
 }
 
 - (BOOL)applyTabWidthsForAvailableWidth:(CGFloat)availableWidth {
+  if (self.restoringTabWidths) {
+    if (availableWidth == self.latestAvailableWidth) return NO;
+    [self.transitionCoordinator cancelTransitionForKey:@"width-restoration"];
+  }
   self.hasAvailableWidth = YES;
   self.latestAvailableWidth = availableWidth;
-  if (self.preservedTabWidth > 0 && ![self isPointerInsidePreservedTabArea]) [self clearPreservedTabWidth];
+  if (self.preservedTabWidth > 0 && ![self isPointerInsidePreservedTabArea]) {
+    [self restoreNormalTabWidthsAnimated];
+    return NO;
+  }
   if (self.tabWidthConstraints.count == 0) return NO;
   availableWidth = MAX(self.palette.space0, availableWidth);
 
@@ -638,20 +782,27 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     return;
   }
   [self.tabStack layoutSubtreeIfNeeded];
-  NSInteger distance = labs((NSInteger)self.pendingSelectionTargetIndex -
-                            (NSInteger)self.pendingSelectionStartIndex);
-  if (distance > 2 && self.pendingSelectionTargetIndex < self.tabViews.count) {
-    NSUInteger nearbyIndex = self.pendingSelectionStartIndex < self.pendingSelectionTargetIndex
-      ? self.pendingSelectionTargetIndex - 1
-      : self.pendingSelectionTargetIndex + 1;
-    if (nearbyIndex < self.tabViews.count) {
-      self.pendingSelectionStartFrame = self.tabViews[nearbyIndex].frame;
-    }
-  }
+  self.pendingSelectionStartFrame = [self selectionStartFrame:self.pendingSelectionStartFrame
+    fromIndex:self.pendingSelectionStartIndex toIndex:self.pendingSelectionTargetIndex];
   [self updateSelectionIndicatorAnimated:YES];
   self.hasPendingSelectionAnimation = NO;
   self.pendingSelectionStartIndex = NSNotFound;
   self.pendingSelectionTargetIndex = NSNotFound;
+  if (self.preservedTabWidth > 0 && ![self isPointerInsidePreservedTabArea]) {
+    [self restoreNormalTabWidthsAnimated];
+  }
+}
+
+- (NSRect)selectionStartFrame:(NSRect)fallback fromIndex:(NSUInteger)source toIndex:(NSUInteger)destination {
+  if (source == NSNotFound || destination >= self.tabViews.count ||
+      labs((NSInteger)destination - (NSInteger)source) <= 2) return fallback;
+  NSUInteger nearby = source < destination ? destination - 1 : destination + 1;
+  if (nearby >= self.tabViews.count) return fallback;
+  NSRect start = self.tabViews[nearby].frame;
+  NSRect target = self.tabViews[destination].frame;
+  start.origin.x = NSMinX(target) + (NSMinX(start) - NSMinX(target)) *
+    self.palette.tabSelectionLongJumpDistanceMultiplier;
+  return start;
 }
 
 - (TLChromeTabView *)activeTabView {
@@ -671,6 +822,10 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 }
 
 - (void)updateSelectionIndicatorAnimated:(BOOL)animated {
+  if (self.settlingDrop) {
+    if (!animated) return;
+    [self.transitionCoordinator cancelTransitionForKey:@"drop"];
+  }
   TLChromeTabView *activeTabView = [self activeTabView];
   if (!activeTabView) {
     [self.transitionCoordinator cancelTransitionForKey:@"selection"];
@@ -678,7 +833,8 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     return;
   }
   if ([self.insertingTabViews containsObject:activeTabView]) return;
-  if (!animated && [self.transitionCoordinator hasTransitionForKey:@"selection"]) return;
+  if (!animated && (self.hasPendingSelectionAnimation ||
+                   [self.transitionCoordinator hasTransitionForKey:@"selection"])) return;
 
   NSRect targetFrame = activeTabView.frame;
   for (TLTabRemovalTransition *transition in self.removalTransitions) {
@@ -706,10 +862,18 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
       TLWorkspaceTabsController *owner = weakSelf;
       if (!owner) return;
       NSRect frame = TLInterpolateTabFrame(startFrame, targetFrame, progress);
+      [owner refreshAnimationActivity];
       [owner.selectionView setSelectionFrame:frame leadingFlareOutset:activeTabView.leadingFlareOutset
                                    animated:NO fromFrame:frame duration:0.0];
+      [owner updateSelectionEdgeGeometry];
+      [owner updateClosingContentBackgroundClips];
+      [owner updateTrailingButtonForRemoval];
     } completion:^(BOOL finished) {
       if (finished) [weakSelf updateSelectionForLifecycle];
+      if (finished && weakSelf.preservedTabWidth > 0 && ![weakSelf isPointerInsidePreservedTabArea]) {
+        [weakSelf restoreNormalTabWidthsAnimated];
+      }
+      [weakSelf refreshAnimationActivity];
     }];
 }
 
@@ -719,11 +883,46 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   CGFloat contentRadius = self.palette.space5;
   TLChromeTabView *firstTabView = self.tabViews.firstObject;
   firstTabView.leadingFlareOutset = self.palette.space0;
+  if (!self.selectionView.hidden && self.tabViews.count > 0 && !self.draggedTab) {
+    [self updateSelectionEdgeGeometry];
+    return;
+  }
   if (firstTabView.active && [self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
     contentRadius = self.palette.space0;
   }
 
   [self.delegate workspaceTabsController:self firstTabEdgeCornerRadiusDidChange:contentRadius];
+}
+
+- (void)updateSelectionEdgeGeometry {
+  // Keep the slab below live tab content/separators, but above the closing
+  // predecessor it is moving across. Restore normal layering if selection changes.
+  TLChromeTabView *active = [self activeTabView];
+  for (TLTabRemovalTransition *transition in self.removalTransitions) {
+    transition.tabView.layer.zPosition = transition.selectedSuccessor && transition.selectedSuccessor == active ? -2.0 : 0.0;
+  }
+  if (self.draggedTab || self.selectionView.hidden || self.tabViews.count == 0) return;
+  // The logical selection changes before the slab arrives. Derive attachment
+  // from the visible slab instead, so entering and leaving the edge are symmetric.
+  // Use the strip's fixed edge, not a tab whose position may itself be animating.
+  CGFloat leadingEdge = NSMinX(self.tabStack.bounds) + self.tabStack.edgeInsets.left;
+  // Content must approach its edge-connected inset with the tab, rather than
+  // adopting first-tab padding as soon as its predecessor leaves the model.
+  TLChromeTabView *firstTabView = self.tabViews.firstObject;
+  CGFloat firstTabDistance = MAX(self.palette.space0,
+    NSMinX(firstTabView.frame) + firstTabView.reorderTranslationX - leadingEdge);
+  firstTabView.leadingFlareOutset = MIN(self.palette.tabFlareRadius, firstTabDistance);
+  CGFloat distance = MAX(self.palette.space0, NSMinX(self.selectionView.selectionFrame) - leadingEdge);
+  self.selectionView.leadingFlareOutset = MIN(self.palette.tabFlareRadius, distance);
+  CGFloat radius = [self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]
+    ? MIN(self.palette.space5, distance) : self.palette.space5;
+  NSRect contentBounds = [self.delegate workspaceTabsControllerContentDragBoundsInWindow:self];
+  if (self.tabStack.window && !NSIsEmptyRect(contentBounds)) {
+    CGFloat contentEdge = NSMinX([self.tabStack convertRect:contentBounds fromView:nil]);
+    radius = MIN(self.palette.space5, MAX(self.palette.space0,
+      NSMinX(self.selectionView.selectionFrame) - contentEdge));
+  }
+  [self.delegate workspaceTabsController:self firstTabEdgeCornerRadiusDidChange:radius];
 }
 
 - (void)chromeTabView:(TLChromeTabView *)tabView didDragWithEvent:(NSEvent *)event {
@@ -768,21 +967,56 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   TLWorkspaceTab *movedTab = self.draggedTab;
   NSUInteger sourceIndex = self.draggedStartIndex;
   NSUInteger targetIndex = self.draggedCurrentIndex;
+  NSMapTable<TLChromeTabView *, NSValue *> *visibleFrames = [NSMapTable strongToStrongObjectsMapTable];
+  for (TLChromeTabView *view in self.tabViews) {
+    CALayer *visible = view.layer.presentationLayer ?: view.layer;
+    CGFloat offset = view == tabView ? view.dragTranslationX : visible.transform.m41;
+    [visibleFrames setObject:[NSValue valueWithRect:NSOffsetRect(view.frame, offset, 0)] forKey:view];
+  }
+  NSRect selectionStart = self.selectionView.selectionFrame;
+  [tabView finishPointerDrag];
   [self resetReorderGap];
   [self resetDragEdgeGeometry];
-  [self.tabStack addSubview:self.selectionView positioned:NSWindowBelow relativeTo:nil];
-  self.selectionView.layer.zPosition = -1.0;
   self.draggedTab = nil;
   self.draggedStartIndex = NSNotFound;
   self.draggedCurrentIndex = NSNotFound;
+  self.settlingDrop = YES;
 
   if (movedTab && targetIndex != NSNotFound && sourceIndex != targetIndex) {
     [self.delegate workspaceTabsController:self moveTab:movedTab toIndex:targetIndex];
   }
 
   [self.tabStack layoutSubtreeIfNeeded];
-  [self updateSelectionIndicatorAnimated:NO];
   [self updateSeparatorVisibilityWithoutAnimation];
+  __weak typeof(self) weakSelf = self;
+  NSTimeInterval duration = self.tabStack.window && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion
+    ? self.palette.tabReorderSlideDuration : 0;
+  [self.transitionCoordinator startTransitionForKey:@"drop" duration:duration update:^(CGFloat progress) {
+    TLWorkspaceTabsController *owner = weakSelf;
+    if (!owner) return;
+    for (TLChromeTabView *view in owner.tabViews) {
+      NSValue *start = [visibleFrames objectForKey:view];
+      if (start) [view setReorderTranslationX:(NSMinX(start.rectValue) - NSMinX(view.frame)) * (1 - progress) animated:NO];
+    }
+    [owner promoteSelectionAndDraggedTabView:tabView];
+    TLChromeTabView *active = [owner activeTabView];
+    NSRect frame = TLInterpolateTabFrame(selectionStart, active.frame, progress);
+    [owner.selectionView setSelectionFrame:frame leadingFlareOutset:active.leadingFlareOutset animated:NO fromFrame:frame duration:0];
+    [owner updateSelectionEdgeGeometry];
+    [owner refreshAnimationActivity];
+  } completion:^(BOOL finished) {
+    TLWorkspaceTabsController *owner = weakSelf;
+    if (!owner) return;
+    owner.settlingDrop = NO;
+    [owner resetReorderGap];
+    tabView.layer.zPosition = tabView.active ? 1 : 0;
+    [owner.tabStack addSubview:owner.selectionView positioned:NSWindowBelow relativeTo:nil];
+    owner.selectionView.layer.zPosition = -1;
+    [owner updateSelectionForLifecycle];
+    [owner updateEdgeAttachmentState];
+    [owner updateSeparatorVisibilityWithoutAnimation];
+    [owner refreshAnimationActivity];
+  }];
 }
 
 - (CGFloat)chromeTabView:(TLChromeTabView *)tabView

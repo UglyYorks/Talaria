@@ -1,6 +1,9 @@
 #import "Theme.h"
 #import "design_system/ThemeColorScheme.h"
 
+// Shared tab/+ animation timing: 1.0 = normal, 10.0 = 10x slower for inspection.
+static const CGFloat TLTabAnimationDurationMultiplier = 1.0;
+
 NSColor *TLColorFromHex(NSUInteger hexValue) {
   CGFloat red = ((hexValue >> 16) & 0xff) / 255.0;
   CGFloat green = ((hexValue >> 8) & 0xff) / 255.0;
@@ -104,13 +107,17 @@ CGColorRef TLCGColor(NSColor *color) {
   self.tabIconSize = 18.0;
   self.tabIconGlyphSize = 16.0;
   self.tabFlareRadius = 8.0;
-  self.tabSelectionSlideDuration = 0.16;
-  self.tabReorderSlideDuration = 0.12;
-  self.tabLifecycleTransitionDuration = 0.20;
+  self.tabSelectionSlideDuration = 0.16 * TLTabAnimationDurationMultiplier;
+  self.tabMetadataTransitionDuration = 0.30 * TLTabAnimationDurationMultiplier;
+  self.tabSelectionLongJumpDistanceMultiplier = 1.3;
+  self.tabReorderSlideDuration = 0.12 * TLTabAnimationDurationMultiplier;
+  self.tabLifecycleTransitionDuration = 0.20 * TLTabAnimationDurationMultiplier;
   self.tabLifecycleCollapsedWidthRatio = 0.30;
   self.tabLifecycleContentFadeDurationRatio = 0.30;
-  self.tabSeparatorFadeDuration = 0.20;
-  self.tabHoverFadeDuration = 0.10;
+  self.tabInsertionFadeStartProgress = 0.25;
+  self.tabInsertionFadeEndProgress = 0.85;
+  self.tabSeparatorFadeDuration = 0.10 * TLTabAnimationDurationMultiplier;
+  self.tabHoverFadeDuration = 0.10 * TLTabAnimationDurationMultiplier;
   self.historyRowHeight = 60.0;
   self.historyRowSelectionHorizontalInset = 9.0;
   self.historyRowSelectionVerticalInset = 5.0;
@@ -148,6 +155,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.brandMarkCrossInset = 7.0;
   self.focusRingSize = 3.0;
   self.borderWidth = 1.0;
+  self.workspaceOutlineOpacity = 1.0 / 3.0;
   self.radiusMedium = 8.0;
   self.slashCommandListCornerRadius = self.radiusMedium;
   self.radiusPill = 999.0;

@@ -1,6 +1,17 @@
 #import "TLButton.h"
 #import <QuartzCore/QuartzCore.h>
 
+@interface TLButtonImageCell : NSButtonCell
+@property (nonatomic) CGFloat imageOffsetX;
+@end
+
+@implementation TLButtonImageCell
+- (void)drawImage:(NSImage *)image withFrame:(NSRect)frame inView:(NSView *)controlView {
+  // Offset only the artwork, preserving the full native button hit target.
+  [super drawImage:image withFrame:NSOffsetRect(frame, self.imageOffsetX, 0) inView:controlView];
+}
+@end
+
 @interface TLButton ()
 @property (nonatomic, strong) NSButton *button;
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
@@ -29,6 +40,7 @@
   self.hoverBackgroundLayer = [CALayer layer];
   [self.layer addSublayer:self.hoverBackgroundLayer];
   self.button = [[NSButton alloc] init];
+  self.button.cell = [[TLButtonImageCell alloc] init];
   self.button.translatesAutoresizingMaskIntoConstraints = NO;
   self.button.bordered = NO;
   self.button.imagePosition = NSImageOnly;
@@ -119,7 +131,7 @@
 
 - (void)updateHoverStateFromCurrentMouseLocation {
   BOOL hovered = NO;
-  if (self.window.isVisible && ![self isHiddenOrHasHiddenAncestor] && !NSIsEmptyRect(self.visibleRect)) {
+  if (!self.hoverSuppressed && self.window.isVisible && ![self isHiddenOrHasHiddenAncestor] && !NSIsEmptyRect(self.visibleRect)) {
     NSPoint point = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
     hovered = NSPointInRect(point, NSIntersectionRect(self.bounds, self.visibleRect));
   }
@@ -137,6 +149,9 @@
   BOOL showHoverBackground = self.enabled && self.hovered;
   NSRect surface = self.bounds;
   BOOL compact = self.style == TLButtonStyleCompactMinimal;
+  TLButtonImageCell *cell = (TLButtonImageCell *)self.button.cell;
+  cell.imageOffsetX = compact ? self.palette.compactButtonSurfaceOffsetX : 0;
+  self.button.needsDisplay = YES;
   if (compact) {
     CGFloat length = MIN(self.palette.compactButtonSurfaceSize, MIN(NSWidth(surface), NSHeight(surface)));
     surface = NSMakeRect(NSMidX(surface) - length * 0.5 + self.palette.compactButtonSurfaceOffsetX,
@@ -145,7 +160,7 @@
   CGFloat targetOpacity = showHoverBackground ? 1.0 : 0.0;
   CGFloat previousOpacity = self.hoverBackgroundLayer.opacity;
   CGFloat visibleOpacity = (self.hoverBackgroundLayer.presentationLayer ?: self.hoverBackgroundLayer).opacity;
-  BOOL animate = compact && self.window.isVisible && self.palette.tabHoverFadeDuration > 0 &&
+  BOOL animate = !self.hoverSuppressed && compact && self.window.isVisible && self.palette.tabHoverFadeDuration > 0 &&
     !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
@@ -165,6 +180,13 @@
     fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
     [self.hoverBackgroundLayer addAnimation:fade forKey:@"tab-decoration-fade"];
   }
+}
+
+- (void)setHoverSuppressed:(BOOL)hoverSuppressed {
+  if (_hoverSuppressed == hoverSuppressed) return;
+  _hoverSuppressed = hoverSuppressed;
+  [self updateHoverStateFromCurrentMouseLocation];
+  [self applyCurrentState];
 }
 
 - (void)setImage:(NSImage *)image {

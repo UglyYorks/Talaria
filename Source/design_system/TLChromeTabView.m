@@ -1,5 +1,6 @@
 #import "TLChromeTabView.h"
 #import "TLTabIconView.h"
+#import "TLTransitionCoordinator.h"
 #import <QuartzCore/QuartzCore.h>
 
 CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palette) {
@@ -424,6 +425,8 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 @end
 
 @interface TLChromeTabView ()
+@property (nonatomic, strong) TLTransitionCoordinator *metadataTransitions;
+@property (nonatomic, copy) NSString *animatedTitle;
 @property (nonatomic, strong) NSView *contentContainer;
 @property (nonatomic, strong) TLTabIconView *tabIconView;
 @property (nonatomic, strong) NSView *titleClipView;
@@ -500,6 +503,69 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   _palette = palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
   [self applyCurrentState];
   [self updateInactiveDecorationVisibilityAnimated:NO];
+}
+
+- (void)updateTitle:(NSString *)title image:(NSImage *)image icon:(NSString *)icon
+    systemIconName:(NSString *)systemIconName animated:(BOOL)animated {
+  BOOL titleChanged = ![self.title isEqual:title];
+  BOOL iconChanged = self.image != image || ![self.icon isEqual:icon] || ![self.systemIconName isEqual:systemIconName];
+  if (!titleChanged && !iconChanged) return;
+  if (!self.metadataTransitions) self.metadataTransitions = [[TLTransitionCoordinator alloc] init];
+  BOOL animate = animated && self.window && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  NSTimeInterval duration = animate ? self.palette.tabMetadataTransitionDuration : 0;
+  if (titleChanged) {
+    NSString *previous = self.animatedTitle ?: self.title ?: @"";
+    [self.metadataTransitions cancelTransitionForKey:@"title"];
+    _title = [title copy];
+    NSMutableArray<NSString *> *oldPrefixes = [NSMutableArray arrayWithObject:@""];
+    NSMutableArray<NSString *> *newPrefixes = [NSMutableArray arrayWithObject:@""];
+    for (NSString *text in @[previous, title]) {
+      NSMutableArray *prefixes = text == previous ? oldPrefixes : newPrefixes;
+      [text enumerateSubstringsInRange:NSMakeRange(0, text.length) options:NSStringEnumerationByComposedCharacterSequences
+        usingBlock:^(NSString *substring, NSRange range, NSRange enclosing, BOOL *stop) {
+          [prefixes addObject:[text substringToIndex:NSMaxRange(range)]];
+        }];
+    }
+    __weak typeof(self) weakSelf = self;
+    [self.metadataTransitions startTransitionForKey:@"title" duration:duration update:^(CGFloat progress) {
+      NSArray *prefixes = progress < 0.5 ? oldPrefixes : newPrefixes;
+      CGFloat fraction = progress < 0.5 ? 1.0 - progress * 2.0 : (progress - 0.5) * 2.0;
+      weakSelf.animatedTitle = prefixes[(NSUInteger)floor((prefixes.count - 1) * fraction)];
+      [weakSelf applyCurrentState];
+    } completion:^(BOOL finished) {
+      weakSelf.animatedTitle = nil;
+      [weakSelf applyCurrentState];
+    }];
+  }
+  if (iconChanged) {
+    [self.metadataTransitions cancelTransitionForKey:@"icon"];
+    [self layoutSubtreeIfNeeded];
+    TLTabIconView *outgoing = [[TLTabIconView alloc] initWithFrame:self.tabIconView.frame];
+    outgoing.palette = self.palette;
+    outgoing.image = self.image;
+    outgoing.icon = self.icon;
+    outgoing.systemIconName = self.systemIconName;
+    [self.contentContainer addSubview:outgoing];
+    _image = image; _icon = [icon copy]; _systemIconName = [systemIconName copy];
+    [self applyCurrentState];
+    __weak typeof(self) weakSelf = self;
+    [self.metadataTransitions startTransitionForKey:@"icon" duration:duration update:^(CGFloat progress) {
+      TLChromeTabView *owner = weakSelf;
+      for (TLTabIconView *view in @[outgoing, owner.tabIconView ?: outgoing]) {
+        CGFloat scale = view == outgoing ? 1.0 - progress : progress;
+        CGFloat x = NSMidX(view.bounds), y = NSMidY(view.bounds);
+        CATransform3D transform = CATransform3DMakeTranslation(x, y, 0);
+        transform = CATransform3DScale(transform, MAX(0.001, scale), MAX(0.001, scale), 1);
+        view.layer.sublayerTransform = CATransform3DTranslate(transform, -x, -y, 0);
+        view.alphaValue = scale;
+      }
+    } completion:^(BOOL finished) {
+      [outgoing removeFromSuperview];
+      weakSelf.tabIconView.layer.sublayerTransform = CATransform3DIdentity;
+      weakSelf.tabIconView.alphaValue = 1;
+    }];
+  }
+  [self applyCurrentState];
 }
 
 - (void)setTitle:(NSString *)title {
@@ -617,7 +683,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.iconSpacingConstraint = [self.titleClipView.leadingAnchor constraintEqualToAnchor:self.tabIconView.trailingAnchor
                                                                                  constant:self.palette.tabIconTextSpacing];
   self.titleClipHeightConstraint = [self.titleClipView.heightAnchor constraintEqualToConstant:self.palette.tabHeight];
-  self.titleClipTrailingConstraint = [self.titleClipView.trailingAnchor constraintEqualToAnchor:self.closeButton.leadingAnchor
+  self.titleClipTrailingConstraint = [self.titleClipView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
                                                                                        constant:self.palette.space0];
   // The icon/title/close chain must not impose a minimum tab or window width.
   // Prefer clipping content over breaking the tab controller's assigned width.
@@ -700,7 +766,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   NSColor *foreground = highlighted ? self.palette.appText : self.palette.labelText;
   BOOL hasSystemIcon = self.systemIconName.length > 0;
   BOOL hasEmojiIcon = self.icon.length > 0 && !hasSystemIcon;
-  self.titleLabel.stringValue = self.title;
+  self.titleLabel.stringValue = self.animatedTitle ?: self.title;
   self.titleLabel.font = self.palette.labelFont;
   self.titleLabel.textColor = foreground;
   self.tabIconView.palette = self.palette;
@@ -726,7 +792,8 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   if (@available(macOS 11.0, *)) {
     self.closeButton.image = [self closeButtonImageWithLength:self.palette.space6];
   }
-  self.titleClipTrailingConstraint.constant = closeButtonVisible ? -self.palette.space3 : -(self.palette.space5 + self.palette.space3);
+  // Keep text layout stable; the gradient mask makes room for the close button.
+  self.titleClipTrailingConstraint.constant = -self.palette.tabIconLeadingInset;
   self.closeWidthConstraint.constant = closeButtonVisible ? [self closeButtonLength] : self.palette.space0;
   self.closeHeightConstraint.constant = closeButtonVisible ? [self closeButtonLength] : self.palette.space0;
   self.closeTrailingConstraint.constant = closeButtonVisible ? -self.palette.space8 : self.palette.space0;
@@ -826,28 +893,50 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   }
 
   CGFloat clipWidth = NSWidth(self.titleClipView.bounds);
-  CGFloat labelWidth = self.titleLabel.intrinsicContentSize.width;
-  if (clipWidth <= 0.0 || labelWidth <= clipWidth + self.palette.space2) {
-    self.titleClipView.layer.mask = nil;
-    return;
+  if (self.closeable && self.hovered) {
+    clipWidth = MAX(0.0, clipWidth - (self.palette.space8 + [self closeButtonLength] +
+      self.palette.space3 - self.palette.tabIconLeadingInset));
   }
+  CGFloat labelWidth = self.titleLabel.intrinsicContentSize.width;
 
   CGFloat preferredFadeWidth = self.closeable && self.hovered
     ? self.palette.space12
     : self.palette.space12 - self.palette.space2;
   CGFloat fadeWidth = MIN(preferredFadeWidth, clipWidth * 0.5);
-  CGFloat solidStop = MAX(0.0, MIN(1.0, (clipWidth - fadeWidth) / clipWidth));
-  CAGradientLayer *mask = [CAGradientLayer layer];
-  mask.frame = self.titleClipView.bounds;
+  CGFloat solidStop = clipWidth > 0 ? MAX(0.0, MIN(1.0, (clipWidth - fadeWidth) / clipWidth)) : 0;
+  CAGradientLayer *mask = (CAGradientLayer *)self.titleClipView.layer.mask;
+  BOOL hadMask = mask != nil;
+  if (!mask) mask = [CAGradientLayer layer];
+  CGFloat previousWidth = CGRectGetWidth(mask.bounds);
+  CGFloat visibleWidth = CGRectGetWidth((mask.presentationLayer ?: mask).bounds);
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  mask.anchorPoint = CGPointZero;
+  mask.position = self.titleClipView.bounds.origin;
+  mask.bounds = CGRectMake(0, 0, clipWidth, NSHeight(self.titleClipView.bounds));
   mask.startPoint = CGPointMake(0.0, 0.5);
   mask.endPoint = CGPointMake(1.0, 0.5);
   mask.colors = @[
     (__bridge id)TLCGColor(self.palette.appText),
     (__bridge id)TLCGColor(self.palette.appText),
-    (__bridge id)TLCGColor(self.palette.transparentSurface),
+    (__bridge id)TLCGColor(labelWidth > clipWidth ? self.palette.transparentSurface : self.palette.appText),
   ];
   mask.locations = @[@0.0, @(solidStop), @1.0];
   self.titleClipView.layer.mask = mask;
+  [CATransaction commit];
+  if (hadMask && fabs(previousWidth - clipWidth) > 0.001) {
+    if (self.window && self.animatesDecorationChanges &&
+        !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+      CABasicAnimation *resize = [CABasicAnimation animationWithKeyPath:@"bounds.size.width"];
+      resize.fromValue = @(visibleWidth);
+      resize.toValue = @(clipWidth);
+      resize.duration = self.palette.tabHoverFadeDuration;
+      resize.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+      [mask addAnimation:resize forKey:@"tab-content-resize"];
+    } else {
+      [mask removeAnimationForKey:@"tab-content-resize"];
+    }
+  }
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -874,9 +963,11 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 
 - (NSRect)inactiveHoverPillRectInRect:(NSRect)rect {
   CGFloat flareOutset = MIN(self.palette.tabFlareRadius, NSWidth(rect) * 0.18);
-  return NSMakeRect(NSMinX(rect) + flareOutset,
+  CGFloat leadingOutset = self.leadingFlareOutset >= self.palette.space0
+    ? MIN(flareOutset, self.leadingFlareOutset) : flareOutset;
+  return NSMakeRect(NSMinX(rect) + leadingOutset,
                     NSMinY(rect) + self.palette.space2,
-                    MAX(self.palette.space0, NSWidth(rect) - flareOutset * 2.0),
+                    MAX(self.palette.space0, NSWidth(rect) - leadingOutset - flareOutset),
                     MAX(self.palette.space0, NSHeight(rect) - self.palette.space2 * 2.0));
 }
 
@@ -1003,12 +1094,17 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   }
 
   if (self.didDrag) {
-    [self.dragDelegate chromeTabViewDidEndDragging:self];
-    self.dragTranslationX = 0.0;
-    self.layer.zPosition = self.active ? 1.0 : 0.0;
+    if (self.dragDelegate) [self.dragDelegate chromeTabViewDidEndDragging:self];
+    else [self finishPointerDrag];
     return;
   }
 
+  self.layer.zPosition = self.active ? 1.0 : 0.0;
+}
+
+- (void)finishPointerDrag {
+  self.didDrag = NO;
+  self.dragTranslationX = 0;
   self.layer.zPosition = self.active ? 1.0 : 0.0;
 }
 
@@ -1077,12 +1173,34 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [CATransaction setDisableActions:YES];
   mask.frame = self.contentContainer.bounds;
   mask.path = path;
+  mask.mask = nil;
   self.contentContainer.layer.mask = mask;
   for (NSView *view in @[self.tabIconView, self.titleClipView, self.closeButton]) {
     view.layer.opacity = MIN(1.0, MAX(0.0, opacity));
   }
   [CATransaction commit];
   CGPathRelease(path);
+}
+
+- (void)clipLifecycleContentToSelectionView:(TLChromeTabSelectionView *)selectionView {
+  CALayer *lifecycleMask = self.contentContainer.layer.mask;
+  if (!lifecycleMask) return;
+  NSPoint origin = [selectionView convertPoint:NSZeroPoint toView:self.contentContainer];
+  NSPoint x = [selectionView convertPoint:NSMakePoint(1, 0) toView:self.contentContainer];
+  NSPoint y = [selectionView convertPoint:NSMakePoint(0, 1) toView:self.contentContainer];
+  CGAffineTransform transform = CGAffineTransformMake(x.x - origin.x, x.y - origin.y,
+    y.x - origin.x, y.y - origin.y, origin.x, origin.y);
+  CGPathRef background = [selectionView newOutlinePath];
+  CGPathRef localPath = CGPathCreateCopyByTransformingPath(background, &transform);
+  CAShapeLayer *mask = [CAShapeLayer layer];
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  mask.frame = self.contentContainer.bounds;
+  mask.path = localPath;
+  lifecycleMask.mask = mask;
+  [CATransaction commit];
+  CGPathRelease(localPath);
+  CGPathRelease(background);
 }
 
 - (void)resetLifecycleAppearance {

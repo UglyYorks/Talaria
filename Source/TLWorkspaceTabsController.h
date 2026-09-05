@@ -34,6 +34,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, weak, nullable) id<TLWorkspaceTabsControllerDelegate> delegate;
 @property (nonatomic, strong, readonly) TLTransitionCoordinator *transitionCoordinator;
 @property (nonatomic, strong, readonly) TLChromeTabSelectionView *selectionView;
+// tabStack.trailing = newTabButton.leading + constant; animated with insertion.
+@property (nonatomic, strong, nullable) NSLayoutConstraint *createTabButtonSpacingConstraint;
+@property (nonatomic, copy, nullable) void (^animationActivityChanged)(BOOL animating);
 
 - (instancetype)initWithTabStack:(NSStackView *)tabStack
                           target:(nullable id)target

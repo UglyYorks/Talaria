@@ -4,6 +4,10 @@ APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 APP_EXECUTABLE := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
 APP_BUILD_STAMP := $(BUILD_DIR)/.$(APP_NAME).build.stamp
 APP_ENTITLEMENTS := Entitlements.plist
+# Keep this identity persistent so the credential helper can authenticate builds.
+# Override with an Apple Development identity when one becomes available.
+CODE_SIGN_IDENTITY ?= Talaria Local Development
+SIGNING_CONFIG := $(BUILD_DIR)/.signing-identity
 AGENT_RUNTIME_FILES := $(shell find AgentRuntime -type f 2>/dev/null)
 AGENT_LINUX_RUNTIME_DIR := $(BUILD_DIR)/agent-runtime/linux-arm64
 AGENT_LINUX_RUNTIME_STAMP := $(AGENT_LINUX_RUNTIME_DIR)/.download.stamp
@@ -64,13 +68,53 @@ APP_OBJCXXFLAGS := $(OBJCFLAGS) $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-excepti
 APP_FRAMEWORKS := -framework AppKit -framework Foundation -framework QuartzCore -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
 TEST_FRAMEWORKS := -framework Foundation -framework AppKit -framework Virtualization -framework Security -lsqlite3
 
-.PHONY: all build test audit-theme-colors clean run widgetbook close-running-app
+.PHONY: all build test audit-theme-colors clean run widgetbook close-running-app check-signing-identity FORCE
 
 all: build
 
+# Explicit installation only: ordinary builds never replace/re-sign the installed
+# helper, whose stable code hash preserves its Keychain partition approval.
+.PHONY: credential-helper install-credential-helper
+CREDENTIAL_HELPER_BUNDLE := $(BUILD_DIR)/Talaria Credentials.app
+credential-helper: $(BUILD_DIR)/.credential-helper.stamp
+
+$(BUILD_DIR)/.credential-helper.stamp: CredentialHelper/main.m CredentialHelper/Info.plist Source/TLCredentialStore.m Source/TLCredentialStore.h Source/TLCredentialHelperProtocol.h $(SIGNING_CONFIG)
+	mkdir -p "$(CREDENTIAL_HELPER_BUNDLE)/Contents/MacOS"
+	xcrun clang $(OBJCFLAGS) -DTL_CREDENTIAL_HELPER_BUILD -ISource CredentialHelper/main.m Source/TLCredentialStore.m -framework Foundation -framework Security -o "$(CREDENTIAL_HELPER_BUNDLE)/Contents/MacOS/TalariaCredentials"
+	cp CredentialHelper/Info.plist "$(CREDENTIAL_HELPER_BUNDLE)/Contents/Info.plist"
+	codesign --force --options runtime --sign "$(CODE_SIGN_IDENTITY)" "$(CREDENTIAL_HELPER_BUNDLE)"
+	touch "$@"
+
+install-credential-helper: credential-helper
+	python3 CredentialHelper/install.py "$(CREDENTIAL_HELPER_BUNDLE)"
+
+# Optional integration check against the installed helper. Never reads secrets.
+.PHONY: test-credential-helper
+test-credential-helper: check-signing-identity
+	xcrun clang $(OBJCFLAGS) -ISource Tests/CredentialHelperProbe.m -framework Foundation -framework Security -o "$(BUILD_DIR)/CredentialHelperProbe"
+	cp "$(BUILD_DIR)/CredentialHelperProbe" "$(BUILD_DIR)/CredentialHelperUntrustedProbe"
+	codesign --force --options runtime --identifier com.talaria.chat --sign "$(CODE_SIGN_IDENTITY)" "$(BUILD_DIR)/CredentialHelperProbe"
+	codesign --force --options runtime --identifier com.talaria.untrusted-probe --sign "$(CODE_SIGN_IDENTITY)" "$(BUILD_DIR)/CredentialHelperUntrustedProbe"
+	"$(BUILD_DIR)/CredentialHelperProbe" allow
+	"$(BUILD_DIR)/CredentialHelperUntrustedProbe" deny
+	"$(BUILD_DIR)/CredentialHelperProbe" allow
+
 build: $(APP_BUILD_STAMP)
 
-$(APP_BUILD_STAMP): Makefile $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(AGENT_CARD_IMAGE) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
+check-signing-identity:
+	@if [ "$(CODE_SIGN_IDENTITY)" = "-" ] || [ -z "$(CODE_SIGN_IDENTITY)" ] || \
+	  ! security find-identity -v -p codesigning | grep -F -- '$(CODE_SIGN_IDENTITY)' >/dev/null; then \
+	  echo 'Missing persistent signing identity: $(CODE_SIGN_IDENTITY)' >&2; \
+	  echo 'Install the local development certificate or set CODE_SIGN_IDENTITY to an installed signing identity.' >&2; \
+	  exit 1; \
+	fi
+
+$(SIGNING_CONFIG): FORCE | check-signing-identity
+	@mkdir -p "$(BUILD_DIR)"
+	@printf '%s\n' '$(CODE_SIGN_IDENTITY)' > "$@.tmp"
+	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
+
+$(APP_BUILD_STAMP): Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(AGENT_CARD_IMAGE) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources" "$(APP_BUNDLE)/Contents/Frameworks"
 	xcrun clang++ $(APP_OBJECTS) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(APP_EXECUTABLE)"
@@ -95,12 +139,12 @@ $(APP_BUILD_STAMP): Makefile $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist
 	ditto "$(HELPER_BUNDLES_DIR)" "$(APP_BUNDLE)/Contents/Frameworks"
 	@set -e; \
 	for library in "$(CEF_FRAMEWORK_DEST)/Versions/A/Libraries/"*.dylib; do \
-	  codesign --force --sign - "$$library"; \
+	  codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$$library"; \
 	done; \
-	codesign --force --sign - "$(CEF_FRAMEWORK_DEST)"; \
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(CEF_FRAMEWORK_DEST)"; \
 	find "$(APP_BUNDLE)/Contents/Frameworks" -maxdepth 1 -name "$(APP_NAME) Helper*.app" -type d -print0 | \
-	  xargs -0 -n 1 codesign --force --sign -; \
-	codesign --force --sign - --entitlements "$(APP_ENTITLEMENTS)" "$(APP_BUNDLE)"
+	  xargs -0 -n 1 codesign --force --sign "$(CODE_SIGN_IDENTITY)"; \
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(APP_BUNDLE)"
 	touch "$(APP_BUILD_STAMP)"
 
 $(APP_OBJECT_DIR)/%.m.o: Source/%.m $(APP_HEADERS) Makefile

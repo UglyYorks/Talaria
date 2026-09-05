@@ -56,12 +56,16 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 
 - (void)applyCurrentState;
 - (void)setReorderTranslationX:(CGFloat)translationX animated:(BOOL)animated;
+- (void)finishPointerDrag;
 - (void)setReorderTranslationX:(CGFloat)translationX animated:(BOOL)animated duration:(NSTimeInterval)duration;
 - (void)prepareForInsertionAnimation;
 @property (nonatomic, readonly) CGFloat lifecycleVisibleWidth;
 @property (nonatomic, readonly) CGFloat lifecycleContentOpacity;
 - (void)setLifecycleVisibleWidth:(CGFloat)width contentOpacity:(CGFloat)opacity;
+- (void)clipLifecycleContentToSelectionView:(TLChromeTabSelectionView *)selectionView;
 - (void)resetLifecycleAppearance;
+- (void)updateTitle:(NSString *)title image:(nullable NSImage *)image icon:(NSString *)icon
+    systemIconName:(NSString *)systemIconName animated:(BOOL)animated;
 
 @end
 

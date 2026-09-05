@@ -52,6 +52,7 @@
   self.outlineLayer.fillColor = TLCGColor(self.palette.transparentSurface);
   self.outlineLayer.strokeColor = TLCGColor(self.palette.controlBorder);
   self.outlineLayer.lineWidth = self.palette.borderWidth;
+  self.outlineLayer.opacity = self.palette.workspaceOutlineOpacity;
   self.hidden = self.contentView.isHiddenOrHasHiddenAncestor;
   [CATransaction commit];
   CGPathRelease(outline);
