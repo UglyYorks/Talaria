@@ -167,7 +167,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackHeightConstraint;
-@property (nonatomic, strong) TLGlassButton *sidebarUserButton;
+@property (nonatomic, strong) TLSidebarUserButton *sidebarUserButton;
 @property (nonatomic, strong) TLSidebarResizeHandle *sidebarResizeHandle;
 @property (nonatomic) CGFloat sidebarPreferredWidth;
 @property (nonatomic) CGFloat sidebarResizeStartWidth;
@@ -1057,13 +1057,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return actionStack;
 }
 
-- (TLGlassButton *)sidebarUserButtonWithDisplayName:(NSString *)displayName {
-  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
+- (TLSidebarUserButton *)sidebarUserButtonWithDisplayName:(NSString *)displayName {
+  TLSidebarUserButton *button = [[TLSidebarUserButton alloc] init];
   button.palette = self.palette;
-  button.title = displayName;
-  button.image = TLAvatarImageForDisplayName(displayName, self.palette);
-  [button setContentHuggingPriority:NSLayoutPriorityDefaultHigh
-                   forOrientation:NSLayoutConstraintOrientationHorizontal];
+  button.displayName = displayName;
   button.target = self;
   button.action = @selector(showSidebarUserMenu:);
   button.toolTip = displayName;
@@ -3961,7 +3958,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (CGFloat)sidebarActionStackHeight {
-  return self.sidebarUserButton.intrinsicContentSize.height;
+  return self.sidebarActionStack.arrangedSubviews.count * self.palette.fieldHeight;
 }
 
 - (CGFloat)currentSidebarContentWidth {
@@ -4519,8 +4516,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
 
   self.sidebarUserButton.palette = self.palette;
-  self.sidebarUserButton.title = @"Yaroslav";
-  self.sidebarUserButton.image = TLAvatarImageForDisplayName(self.sidebarUserButton.title, self.palette);
+  self.sidebarUserButton.displayName = @"Yaroslav";
 }
 
 - (void)updateSidebarContentInsets {
