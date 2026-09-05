@@ -20,6 +20,23 @@ static BOOL TLDatabaseSetSchemaVersion(TLSQLiteConnection *connection, NSInteger
   return [connection executeSQL:sql.UTF8String error:error];
 }
 
+// Worktrees may share a schema version while introducing independent features.
+// Check this feature's actual schema inside the write transaction, including on reopen.
+static BOOL TLEnsureMessageAttachments(TLSQLiteConnection *connection, NSError **error) {
+  BOOL hasAttachments = NO;
+  {
+    TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(messages)" error:error];
+    if (!columns) return NO;
+    int result;
+    while ((result = [columns step]) == SQLITE_ROW) {
+      if ([[columns stringAtColumn:1] isEqualToString:@"attachments"]) hasAttachments = YES;
+    }
+    if (result != SQLITE_DONE) { [connection setCurrentError:error]; return NO; }
+  }
+  return hasAttachments || [connection executeSQL:
+    "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'" error:error];
+}
+
 BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, NSError **error) {
   NSInteger version = TLDatabaseSchemaVersion(connection, error);
   if (version < 0) {
@@ -32,7 +49,10 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
   }
 
   if (version == targetVersion) {
-    return YES;
+    if (targetVersion < 5) return YES;
+    return [connection performTransaction:^BOOL(NSError **transactionError) {
+      return TLEnsureMessageAttachments(connection, transactionError);
+    } error:error];
   }
 
   if (version < 1) {
@@ -119,8 +139,8 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
 
   if (version < 5) {
     BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
-      return [connection executeSQL:"ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'"
-                              error:transactionError] && TLDatabaseSetSchemaVersion(connection, 5, transactionError);
+      return TLEnsureMessageAttachments(connection, transactionError) &&
+        TLDatabaseSetSchemaVersion(connection, 5, transactionError);
     } error:error];
     if (!migrated) return NO;
     version = 5;

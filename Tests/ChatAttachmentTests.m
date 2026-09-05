@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "ChatAttachmentStore.h"
 #import "Database.h"
+#import "SQLiteConnection.h"
 #import "PromptMessages.h"
 #import "design_system/TLMessageInput.h"
 
@@ -9,6 +10,50 @@ static void Check(BOOL condition, NSString *message) {
 }
 static NSURL *HostURL(NSURL *workspace, NSDictionary *attachment) {
   return [workspace URLByAppendingPathComponent:[attachment[@"guestPath"] substringFromIndex:@"/workspace/".length]];
+}
+
+static void TestAttachmentMigrationCollision(void) {
+  NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+  NSURL *URL = [base URLByAppendingPathComponent:@"migration.sqlite"];
+  NSError *error = nil;
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:URL error:&error];
+  TLChatRecord *chat = [database createChatWithModel:@"test" error:&error];
+  [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Existing conversation" thinking:nil]
+                chatID:chat.chatID error:&error];
+  database = nil;
+  TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
+  // Another worktree used version 5 for agent metadata, without adding message attachments.
+  Check([fixture executeSQL:
+    "ALTER TABLE messages DROP COLUMN attachments;"
+    "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT 'robot';"
+    "ALTER TABLE agents ADD COLUMN soul TEXT NOT NULL DEFAULT '';"
+    "ALTER TABLE agents ADD COLUMN folder_paths TEXT NOT NULL DEFAULT '[]';"
+    "INSERT INTO agents(name,guest_kind,runtime,status,vm_directory,soul) VALUES('Existing agent','linux','python','stopped','/tmp/test-agent','Keep this');"
+    "PRAGMA user_version = 5;" error:&error], @"creates the conflicting version-5 fixture");
+  fixture = nil;
+  database = [[TLDatabase alloc] initWithURL:URL error:&error];
+  TLChatRecord *loaded = [database chatWithID:chat.chatID error:&error];
+  Check(loaded && [loaded.messages.firstObject.content isEqual:@"Existing conversation"],
+        [NSString stringWithFormat:@"version-5 collision repairs attachment schema without losing messages: %@", error]);
+  Check(loaded.messages.firstObject.attachments.count == 0, @"existing messages default to no attachments");
+  TLChatMessage *newMessage = [TLChatMessage messageWithRole:TLRoleUser content:@"New attachment" thinking:nil];
+  newMessage.attachments = @[@{@"name":@"report.txt", @"guestPath":@"/workspace/attachments/report.txt", @"directory":@NO}];
+  Check([database saveMessage:newMessage chatID:chat.chatID error:&error].attachments.count == 1,
+        @"attachment messages can be saved after repairing the schema");
+  database = nil;
+  fixture = [TLSQLiteConnection openURL:URL error:&error];
+  TLSQLiteStatement *soul = [fixture prepareSQL:"SELECT soul FROM agents" error:&error];
+  Check([soul step] == SQLITE_ROW && [[soul stringAtColumn:0] isEqual:@"Keep this"], @"unrelated agent metadata stays intact");
+  soul = nil;
+  Check([fixture executeSQL:"PRAGMA user_version = 4" error:&error], @"prepares a database whose attachment column already exists");
+  fixture = nil;
+  database = [[TLDatabase alloc] initWithURL:URL error:&error];
+  Check(database != nil, @"version-4 upgrade tolerates an existing attachment column");
+  database = nil;
+  database = [[TLDatabase alloc] initWithURL:URL error:&error];
+  Check([database chatWithID:chat.chatID error:&error].messages.lastObject.attachments.count == 1,
+        @"repeated migration preserves saved attachment metadata");
+  [NSFileManager.defaultManager removeItemAtURL:base error:nil];
 }
 
 static void TestStorageAndPersistence(void) {
@@ -119,6 +164,6 @@ static void TestComposer(void) {
 }
 
 int main(void) {
-  @autoreleasepool { TestStorageAndPersistence(); TestComposer(); NSLog(@"ChatAttachmentTests passed"); }
+  @autoreleasepool { TestAttachmentMigrationCollision(); TestStorageAndPersistence(); TestComposer(); NSLog(@"ChatAttachmentTests passed"); }
   return 0;
 }
