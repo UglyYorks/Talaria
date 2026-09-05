@@ -2,6 +2,26 @@
 #import "Theme.h"
 #import <WebKit/WebKit.h>
 
+// A separate handler avoids a retain cycle between the view and its configuration.
+@interface TLMarkdownClipboardHandler : NSObject <WKScriptMessageHandlerWithReply>
+@end
+
+@implementation TLMarkdownClipboardHandler
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message
+                 replyHandler:(void (^)(id, NSString *))replyHandler {
+  if (!message.frameInfo.isMainFrame || !message.webView.URL.isFileURL ||
+      ![message.body isKindOfClass:NSString.class]) {
+    replyHandler(nil, @"Invalid code copy request");
+    return;
+  }
+  NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
+  [pasteboard clearContents];
+  BOOL copied = [pasteboard setString:message.body forType:NSPasteboardTypeString];
+  replyHandler(copied ? @YES : nil, copied ? nil : @"Could not copy code");
+}
+@end
+
 @interface TLMarkdownContentWebView : WKWebView
 @end
 
@@ -127,6 +147,10 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
 
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     configuration.suppressesIncrementalRendering = NO;
+    if (rendersMarkdown) {
+      [configuration.userContentController addScriptMessageHandlerWithReply:[[TLMarkdownClipboardHandler alloc] init]
+        contentWorld:WKContentWorld.pageWorld name:@"talariaCopyCode"];
+    }
 
     _webView = [[TLMarkdownContentWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     _webView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -287,6 +311,17 @@ static NSString *TLMarkdownItScript(void) {
 }
 
 static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor *textColor, NSFont *baseFont, BOOL rendersMarkdown) {
+  static NSString *codeScript = nil;
+  static dispatch_once_t codeOnceToken;
+  dispatch_once(&codeOnceToken, ^{
+    NSMutableString *scripts = [NSMutableString string];
+    for (NSString *name in @[@"highlight.min", @"MarkdownCode"]) {
+      NSURL *URL = [NSBundle.mainBundle URLForResource:name withExtension:@"js"];
+      NSString *source = URL ? [NSString stringWithContentsOfURL:URL encoding:NSUTF8StringEncoding error:nil] : nil;
+      if (source) [scripts appendFormat:@"%@\n", source];
+    }
+    codeScript = [scripts stringByReplacingOccurrencesOfString:@"</script" withString:@"<\\/script"];
+  });
   static NSString *mathScript = nil;
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
@@ -322,6 +357,19 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     @"pre{box-sizing:border-box;margin:0 0 %.1fpx 0;padding:%.1fpx %.1fpx;background:%@;border:%.1fpx solid %@;border-radius:%.1fpx;overflow-x:auto;white-space:pre;}"
     @"code{font:%.1fpx ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,monospace;color:%@;background:%@;border-radius:4px;padding:1px 4px;}"
     @"pre code{display:block;padding:0;background:%@;color:%@;white-space:pre;overflow-wrap:normal;}"
+    @".tl-code-block{margin:0 0 %.1fpx;background:%@;border:%.1fpx solid %@;border-radius:%.1fpx;overflow:hidden;}"
+    @".tl-code-block pre{margin:0;border:0;border-radius:0;background:%@;}"
+    @".tl-code-toolbar{display:flex;align-items:center;justify-content:space-between;gap:%.1fpx;padding:%.1fpx %.1fpx;border-bottom:%.1fpx solid %@;font-size:%.1fpx;color:%@;}"
+    @".tl-code-language{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}"
+    @".tl-code-copy{flex:none;cursor:pointer;font:inherit;color:%@;background:%@;border:%.1fpx solid %@;border-radius:%.1fpx;padding:%.1fpx %.1fpx;}"
+    @".tl-code-copy:hover{background:%@;}.tl-code-copy:focus-visible{outline:2px solid %@;outline-offset:2px;}"
+    @"pre .hljs-keyword,pre .hljs-selector-tag,pre .hljs-name,pre .hljs-meta,pre .hljs-section{color:%@;}"
+    @"pre .hljs-string,pre .hljs-regexp,pre .hljs-symbol,pre .hljs-bullet,pre .hljs-addition{color:%@;}"
+    @"pre .hljs-number,pre .hljs-literal,pre .hljs-variable,pre .hljs-deletion{color:%@;}"
+    @"pre .hljs-title,pre .hljs-built_in,pre .hljs-attr,pre .hljs-attribute,pre .hljs-selector-id{color:%@;}"
+    @"pre .hljs-comment,pre .hljs-quote,pre .hljs-doctag{color:%@;font-style:italic;}"
+    @"pre .hljs-type,pre .hljs-title.class_,pre .hljs-selector-class{color:%@;}"
+    @"pre .hljs-emphasis{font-style:italic;}pre .hljs-strong{font-weight:700;}"
     @"table{box-sizing:border-box;width:100%%;border-collapse:collapse;margin:0 0 %.1fpx 0;table-layout:auto;}"
     @"th,td{border:%.1fpx solid %@;padding:%.1fpx %.1fpx;text-align:left;vertical-align:top;}"
     @"th{background:%@;font-weight:700;}"
@@ -346,6 +394,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     @"<div id=\"content\"></div>"
     @"<script>%@</script>"
     @"<script>%@</script>"
+    @"<script>%@</script>"
     @"<script>"
     @"const initialSource=%@;"
     @"window.talariaRender=function(source){"
@@ -354,6 +403,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     @"const md=window.markdownit({html:false,linkify:true,typographer:false,breaks:false});"
     @"if(window.talariaMarkdownMath)md.use(window.talariaMarkdownMath);"
     @"content.innerHTML=md.render(source);"
+    @"if(window.talariaEnhanceCode)window.talariaEnhanceCode(content);"
     @"document.querySelectorAll('li').forEach((li)=>{"
     @"const walker=document.createTreeWalker(li,NodeFilter.SHOW_TEXT);"
     @"const node=walker.nextNode();"
@@ -402,6 +452,34 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     TLCSSColor(palette.transparentSurface),
     TLCSSColor(palette.markdownCodeText),
     palette.space5,
+    TLCSSColor(palette.markdownCodeSurface),
+    palette.borderWidth,
+    TLCSSColor(palette.markdownCodeBorder),
+    palette.radiusMedium,
+    TLCSSColor(palette.transparentSurface),
+    palette.space4,
+    palette.space3,
+    palette.space6,
+    palette.borderWidth,
+    TLCSSColor(palette.markdownCodeBorder),
+    palette.smallFont.pointSize,
+    TLCSSColor(palette.textMuted),
+    TLCSSColor(palette.controlText),
+    TLCSSColor(palette.controlSurface),
+    palette.borderWidth,
+    TLCSSColor(palette.controlBorder),
+    palette.radiusMedium,
+    palette.space2,
+    palette.space4,
+    TLCSSColor(palette.chromeHoverSurface),
+    TLCSSColor(palette.controlFocus),
+    TLCSSColor(palette.markdownSyntaxKeyword),
+    TLCSSColor(palette.markdownSyntaxString),
+    TLCSSColor(palette.markdownSyntaxNumber),
+    TLCSSColor(palette.markdownSyntaxFunction),
+    TLCSSColor(palette.markdownSyntaxComment),
+    TLCSSColor(palette.markdownSyntaxType),
+    palette.space5,
     palette.borderWidth,
     TLCSSColor(palette.markdownTableBorder),
     palette.space4,
@@ -414,6 +492,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     palette.radiusMedium,
     TLMarkdownItScript(),
     mathScript,
+    codeScript,
     TLJSONString(text),
     rendersMarkdown ? @"true" : @"false"];
 }

@@ -56,6 +56,12 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.markdownCodeSurface = palette.gray100;
   palette.markdownCodeText = palette.gray900;
   palette.markdownCodeBorder = palette.gray200;
+  palette.markdownSyntaxKeyword = TLColorFromHex(0xA626A4);
+  palette.markdownSyntaxString = TLColorFromHex(0x287A35);
+  palette.markdownSyntaxNumber = TLColorFromHex(0x986801);
+  palette.markdownSyntaxFunction = TLColorFromHex(0x3366CC);
+  palette.markdownSyntaxComment = TLColorFromHex(0x6A737D);
+  palette.markdownSyntaxType = TLColorFromHex(0x8A5600);
   palette.markdownQuoteBorder = palette.gray300;
   palette.markdownQuoteText = palette.gray700;
   palette.markdownTableBorder = palette.gray200;

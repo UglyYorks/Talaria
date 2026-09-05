@@ -56,6 +56,12 @@ void TLApplyDarkThemeColors(TLThemePalette *palette) {
   palette.markdownCodeSurface = TLColorWithAlpha(palette.gray800, 0.86);
   palette.markdownCodeText = palette.gray100;
   palette.markdownCodeBorder = TLColorWithAlpha(palette.gray400, 0.22);
+  palette.markdownSyntaxKeyword = TLColorFromHex(0xC678DD);
+  palette.markdownSyntaxString = TLColorFromHex(0x98C379);
+  palette.markdownSyntaxNumber = TLColorFromHex(0xD19A66);
+  palette.markdownSyntaxFunction = TLColorFromHex(0x61AFEF);
+  palette.markdownSyntaxComment = TLColorFromHex(0x9AA3B2);
+  palette.markdownSyntaxType = TLColorFromHex(0xE5C07B);
   palette.markdownQuoteBorder = palette.gray600;
   palette.markdownQuoteText = palette.gray200;
   palette.markdownTableBorder = TLColorWithAlpha(palette.gray400, 0.22);
