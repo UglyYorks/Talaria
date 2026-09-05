@@ -167,7 +167,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackHeightConstraint;
-@property (nonatomic, strong) TLSidebarUserButton *sidebarUserButton;
+@property (nonatomic, strong) TLGlassButton *sidebarUserButton;
 @property (nonatomic, strong) TLSidebarResizeHandle *sidebarResizeHandle;
 @property (nonatomic) CGFloat sidebarPreferredWidth;
 @property (nonatomic) CGFloat sidebarResizeStartWidth;
@@ -1057,10 +1057,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return actionStack;
 }
 
-- (TLSidebarUserButton *)sidebarUserButtonWithDisplayName:(NSString *)displayName {
-  TLSidebarUserButton *button = [[TLSidebarUserButton alloc] init];
+- (TLGlassButton *)sidebarUserButtonWithDisplayName:(NSString *)displayName {
+  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
   button.palette = self.palette;
-  button.displayName = displayName;
+  button.title = displayName;
+  button.image = [self symbolImageNamed:@"person.crop.circle" accessibilityDescription:@"Account menu"];
+  [button setContentHuggingPriority:NSLayoutPriorityDefaultHigh
+                   forOrientation:NSLayoutConstraintOrientationHorizontal];
   button.target = self;
   button.action = @selector(showSidebarUserMenu:);
   button.toolTip = displayName;
@@ -3965,7 +3968,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (CGFloat)sidebarActionStackHeight {
-  return self.sidebarActionStack.arrangedSubviews.count * self.palette.fieldHeight;
+  return self.sidebarUserButton.intrinsicContentSize.height;
 }
 
 - (CGFloat)currentSidebarContentWidth {
@@ -4523,7 +4526,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
 
   self.sidebarUserButton.palette = self.palette;
-  self.sidebarUserButton.displayName = @"Yaroslav";
+  self.sidebarUserButton.title = @"Yaroslav";
 }
 
 - (void)updateSidebarContentInsets {
