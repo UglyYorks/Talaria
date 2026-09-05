@@ -29,6 +29,7 @@
 #import "WorkspaceTabRuntime.h"
 #import "Widgetbook.h"
 #import "design_system/TLButton.h"
+#import "design_system/TLThemedButton.h"
 #import "design_system/TLASCIIPlanetScreensaverView.h"
 #import "design_system/TLGlassButton.h"
 #import "design_system/TLMessageInput.h"
@@ -3109,21 +3110,19 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   terminalDescription.maximumNumberOfLines = 0;
   terminalDescription.lineBreakMode = NSLineBreakByWordWrapping;
 
-  NSButton *openButton = [NSButton buttonWithTitle:@"Open VM terminal" target:self action:@selector(openDebugTerminal:)];
+  TLThemedButton *openButton = [TLThemedButton buttonWithTitle:@"Open VM terminal" target:self action:@selector(openDebugTerminal:)];
   openButton.translatesAutoresizingMaskIntoConstraints = NO;
   openButton.bezelStyle = NSBezelStyleRounded;
   openButton.controlSize = NSControlSizeLarge;
-  openButton.font = palette.labelFont;
-  openButton.bezelColor = palette.primaryActionSurface;
-  openButton.contentTintColor = palette.primaryActionText;
+  openButton.palette = palette;
+  openButton.primary = YES;
 
-  NSButton *closeButton = [NSButton buttonWithTitle:@"Close" target:self action:@selector(closeDebugTab:)];
+  TLThemedButton *closeButton = [TLThemedButton buttonWithTitle:@"Close" target:self action:@selector(closeDebugTab:)];
   closeButton.translatesAutoresizingMaskIntoConstraints = NO;
   closeButton.bezelStyle = NSBezelStyleRounded;
   closeButton.controlSize = NSControlSizeLarge;
-  closeButton.font = palette.labelFont;
-  closeButton.bezelColor = palette.secondaryActionSurface;
-  closeButton.contentTintColor = palette.secondaryActionText;
+  closeButton.palette = palette;
+  closeButton.primary = NO;
 
   TLTokenView *card = [[TLTokenView alloc] init];
   card.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3138,13 +3137,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   resetDescription.usesSingleLineMode = NO;
   resetDescription.maximumNumberOfLines = 0;
   resetDescription.lineBreakMode = NSLineBreakByWordWrapping;
-  NSButton *resetButton = [NSButton buttonWithTitle:@"Reset everything…" target:NSApp.delegate action:@selector(resetApp:)];
+  TLThemedButton *resetButton = [TLThemedButton buttonWithTitle:@"Reset everything…" target:NSApp.delegate action:@selector(resetApp:)];
   resetButton.translatesAutoresizingMaskIntoConstraints = NO;
   resetButton.bezelStyle = NSBezelStyleRounded;
   resetButton.controlSize = NSControlSizeLarge;
-  resetButton.font = palette.labelFont;
-  resetButton.bezelColor = palette.primaryActionSurface;
-  resetButton.contentTintColor = palette.primaryActionText;
+  resetButton.palette = palette;
+  resetButton.primary = NO;
   TLTokenView *resetCard = [[TLTokenView alloc] init];
   resetCard.translatesAutoresizingMaskIntoConstraints = NO;
   resetCard.fillColor = palette.controlSurface;
@@ -3181,7 +3179,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [terminalDescription.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-palette.space8],
     [terminalDescription.topAnchor constraintEqualToAnchor:terminalLabel.bottomAnchor constant:palette.space3],
     [openButton.leadingAnchor constraintEqualToAnchor:terminalLabel.leadingAnchor],
-    [openButton.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-palette.space8],
+    [openButton.trailingAnchor constraintLessThanOrEqualToAnchor:card.trailingAnchor constant:-palette.space8],
     [openButton.topAnchor constraintEqualToAnchor:terminalDescription.bottomAnchor constant:palette.space6],
     [openButton.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-palette.space8],
     [openButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
@@ -3194,7 +3192,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [resetDescription.trailingAnchor constraintEqualToAnchor:resetCard.trailingAnchor constant:-palette.space8],
     [resetDescription.topAnchor constraintEqualToAnchor:resetLabel.bottomAnchor constant:palette.space3],
     [resetButton.leadingAnchor constraintEqualToAnchor:resetLabel.leadingAnchor],
-    [resetButton.trailingAnchor constraintEqualToAnchor:resetDescription.trailingAnchor],
+    [resetButton.trailingAnchor constraintLessThanOrEqualToAnchor:resetDescription.trailingAnchor],
     [resetButton.topAnchor constraintEqualToAnchor:resetDescription.bottomAnchor constant:palette.space6],
     [resetButton.bottomAnchor constraintEqualToAnchor:resetCard.bottomAnchor constant:-palette.space8],
     [resetButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],

@@ -17,6 +17,7 @@
 #import "design_system/TLFolderAccessPicker.h"
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLButton.h"
+#import "design_system/TLThemedButton.h"
 #import "design_system/TLWorkspaceOutlineView.h"
 #import "design_system/TLChromeTabView.h"
 
@@ -337,6 +338,88 @@ static NSButton *FindResetButton(NSView *view) {
   return nil;
 }
 
+static void RGBComponents(NSColor *color, CGFloat rgb[3], CGFloat *alpha) {
+  [[color colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace] getRed:&rgb[0] green:&rgb[1] blue:&rgb[2] alpha:alpha];
+}
+
+static void CompositeColor(NSColor *color, CGFloat opacity, CGFloat rgb[3]) {
+  CGFloat foreground[3], alpha;
+  RGBComponents(color, foreground, &alpha);
+  alpha *= opacity;
+  for (NSUInteger i = 0; i < 3; i++) rgb[i] = foreground[i] * alpha + rgb[i] * (1 - alpha);
+}
+
+static BOOL PixelMatches(NSBitmapImageRep *bitmap, NSInteger x, NSInteger y, CGFloat expected[3]) {
+  CGFloat actual[3], alpha;
+  RGBComponents([bitmap colorAtX:x y:y], actual, &alpha);
+  return fabs(actual[0] - expected[0]) < 0.04 && fabs(actual[1] - expected[1]) < 0.04 && fabs(actual[2] - expected[2]) < 0.04;
+}
+
+static NSBitmapImageRep *RenderThemedButton(TLThemedButton *button) {
+  NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+    pixelsWide:220 pixelsHigh:44 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+    colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
+  [NSGraphicsContext saveGraphicsState];
+  NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap];
+  [button.palette.tabBackground setFill];
+  NSRectFill(button.bounds);
+  [button.cell drawWithFrame:button.bounds inView:button];
+  [NSGraphicsContext restoreGraphicsState];
+  return bitmap;
+}
+
+static void TestThemedButtonRenderedColors(void) {
+  TLThemedButton *button = [TLThemedButton buttonWithTitle:@"Reset everything…" target:nil action:nil];
+  button.frame = NSMakeRect(0, 0, 220, 44);
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:button.bounds
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  [window.contentView addSubview:button];
+  NSEvent *hoverEvent = [NSEvent enterExitEventWithType:NSEventTypeMouseEntered
+    location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:window.windowNumber
+    context:nil eventNumber:0 trackingNumber:0 userData:NULL];
+  // Use the same control across theme changes, and render in an inactive window.
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    button.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    TLThemePalette *palette = button.palette;
+    for (NSNumber *primary in @[@NO, @YES]) {
+      button.primary = primary.boolValue;
+      for (NSString *state in @[@"normal", @"hovered", @"pressed", @"disabled", @"focused", @"default"]) {
+        button.enabled = ![state isEqualToString:@"disabled"];
+        [button mouseExited:hoverEvent];
+        if ([state isEqualToString:@"hovered"]) [button mouseEntered:hoverEvent];
+        [button.cell setHighlighted:[state isEqualToString:@"pressed"]];
+        button.keyEquivalent = [state isEqualToString:@"default"] ? @"\r" : @"";
+        BOOL focused = [state isEqualToString:@"focused"];
+        [window makeFirstResponder:focused ? button : nil];
+        if (focused) Check(window.firstResponder == button, @"themed buttons retain native keyboard focus");
+        NSBitmapImageRep *bitmap = RenderThemedButton(button);
+        if (focused) {
+          CGFloat focusColor[3], alpha;
+          RGBComponents(palette.controlFocus, focusColor, &alpha);
+          Check(PixelMatches(bitmap, 1, 22, focusColor), @"keyboard focus uses the theme focus token");
+        }
+        CGFloat surface[3], unusedAlpha;
+        RGBComponents(palette.tabBackground, surface, &unusedAlpha);
+        CGFloat opacity = button.enabled ? 1 : palette.disabledOpacity;
+        CompositeColor(button.primary ? palette.primaryActionSurface : palette.secondaryActionSurface, opacity, surface);
+        if ([state isEqualToString:@"hovered"] || [state isEqualToString:@"pressed"]) CompositeColor(palette.chromeHoverSurface, 1, surface);
+        Check(PixelMatches(bitmap, 10, 22, surface), [NSString stringWithFormat:@"%@ button renders its theme surface", state]);
+        CGFloat foreground[3] = {surface[0], surface[1], surface[2]};
+        CompositeColor(button.primary ? palette.primaryActionText : palette.secondaryActionText, opacity, foreground);
+        NSUInteger foregroundPixels = 0;
+        for (NSInteger y = 8; y < 36; y++) {
+          for (NSInteger x = 35; x < 185; x++) if (PixelMatches(bitmap, x, y, foreground)) foregroundPixels++;
+        }
+        Check(foregroundPixels > 10, [NSString stringWithFormat:@"%@ button renders the paired text color in theme %@", state, theme]);
+        NSString *path = [NSString stringWithFormat:@"build/themed-button-%@-%@-%@.png", theme, primary, state];
+        [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+      }
+    }
+  }
+  [window close];
+}
+
 static void TestDebugResetLayout(void) {
   TalariaWindowController *controller = [[TalariaWindowController alloc] initWithWindow:nil];
   for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
@@ -355,13 +438,15 @@ static void TestDebugResetLayout(void) {
     ]];
     NSButton *resetButton = FindResetButton(view);
     Check(resetButton != nil && [resetButton.title isEqualToString:@"Reset everything…"], @"debug screen exposes the reset action");
-    Check([resetButton.bezelColor isEqual:palette.primaryActionSurface], @"reset action follows the active palette");
+    Check([resetButton isKindOfClass:TLThemedButton.class] &&
+      [resetButton.bezelColor isEqual:palette.secondaryActionSurface], @"reset action uses the themed secondary button");
     for (NSNumber *width in @[@640, @200]) {
       [window setContentSize:NSMakeSize(width.doubleValue, 240)];
       [window.contentView layoutSubtreeIfNeeded];
       NSView *document = view.documentView;
       NSRect buttonRect = [resetButton convertRect:resetButton.bounds toView:document];
       Check(NSWidth(document.frame) <= width.doubleValue && NSWidth(document.frame) > 0, [NSString stringWithFormat:@"debug content fits a narrow window: window %@ scroll %@ document %@", NSStringFromRect(window.contentView.bounds), NSStringFromRect(view.frame), NSStringFromRect(document.frame)]);
+      if (width.doubleValue == 640) Check(NSWidth(buttonRect) < 240, @"card actions fit their labels instead of filling the card");
       Check(NSContainsRect(document.bounds, buttonRect), @"reset button stays inside the scrollable document");
       [document scrollRectToVisible:buttonRect];
       Check(NSIntersectsRect(document.visibleRect, buttonRect), @"reset button is reachable by scrolling");
@@ -1532,6 +1617,7 @@ int main(void) {
     TestRealSidebarAgents();
     TestSuggestionTypingAndVirtualization();
     TestRunningAgentRepairAction();
+    TestThemedButtonRenderedColors();
     TestDebugResetLayout();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
