@@ -95,7 +95,8 @@ CGColorRef TLCGColor(NSColor *color) {
   self.sidebarTileSystemIconSize = 16.0;
   self.sidebarAccessoryIconOpacity = 0.32;
   self.tabHeight = 36.0;
-  self.compactButtonSurfaceSize = 24.0;
+  self.compactButtonSurfaceSize = 25.0;
+  self.compactButtonSurfaceOffsetX = -2.0;
   self.compactButtonCornerRadius = 6.0;
   self.tabActiveHeightReduction = 2.0;
   self.tabMinWidth = 112.0;

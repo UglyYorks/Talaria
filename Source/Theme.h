@@ -209,6 +209,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat sidebarBookmarkCornerRadius;
 @property (nonatomic) CGFloat tabHeight;
 @property (nonatomic) CGFloat compactButtonSurfaceSize;
+@property (nonatomic) CGFloat compactButtonSurfaceOffsetX;
 @property (nonatomic) CGFloat compactButtonCornerRadius;
 @property (nonatomic) CGFloat tabActiveHeightReduction;
 @property (nonatomic) CGFloat tabMinWidth;

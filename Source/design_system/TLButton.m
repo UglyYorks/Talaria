@@ -139,17 +139,32 @@
   BOOL compact = self.style == TLButtonStyleCompactMinimal;
   if (compact) {
     CGFloat length = MIN(self.palette.compactButtonSurfaceSize, MIN(NSWidth(surface), NSHeight(surface)));
-    surface = NSMakeRect(NSMidX(surface) - length * 0.5, NSMidY(surface) - length * 0.5, length, length);
+    surface = NSMakeRect(NSMidX(surface) - length * 0.5 + self.palette.compactButtonSurfaceOffsetX,
+                         NSMidY(surface) - length * 0.5, length, length);
   }
+  CGFloat targetOpacity = showHoverBackground ? 1.0 : 0.0;
+  CGFloat previousOpacity = self.hoverBackgroundLayer.opacity;
+  CGFloat visibleOpacity = (self.hoverBackgroundLayer.presentationLayer ?: self.hoverBackgroundLayer).opacity;
+  BOOL animate = compact && self.window.isVisible && self.palette.tabHoverFadeDuration > 0 &&
+    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   self.hoverBackgroundLayer.frame = surface;
-  self.hoverBackgroundLayer.backgroundColor = showHoverBackground
-    ? TLCGColor(self.palette.secondaryActionSurface)
-    : TLCGColor(self.palette.transparentSurface);
+  self.hoverBackgroundLayer.backgroundColor = TLCGColor(self.palette.secondaryActionSurface);
+  self.hoverBackgroundLayer.opacity = targetOpacity;
   self.hoverBackgroundLayer.cornerRadius = compact ? self.palette.compactButtonCornerRadius
     : MIN(NSWidth(surface), NSHeight(surface)) * 0.5;
   [CATransaction commit];
+  if (!animate) {
+    [self.hoverBackgroundLayer removeAnimationForKey:@"tab-decoration-fade"];
+  } else if (previousOpacity != targetOpacity) {
+    CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+    fade.fromValue = @(visibleOpacity);
+    fade.toValue = @(targetOpacity);
+    fade.duration = self.palette.tabHoverFadeDuration;
+    fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [self.hoverBackgroundLayer addAnimation:fade forKey:@"tab-decoration-fade"];
+  }
 }
 
 - (void)setImage:(NSImage *)image {

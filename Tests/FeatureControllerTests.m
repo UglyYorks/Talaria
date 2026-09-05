@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import "TLBrowserTabController.h"
 #import "TLNotesTabController.h"
 #import "TLSettingsTabController.h"
@@ -40,6 +41,8 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
   Check(NSWidth(surface.frame) == button.palette.compactButtonSurfaceSize &&
         NSHeight(surface.frame) == NSWidth(surface.frame), @"compact surface is a smaller square");
   Check(surface.cornerRadius == button.palette.compactButtonCornerRadius, @"compact surface has rounded corners");
+  Check(NSWidth(surface.frame) == 25 && NSMidX(surface.frame) == NSMidX(button.bounds) - 2,
+        @"visible square is 25 points and shifted two points left without moving the hit target");
   Check(NSContainsRect(clickTarget.frame, button.bounds) && NSWidth(surface.frame) < NSWidth(button.bounds),
         [NSString stringWithFormat:@"click target remains larger than the visible background: target %@ bounds %@ surface %@",
           NSStringFromRect(clickTarget.frame), NSStringFromRect(button.bounds), NSStringFromRect(surface.frame)]);
@@ -47,19 +50,33 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 
   __block BOOL hovered = NO;
   button.hoverChanged = ^(BOOL value) { hovered = value; };
-  NSPoint outerHitPoint = NSMakePoint(1, NSMidY(button.bounds));
+  NSPoint outerHitPoint = NSMakePoint(NSWidth(button.bounds) - 1, NSMidY(button.bounds));
   Check(!NSPointInRect(outerHitPoint, surface.frame), @"test pointer is outside the visible square");
   window.testPointer = [button convertPoint:outerHitPoint toView:nil];
   [button updateTrackingAreas];
-  Check(hovered && CGColorGetAlpha(surface.backgroundColor) > 0, @"invisible margin still activates hover");
+  Check(hovered && surface.opacity == 1, @"invisible margin still activates hover");
+  Check(CGColorEqualToColor(surface.backgroundColor, TLCGColor(button.palette.secondaryActionSurface)),
+        @"button hover uses the same surface color as tabs");
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    CABasicAnimation *fade = (CABasicAnimation *)[surface animationForKey:@"tab-decoration-fade"];
+    Check(fade && fade.duration == button.palette.tabHoverFadeDuration && [fade.toValue doubleValue] == 1,
+          @"button hover fades in with the tab hover duration");
+    Check([fade.timingFunction isEqual:[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut]],
+          @"button hover matches tab easing");
+  }
   Check([button hitTest:[button convertPoint:outerHitPoint toView:button.superview]] == clickTarget,
         @"invisible margin still receives clicks");
 
   [button setFrameOrigin:NSMakePoint(100, 20)];
-  Check(!hovered && CGColorGetAlpha(surface.backgroundColor) == 0,
+  Check(!hovered && surface.opacity == 0,
     [NSString stringWithFormat:@"moving away during tab closure clears cached hover: frame %@ pointer %@ local %@ hover %d alpha %g",
       NSStringFromRect(button.frame), NSStringFromPoint(window.testPointer),
-      NSStringFromPoint([button convertPoint:window.testPointer fromView:nil]), hovered, CGColorGetAlpha(surface.backgroundColor)]);
+      NSStringFromPoint([button convertPoint:window.testPointer fromView:nil]), hovered, surface.opacity]);
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    CABasicAnimation *fade = (CABasicAnimation *)[surface animationForKey:@"tab-decoration-fade"];
+    Check(fade && fade.duration == button.palette.tabHoverFadeDuration && [fade.toValue doubleValue] == 0,
+          @"moving away fades hover out with the tab hover duration");
+  }
   NSEvent *staleEntry = [NSEvent enterExitEventWithType:NSEventTypeMouseEntered
     location:window.testPointer modifierFlags:0 timestamp:0 windowNumber:window.windowNumber
     context:nil eventNumber:0 trackingNumber:0 userData:NULL];
