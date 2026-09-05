@@ -5,7 +5,7 @@
 > [!WARNING]
 > Talaria is under active development and is **not in a working state yet**. It is not ready for regular use.
 
-The most polished way to run Hermes on Mac OS.
+The easiest way to run Hermes on Mac OS.
 
 ## License
 
