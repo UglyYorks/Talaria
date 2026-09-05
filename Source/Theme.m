@@ -129,6 +129,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.composerMinHeight = 76.0;
   self.composerButtonHeight = 46.0;
   self.messageInputSendButtonSize = 32.0;
+  self.buttonImageReplacementDuration = 0.24;
   self.messageInputMaxHeight = 168.0;
   self.browserBackdropHeight = 75.0;
   self.browserToolbarButtonSize = 28.0;
@@ -146,6 +147,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.messageMaxWidth = 760.0;
   self.messageHorizontalInset = 56.0;
   self.messageVerticalSpacing = 30.0;
+  self.messageBottomSpacing = 100.0;
   self.userMessageMaxWidthMultiplier = 0.70;
   self.assistantMessageMaxWidthMultiplier = 0.90;
   self.controlMinWidth = 78.0;

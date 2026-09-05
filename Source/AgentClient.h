@@ -30,6 +30,7 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLOpenRouterModel *> *_Null
                            completion:(TLAgentModelCatalogueHandler)completion;
 
 @optional
+- (void)cancelChatWithRequestID:(NSString *)requestID;
 - (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent
                            requestID:(NSString *)requestID
                            sessionID:(NSString *)sessionID

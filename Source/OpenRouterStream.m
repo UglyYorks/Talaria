@@ -172,13 +172,16 @@ didReceiveResponse:(NSURLResponse *)response
   return TLOpenRouterError([NSString stringWithFormat:@"OpenRouter returned %ld: %@", (long)self.statusCode, message]);
 }
 
-- (void)finishWithError:(NSError *)error {
-  if (self.finished) {
-    return;
-  }
+- (void)cancel {
+  [self finishWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]];
+}
 
-  self.finished = YES;
-  [self.session invalidateAndCancel];
+- (void)finishWithError:(NSError *)error {
+  @synchronized (self) {
+    if (self.finished) return;
+    self.finished = YES;
+    [self.session invalidateAndCancel];
+  }
 
   dispatch_async(dispatch_get_main_queue(), ^{
     self.completion(error);

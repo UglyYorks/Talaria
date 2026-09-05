@@ -27,17 +27,20 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 @property (nonatomic, strong) NSFileHandle *fileHandle;
 @property (nonatomic, strong) NSMutableData *outputBuffer;
 @property (nonatomic, copy) NSString *operation;
+@property (nonatomic, copy) NSString *requestID;
 @property (nonatomic, copy, nullable) TLAgentStreamDeltaHandler deltaHandler;
 @property (nonatomic, copy, nullable) TLAgentStreamCompletionHandler streamCompletion;
 @property (nonatomic, copy, nullable) TLAgentModelCatalogueHandler modelCompletion;
 @property (nonatomic, copy) TLBundledAgentRequestReleaseHandler releaseHandler;
 @property (nonatomic) BOOL finished;
+@property (nonatomic) BOOL cancelled;
 @property (nonatomic) BOOL receivedTerminalEvent;
 
 - (BOOL)startWithConnection:(VZVirtioSocketConnection *)connection
                     payload:(NSDictionary *)payload
                   operation:(NSString *)operation
                       error:(NSError **)error;
+- (void)finishWithError:(NSError *)error models:(NSArray<TLOpenRouterModel *> *)models;
 
 @end
 
@@ -335,6 +338,12 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                    operation:@"stream_chat"
                        delta:VMDelta
             streamCompletion:^(NSError *error) {
+    for (TLBundledAgentRequest *request in self.activeRequests) {
+      if ([request.requestID isEqualToString:requestID] && request.cancelled) {
+        completion([NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
+        return;
+      }
+    }
     if (!error || receivedDelta || !TLAgentClientShouldUseHostNetworkFallback(error)) {
       completion(error);
       return;
@@ -352,6 +361,17 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     } completion:completion];
   }
              modelCompletion:nil];
+}
+
+- (void)cancelChatWithRequestID:(NSString *)requestID {
+  for (TLBundledAgentRequest *request in self.activeRequests.copy) {
+    if ([request.requestID isEqualToString:requestID]) {
+      request.cancelled = YES;
+      // Closing this request's socket signals cancellation to the guest worker.
+      [request finishWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil] models:nil];
+    }
+  }
+  [self.hostNetworkClient cancelChatWithRequestID:requestID];
 }
 
 - (void)fetchModelCatalogueWithAgent:(TLAgentRecord *)agent
@@ -391,32 +411,26 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     return;
   }
 
+  // Register before connecting so Stop also cancels a request waiting for its socket.
+  TLBundledAgentRequest *request = [[TLBundledAgentRequest alloc] init];
+  request.requestID = payload[@"request_id"];
+  request.deltaHandler = delta;
+  request.streamCompletion = streamCompletion;
+  request.modelCompletion = modelCompletion;
+  __weak typeof(self) weakSelf = self;
+  request.releaseHandler = ^(id finishedRequest) {
+    [weakSelf.activeRequests removeObject:finishedRequest];
+  };
+  [self.activeRequests addObject:request];
   [self.vmService connectToAgent:agent port:TLAgentWorkerPort timeout:TLAgentWorkerConnectionTimeout completion:^(VZVirtioSocketConnection *connection, NSError *error) {
+    if (request.finished) { [connection close]; return; }
     if (!connection) {
-      [self completeStreamCompletion:streamCompletion
-                     modelCompletion:modelCompletion
-                              models:nil
-                               error:error ?: TLAgentClientError(@"Could not connect to the agent VM.")];
+      [request finishWithError:error ?: TLAgentClientError(@"Could not connect to the agent VM.") models:nil];
       return;
     }
-
-    TLBundledAgentRequest *request = [[TLBundledAgentRequest alloc] init];
-    request.deltaHandler = delta;
-    request.streamCompletion = streamCompletion;
-    request.modelCompletion = modelCompletion;
-    __weak typeof(self) weakSelf = self;
-    request.releaseHandler = ^(id finishedRequest) {
-      [weakSelf.activeRequests removeObject:finishedRequest];
-    };
-
-    [self.activeRequests addObject:request];
     NSError *startError = nil;
     if (![request startWithConnection:connection payload:payload operation:operation error:&startError]) {
-      [self.activeRequests removeObject:request];
-      [self completeStreamCompletion:streamCompletion
-                     modelCompletion:modelCompletion
-                              models:nil
-                               error:startError ?: TLAgentClientError(@"Could not start the agent VM request.")];
+      [request finishWithError:startError ?: TLAgentClientError(@"Could not start the agent VM request.") models:nil];
     }
   }];
 }

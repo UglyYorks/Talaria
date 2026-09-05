@@ -1,8 +1,10 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <WebKit/WebKit.h>
 #import "TLBrowserTabController.h"
 #import "TLSettingsTabController.h"
 #import "AgentOrchestrator.h"
+#import "AssistantTurnRunner.h"
 #import "ModelPickerView.h"
 #import "UIComponents.h"
 #import "TalariaWindowController.h"
@@ -218,10 +220,106 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (void)renderWorkspaceTabs;
 - (void)updateWorkspaceMode;
 - (void)updateControlStates;
+- (void)activateComposerButton:(id)sender;
+- (void)sendMessage:(id)sender allowAutomaticRouting:(BOOL)allowAutomaticRouting;
+- (void)loadChatWithID:(NSInteger)chatID;
+- (void)applySavedChatSummary:(TLChatSummary *)summary;
+- (NSString *)displayTitleForWorkspaceTab:(TLWorkspaceTab *)tab;
 - (void)startNewChatWithModel:(NSString *)model focus:(BOOL)focus;
+- (void)renderMessages;
+- (void)resetMessageRowCache;
 - (void)workspaceTabsController:(nullable TLWorkspaceTabsController *)controller
                        moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index;
 @end
+
+@interface TLMessageStackRecorder : NSStackView
+@property (nonatomic) NSUInteger removalCount;
+@end
+@implementation TLMessageStackRecorder
+- (void)removeView:(NSView *)view {
+  self.removalCount++;
+  [super removeView:view];
+}
+@end
+
+static id EvaluateChatScript(WKWebView *web, NSString *script) {
+  __block BOOL done = NO;
+  __block id value = nil;
+  __block NSError *failure = nil;
+  [web evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+    value = result; failure = error; done = YES;
+  }];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+  while (!done && deadline.timeIntervalSinceNow > 0) {
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+  }
+  Check(done && !failure, [NSString stringWithFormat:@"chat JavaScript completes: %@", failure]);
+  return value;
+}
+
+static void TestStreamingKeepsMessageViewsAttached(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 600)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TalariaWindowController *controller = [[TalariaWindowController alloc] initWithWindow:window];
+  [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
+  [controller resetMessageRowCache];
+  TLMessageStackRecorder *stack = [[TLMessageStackRecorder alloc] initWithFrame:window.contentView.bounds];
+  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  stack.alignment = NSLayoutAttributeWidth;
+  NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:window.contentView.bounds];
+  scroll.documentView = stack;
+  [window.contentView addSubview:scroll];
+  [controller setValue:scroll forKey:@"messageScrollView"];
+  [controller setValue:stack forKey:@"messageStack"];
+  [controller setValue:stack forKey:@"messageDocumentView"];
+  TLChatMessage *user = [TLChatMessage messageWithRole:TLRoleUser content:@"Write a long answer" thinking:nil];
+  TLChatMessage *assistant = [TLChatMessage messageWithRole:TLRoleAssistant content:@"First paragraph.\n\n" thinking:nil];
+  NSMutableArray *messages = [NSMutableArray arrayWithObjects:user, assistant, nil];
+  [controller setValue:messages forKey:@"messages"];
+  [controller renderMessages];
+  NSArray *rows = stack.arrangedSubviews.copy;
+  NSMapTable *markdownViews = [controller valueForKey:@"messageMarkdownViews"];
+  NSView *markdown = [markdownViews objectForKey:assistant];
+  WKWebView *web = [markdown valueForKey:@"webView"];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+  while (![[markdown valueForKey:@"documentReady"] boolValue] && deadline.timeIntervalSinceNow > 0) {
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+  }
+  Check([[markdown valueForKey:@"documentReady"] boolValue], @"initial chat document loads");
+  EvaluateChatScript(web, @"window.streamingTestMarker = 42");
+  NSUInteger constraintCount = stack.constraints.count;
+  for (NSString *chunk in @[@"Another ", @"sentence.\n\n```swift\n", @"print(\"hi\")", @"\n```\n\nDone."]) {
+    assistant.content = [assistant.content stringByAppendingString:chunk];
+    [controller renderMessages];
+    Check([stack.arrangedSubviews isEqual:rows] && stack.removalCount == 0,
+          @"streaming keeps every message row attached instead of tearing down the conversation");
+    Check([markdownViews objectForKey:assistant] == markdown && [markdown valueForKey:@"webView"] == web,
+          @"deltas reuse the loaded Markdown view and WebKit document");
+    Check([[markdown valueForKey:@"text"] isEqual:assistant.content], @"each delta reaches the existing renderer");
+    Check(stack.constraints.count == constraintCount, @"streaming does not accumulate width constraints");
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    Check([EvaluateChatScript(web, @"window.streamingTestMarker") integerValue] == 42,
+          @"rendering new text never reloads the web document");
+    Check([EvaluateChatScript(web, @"document.body.innerText") containsString:@"First paragraph."],
+          @"already visible answer text remains present throughout the stream");
+  }
+  Check([EvaluateChatScript(web, @"document.body.innerText") containsString:@"Done."], @"final streamed text is rendered");
+  TLStoredChatMessage *saved = [TLStoredChatMessage messageWithRole:assistant.role content:assistant.content thinking:assistant.thinking];
+  saved.messageID = 7;
+  messages[1] = saved;
+  [controller renderMessages];
+  Check([stack.arrangedSubviews isEqual:rows] && [markdownViews objectForKey:saved] == markdown && stack.removalCount == 0,
+        @"saving the completed answer preserves its visible row and renderer");
+  [messages removeObjectAtIndex:1];
+  [controller renderMessages];
+  Check(stack.arrangedSubviews.count == 1 && stack.arrangedSubviews.firstObject == rows.firstObject &&
+        ![markdownViews objectForKey:saved], @"deleting an answer removes only its own row and renderer");
+  [controller resetMessageRowCache];
+  Check(stack.arrangedSubviews.count == 0 && [[controller valueForKey:@"messageMarkdownViews"] count] == 0,
+        @"theme and conversation resets discard the old renderers");
+  [window close];
+}
 
 /// Keep service/rendering side effects out of this navigation/state regression.
 @interface TLSendingNavigationController : TalariaWindowController
@@ -238,12 +336,58 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (BOOL)isChatWorkspaceActive { return YES; }
 @end
 
+@interface TLStopTestRunner : TLAssistantTurnRunner
+@property NSUInteger stopCount;
+@end
+@implementation TLStopTestRunner
+- (BOOL)running { return self.stopCount == 0; }
+- (void)cancel { self.stopCount++; }
+@end
+
+static void TestStreamingComposerStopButton(void) {
+  TLSendingNavigationController *controller = [[TLSendingNavigationController alloc] initWithWindow:nil];
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  TLStopTestRunner *runner = [[TLStopTestRunner alloc] initWithMessageStore:(id)[[NSObject alloc] init] streaming:(id)[[NSObject alloc] init]];
+  TLChatRecord *chat = [[TLChatRecord alloc] init]; chat.chatID = 17;
+  [controller setValue:input forKey:@"messageInput"];
+  [controller setValue:input.textView forKey:@"promptTextView"];
+  [controller setValue:input.sendButton forKey:@"sendButton"];
+  [controller setValue:input.palette forKey:@"palette"];
+  [controller setValue:[NSMutableDictionary dictionaryWithObject:runner forKey:@17] forKey:@"turnRunners"];
+  [controller setValue:chat forKey:@"activeChat"];
+
+  [controller updateControlStates];
+  Check(input.showsStopButton && input.sendButton.image != nil && input.sendButton.enabled && input.sendButton.alphaValue == 1 &&
+    [input.sendButton.toolTip isEqual:@"Stop response"], @"empty streaming composer has an active Stop button");
+  for (NSString *draft in @[@"Next question", @" "]) {
+    input.textView.string = draft;
+    [controller updateControlStates];
+    Check(!input.showsStopButton && !input.sendButton.enabled && [input.sendButton.toolTip isEqual:@"Send"],
+      @"any draft restores Send and cannot accidentally stop the response");
+  }
+  input.textView.string = @"";
+  chat.chatID = 18;
+  [controller updateControlStates];
+  Check(!input.showsStopButton, @"another chat cannot stop the originating chat's response");
+  chat.chatID = 17;
+  [controller updateControlStates];
+  Check(input.showsStopButton, @"clearing the draft restores Stop");
+  [controller activateComposerButton:input.sendButton];
+  Check(runner.stopCount == 1, @"the composer Stop action cancels generation");
+  [[controller valueForKey:@"turnRunners"] removeAllObjects];
+  [controller updateControlStates];
+  Check(!input.showsStopButton && !input.sendButton.enabled, @"finished empty composer returns to disabled Send");
+  input.textView.string = @"Next question";
+  [controller updateControlStates];
+  Check(input.sendButton.enabled && !input.showsStopButton, @"draft can be sent after stopping");
+}
+
 static void TestNavigationWhileSendingPreservesTurn(void) {
   TLSendingNavigationController *controller = [[TLSendingNavigationController alloc] initWithWindow:nil];
   NSMutableArray *originalMessages = [NSMutableArray arrayWithObject:@"in-flight response"];
   [controller setValue:originalMessages forKey:@"messages"];
-  [controller setValue:originalMessages forKey:@"sendingMessages"];
-  [controller setValue:@YES forKey:@"isSending"];
+  [controller setValue:[NSMutableDictionary dictionaryWithObject:originalMessages forKey:@17] forKey:@"turnMessagesByChat"];
+  [controller setValue:[NSMutableDictionary dictionaryWithObject:[[NSObject alloc] init] forKey:@17] forKey:@"turnRunners"];
   [controller setValue:@(-2) forKey:@"nextDraftChatID"];
   [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
   NSArray *headerKeys = @[@"createChatButton", @"sidebarToggleButton"];
@@ -261,15 +405,238 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
         @"new tab can open while a response is running");
   Check([controller valueForKey:@"messages"] != originalMessages && originalMessages.count == 1,
         @"navigation replaces the display buffer without clearing the running turn");
-  Check([controller valueForKey:@"sendingMessages"] == originalMessages,
+  Check([[controller valueForKey:@"turnMessagesByChat"] objectForKey:@17] == originalMessages,
         @"running turn keeps its own buffer");
   for (NSString *key in headerKeys) {
     Check([[controller valueForKey:key] isEnabled], @"header remains enabled while sending");
   }
   prompt.string = @"next draft";
   [controller updateControlStates];
-  Check(prompt.editable && !send.enabled, @"draft editing stays available but concurrent sends remain blocked");
-  Check([[controller valueForKey:@"isSending"] boolValue], @"navigation does not cancel the turn");
+  Check(prompt.editable && send.enabled, @"a new chat can send while another chat is streaming");
+  Check([[controller valueForKey:@"hasSendingTurns"] boolValue] && ![[controller valueForKey:@"isSending"] boolValue],
+    @"navigation keeps the original turn running without marking the new chat busy");
+}
+
+@interface TLConcurrentTestRequest : NSObject
+@property NSString *requestID;
+@property NSString *sessionID;
+@property (copy) TLAgentStreamDeltaHandler delta;
+@property (copy) TLAgentStreamCompletionHandler completion;
+@end
+@implementation TLConcurrentTestRequest
+@end
+
+@interface TLConcurrentTestStream : NSObject <TLAssistantTurnStreaming>
+@property NSMutableArray<TLConcurrentTestRequest *> *requests;
+@property NSMutableArray<NSString *> *cancelledRequests;
+@end
+@implementation TLConcurrentTestStream
+- (instancetype)init {
+  if ((self = [super init])) { _requests = [NSMutableArray array]; _cancelledRequests = [NSMutableArray array]; }
+  return self;
+}
+- (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID sessionID:(NSString *)sessionID
+  token:(NSString *)token model:(NSString *)model messages:(NSArray<TLChatMessage *> *)messages
+  delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
+  TLConcurrentTestRequest *request = [[TLConcurrentTestRequest alloc] init];
+  request.requestID = requestID; request.sessionID = sessionID; request.delta = delta; request.completion = completion;
+  [self.requests addObject:request];
+}
+- (void)cancelChatWithRequestID:(NSString *)requestID { [self.cancelledRequests addObject:requestID]; }
+@end
+
+@interface TLConcurrentTestStore : NSObject <TLAssistantTurnMessageStore>
+@property NSMutableDictionary<NSNumber *, TLChatRecord *> *chats;
+@property NSInteger nextMessageID;
+@end
+@implementation TLConcurrentTestStore
+- (instancetype)init {
+  if ((self = [super init])) _chats = [NSMutableDictionary dictionary];
+  return self;
+}
+- (TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error {
+  TLStoredChatMessage *saved = [TLStoredChatMessage messageWithRole:message.role content:message.content thinking:message.thinking];
+  saved.messageID = ++self.nextMessageID;
+  TLChatRecord *chat = self.chats[@(chatID)];
+  chat.messages = [(chat.messages ?: @[]) arrayByAddingObject:saved];
+  return saved;
+}
+- (TLChatRecord *)chatWithID:(NSInteger)chatID error:(NSError **)error { return self.chats[@(chatID)]; }
+@end
+
+@interface TLConcurrentChatController : TLSendingNavigationController
+@property TLConcurrentTestStore *store;
+@property TLConcurrentTestStream *stream;
+@end
+@implementation TLConcurrentChatController
+- (TLAssistantTurnRunner *)newAssistantTurnRunner {
+  return [[TLAssistantTurnRunner alloc] initWithMessageStore:self.store streaming:self.stream];
+}
+- (void)refreshChatsKeepingActiveSelection {}
+- (void)generateChatIconIfNeededForChatID:(NSInteger)chatID messages:(NSArray *)messages {}
+- (void)presentErrorMessage:(NSString *)message { Check(NO, [@"unexpected concurrent chat error: " stringByAppendingString:message]); }
+@end
+
+static void TestConcurrentChatStreams(void) {
+  TLConcurrentChatController *controller = [[TLConcurrentChatController alloc] initWithWindow:nil];
+  controller.store = [[TLConcurrentTestStore alloc] init];
+  controller.stream = [[TLConcurrentTestStream alloc] init];
+  [controller setValue:controller.store forKey:@"database"];
+  TLAppSettings *settings = [TLAppSettings defaultSettings];
+  settings.openRouterToken = @"test-token"; settings.selectedModel = @"test-model";
+  [controller setValue:settings forKey:@"settings"];
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  [controller setValue:input forKey:@"messageInput"];
+  [controller setValue:input.textView forKey:@"promptTextView"];
+  [controller setValue:input.sendButton forKey:@"sendButton"];
+  [controller setValue:input.palette forKey:@"palette"];
+  for (NSNumber *chatID in @[@17, @18]) {
+    TLChatRecord *chat = [[TLChatRecord alloc] init];
+    chat.chatID = chatID.integerValue; chat.hermesSessionID = chatID.stringValue; chat.messages = @[];
+    controller.store.chats[chatID] = chat;
+  }
+  [controller loadChatWithID:17];
+  input.textView.string = @"Question A";
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+  TLConcurrentTestRequest *a = controller.stream.requests.lastObject;
+  a.delta(a.requestID, TLAgentStreamDeltaKindContent, @"Answer A");
+  NSMutableArray *messagesA = [controller valueForKey:@"messages"];
+  [controller loadChatWithID:18];
+  input.textView.string = @"Question B";
+  [controller updateControlStates];
+  Check(input.sendButton.enabled && !input.showsStopButton, @"chat B can send while A streams");
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+  TLConcurrentTestRequest *b = controller.stream.requests.lastObject;
+  NSMutableArray *messagesB = [controller valueForKey:@"messages"];
+  Check(controller.stream.requests.count == 2 && [a.sessionID isEqual:@"17"] && [b.sessionID isEqual:@"18"],
+    @"two independent runners dispatch separate Hermes sessions");
+  a.delta(a.requestID, TLAgentStreamDeltaKindContent, @" continues");
+  b.delta(b.requestID, TLAgentStreamDeltaKindContent, @"Answer B");
+  Check([((TLChatMessage *)messagesA.lastObject).content isEqual:@"Answer A continues"] &&
+    [((TLChatMessage *)messagesB.lastObject).content isEqual:@"Answer B"], @"interleaved deltas stay in their own chats");
+  input.textView.string = @"do not duplicate B";
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+  Check(controller.stream.requests.count == 2, @"a second turn in the same busy chat is still blocked");
+  [controller loadChatWithID:17];
+  Check([controller valueForKey:@"messages"] == messagesA && input.showsStopButton,
+    @"returning to a streaming chat restores its live buffer and Stop button");
+  [controller loadChatWithID:18];
+  [controller activateComposerButton:input.sendButton];
+  Check([controller.stream.cancelledRequests isEqual:@[b.requestID]] &&
+    [[controller valueForKey:@"turnRunners"] count] == 1, @"Stop B leaves A running");
+  input.textView.string = @"Another question B";
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+  TLConcurrentTestRequest *b2 = controller.stream.requests.lastObject;
+  input.textView.string = @"unsent draft";
+  b.delta(b.requestID, TLAgentStreamDeltaKindContent, @"stale B");
+  b.completion(nil);
+  a.delta(a.requestID, TLAgentStreamDeltaKindContent, @" finished");
+  a.completion(nil);
+  Check([[controller valueForKey:@"isSending"] boolValue] && [[controller valueForKey:@"turnRunners"] count] == 1 &&
+    [input.textView.string isEqual:@"unsent draft"], @"background completion cannot unlock B or replace its draft");
+  input.textView.string = @"";
+  [controller updateControlStates];
+  Check(input.showsStopButton && input.sendButton.enabled, @"B's Stop remains active after A finishes");
+  b2.delta(b2.requestID, TLAgentStreamDeltaKindContent, @"Second B answer");
+  b2.completion(nil);
+  [controller loadChatWithID:17];
+  Check([((TLChatMessage *)[[controller valueForKey:@"messages"] lastObject]).content isEqual:@"Answer A continues finished"],
+    @"completed background output persists to its original conversation");
+  [controller loadChatWithID:18];
+  Check([((TLChatMessage *)[[controller valueForKey:@"messages"] lastObject]).content isEqual:@"Second B answer"] &&
+    ![[controller valueForKey:@"hasSendingTurns"] boolValue], @"all chats finish independently without stale callbacks");
+}
+
+// Real database and tab metadata paths, with only unrelated UI/services suppressed.
+@interface TLChatTitleTestController : TalariaWindowController
+@property TLConcurrentTestStream *stream;
+@end
+@implementation TLChatTitleTestController
+- (TLAssistantTurnRunner *)newAssistantTurnRunner {
+  return [[TLAssistantTurnRunner alloc] initWithMessageStore:[self valueForKey:@"database"] streaming:self.stream];
+}
+- (void)renderMessages {}
+- (void)resetMessageRowCache {}
+- (void)showChatWorkspace {}
+- (void)reloadWorkspaceTabs {}
+- (void)updateControlStates {}
+- (void)selectActiveChatInHistory {}
+- (void)generateChatIconIfNeededForChatID:(NSInteger)chatID messages:(NSArray *)messages {}
+- (void)presentErrorMessage:(NSString *)message { Check(NO, message); }
+@end
+
+static TLChatTitleTestController *TitleController(TLDatabase *database) {
+  TLChatTitleTestController *controller = [[TLChatTitleTestController alloc] initWithWindow:nil];
+  controller.stream = [[TLConcurrentTestStream alloc] init];
+  [controller setValue:database forKey:@"database"];
+  [controller setValue:[[TLAppStateManager alloc] init] forKey:@"appStateManager"];
+  [controller setValue:[[NSView alloc] init] forKey:@"chatWorkspace"];
+  [controller setValue:[NSMutableDictionary dictionary] forKey:@"workspaceTabRuntimes"];
+  [controller setValue:[NSMutableArray array] forKey:@"chats"];
+  [controller setValue:@(-1) forKey:@"nextDraftChatID"];
+  TLAppSettings *settings = [TLAppSettings defaultSettings];
+  settings.openRouterToken = @"test-token"; settings.selectedModel = @"test-model";
+  [controller setValue:settings forKey:@"settings"];
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  [controller setValue:input forKey:@"messageInput"];
+  [controller setValue:input.textView forKey:@"promptTextView"];
+  [controller setValue:input.palette forKey:@"palette"];
+  return controller;
+}
+
+static void CheckChatTabTitle(TLChatTitleTestController *controller, NSInteger chatID, NSString *title) {
+  TLAppStateManager *state = [controller valueForKey:@"appStateManager"];
+  TLWorkspaceTab *tab = [state workspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID];
+  Check([tab.title isEqual:title] && [tab.toolTip isEqual:title] &&
+    [[controller displayTitleForWorkspaceTab:tab] isEqual:title], @"saved chat title stays consistent in tab, tooltip, and display");
+}
+
+static void TestStreamingChatTitlesPersist(void) {
+  NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+  NSURL *url = [directory URLByAppendingPathComponent:@"titles.sqlite3"];
+  id credentials = [[NSObject alloc] init]; // No credentials are accessed by these database operations.
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:credentials error:nil];
+  Check(database != nil, @"title fixture database opens");
+  TLChatTitleTestController *controller = TitleController(database);
+  NSTextView *prompt = [controller valueForKey:@"promptTextView"];
+  NSMutableArray<NSNumber *> *chatIDs = [NSMutableArray array];
+  NSArray<NSString *> *titles = @[@"Write a long essay", @"Explain the stars"];
+  for (NSString *title in titles) {
+    [controller startNewChatWithModel:@"test-model" focus:NO];
+    prompt.string = title;
+    [controller sendMessage:nil allowAutomaticRouting:NO];
+    NSInteger chatID = [[controller valueForKeyPath:@"activeChat.chatID"] integerValue];
+    [chatIDs addObject:@(chatID)];
+    CheckChatTabTitle(controller, chatID, title);
+    Check([[[database chatWithID:chatID error:nil] title] isEqual:title], @"title is durable before the first stream delta");
+  }
+  Check([[controller valueForKey:@"turnRunners"] count] == 2, @"both naming fixtures are still streaming");
+  for (NSUInteger pass = 0; pass < 3; pass++) {
+    for (NSNumber *chatID in chatIDs) {
+      [controller loadChatWithID:chatID.integerValue];
+      for (NSUInteger index = 0; index < chatIDs.count; index++) CheckChatTabTitle(controller, chatIDs[index].integerValue, titles[index]);
+    }
+  }
+  // Simulate a missing history entry when a background icon request finishes.
+  [controller setValue:[NSMutableArray array] forKey:@"chats"];
+  CheckChatTabTitle(controller, chatIDs[0].integerValue, titles[0]);
+  TLChatSummary *saved = [database saveChatIcon:@"📝" chatID:chatIDs[0].integerValue error:nil];
+  [controller applySavedChatSummary:saved];
+  CheckChatTabTitle(controller, chatIDs[0].integerValue, titles[0]);
+  Check([[controller valueForKey:@"chats"] count] == 1, @"background metadata fills a missing cache entry");
+  TLConcurrentTestRequest *first = controller.stream.requests[0];
+  first.delta(first.requestID, TLAgentStreamDeltaKindContent, @"Partial answer");
+  [controller loadChatWithID:chatIDs[0].integerValue];
+  [controller activateComposerButton:nil];
+  TLConcurrentTestRequest *second = controller.stream.requests[1];
+  second.delta(second.requestID, TLAgentStreamDeltaKindContent, @"Completed answer");
+  second.completion(nil);
+  for (NSUInteger index = 0; index < chatIDs.count; index++) CheckChatTabTitle(controller, chatIDs[index].integerValue, titles[index]);
+  TLDatabase *reopened = [[TLDatabase alloc] initWithURL:url credentialStore:credentials error:nil];
+  TLChatTitleTestController *restored = TitleController(reopened);
+  for (NSNumber *chatID in chatIDs) [restored loadChatWithID:chatID.integerValue];
+  for (NSUInteger index = 0; index < chatIDs.count; index++) CheckChatTabTitle(restored, chatIDs[index].integerValue, titles[index]);
+  [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
 }
 
 /// Exercise the real state subscriptions and drag delegate without constructing app services or UI.
@@ -819,7 +1186,11 @@ int main(void) {
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();
+    TestStreamingChatTitlesPersist();
+    TestConcurrentChatStreams();
+    TestStreamingComposerStopButton();
     TestNavigationWhileSendingPreservesTurn();
+    TestStreamingKeepsMessageViewsAttached();
     TestCompactButtonHitAreaAndMovingHover();
     TestUnifiedWorkspaceOutline();
     NSLog(@"FeatureControllerTests passed");

@@ -10,6 +10,7 @@ typedef NS_ENUM(NSInteger, TLAssistantTurnGenerationStatus) {
   TLAssistantTurnGenerationStatusNotStarted,
   TLAssistantTurnGenerationStatusSucceeded,
   TLAssistantTurnGenerationStatusFailed,
+  TLAssistantTurnGenerationStatusCancelled,
 };
 
 typedef NS_ENUM(NSInteger, TLAssistantTurnPersistenceStatus) {
@@ -36,6 +37,7 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
 @end
 
 @protocol TLAssistantTurnStreaming <NSObject>
+- (void)cancelChatWithRequestID:(NSString *)requestID;
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
                                 sessionID:(NSString *)sessionID
                                     token:(NSString *)token
@@ -48,8 +50,11 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
 @interface TLAssistantTurnRunner : NSObject
 
 @property (nonatomic, readonly) BOOL running;
+// Stops generation and saves any partial response. Safe to call repeatedly.
+- (void)cancel;
 // Reference context is sent to the model, never displayed or stored as the user's message.
 @property (nonatomic, copy, nullable) NSString *referenceContext;
+// Defaults to YES so each answer delta is visible, including unfinished Markdown.
 @property (nonatomic) BOOL streamsPartialContent;
 
 - (instancetype)initWithDatabase:(TLDatabase *)database agentOrchestrator:(TLAgentOrchestrator *)agentOrchestrator;

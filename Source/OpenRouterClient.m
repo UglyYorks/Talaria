@@ -52,6 +52,12 @@
   [task resume];
 }
 
+- (void)cancelChatWithRequestID:(NSString *)requestID {
+  for (TLOpenRouterStream *stream in self.activeStreams.copy) {
+    if ([stream.requestID isEqualToString:requestID]) [stream cancel];
+  }
+}
+
 - (void)streamChatWithRequestID:(NSString *)requestID
                           token:(NSString *)token
                           model:(NSString *)model

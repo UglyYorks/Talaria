@@ -108,7 +108,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @property (nonatomic, strong) TLDatabase *database;
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
-@property (nonatomic, strong) TLAssistantTurnRunner *assistantTurnRunner;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLAssistantTurnRunner *> *turnRunners;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray<TLChatMessage *> *> *turnMessagesByChat;
 @property (nonatomic, strong) TLChatIconGenerator *chatIconGenerator;
 @property (nonatomic, strong) TLAppStateManager *appStateManager;
 @property (nonatomic, strong) NSMutableArray<TLAppStateSubscription *> *appStateSubscriptions;
@@ -128,9 +129,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSMutableArray<TLChatMessage *> *messages;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageRowViews;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSString *> *messageRowSignatures;
-@property (nonatomic) BOOL isSending;
-@property (nonatomic) NSInteger sendingChatID;
-@property (nonatomic, strong) NSMutableArray<TLChatMessage *> *sendingMessages;
+@property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageMarkdownViews;
+@property (nonatomic, copy) NSArray<TLChatMessage *> *renderedMessages;
+@property (nonatomic, readonly) BOOL isSending;
+@property (nonatomic, readonly) BOOL hasSendingTurns;
 @property (nonatomic) BOOL isLoading;
 @property (nonatomic) BOOL widgetbookMode;
 @property (nonatomic, copy) NSString *errorMessage;
@@ -302,8 +304,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self) {
     _database = database;
     _agentOrchestrator = agentOrchestrator;
-    _assistantTurnRunner = [[TLAssistantTurnRunner alloc] initWithDatabase:database
-                                                         agentOrchestrator:agentOrchestrator];
+    _turnRunners = [NSMutableDictionary dictionary];
+    _turnMessagesByChat = [NSMutableDictionary dictionary];
     _chatIconGenerator = [[TLChatIconGenerator alloc] initWithAgentOrchestrator:agentOrchestrator];
     _appStateManager = appStateManager ?: [[TLAppStateManager alloc] init];
     _appStateSubscriptions = [NSMutableArray array];
@@ -319,6 +321,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     _messages = [NSMutableArray array];
     _messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
     _messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
+    _messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
     _errorMessage = @"";
     _sidebarVisible = YES;
     _widgetbookMode = TLWidgetbookModeEnabled();
@@ -736,7 +739,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)activateSidebarAgent:(NSControl *)sender {
-  if (self.isSending) return;
+  if (self.hasSendingTurns) return;
   NSError *error = nil;
   if (![self.database setCurrentAgentID:sender.tag error:&error]) {
     [self presentErrorMessage:error.localizedDescription];
@@ -767,7 +770,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     row.alignment = NSTextAlignmentLeft;
     row.font = self.palette.labelFont;
     row.contentTintColor = self.palette.appText;
-    row.enabled = !self.isSending;
+    row.enabled = !self.hasSendingTurns;
     row.toolTip = [NSString stringWithFormat:@"%@ — Local Hermes%@", agent.name,
       agent.agentID == currentID ? @" (Current)" : @""];
     [pane addArrangedSubview:row];
@@ -1363,6 +1366,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (row) { [self detachMessageRowFromStack:row]; }
   [self.messageRowViews removeObjectForKey:message];
   [self.messageRowSignatures removeObjectForKey:message];
+  [self.messageMarkdownViews removeObjectForKey:message];
   [self.messages removeObjectAtIndex:index];
   [self refreshChatsKeepingActiveSelection];
   [self renderMessagesScrollingToBottom:NO];
@@ -1376,7 +1380,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.promptTextView.delegate = self;
   self.sendButton = self.messageInput.sendButton;
   self.sendButton.target = self;
-  self.sendButton.action = @selector(sendMessage:);
+  self.sendButton.action = @selector(activateComposerButton:);
   return self.messageInput;
 }
 
@@ -1557,7 +1561,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.chats = [nextChats mutableCopy];
   [self reloadHistoryPanel];
   [self selectActiveChatInHistory];
-  [self reloadWorkspaceTabs];
 
   for (TLChatSummary *summary in self.chats) {
     if (summary.chatID == self.activeChat.chatID) {
@@ -1568,6 +1571,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
   }
 
+  [self synchronizeChatTabTitles];
+  [self reloadWorkspaceTabs];
 }
 
 - (void)loadChatWithID:(NSInteger)chatID {
@@ -1584,6 +1589,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.activeChat = chat;
+  [self applySavedChatSummary:chat];
   [self addChatToSessionIfNeeded:chat.chatID activate:YES];
   [self showChatWorkspace];
   self.messages = [NSMutableArray array];
@@ -1591,7 +1597,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   for (TLStoredChatMessage *storedMessage in chat.messages) {
     [self.messages addObject:[storedMessage copy]];
   }
-  if (self.isSending && self.sendingChatID == chatID) self.messages = self.sendingMessages;
+  NSMutableArray<TLChatMessage *> *streamingMessages = self.turnMessagesByChat[@(chatID)];
+  if (streamingMessages) self.messages = streamingMessages;
 
   self.promptTextView.string = @"";
   self.errorMessage = @"";
@@ -1979,6 +1986,31 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return YES;
 }
 
+- (BOOL)isSending {
+  return self.activeChat && self.turnRunners[@(self.activeChat.chatID)] != nil;
+}
+
+- (BOOL)hasSendingTurns {
+  return self.turnRunners.count > 0;
+}
+
+- (TLAssistantTurnRunner *)newAssistantTurnRunner {
+  return [[TLAssistantTurnRunner alloc] initWithDatabase:self.database agentOrchestrator:self.agentOrchestrator];
+}
+
+- (BOOL)canStopResponse {
+  return self.turnRunners[@(self.activeChat.chatID)].running && [self isChatWorkspaceActive] &&
+    self.promptTextView.string.length == 0;
+}
+
+- (void)activateComposerButton:(id)sender {
+  if ([self canStopResponse]) {
+    [self.turnRunners[@(self.activeChat.chatID)] cancel];
+  } else {
+    [self sendMessage:sender];
+  }
+}
+
 - (void)sendMessage:(id)sender {
   if ([self performSelectedSlashCommand]) {
     return;
@@ -2030,15 +2062,17 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   TLChatRecord *chat = self.activeChat;
   NSMutableArray<TLChatMessage *> *turnMessages = self.messages;
-  self.sendingChatID = chat.chatID;
-  self.sendingMessages = turnMessages;
+  TLAssistantTurnRunner *runner = [self newAssistantTurnRunner];
+  if (!self.turnRunners) self.turnRunners = [NSMutableDictionary dictionary];
+  if (!self.turnMessagesByChat) self.turnMessagesByChat = [NSMutableDictionary dictionary];
+  self.turnRunners[@(chat.chatID)] = runner;
+  self.turnMessagesByChat[@(chat.chatID)] = turnMessages;
   self.promptTextView.string = @"";
-  self.isSending = YES;
   self.errorMessage = @"";
   __weak typeof(self) weakSelf = self;
 
   NSError *startError = nil;
-  BOOL started = [self.assistantTurnRunner startTurnWithChat:chat
+  BOOL started = [runner startTurnWithChat:chat
                                                        token:token
                                                        model:model
                                                     messages:turnMessages
@@ -2050,15 +2084,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
     if (strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive]) {
       [strongSelf renderMessages];
+      [strongSelf updateControlStates];
     }
-    [strongSelf updateControlStates];
   } completionHandler:^(TLAssistantTurnResult *result) {
     TalariaWindowController *strongSelf = weakSelf;
     if (!strongSelf) {
       return;
     }
 
-    strongSelf.isSending = NO;
+    [strongSelf.turnRunners removeObjectForKey:@(chat.chatID)];
+    [strongSelf.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
     BOOL showingOrigin = strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive];
     if (showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       strongSelf.promptTextView.string = result.userMessage.content;
@@ -2072,7 +2107,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       [strongSelf generateChatIconIfNeededForChatID:chat.chatID messages:turnMessages];
     }
     if (showingOrigin) [strongSelf renderMessages];
-    strongSelf.sendingMessages = nil;
     [strongSelf updateControlStates];
     if (showingOrigin) [strongSelf.window makeFirstResponder:strongSelf.promptTextView];
 
@@ -2093,9 +2127,14 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
   } error:&startError];
 
+  // The first prompt saves the durable title synchronously, before any deltas.
+  // Publish it now so background streaming tabs never fall back to "New chat".
+  if (started && self.turnRunners[@(chat.chatID)]) {
+    [self refreshChatsKeepingActiveSelection];
+  }
   if (!started) {
-    self.isSending = NO;
-    self.sendingMessages = nil;
+    [self.turnRunners removeObjectForKey:@(chat.chatID)];
+    [self.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
     self.promptTextView.string = nextPrompt;
     [self presentErrorMessage:startError.localizedDescription ?: @"Could not start assistant turn."];
     [self updateControlStates];
@@ -3050,7 +3089,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)createAgent:(id)sender {
-  if (self.widgetbookMode || self.isSending || self.window.attachedSheet) return;
+  if (self.widgetbookMode || self.hasSendingTurns || self.window.attachedSheet) return;
   [self.sidebarAgentPaneSurface removeFromSuperview];
   self.sidebarAgentPaneSurface = nil;
   self.sidebarAgentPane = nil;
@@ -3249,7 +3288,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)updateAgentControlStates {
-  BOOL controlsAllowed = !self.isSending && !self.widgetbookMode && self.agentsTab != nil;
+  BOOL controlsAllowed = !self.hasSendingTurns && !self.widgetbookMode && self.agentsTab != nil;
   TLAgentRecord *agent = [self selectedAgent];
   BOOL hasAgent = agent != nil;
   BOOL starting = [agent.status isEqualToString:TLAgentStatusStarting];
@@ -3351,8 +3390,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)pinMessageRowToStackWidth:(NSView *)row {
   static NSString *const TLMessageRowWidthConstraintIdentifier = @"TLMessageRowWidthConstraint";
 
-  for (NSLayoutConstraint *constraint in row.constraints) {
-    if ([constraint.identifier isEqualToString:TLMessageRowWidthConstraintIdentifier]) {
+  for (NSLayoutConstraint *constraint in self.messageStack.constraints) {
+    if (constraint.firstItem == row && [constraint.identifier isEqualToString:TLMessageRowWidthConstraintIdentifier]) {
       return;
     }
   }
@@ -3364,6 +3403,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)addMessageRowToStack:(NSView *)row {
   [self.messageStack addView:row inGravity:NSStackViewGravityTop];
+}
+
+- (void)placeMessageRow:(NSView *)row atIndex:(NSUInteger)index {
+  NSArray<NSView *> *rows = self.messageStack.arrangedSubviews;
+  if (index < rows.count && rows[index] == row) return;
+  [self removeArrangedMessageRowIfNeeded:row];
+  [self.messageStack insertView:row atIndex:index inGravity:NSStackViewGravityTop];
 }
 
 - (BOOL)isUserMessageAtIndex:(NSUInteger)index {
@@ -3406,18 +3452,34 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
   NSPoint previousScrollOrigin = self.messageScrollView.contentView.bounds.origin;
+  // Persistence replaces transient messages with stored records. Keep their
+  // already-loaded views when the displayed message at that position is unchanged.
+  [self.renderedMessages enumerateObjectsUsingBlock:^(TLChatMessage *previous, NSUInteger index, BOOL *stop) {
+    if (index >= self.messages.count || [self.messages indexOfObjectIdenticalTo:previous] != NSNotFound) return;
+    TLChatMessage *current = self.messages[index];
+    NSView *row = [self.messageRowViews objectForKey:previous];
+    if (!row || [self.messageRowViews objectForKey:current] ||
+        ![previous.role isEqualToString:current.role] || ![previous.content isEqualToString:current.content] ||
+        ![(previous.thinking ?: @"") isEqualToString:current.thinking ?: @""]) return;
+    [self.messageRowViews setObject:row forKey:current];
+    [self.messageRowSignatures setObject:[self.messageRowSignatures objectForKey:previous] forKey:current];
+    NSView *markdown = [self.messageMarkdownViews objectForKey:previous];
+    if (markdown) [self.messageMarkdownViews setObject:markdown forKey:current];
+    [self.messageRowViews removeObjectForKey:previous];
+    [self.messageRowSignatures removeObjectForKey:previous];
+    [self.messageMarkdownViews removeObjectForKey:previous];
+  }];
+  self.renderedMessages = self.messages.copy;
   for (TLChatMessage *cachedMessage in self.messageRowViews.keyEnumerator.allObjects) {
     if ([self.messages indexOfObjectIdenticalTo:cachedMessage] == NSNotFound) {
       NSView *staleRow = [self.messageRowViews objectForKey:cachedMessage];
       [self detachMessageRowFromStack:staleRow];
       [self.messageRowViews removeObjectForKey:cachedMessage];
       [self.messageRowSignatures removeObjectForKey:cachedMessage];
+      [self.messageMarkdownViews removeObjectForKey:cachedMessage];
     }
   }
   NSArray<NSView *> *previousRows = self.messageStack.arrangedSubviews.copy;
-  for (NSView *view in previousRows) {
-    [self removeArrangedMessageRowIfNeeded:view];
-  }
 
   if (self.isLoading || self.errorMessage.length > 0 || self.messages.count == 0) {
     [self resetMessageRowCache];
@@ -3431,18 +3493,19 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   NSMutableSet<NSView *> *renderedRows = [NSMutableSet setWithCapacity:self.messages.count];
+  NSUInteger rowIndex = 0;
   for (NSUInteger index = 0; index < self.messages.count; index++) {
     TLChatMessage *message = self.messages[index];
     BOOL showsOutgoingTail = [self showsOutgoingTailForMessageAtIndex:index];
     NSView *row = [self cachedRowForMessage:message showsOutgoingTail:showsOutgoingTail];
     [renderedRows addObject:row];
-    [self addMessageRowToStack:row];
+    [self placeMessageRow:row atIndex:rowIndex++];
     [self pinMessageRowToStackWidth:row];
     if ([self messageShowsAWSOutageIntent:message]) {
       [self.messageStack setCustomSpacing:self.palette.space8 afterView:row];
       NSView *intentWidget = [self AWSOutageIntentWidget];
       [renderedRows addObject:intentWidget];
-      [self addMessageRowToStack:intentWidget];
+      [self placeMessageRow:intentWidget atIndex:rowIndex++];
       [self pinMessageRowToStackWidth:intentWidget];
       [self.messageStack setCustomSpacing:[self messageStackSpacingAfterMessageAtIndex:index] afterView:intentWidget];
     } else {
@@ -3452,7 +3515,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   for (NSView *view in self.messageStack.subviews.copy) {
     if (![renderedRows containsObject:view]) {
-      [view removeFromSuperview];
+      [self detachMessageRowFromStack:view];
     }
   }
 
@@ -3550,7 +3613,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   CGFloat slashCommandListHeight = (!self.slashCommandListView.hidden && self.slashCommandListHeightConstraint.constant > self.palette.space0)
     ? self.slashCommandListHeightConstraint.constant + self.palette.space5
     : self.palette.space0;
-  CGFloat bottomClearance = inputHeight + slashCommandListHeight + self.palette.space10 + self.palette.space8;
+  CGFloat bottomClearance = inputHeight + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
   self.messageScrollView.contentInsets = NSEdgeInsetsMake(self.palette.space0,
                                                           self.palette.space0,
                                                           self.palette.space0,
@@ -3566,6 +3629,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSString *previousSignature = [self.messageRowSignatures objectForKey:message];
 
   if (row && [previousSignature isEqualToString:signature]) {
+    NSView *markdown = [self.messageMarkdownViews objectForKey:message];
+    if (markdown) {
+      TLMarkdownRenderer *renderer = [[TLMarkdownRenderer alloc] initWithPalette:self.palette];
+      [renderer updateMarkdown:[self displayTextForMessage:message] inView:markdown];
+    }
     return row;
   }
 
@@ -3573,23 +3641,30 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self detachMessageRowFromStack:row];
   }
 
+  [self.messageMarkdownViews removeObjectForKey:message];
   row = [self rowForMessage:message showsOutgoingTail:showsOutgoingTail];
   [self.messageRowViews setObject:row forKey:message];
   [self.messageRowSignatures setObject:signature forKey:message];
   return row;
 }
 
-- (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
+- (NSString *)displayTextForMessage:(TLChatMessage *)message {
   BOOL user = [message.role isEqualToString:TLRoleUser];
   BOOL hasResponseContent = message.content.length > 0;
   BOOL showThinking = !user && !hasResponseContent && message.thinking.length > 0;
-  NSString *mode = showThinking ? @"thinking" : @"content";
   NSString *displayText = showThinking
     ? (message.thinking ?: @"")
     : (hasResponseContent ? message.content : ([message.role isEqualToString:TLRoleAssistant] ? @"..." : @""));
   if ([self messageShowsAWSOutageIntent:message]) {
     displayText = TLAWSOutageAgentMessage;
   }
+  return displayText;
+}
+
+- (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
+  BOOL user = [message.role isEqualToString:TLRoleUser];
+  BOOL showThinking = !user && !message.content.length && message.thinking.length > 0;
+  NSString *mode = showThinking ? @"thinking" : @"content";
   CGFloat layoutWidth = self.messageInputWidthConstraint.constant > 0.0
     ? self.messageInputWidthConstraint.constant
     : self.palette.messageInputMaxWidth;
@@ -3599,7 +3674,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
                                     mode,
                                     layoutWidth,
                                     showsOutgoingTail ? @"tail" : @"body",
-                                    displayText ?: @""];
+                                    user ? [self displayTextForMessage:message] : ([self messageShowsAWSOutageIntent:message] ? @"intent" : @"answer")];
 }
 
 - (void)resetMessageRowCache {
@@ -3608,6 +3683,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   self.messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
   self.messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
+  self.messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
+  self.renderedMessages = @[];
 }
 
 - (NSView *)emptyStateView {
@@ -3692,9 +3769,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [stack addArrangedSubview:[self labelWithString:@"Thinking"
                                                font:self.palette.roleFont
                                               color:self.palette.thinkingText]];
-    [stack addArrangedSubview:[self markdownViewWithString:message.thinking
-                                                  textColor:self.palette.thinkingText
-                                                   baseFont:self.palette.smallFont]];
+    NSView *markdown = [self markdownViewWithString:message.thinking textColor:self.palette.thinkingText baseFont:self.palette.smallFont];
+    [stack addArrangedSubview:markdown];
+    [self.messageMarkdownViews setObject:markdown forKey:message];
   } else if (user) {
     NSString *content = hasResponseContent ? message.content : @"";
     TLUserMessageBubbleLayout userLayout = TLUserMessageBubbleLayoutForContent(content,
@@ -3712,6 +3789,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     contentLabel = [self wrappingLabelWithString:content
                                             font:self.palette.messageBodyFont
                                            color:textColor];
+    contentLabel.selectable = YES;
     contentLabel.preferredMaxLayoutWidth = userTextMaxWidth;
     [contentLabel setContentHuggingPriority:NSLayoutPriorityDefaultHigh
                              forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -3730,7 +3808,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       [leadingSpacer.heightAnchor constraintEqualToConstant:lineHeight * 3.0].active = YES;
       [stack addArrangedSubview:leadingSpacer];
     }
-    [stack addArrangedSubview:[self markdownViewWithString:content textColor:textColor baseFont:self.palette.messageBodyFont]];
+    NSView *markdown = [self markdownViewWithString:content textColor:textColor baseFont:self.palette.messageBodyFont];
+    [stack addArrangedSubview:markdown];
+    [self.messageMarkdownViews setObject:markdown forKey:message];
   }
 
   [row addSubview:bubble];
@@ -3771,7 +3851,18 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   renderer.linkHandler = ^(NSURL *URL, NSEventModifierFlags modifierFlags) {
     [weakSelf handleLinkURL:URL modifierFlags:modifierFlags];
   };
-  return [renderer viewForMarkdown:string ?: @"" textColor:textColor baseFont:baseFont];
+  __block __weak NSView *weakView = nil;
+  renderer.heightChangeHandler = ^{
+    TalariaWindowController *controller = weakSelf;
+    if (!controller.isSending ||
+        ![weakView isDescendantOf:controller.messageStack]) return;
+    [controller.messageDocumentView layoutSubtreeIfNeeded];
+    NSRect bottom = NSMakeRect(0, MAX(0, NSHeight(controller.messageDocumentView.bounds) - 1), 1, 1);
+    [controller.messageDocumentView scrollRectToVisible:bottom];
+  };
+  NSView *view = [renderer viewForMarkdown:string ?: @"" textColor:textColor baseFont:baseFont];
+  weakView = view;
+  return view;
 }
 
 - (NSView *)plainTextViewWithString:(NSString *)string textColor:(NSColor *)textColor baseFont:(NSFont *)baseFont {
@@ -4086,7 +4177,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)addChatToSessionIfNeeded:(NSInteger)chatID activate:(BOOL)activate {
   TLChatSummary *chat = [self summaryForChatID:chatID];
-  NSString *title = chat.title.length > 0 ? chat.title : @"New chat";
+  TLWorkspaceTab *existing = [self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID];
+  NSString *title = chat.title.length > 0 ? chat.title : (existing.title.length > 0 ? existing.title : @"New chat");
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat
                                              tabID:chatID
                                              title:title
@@ -4276,7 +4368,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (NSString *)displayTitleForWorkspaceTab:(TLWorkspaceTab *)tab {
   if (tab.kind == TLWorkspaceTabKindChat) {
     TLChatSummary *chat = [self summaryForChatID:tab.tabID];
-    return chat.title.length > 0 ? chat.title : @"New chat";
+    return chat.title.length > 0 ? chat.title : (tab.title.length > 0 ? tab.title : @"New chat");
   }
   if (tab.kind == TLWorkspaceTabKindBrowser) {
     return tab.title.length > 0 ? tab.title : [self browserTabTitleForURL:tab.URL];
@@ -4719,7 +4811,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
-  self.sendButton.enabled = !self.isSending && chatActive && prompt.length > 0;
+  self.messageInput.showsStopButton = [self canStopResponse];
+  self.sendButton.enabled = self.messageInput.showsStopButton || (!self.isSending && chatActive && prompt.length > 0);
   self.historyPanelController.enabled = YES;
   self.promptTextView.editable = chatActive;
   self.promptTextView.selectable = YES;
@@ -4745,7 +4838,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteChatID:(NSInteger)chatID {
-  if (self.isSending || self.widgetbookMode || chatID <= 0) {
+  if (self.turnRunners[@(chatID)] || self.widgetbookMode || chatID <= 0) {
     return;
   }
 
@@ -4769,7 +4862,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)deleteChatWithID:(NSInteger)chatID {
-  if (self.isSending || self.widgetbookMode || chatID <= 0) {
+  if (self.turnRunners[@(chatID)] || self.widgetbookMode || chatID <= 0) {
     return;
   }
 
@@ -4887,17 +4980,33 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return @"";
 }
 
+- (void)synchronizeChatTabTitles {
+  for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindChat]) {
+    TLChatSummary *summary = [self summaryForChatID:tab.tabID];
+    if (!summary.title.length || ([tab.title isEqual:summary.title] && [tab.toolTip isEqual:summary.title])) continue;
+    TLWorkspaceTab *updatedTab = [tab copy];
+    updatedTab.title = summary.title;
+    updatedTab.toolTip = summary.title;
+    [self.appStateManager upsertWorkspaceTab:updatedTab activate:NO];
+  }
+}
+
 - (void)applySavedChatSummary:(TLChatSummary *)savedSummary {
   if (!savedSummary) {
     return;
   }
 
+  if (!self.chats) self.chats = [NSMutableArray array];
+  BOOL found = NO;
   for (NSUInteger index = 0; index < self.chats.count; index += 1) {
     if (self.chats[index].chatID == savedSummary.chatID) {
-      self.chats[index] = savedSummary;
+      self.chats[index] = [savedSummary copy];
+      found = YES;
       break;
     }
   }
+
+  if (!found) [self.chats addObject:[savedSummary copy]];
 
   if (self.activeChat.chatID == savedSummary.chatID) {
     self.activeChat.title = savedSummary.title;
@@ -4905,6 +5014,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.activeChat.updatedAt = savedSummary.updatedAt;
   }
 
+  [self synchronizeChatTabTitles];
   [self reloadHistoryPanel];
   [self selectActiveChatInHistory];
   [self reloadWorkspaceTabs];

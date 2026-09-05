@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <math.h>
 #import <sqlite3.h>
+#import <sys/socket.h>
+#import <unistd.h>
 #import "AgentClient.h"
 #import "AgentOrchestrator.h"
 #import "AgentVMService.h"
@@ -629,6 +631,79 @@ static void TestChatIconGenerator(void) {
   [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
 }
 
+@interface TLDeferredReadyOrchestrator : TLAgentOrchestrator
+@property (copy) void (^ready)(TLAgentRecord *, NSError *);
+@end
+@implementation TLDeferredReadyOrchestrator
+- (void)withDefaultRunningAgent:(void (^)(TLAgentRecord *, NSError *))completion { self.ready = completion; }
+@end
+
+@interface TLDeferredSocketService : TLAgentVMService
+@property (copy) TLAgentVMConnectionCompletionHandler connected;
+@end
+@implementation TLDeferredSocketService
+- (void)connectToAgent:(TLAgentRecord *)agent port:(uint32_t)port timeout:(NSTimeInterval)timeout
+  completion:(TLAgentVMConnectionCompletionHandler)completion { self.connected = completion; }
+@end
+
+@interface TLTestSocketConnection : NSObject
+@property int fileDescriptor;
+@property BOOL closed;
+@end
+@implementation TLTestSocketConnection
+- (void)close {
+  if (!self.closed) { self.closed = YES; shutdown(self.fileDescriptor, SHUT_RDWR); close(self.fileDescriptor); }
+}
+@end
+
+static void TestCancellationDuringStartup(void) {
+  TLFakeAgentClient *fake = [[TLFakeAgentClient alloc] init];
+  TLDeferredReadyOrchestrator *orchestrator = [[TLDeferredReadyOrchestrator alloc]
+    initWithDatabase:(id)[[NSObject alloc] init] agentClient:fake vmService:[[TLDeferredSocketService alloc] init]];
+  __block NSUInteger completions = 0;
+  [orchestrator streamChatWithDefaultAgentRequestID:@"pending" sessionID:@"chat" token:@"token" model:@"model"
+    messages:@[] delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {
+      TLAssertTrue(NO, @"cancelled pending request never emits a delta");
+    } completion:^(NSError *error) {
+      completions++;
+      TLAssertTrue(error.code == NSURLErrorCancelled, @"startup cancellation reports cancellation");
+    }];
+  [orchestrator cancelChatWithRequestID:@"pending"];
+  [orchestrator cancelChatWithRequestID:@"pending"];
+  orchestrator.ready([[TLAgentRecord alloc] init], nil);
+  TLAssertTrue(completions == 1 && !fake.capturedAgent, @"cancelled VM startup never dispatches the chat later");
+
+  for (NSNumber *beforeConnection in @[@YES, @NO]) {
+    TLDeferredSocketService *vm = [[TLDeferredSocketService alloc] init];
+    TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:vm];
+    __block NSUInteger socketCompletions = 0;
+    [client streamHermesSessionWithAgent:[[TLAgentRecord alloc] init] requestID:@"socket" sessionID:@"chat"
+      token:@"token" model:@"model" prompt:@"Hello" delta:^(NSString *rid, TLAgentStreamDeltaKind kind, NSString *text) {}
+      completion:^(NSError *error) { socketCompletions++; TLAssertTrue(error.code == NSURLErrorCancelled,
+        @"socket cancellation reports cancellation"); }];
+    int descriptors[2];
+    TLAssertTrue(socketpair(AF_UNIX, SOCK_STREAM, 0, descriptors) == 0, @"create test transport");
+    TLTestSocketConnection *connection = [[TLTestSocketConnection alloc] init];
+    connection.fileDescriptor = descriptors[0];
+    if (beforeConnection.boolValue) [client cancelChatWithRequestID:@"socket"];
+    vm.connected((id)connection, nil);
+    char bytes[4096];
+    if (!beforeConnection.boolValue) {
+      TLAssertTrue(recv(descriptors[1], bytes, sizeof(bytes), MSG_DONTWAIT) > 0, @"connected transport sends the prompt");
+      [client cancelChatWithRequestID:@"socket"];
+    }
+    TLAssertTrue(connection.closed && recv(descriptors[1], bytes, sizeof(bytes), MSG_DONTWAIT) == 0,
+      @"Stop closes the request socket; pending cancellation never sends a prompt");
+    close(descriptors[1]);
+    [client cancelChatWithRequestID:@"socket"];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (!socketCompletions && deadline.timeIntervalSinceNow > 0) {
+      [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+    }
+    TLAssertTrue(socketCompletions == 1, @"transport completes cancellation once");
+  }
+}
+
 static void TestAgentOrchestrator(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaAgentOrchestratorTests");
   NSURL *agentsURL = TLTemporaryDirectoryURL(@"TalariaAgentVMs");
@@ -1139,6 +1214,7 @@ int main(int argc, const char *argv[]) {
     TestCompatibleVersion5Database();
     TestMessageDeletion();
     TestChatIconGenerator();
+    TestCancellationDuringStartup();
     TestAgentOrchestrator();
     TestAgentProfilesAndSelection();
     TestAgentProfileMigration();

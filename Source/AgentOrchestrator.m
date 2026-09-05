@@ -48,6 +48,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 @property (nonatomic, strong) id<TLAgentStreaming> agentClient;
 @property (nonatomic, strong) TLAgentVMService *vmService;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *initializingAgentIDs;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, TLAgentStreamCompletionHandler> *chatCompletions;
 
 - (void)withDefaultRunningAgent:(TLAgentReadyCompletionHandler)completion;
 - (void)completeDefaultAgent:(TLAgentRecord *)agent
@@ -67,6 +68,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     _agentClient = agentClient;
     _vmService = vmService;
     _initializingAgentIDs = [NSMutableSet set];
+    _chatCompletions = [NSMutableDictionary dictionary];
   }
   return self;
 }
@@ -268,6 +270,16 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   return [self.database deleteAgentWithID:agentID error:error];
 }
 
+- (void)cancelChatWithRequestID:(NSString *)requestID {
+  TLAgentStreamCompletionHandler completion = self.chatCompletions[requestID];
+  if (!completion) return;
+  [self.chatCompletions removeObjectForKey:requestID];
+  if ([self.agentClient respondsToSelector:@selector(cancelChatWithRequestID:)]) {
+    [self.agentClient cancelChatWithRequestID:requestID];
+  }
+  completion([NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
+}
+
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
                                   sessionID:(NSString *)sessionID
                                       token:(NSString *)token
@@ -275,9 +287,16 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
                                    messages:(NSArray<TLChatMessage *> *)messages
                                       delta:(TLAgentStreamDeltaHandler)delta
                                  completion:(TLAgentStreamCompletionHandler)completion {
+  self.chatCompletions[requestID] = completion;
+  TLAgentStreamCompletionHandler finish = ^(NSError *error) {
+    TLAgentStreamCompletionHandler callback = self.chatCompletions[requestID];
+    [self.chatCompletions removeObjectForKey:requestID];
+    if (callback) callback(error);
+  };
   [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *agentError) {
+    if (!self.chatCompletions[requestID]) return;
     if (!agent) {
-      [self completeStreamWithError:(agentError ?: TLAgentOrchestratorError(@"Could not open an agent VM.")) completion:completion];
+      [self completeStreamWithError:(agentError ?: TLAgentOrchestratorError(@"Could not open an agent VM.")) completion:finish];
       return;
     }
 
@@ -285,11 +304,11 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
         [self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:delta:completion:)]) {
       [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
                                                token:token model:model prompt:TLHermesInputFromMessages(messages)
-                                               delta:delta completion:completion];
+                                               delta:delta completion:finish];
       return;
     }
     [self.agentClient streamChatWithAgent:agent requestID:requestID token:token model:model
-                                 messages:messages delta:delta completion:completion];
+                                 messages:messages delta:delta completion:finish];
   }];
 }
 

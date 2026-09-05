@@ -70,7 +70,9 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
 }
 
 - (void)updateMarkdown:(NSString *)markdown inView:(NSView *)view {
-  if ([view isKindOfClass:TLMarkdownWebView.class]) { [(TLMarkdownWebView *)view updateText:markdown]; }
+  if ([view isKindOfClass:TLMarkdownWebView.class] && ![((TLMarkdownWebView *)view).text isEqualToString:markdown]) {
+    [(TLMarkdownWebView *)view updateText:markdown];
+  }
 }
 
 @end
@@ -225,19 +227,16 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
 
 - (void)updateHeight {
   NSString *script =
-    @"Math.ceil(Math.max("
-    @"document.body.scrollHeight,"
-    @"document.documentElement.scrollHeight,"
-    @"document.body.offsetHeight,"
-    @"document.documentElement.offsetHeight"
-    @"));";
+    @"({height:Math.ceil(document.getElementById('content').getBoundingClientRect().height),"
+    @"fontsLoading:document.fonts.status==='loading'});";
 
   [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
-    if (error || ![result respondsToSelector:@selector(doubleValue)]) {
+    if (error || ![result isKindOfClass:NSDictionary.class]) {
       return;
     }
 
-    CGFloat height = MAX(1.0, ceil([result doubleValue]));
+    if ([result[@"fontsLoading"] boolValue]) [self scheduleHeightUpdate];
+    CGFloat height = MAX(1.0, ceil([result[@"height"] doubleValue]));
     if (fabs(self.heightConstraint.constant - height) < 0.5) {
       return;
     }
@@ -288,12 +287,23 @@ static NSString *TLMarkdownItScript(void) {
 }
 
 static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor *textColor, NSFont *baseFont, BOOL rendersMarkdown) {
+  static NSString *mathScript = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    NSURL *katexURL = [NSBundle.mainBundle URLForResource:@"katex" withExtension:@"min.js" subdirectory:@"katex"];
+    NSURL *pluginURL = [NSBundle.mainBundle URLForResource:@"MarkdownMath" withExtension:@"js"];
+    NSString *katex = katexURL ? [NSString stringWithContentsOfURL:katexURL encoding:NSUTF8StringEncoding error:nil] : @"";
+    NSString *plugin = pluginURL ? [NSString stringWithContentsOfURL:pluginURL encoding:NSUTF8StringEncoding error:nil] : @"";
+    mathScript = [[NSString stringWithFormat:@"%@\n%@", katex ?: @"", plugin ?: @""]
+      stringByReplacingOccurrencesOfString:@"</script" withString:@"<\\/script"];
+  });
   return [NSString stringWithFormat:
     @"<!doctype html>"
     @"<html>"
     @"<head>"
     @"<meta charset=\"utf-8\">"
     @"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    @"<link rel=\"stylesheet\" href=\"katex/katex.min.css\">"
     @"<style>"
     @"html,body{margin:0;padding:0;background:%@;color:%@;font:%.1fpx -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.48;overflow:hidden;word-break:normal;overflow-wrap:anywhere;}"
     @"body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}"
@@ -321,10 +331,20 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     @".plain{white-space:pre-wrap;}"
     @".task-list-item{list-style:none;margin-left:-1.2em;}"
     @".task-list-item input{margin-right:.45em;vertical-align:-1px;}"
+    @".tl-math{box-sizing:border-box;overflow-wrap:normal;word-break:normal;}"
+    @".tl-math,.tl-math *{color:inherit!important;}"
+    @".tl-math .katex{font-size:1.1em;}"
+    // KaTeX glyphs can overhang their advance width; leave room so they do not
+    // trigger a horizontal scrollbar on an otherwise fitting equation.
+    @".tl-math-inline{display:inline-block;max-width:100%%;vertical-align:middle;overflow-x:auto;overflow-y:hidden;padding:.25em .2em;}"
+    @".tl-math-inline .katex{white-space:normal;}"
+    @".tl-math-display{display:block;max-width:100%%;overflow-x:auto;overflow-y:hidden;padding:.25em .2em;}"
+    @".tl-math-display .katex-display{margin:.5em 0;text-align:left;}"
     @"</style>"
     @"</head>"
     @"<body>"
     @"<div id=\"content\"></div>"
+    @"<script>%@</script>"
     @"<script>%@</script>"
     @"<script>"
     @"const initialSource=%@;"
@@ -332,6 +352,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     @"const content=document.getElementById('content');"
     @"if(%@&&window.markdownit){"
     @"const md=window.markdownit({html:false,linkify:true,typographer:false,breaks:false});"
+    @"if(window.talariaMarkdownMath)md.use(window.talariaMarkdownMath);"
     @"content.innerHTML=md.render(source);"
     @"document.querySelectorAll('li').forEach((li)=>{"
     @"const walker=document.createTreeWalker(li,NodeFilter.SHOW_TEXT);"
@@ -392,6 +413,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     palette.space6,
     palette.radiusMedium,
     TLMarkdownItScript(),
+    mathScript,
     TLJSONString(text),
     rendersMarkdown ? @"true" : @"false"];
 }

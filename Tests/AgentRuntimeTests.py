@@ -1,9 +1,13 @@
 import importlib.util
+from contextlib import nullcontext
 import io
 import json
 from pathlib import Path
 import sys
 import tempfile
+import socket
+import threading
+import urllib.error
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +16,132 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("agent_runtime", Path(__file__).parents[1] / "AgentRuntime/openrouter_agent.py")
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
+
+
+class HermesStreamingTests(unittest.TestCase):
+    def test_answer_deltas_are_flushed_before_reading_the_next_event(self):
+        class FlushedOutput(io.BytesIO):
+            flushed = b""
+
+            def flush(self):
+                self.flushed = self.getvalue()
+
+        output = FlushedOutput()
+        chunks = ["Hello", " 🦊", "\n```swift\n", 'print("hi")']
+
+        def response_lines():
+            for index, chunk in enumerate(chunks):
+                yield b"event: assistant.delta\n"
+                yield ("data: " + json.dumps({"delta": chunk}) + "\n").encode()
+                events = [json.loads(line) for line in output.flushed.splitlines()]
+                self.assertEqual(events, [
+                    {"type": "delta", "request_id": "r", "kind": "content", "text": text}
+                    for text in chunks[:index + 1]
+                ])
+                yield b"\n"
+            yield b"event: run.completed\n"
+            yield b"data: {}\n"
+
+        with patch.object(runtime, "ensure_hermes_gateway"), patch.object(runtime, "ensure_hermes_session"), \
+                patch.object(runtime, "api_request", return_value=nullcontext(response_lines())):
+            runtime.stream_hermes_session({"request_id": "r", "session_id": "chat", "token": "test",
+                "model": "test", "prompt": "Hello"}, output)
+        events = [json.loads(line) for line in output.flushed.splitlines()]
+        self.assertEqual(events[-1], {"type": "complete"})
+        self.assertEqual(len(events), len(chunks) + 1)
+
+
+class HermesCancellationTests(unittest.TestCase):
+    request = {"operation": "hermes_session_chat", "request_id": "r", "session_id": "chat",
+               "token": "test", "model": "test", "prompt": "Hello"}
+
+    def test_disconnect_stops_upstream_while_stream_is_waiting(self):
+        stopped = threading.Event()
+        response_closed = threading.Event()
+        calls = []
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): self.close()
+            def close(self): response_closed.set()
+            def __iter__(self):
+                yield b'event: run.started\n'
+                yield b'data: {"run_id":"run_test"}\n'
+                yield b'event: assistant.delta\n'
+                yield b'data: {"run_id":"run_test","delta":"Partial answer"}\n'
+                if not stopped.wait(3):
+                    raise RuntimeError("Stop did not reach Hermes while waiting for the next delta")
+                yield b'event: run.completed\n'
+                yield b'data: {"run_id":"run_test"}\n'
+
+        def api(path, **kwargs):
+            calls.append((path, kwargs))
+            if path.endswith("/stop"):
+                stopped.set()
+                return nullcontext()
+            return Response()
+
+        server, client = socket.socketpair()
+        client.settimeout(4)
+        with patch.object(runtime, "save_agent_soul"), patch.object(runtime, "ensure_hermes_gateway"), \
+                patch.object(runtime, "ensure_hermes_session"), patch.object(runtime, "api_request", side_effect=api):
+            worker = threading.Thread(target=runtime.handle_connection, args=(server,))
+            worker.start()
+            try:
+                client.sendall((json.dumps(self.request) + "\n").encode())
+                self.assertEqual(json.loads(client.recv(4096))["text"], "Partial answer")
+                client.close()
+                self.assertTrue(stopped.wait(3), "client disconnect must call the real Hermes stop endpoint")
+            finally:
+                client.close()
+                worker.join(6)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(response_closed.is_set())
+        stop_calls = [call for call in calls if call[0].endswith("/stop")]
+        self.assertEqual(stop_calls, [("/v1/runs/run_test/stop", {"method": "POST", "body": {}, "timeout": 5})])
+
+    def test_stop_before_gateway_start_does_not_start_generation(self):
+        cancellation = runtime.StreamCancellation()
+        cancellation.cancel()
+        with patch.object(runtime, "ensure_hermes_gateway") as gateway, patch.object(runtime, "api_request") as api:
+            runtime.stream_hermes_session(self.request, io.BytesIO(), cancellation)
+        gateway.assert_not_called()
+        api.assert_not_called()
+
+    def test_stop_before_run_id_arrives_is_not_lost(self):
+        cancellation = runtime.StreamCancellation()
+        output = io.BytesIO()
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def close(self): pass
+            def __iter__(self):
+                cancellation.cancel()
+                yield b'event: run.started\n'
+                yield b'data: {"run_id":"run_early"}\n'
+                raise AssertionError("cancelled stream should not read more events")
+        with patch.object(runtime, "save_agent_soul"), patch.object(runtime, "ensure_hermes_gateway"), \
+                patch.object(runtime, "ensure_hermes_session"), patch.object(runtime, "api_request", return_value=Response()), \
+                patch.object(runtime, "stop_hermes_run") as stop:
+            runtime.stream_hermes_session(self.request, output, cancellation)
+            cancellation.cancel()
+        stop.assert_called_once_with("run_early")
+        self.assertEqual(output.getvalue(), b"")
+
+    def test_stop_retries_hermes_registration_race(self):
+        conflict = urllib.error.HTTPError("test", 409, "not active yet", {}, io.BytesIO())
+        with patch.object(runtime, "api_request", side_effect=[conflict, nullcontext()]) as api, \
+                patch.object(runtime.time, "sleep"):
+            runtime.stop_hermes_run("run_queued")
+        self.assertEqual(api.call_count, 2)
+
+    def test_normal_completion_disarms_disconnect_cancellation(self):
+        cancellation = runtime.StreamCancellation()
+        calls = []
+        cancellation.on_cancel(lambda: calls.append("stopped"))
+        cancellation.finish()
+        cancellation.cancel()
+        self.assertEqual(calls, [])
 
 
 class AgentSoulTests(unittest.TestCase):

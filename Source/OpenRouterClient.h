@@ -33,6 +33,8 @@ typedef void (^TLOpenRouterModelCatalogueHandler)(NSArray<TLOpenRouterModel *> *
 - (void)fetchModelCatalogueWithToken:(NSString *)token
                            completion:(TLOpenRouterModelCatalogueHandler)completion;
 
+- (void)cancelChatWithRequestID:(NSString *)requestID;
+
 - (void)streamChatWithRequestID:(NSString *)requestID
                           token:(NSString *)token
                           model:(NSString *)model

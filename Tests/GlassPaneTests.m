@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "design_system/UIComponents.h"
 #import "design_system/TLGlassButton.h"
+#import "design_system/TLTransitionCoordinator.h"
 #import "InputSuggestions.h"
 #import "TLBrowserHeightTransition.h"
 #import "ChromiumRunLoop.h"
@@ -518,6 +519,58 @@ static void TestCommandDescriptions(void) {
   [window close];
 }
 
+static void TestSendStopImageTransition(void) {
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 80)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  window.contentView = input;
+  [input layoutSubtreeIfNeeded];
+  TLGlassButton *button = input.sendButton;
+  NSButton *native = [button valueForKey:@"button"];
+  TLCommandTarget *target = [[TLCommandTarget alloc] init];
+  button.target = target;
+  button.action = @selector(activate:);
+  __block NSTimeInterval now = 0;
+  TLTransitionCoordinator *transitions = [[TLTransitionCoordinator alloc] initWithClock:^{ return now; }
+    automaticallyAdvances:NO];
+  [button setValue:transitions forKey:@"imageTransitions"];
+  NSImage *send = button.image;
+  input.showsStopButton = YES;
+  NSImage *stop = button.image;
+  Check(stop != send && [button.toolTip isEqual:@"Stop response"], @"logical action switches immediately");
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    Check(native.image == send, @"outgoing Send remains visible at animation start");
+    now = button.palette.buttonImageReplacementDuration * .25;
+    [transitions advance];
+    Check(native.image == send && native.alphaValue > 0 && native.alphaValue < 1 &&
+      native.layer.transform.m11 < 1, @"Send shrinks and fades before the replacement");
+    [native performClick:nil];
+    Check(target.activationCount == 1, @"the action remains clickable while animating");
+    now = button.palette.buttonImageReplacementDuration * .5;
+    [transitions advance];
+    Check(native.image == stop && native.alphaValue == 0, @"icon switches only after fading out fully");
+    now = button.palette.buttonImageReplacementDuration * .75;
+    [transitions advance];
+    Check(native.image == stop && native.alphaValue > 0 && native.alphaValue < 1 &&
+      native.layer.transform.m11 < 1, @"Stop grows and fades in after replacement");
+    // Reverse mid-animation, as happens when the user types and immediately clears a draft.
+    input.showsStopButton = NO;
+    input.showsStopButton = YES;
+    button.palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
+    Check([button.toolTip isEqual:@"Stop response"], @"rapid replacements keep the latest action");
+    [transitions finishAllTransitions];
+  }
+  Check(native.image == button.image && native.alphaValue == 1 &&
+    CATransform3DIsIdentity(native.layer.transform) && !transitions.hasTransitions,
+    @"animation settles on the latest icon at full opacity and size");
+  [input removeFromSuperview];
+  input.showsStopButton = NO;
+  Check(native.image == button.image && native.alphaValue == 1 && !transitions.hasTransitions,
+    @"detached composers swap immediately without leaving an invisible button");
+  [window close];
+}
+
 int main(void) {
   @autoreleasepool {
     [TLFocusTestApplication sharedApplication];
@@ -531,6 +584,7 @@ int main(void) {
     TestURLSuggestions();
     TestBrowserChatPane();
     TestNativeMessageComposer();
+    TestSendStopImageTransition();
     TestBrowserComposer();
     TestBrowserHeightAnimation();
     TestCommandDescriptions();

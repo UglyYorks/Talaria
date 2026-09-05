@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) void (^releaseHandler)(TLOpenRouterStream *stream);
 
 - (void)start;
+- (void)cancel;
 
 @end
 
