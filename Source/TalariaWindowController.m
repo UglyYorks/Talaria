@@ -106,6 +106,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return layout;
 }
 
+@interface TLClosedWorkspaceTab : NSObject
+@property (nonatomic, copy) TLWorkspaceTab *tab;
+@property (nonatomic) NSUInteger index;
+@property (nonatomic, strong) TLChatRecord *draftChat;
+@property (nonatomic, copy) NSString *prompt;
+@end
+@implementation TLClosedWorkspaceTab
+@end
+
 @interface TalariaWindowController () <NSWindowDelegate, NSTextViewDelegate, NSTableViewDataSource, NSTableViewDelegate, TLHistoryPanelControllerDelegate, TLWorkspaceTabsControllerDelegate>
 
 @property (nonatomic, strong) TLDatabase *database;
@@ -116,6 +125,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSMutableArray<TLAppStateSubscription *> *appStateSubscriptions;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, TLWorkspaceTabRuntime *> *workspaceTabRuntimes;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *chatIconRequests;
+@property (nonatomic, strong) NSMutableArray<TLClosedWorkspaceTab *> *closedWorkspaceTabs;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong) TLAppSettings *settings;
 @property (nonatomic, strong) NSMutableArray<TLChatSummary *> *chats;
@@ -434,6 +444,121 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (BOOL)windowShouldClose:(NSWindow *)sender {
   [sender orderOut:self];
   return NO;
+}
+
+- (NSUInteger)activeWorkspaceTabIndex {
+  TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
+  return [snapshot.workspaceTabs indexOfObjectPassingTest:^BOOL(TLWorkspaceTab *tab, NSUInteger index, BOOL *stop) {
+    return tab.kind == snapshot.activeTabKind && tab.tabID == snapshot.activeTabID;
+  }];
+}
+
+- (BOOL)canPerformTabCommand:(TLTabCommand)command {
+  if (self.widgetbookMode) return NO;
+  NSUInteger count = [self workspaceTabs].count;
+  NSUInteger index = [self activeWorkspaceTabIndex];
+  if (command >= TLTabCommandSelectFirst && command <= TLTabCommandSelectLast) {
+    return command == TLTabCommandSelectLast ? count > 0 : (NSUInteger)(command - TLTabCommandSelectFirst) < count;
+  }
+  switch (command) {
+    case TLTabCommandNew:
+    case TLTabCommandCloseWindow: return YES;
+    case TLTabCommandClose: return count <= 1 || (index != NSNotFound && [self activeWorkspaceTab].closeable);
+    case TLTabCommandReopen: return self.closedWorkspaceTabs.count > 0;
+    case TLTabCommandNext:
+    case TLTabCommandPrevious: return count > 1;
+    case TLTabCommandMoveLeft: return index != NSNotFound && index > 0;
+    case TLTabCommandMoveRight: return index != NSNotFound && index + 1 < count;
+    default: return NO;
+  }
+}
+
+- (void)selectWorkspaceTabAtIndex:(NSUInteger)index {
+  NSArray<TLWorkspaceTab *> *tabs = [self workspaceTabs];
+  if (index >= tabs.count || index == [self activeWorkspaceTabIndex]) return;
+  TLWorkspaceTab *tab = tabs[index];
+  SEL action = [self runtimeForTab:tab].openAction;
+  if (!action) return;
+  NSButton *sender = [[NSButton alloc] init];
+  sender.tag = tab.tabID;
+  [NSApp sendAction:action to:self from:sender];
+}
+
+- (void)performTabCommand:(TLTabCommand)command {
+  if (![self canPerformTabCommand:command]) return;
+  NSUInteger count = [self workspaceTabs].count;
+  NSUInteger index = [self activeWorkspaceTabIndex];
+  if (command >= TLTabCommandSelectFirst && command <= TLTabCommandSelectLast) {
+    [self selectWorkspaceTabAtIndex:command == TLTabCommandSelectLast ? count - 1 : command - TLTabCommandSelectFirst];
+    return;
+  }
+  switch (command) {
+    case TLTabCommandNew: [self startNewChatFromButton:self]; break;
+    case TLTabCommandClose: [self closeActiveTabOrWindow:self]; break;
+    case TLTabCommandCloseWindow: [self.window performClose:self]; break;
+    case TLTabCommandReopen: [self reopenLastClosedWorkspaceTab]; break;
+    case TLTabCommandNext:
+      [self selectWorkspaceTabAtIndex:index == NSNotFound ? 0 : (index + 1) % count]; break;
+    case TLTabCommandPrevious:
+      [self selectWorkspaceTabAtIndex:index == NSNotFound ? count - 1 : (index + count - 1) % count]; break;
+    case TLTabCommandMoveLeft:
+    case TLTabCommandMoveRight:
+      [self workspaceTabsController:self.workspaceTabsController moveTab:[self activeWorkspaceTab]
+                            toIndex:command == TLTabCommandMoveLeft ? index - 1 : index + 1];
+      break;
+    default: break;
+  }
+}
+
+- (void)rememberClosedWorkspaceTab:(TLWorkspaceTab *)tab {
+  TLClosedWorkspaceTab *closed = [[TLClosedWorkspaceTab alloc] init];
+  closed.tab = tab;
+  closed.index = [[self workspaceTabs] indexOfObjectPassingTest:^BOOL(TLWorkspaceTab *candidate, NSUInteger index, BOOL *stop) {
+    return candidate.kind == tab.kind && candidate.tabID == tab.tabID;
+  }];
+  if (closed.index == NSNotFound) return;
+  if (tab.kind == TLWorkspaceTabKindChat && self.activeChat.chatID == tab.tabID) {
+    closed.prompt = self.promptTextView.string;
+    if (tab.tabID <= 0) closed.draftChat = self.activeChat;
+  }
+  if (!self.closedWorkspaceTabs) self.closedWorkspaceTabs = [NSMutableArray array];
+  [self.closedWorkspaceTabs addObject:closed];
+  // Keep only lightweight metadata; closed browsers release their live session.
+  if (self.closedWorkspaceTabs.count > 50) [self.closedWorkspaceTabs removeObjectAtIndex:0];
+}
+
+- (void)reopenLastClosedWorkspaceTab {
+  TLClosedWorkspaceTab *closed = self.closedWorkspaceTabs.lastObject;
+  if (!closed) return;
+  [self.closedWorkspaceTabs removeLastObject];
+  TLWorkspaceTab *tab = closed.tab;
+  switch (tab.kind) {
+    case TLWorkspaceTabKindChat:
+      if (tab.tabID <= 0) {
+        [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:self.chatWorkspace
+          openAction:@selector(openChatTab:) closeAction:@selector(closeChatTab:)] forTab:tab];
+        [self.appStateManager addWorkspaceTab:tab activate:NO];
+      }
+      [self loadChatWithID:tab.tabID];
+      if (self.activeChat.chatID == tab.tabID) {
+        if (closed.draftChat) self.activeChat = closed.draftChat;
+        if (closed.prompt) self.promptTextView.string = closed.prompt;
+        [self updateControlStates];
+      }
+      break;
+    case TLWorkspaceTabKindBrowser:
+      [self openBrowserTabWithURL:tab.URL];
+      tab = [self activeWorkspaceTab];
+      break;
+    case TLWorkspaceTabKindHistory: [self showHistoryScreen:self]; break;
+    case TLWorkspaceTabKindSettings: [self showSettings:self]; break;
+    case TLWorkspaceTabKindAgents: [self showAgents:self]; break;
+    case TLWorkspaceTabKindDebug: [self showDebug:self]; break;
+  }
+  if (tab && [self.appStateManager hasWorkspaceTabWithKind:tab.kind tabID:tab.tabID]) {
+    [self workspaceTabsController:self.workspaceTabsController moveTab:tab
+                          toIndex:MIN(closed.index, [self workspaceTabs].count - 1)];
+  }
 }
 
 - (void)closeActiveTabOrWindow:(id)sender {
@@ -1718,6 +1843,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:self.historyTab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:self.historyTab];
 
   [self.appStateManager removeWorkspaceTabWithKind:self.historyTab.kind tabID:self.historyTab.tabID];
   [self removeRuntimeForKind:self.historyTab.kind tabID:self.historyTab.tabID];
@@ -1758,6 +1884,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:tab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:tab];
 
   BOOL closingActiveChat = self.activeChat && self.activeChat.chatID == chatID;
   [self.appStateManager removeWorkspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID];
@@ -1888,6 +2015,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:tab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:tab];
   TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
   [runtime.featureController close];
   [runtime.contentView removeFromSuperview];
@@ -2734,6 +2862,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:self.agentsTab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:self.agentsTab];
 
   [self.appStateManager removeWorkspaceTabWithKind:self.agentsTab.kind tabID:self.agentsTab.tabID];
   [[self contentViewForTab:self.agentsTab] removeFromSuperview];
@@ -2790,6 +2919,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:self.debugTab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:self.debugTab];
 
   [self.appStateManager removeWorkspaceTabWithKind:self.debugTab.kind tabID:self.debugTab.tabID];
   [[self contentViewForTab:self.debugTab] removeFromSuperview];
@@ -3329,6 +3459,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:self.settingsTab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:self.settingsTab];
 
   [self.appStateManager removeWorkspaceTabWithKind:self.settingsTab.kind tabID:self.settingsTab.tabID];
   [[self contentViewForTab:self.settingsTab] removeFromSuperview];

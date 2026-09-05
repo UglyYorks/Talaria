@@ -244,7 +244,7 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	test -s "$(AGENT_LINUX_INITRD)"
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
-test: test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests
+test: test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
 	"$(TEST_EXECUTABLE)"
 	"$(TAB_LAYOUT_TEST_EXECUTABLE)"
 	"$(NOTCH_VIEW_TEST_EXECUTABLE)"
@@ -254,6 +254,7 @@ test: test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TES
 	"$(BUILD_DIR)/AppStateManagerTests"
 	"$(BUILD_DIR)/TransitionCoordinatorTests"
 	"$(BUILD_DIR)/FeatureControllerTests"
+	"$(BUILD_DIR)/TabShortcutTests"
 	python3 Tests/AgentRuntimeTests.py
 
 $(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLGlassButton.m Source/design_system/TLBrowserChatPane.m Source/MarkdownRenderer.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
@@ -306,6 +307,9 @@ $(BUILD_DIR)/TransitionCoordinatorTests: Source/design_system/TLTransitionCoordi
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework QuartzCore -o "$@"
 
 $(BUILD_DIR)/FeatureControllerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/FeatureControllerTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
+
+$(BUILD_DIR)/TabShortcutTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/TabShortcutTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
 
 .PHONY: test-hermes-gateway
