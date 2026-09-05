@@ -3132,7 +3132,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   for (NSView *view in @[terminalLabel, terminalDescription, openButton]) {
     [card addSubview:view];
   }
-  NSTextField *resetLabel = [self labelWithString:@"Nuclear reset" font:palette.labelFont color:palette.labelText];
+  NSTextField *resetLabel = [self labelWithString:@"Reset app" font:palette.labelFont color:palette.labelText];
   NSTextField *resetDescription = [self labelWithString:@"Permanently erase all chats, settings, saved API token, browser data, and Talaria VMs and their files. Restart at onboarding. This affects every copy of Talaria on this Mac."
                                                   font:palette.bodyFont color:palette.textMuted];
   resetDescription.usesSingleLineMode = NO;
