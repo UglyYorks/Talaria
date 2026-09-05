@@ -16,7 +16,10 @@
     [self addSubview:self.avatarLabel];
     NSTextField *label = [NSTextField labelWithString:@""];
     self.textField = label;
-    self.textField.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.textField.lineBreakMode = NSLineBreakByWordWrapping;
+    self.textField.maximumNumberOfLines = 2;
+    self.textField.cell.wraps = YES;
+    self.textField.cell.scrollable = NO;
     self.currentLabel = [NSTextField labelWithString:@"Current"];
     NSStackView *labels = [NSStackView stackViewWithViews:@[label, self.currentLabel]];
     labels.translatesAutoresizingMaskIntoConstraints = NO;
@@ -77,7 +80,10 @@
     NSTextField *label = [NSTextField labelWithString:@""];
     self.textField = label;
     self.textField.translatesAutoresizingMaskIntoConstraints = NO;
-    self.textField.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.textField.lineBreakMode = NSLineBreakByWordWrapping;
+    self.textField.maximumNumberOfLines = 2;
+    self.textField.cell.wraps = YES;
+    self.textField.cell.scrollable = NO;
     [self addSubview:self.dotLabel];
     [self addSubview:label];
     [NSLayoutConstraint activateConstraints:@[
@@ -98,7 +104,7 @@
   return self;
 }
 
-- (void)configureWithStatus:(NSString *)status running:(BOOL)running initializing:(BOOL)initializing palette:(TLThemePalette *)palette {
+- (void)configureWithStatus:(NSString *)status running:(BOOL)running initializing:(BOOL)initializing setupRequired:(BOOL)setupRequired palette:(TLThemePalette *)palette {
   self.textField.stringValue = status;
   self.textField.font = palette.bodyFont;
   self.textField.textColor = palette.appText;
@@ -106,7 +112,7 @@
   if (initializing) [self.spinner startAnimation:nil];
   else [self.spinner stopAnimation:nil];
   self.dotLabel.font = palette.smallFont;
-  self.dotLabel.textColor = running ? palette.agentRunningIndicator : palette.textMuted;
+  self.dotLabel.textColor = setupRequired ? palette.agentSetupRequiredIndicator : (running ? palette.agentRunningIndicator : palette.textMuted);
 }
 
 @end

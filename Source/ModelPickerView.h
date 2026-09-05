@@ -1,4 +1,4 @@
-#import "OpenRouterClient.h"
+#import "AgentModel.h"
 #import "UIComponents.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -8,7 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *selectedModelID;
 
 - (instancetype)initWithTitle:(NSString *)title palette:(TLThemePalette *)palette selectedModelID:(NSString *)selectedModelID;
-- (void)setModels:(NSArray<TLOpenRouterModel *> *)models;
+- (void)setModels:(NSArray<TLAgentModel *> *)models;
 - (void)setStatusText:(NSString *)statusText;
 - (void)updatePalette:(TLThemePalette *)palette;
 

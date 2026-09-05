@@ -1,5 +1,4 @@
 #import "ChatIconGenerator.h"
-#import "OpenRouterSupport.h"
 #import "PromptBuilder.h"
 
 static NSString * const TLChatIconGeneratorErrorDomain = @"Talaria.ChatIconGenerator";
@@ -8,6 +7,10 @@ static NSError *TLChatIconGeneratorError(NSString *message) {
   return [NSError errorWithDomain:TLChatIconGeneratorErrorDomain
                              code:1
                          userInfo:@{NSLocalizedDescriptionKey: message ?: @""}];
+}
+
+static NSString *TLChatIconTrim(NSString *value) {
+  return [(value ?: @"") stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
 }
 
 static BOOL TLCodePointIsEmoji(uint32_t codePoint) {
@@ -38,7 +41,7 @@ static BOOL TLStringContainsEmojiCodePoint(NSString *value) {
 }
 
 NSString *TLExtractChatIcon(NSString *value) {
-  NSString *trimmed = TLOpenRouterTrim(value);
+  NSString *trimmed = TLChatIconTrim(value);
   if (trimmed.length == 0) {
     return nil;
   }
@@ -88,9 +91,9 @@ NSString *TLExtractChatIcon(NSString *value) {
                        token:(NSString *)token
                        model:(NSString *)model
                   completion:(TLChatIconGenerationCompletion)completion {
-  NSString *trimmedToken = TLOpenRouterTrim(token);
-  NSString *trimmedModel = TLOpenRouterTrim(model);
-  NSString *trimmedMessage = TLOpenRouterTrim(firstUserMessage);
+  NSString *trimmedToken = TLChatIconTrim(token);
+  NSString *trimmedModel = TLChatIconTrim(model);
+  NSString *trimmedMessage = TLChatIconTrim(firstUserMessage);
 
   if (trimmedToken.length == 0) {
     completion(nil, TLChatIconGeneratorError(@"OpenRouter token is required."));
@@ -121,7 +124,7 @@ NSString *TLExtractChatIcon(NSString *value) {
                               importance:TLPromptImportanceRequired
                                 strategy:TLPromptCompactionStrategyWhole
                                     name:@"task"]
-    addPartWithContent:[NSString stringWithFormat:@"Title: %@", TLOpenRouterTrim(title).length > 0 ? TLOpenRouterTrim(title) : @"New chat"]
+    addPartWithContent:[NSString stringWithFormat:@"Title: %@", TLChatIconTrim(title).length > 0 ? TLChatIconTrim(title) : @"New chat"]
             importance:TLPromptImportanceUseful
               strategy:TLPromptCompactionStrategyKeepStart
                   name:@"title"];
@@ -130,18 +133,14 @@ NSString *TLExtractChatIcon(NSString *value) {
                                strategy:TLPromptCompactionStrategyKeepStart
                                    name:@"message"];
 
-  NSArray<TLChatMessage *> *messages = @[
-    [TLChatMessage messageWithRole:TLRoleSystem content:systemPrompt thinking:nil],
-    [TLChatMessage messageWithRole:TLRoleUser content:userPromptBuilder.compact.prompt thinking:nil],
-  ];
   NSString *requestID = NSUUID.UUID.UUIDString;
   NSMutableString *response = [NSMutableString string];
 
-  [self.agentOrchestrator streamChatWithDefaultAgentRequestID:requestID
-                                                    sessionID:@""
+  [self.agentOrchestrator generateTextWithDefaultAgentRequestID:requestID
                                                        token:trimmedToken
                                                        model:trimmedModel
-                                                    messages:messages
+                                                instructions:systemPrompt
+                                                       input:userPromptBuilder.compact.prompt
                                                        delta:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
     if (![deltaRequestID isEqualToString:requestID] || kind != TLAgentStreamDeltaKindContent || text.length == 0) {
       return;
