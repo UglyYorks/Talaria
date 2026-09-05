@@ -1,5 +1,6 @@
 #import "UIComponents.h"
 #import <QuartzCore/QuartzCore.h>
+#import <CoreText/CoreText.h>
 #import <math.h>
 
 static const NSTimeInterval TLUrgentNotificationPulseDuration = 1.8;
@@ -2892,6 +2893,26 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 @end
 
+static void TLDrawAvatarInitial(NSString *initial, NSRect rect, TLThemePalette *palette) {
+  [palette.userMessageSurface setFill];
+  [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(rect, palette.borderWidth * 0.5,
+                                                   palette.borderWidth * 0.5)] fill];
+  NSAttributedString *text = [[NSAttributedString alloc] initWithString:initial
+    attributes:@{NSFontAttributeName: palette.roleFont,
+                 NSForegroundColorAttributeName: palette.userMessageText}];
+  CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)text);
+  // Center the visible glyph, excluding the font's ascender/descender padding.
+  CGRect glyphBounds = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
+  CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+  CGContextSaveGState(context);
+  CGContextSetTextMatrix(context, CGAffineTransformIdentity);
+  CGContextSetTextPosition(context, NSMidX(rect) - CGRectGetMidX(glyphBounds),
+                          NSMidY(rect) - CGRectGetMidY(glyphBounds));
+  CTLineDraw(line, context);
+  CGContextRestoreGState(context);
+  CFRelease(line);
+}
+
 NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *palette) {
   NSString *name = [displayName stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSString *initial = name.length > 0
@@ -2899,15 +2920,7 @@ NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *pale
     : @"?";
   NSSize size = NSMakeSize(palette.sidebarActionIconSize, palette.sidebarActionIconSize);
   NSImage *image = [NSImage imageWithSize:size flipped:NO drawingHandler:^BOOL(NSRect rect) {
-    [palette.userMessageSurface setFill];
-    [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(rect, palette.borderWidth * 0.5,
-                                                     palette.borderWidth * 0.5)] fill];
-    NSDictionary *attributes = @{NSFontAttributeName: palette.roleFont,
-                                 NSForegroundColorAttributeName: palette.userMessageText};
-    NSSize textSize = [initial sizeWithAttributes:attributes];
-    [initial drawAtPoint:NSMakePoint(NSMidX(rect) - textSize.width * 0.5,
-                                    NSMidY(rect) - textSize.height * 0.5)
-         withAttributes:attributes];
+    TLDrawAvatarInitial(initial, rect, palette);
     return YES;
   }];
   image.template = NO;
@@ -2917,7 +2930,6 @@ NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *pale
 @interface TLAvatarInitialView : NSView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSString *initial;
-@property (nonatomic, strong) NSTextField *initialLabel;
 @end
 
 @implementation TLAvatarInitialView
@@ -2930,17 +2942,6 @@ NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *pale
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.wantsLayer = YES;
 
-    _initialLabel = [NSTextField labelWithString:@""];
-    _initialLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _initialLabel.alignment = NSTextAlignmentCenter;
-    [self addSubview:_initialLabel];
-
-    [NSLayoutConstraint activateConstraints:@[
-      [_initialLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-      [_initialLabel.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-      [_initialLabel.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-    ]];
-
     [self applyCurrentState];
   }
   return self;
@@ -2950,17 +2951,11 @@ NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *pale
   [super drawRect:dirtyRect];
 
   TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
-  NSRect circleRect = NSInsetRect(self.bounds, palette.borderWidth * 0.5, palette.borderWidth * 0.5);
-  NSBezierPath *circlePath = [NSBezierPath bezierPathWithOvalInRect:circleRect];
-  [palette.userMessageSurface setFill];
-  [circlePath fill];
+  TLDrawAvatarInitial(self.initial, self.bounds, palette);
 }
 
 - (void)applyCurrentState {
   TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
-  self.initialLabel.stringValue = self.initial;
-  self.initialLabel.font = palette.roleFont;
-  self.initialLabel.textColor = palette.userMessageText;
   self.layer.backgroundColor = TLCGColor(palette.transparentSurface);
   [self setNeedsDisplay:YES];
 }

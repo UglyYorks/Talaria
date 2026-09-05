@@ -42,6 +42,38 @@ static id Evaluate(WKWebView *view, NSString *script) {
   return value;
 }
 
+static void TestAvatarInitialCentering(void) {
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    NSImage *avatar = TLAvatarImageForDisplayName(@"Yaroslav", palette);
+    NSInteger pixels = (NSInteger)(avatar.size.width * 2);
+    NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+      pixelsWide:pixels pixelsHigh:pixels bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+      isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
+    [NSGraphicsContext saveGraphicsState];
+    NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap];
+    [avatar drawInRect:NSMakeRect(0, 0, pixels, pixels)];
+    [NSGraphicsContext restoreGraphicsState];
+    NSColor *text = [palette.userMessageText colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    NSInteger minX = pixels, minY = pixels, maxX = -1, maxY = -1;
+    for (NSInteger y = 0; y < pixels; y++) {
+      for (NSInteger x = 0; x < pixels; x++) {
+        NSColor *pixel = [bitmap colorAtX:x y:y];
+        CGFloat difference = fabs(pixel.redComponent - text.redComponent) +
+          fabs(pixel.greenComponent - text.greenComponent) + fabs(pixel.blueComponent - text.blueComponent);
+        if (pixel.alphaComponent > 0.9 && difference < 0.3) {
+          minX = MIN(minX, x); maxX = MAX(maxX, x);
+          minY = MIN(minY, y); maxY = MAX(maxY, y);
+        }
+      }
+    }
+    Check(maxX >= minX && maxY >= minY, @"avatar renders its initial");
+    Check(fabs((minX + maxX + 1) * 0.5 - pixels * 0.5) <= 1 &&
+          fabs((minY + maxY + 1) * 0.5 - pixels * 0.5) <= 1,
+          @"visible avatar initial is centered within one retina pixel");
+  }
+}
+
 static void TestGlassAccountButtonSizing(void) {
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 300, 100)
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
@@ -550,6 +582,7 @@ int main(void) {
       Check(target.activationCount == before + 1, @"disabled web choice cannot activate");
       row.enabled = YES;
     }
+    TestAvatarInitialCentering();
     TestGlassAccountButtonSizing();
     NSLog(@"GlassPaneTests passed");
   }
