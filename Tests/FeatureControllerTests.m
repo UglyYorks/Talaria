@@ -210,6 +210,9 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 
 @interface TalariaWindowController (FeatureControllerTests)
 - (void)installAppStateBindings;
+- (void)sendMessage:(id)sender;
+- (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)URLs;
+- (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)selector;
 - (void)renderWorkspaceTabs;
 - (void)updateWorkspaceMode;
 - (void)updateControlStates;
@@ -232,6 +235,82 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (void)hideSlashCommandList {}
 - (BOOL)isChatWorkspaceActive { return YES; }
 @end
+
+@interface TLAttachmentPreparationRecorder : NSObject
+@property (nonatomic, copy) void (^pendingCompletion)(NSArray *, NSError *);
+@property (nonatomic, copy) NSArray<NSURL *> *receivedURLs;
+@end
+@implementation TLAttachmentPreparationRecorder
+- (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID
+                  completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *, NSError *))completion {
+  self.receivedURLs = URLs;
+  self.pendingCompletion = completion;
+}
+@end
+
+@interface TLAttachmentSendRecorder : TLSendingNavigationController
+@property (nonatomic) NSUInteger startedTurns;
+@property (nonatomic) NSUInteger routedCommands;
+@property (nonatomic, copy) NSString *preparedPrompt;
+@property (nonatomic, copy) NSArray *preparedAttachments;
+@property (nonatomic, copy) NSString *reportedError;
+@end
+@implementation TLAttachmentSendRecorder
+- (BOOL)performSelectedSlashCommand { self.routedCommands++; return YES; }
+- (void)presentErrorMessage:(NSString *)message { self.reportedError = message; }
+- (void)openFromNotchOverlay:(id)sender {}
+- (void)beginPreparedTurnWithChat:(TLChatRecord *)chat messages:(NSMutableArray<TLChatMessage *> *)messages
+                          token:(NSString *)token model:(NSString *)model prompt:(NSString *)prompt
+                    attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)URLs {
+  self.startedTurns++;
+  self.preparedPrompt = prompt;
+  self.preparedAttachments = attachments;
+}
+@end
+
+static void TestAttachmentSendPreparation(void) {
+  TLAttachmentSendRecorder *controller = [[TLAttachmentSendRecorder alloc] initWithWindow:nil];
+  TLMessageInput *input = [[TLMessageInput alloc] init];
+  input.attachmentsEnabled = YES;
+  [controller setValue:input forKey:@"messageInput"];
+  [controller setValue:input.textView forKey:@"promptTextView"];
+  [controller setValue:input.sendButton forKey:@"sendButton"];
+  [controller setValue:input.palette forKey:@"palette"];
+  TLChatRecord *chat = [[TLChatRecord alloc] init];
+  chat.chatID = 8; chat.hermesSessionID = @"test-attachment-session";
+  [controller setValue:chat forKey:@"activeChat"];
+  [controller setValue:[NSMutableArray array] forKey:@"messages"];
+  TLAppSettings *settings = TLAppSettings.defaultSettings;
+  settings.openRouterToken = @"test-token";
+  [controller setValue:settings forKey:@"settings"];
+  TLAttachmentPreparationRecorder *agent = [[TLAttachmentPreparationRecorder alloc] init];
+  [controller setValue:agent forKey:@"agentOrchestrator"];
+  NSArray *URLs = @[[NSURL fileURLWithPath:@"/tmp/report.pdf"]];
+  [controller handleFileURLsDroppedOnNotch:URLs];
+  Check(input.attachmentURLs.count == 1 && input.textView.string.length == 0,
+        @"notch drops become attachment chips, not host-path prompt text");
+  [controller updateControlStates];
+  Check(input.sendButton.enabled, @"attachment-only messages can be sent");
+  [controller textView:input.textView doCommandBySelector:@selector(insertNewline:)];
+  Check(controller.routedCommands == 0 && controller.startedTurns == 0 && agent.pendingCompletion != nil,
+        @"Return waits for attachment copies and bypasses automatic command routing");
+  Check([[controller valueForKey:@"preparingAttachments"] boolValue] && !input.attachmentsEditable,
+        @"copying locks the submitted attachment selection");
+  void (^failedCopy)(NSArray *, NSError *) = agent.pendingCompletion;
+  agent.pendingCompletion = nil;
+  failedCopy(nil, [NSError errorWithDomain:@"Test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Copy failed"}]);
+  Check(controller.startedTurns == 0 && input.attachmentURLs.count == 1 && controller.reportedError.length > 0,
+        @"failed copying preserves the draft without starting Hermes");
+  Check(![[controller valueForKey:@"isSending"] boolValue] && input.attachmentsEditable, @"copy failure releases send state");
+  input.textView.string = @"https://example.com";
+  [controller sendMessage:nil];
+  Check(controller.startedTurns == 0 && agent.receivedURLs.count == 1, @"URL with an attachment stays a Hermes request");
+  void (^successfulCopy)(NSArray *, NSError *) = agent.pendingCompletion;
+  agent.pendingCompletion = nil;
+  successfulCopy(@[@{@"name":@"report.pdf", @"guestPath":@"/workspace/attachments/report.pdf", @"directory":@NO}], nil);
+  Check(controller.startedTurns == 1 && controller.preparedAttachments.count == 1 &&
+        [controller.preparedPrompt isEqual:@"https://example.com"], @"prepared files and original request reach the turn together");
+}
 
 static void TestNavigationWhileSendingPreservesTurn(void) {
   TLSendingNavigationController *controller = [[TLSendingNavigationController alloc] initWithWindow:nil];
@@ -524,6 +603,7 @@ int main(void) {
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();
+    TestAttachmentSendPreparation();
     TestNavigationWhileSendingPreservesTurn();
     TestCompactButtonHitAreaAndMovingHover();
     TestUnifiedWorkspaceOutline();

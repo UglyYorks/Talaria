@@ -3,10 +3,32 @@
 
 @interface TLComposerTextView : NSTextView
 @property (nonatomic) BOOL selectsAllOnFocus;
+@property (nonatomic, copy) BOOL (^filePasteHandler)(NSPasteboard *pasteboard);
+@property (nonatomic, copy) BOOL (^fileDropEnabled)(void);
 @property (nonatomic, strong) NSEvent *focusMouseDownEvent;
 @end
 
 @implementation TLComposerTextView
+- (void)paste:(id)sender {
+  if (self.filePasteHandler && self.filePasteHandler(NSPasteboard.generalPasteboard)) return;
+  [super paste:sender];
+}
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+  if (self.filePasteHandler && [sender.draggingPasteboard canReadObjectForClasses:@[NSURL.class]
+      options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}]) return self.fileDropEnabled() ? NSDragOperationCopy : NSDragOperationNone;
+  return [super draggingEntered:sender];
+}
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender { return [self draggingEntered:sender]; }
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
+  if (self.filePasteHandler && [sender.draggingPasteboard canReadObjectForClasses:@[NSURL.class]
+      options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}]) return self.fileDropEnabled();
+  return [super prepareForDragOperation:sender];
+}
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+  if (self.filePasteHandler && !self.fileDropEnabled()) return NO;
+  if (self.filePasteHandler && self.filePasteHandler(sender.draggingPasteboard)) return YES;
+  return [super performDragOperation:sender];
+}
 - (BOOL)becomeFirstResponder {
   BOOL accepted = [super becomeFirstResponder];
   if (accepted && self.selectsAllOnFocus) {
@@ -51,9 +73,46 @@
 }
 @end
 
+@interface TLAttachmentChipButton : TLHoverIconButton
+@property (nonatomic) BOOL attachmentHovered;
+@end
+@implementation TLAttachmentChipButton
+- (NSSize)intrinsicContentSize {
+  NSSize size = [super intrinsicContentSize];
+  size.width += self.palette.space4 * 2;
+  size.height = MAX(size.height, self.palette.fieldHeight);
+  return size;
+}
+- (void)applyChipPalette {
+  self.wantsLayer = YES;
+  self.layer.cornerRadius = self.palette.radiusMedium;
+  self.layer.backgroundColor = TLCGColor(self.attachmentHovered && self.enabled ? self.palette.chromeHoverSurface : self.palette.controlSurface);
+  self.layer.borderColor = TLCGColor(self.palette.composerBorder);
+  self.layer.borderWidth = self.palette.borderWidth;
+  self.font = self.palette.smallFont;
+  self.contentTintColor = self.palette.controlText;
+}
+- (void)setPalette:(TLThemePalette *)palette { [super setPalette:palette]; [self applyChipPalette]; [self invalidateIntrinsicContentSize]; }
+- (void)mouseEntered:(NSEvent *)event { self.attachmentHovered = YES; [self applyChipPalette]; }
+- (void)mouseExited:(NSEvent *)event { self.attachmentHovered = NO; [self applyChipPalette]; }
+- (void)layout { [super layout]; [self applyChipPalette]; }
+@end
+
 @interface TLMessageInput ()
 
 @property (nonatomic, strong) NSView *contentView;
+@property (nonatomic, strong) TLGlassButton *attachButton;
+@property (nonatomic, strong) NSScrollView *attachmentScrollView;
+@property (nonatomic, strong) NSStackView *attachmentStack;
+@property (nonatomic, strong) NSLayoutConstraint *textTopConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *attachmentHeightConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *attachmentTopConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *attachmentLeadingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *attachmentTrailingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *attachLeadingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *attachWidthConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *attachHeightConstraint;
+@property (nonatomic, strong) NSURL *clipboardDirectory;
 @property (nonatomic, strong) NSScrollView *textScrollView;
 @property (nonatomic, strong) NSTextView *textView;
 @property (nonatomic, strong) NSTextField *placeholderLabel;
@@ -78,6 +137,8 @@
     _sendButtonSize = _palette.composerButtonHeight - (_palette.space3 * 2.0);
     _sendButtonInset = _palette.space3;
     _maximumExpandedHeight = _palette.messageInputMaxHeight;
+    _attachmentURLs = @[];
+    _attachmentsEditable = YES;
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.wantsLayer = YES;
     [self buildInterface];
@@ -150,16 +211,17 @@
   self.placeholderLeadingConstraint = [self.placeholderLabel.leadingAnchor constraintEqualToAnchor:self.textScrollView.leadingAnchor
                                                                                           constant:self.palette.space3];
   self.textLeadingConstraint = [self.textScrollView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:self.palette.space6];
+  self.textTopConstraint = [self.textScrollView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:self.palette.space3];
   self.textTrailingConstraint = [self.textScrollView.trailingAnchor constraintEqualToAnchor:self.sendButton.leadingAnchor constant:-self.palette.space4];
 
   [NSLayoutConstraint activateConstraints:@[
     self.textLeadingConstraint,
     self.textTrailingConstraint,
-    [self.textScrollView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:self.palette.space3],
+    self.textTopConstraint,
     [self.textScrollView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-self.palette.space3],
     self.placeholderLeadingConstraint,
     [self.placeholderLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.textScrollView.trailingAnchor constant:-self.palette.space3],
-    [self.placeholderLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+    [self.placeholderLabel.centerYAnchor constraintEqualToAnchor:self.textScrollView.centerYAnchor],
     self.sendButtonTrailingConstraint,
     self.sendButtonBottomConstraint,
     self.sendButtonWidthConstraint,
@@ -173,6 +235,7 @@
 }
 
 - (void)dealloc {
+  if (_clipboardDirectory) [NSFileManager.defaultManager removeItemAtURL:_clipboardDirectory error:nil];
   [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
@@ -198,6 +261,7 @@
   self.sendButton.palette = self.palette;
   self.sendButton.contentTintColor = self.palette.labelText;
   self.maximumExpandedHeight = self.palette.messageInputMaxHeight;
+  [self applyAttachmentPalette];
   self.heightConstraint.constant = MAX(self.palette.composerButtonHeight, self.heightConstraint.constant);
   self.sendButtonWidthConstraint.constant = self.sendButtonSize;
   self.sendButtonHeightConstraint.constant = self.sendButtonSize;
@@ -211,6 +275,7 @@
   _sendButtonSize = sendButtonSize;
   self.sendButtonWidthConstraint.constant = sendButtonSize;
   self.sendButtonHeightConstraint.constant = sendButtonSize;
+  [self applyAttachmentPalette];
   [self setNeedsLayout:YES];
 }
 
@@ -283,9 +348,11 @@
   CGFloat chrome = self.palette.space3 * 2.0;
   CGFloat textHeight = MAX(usedHeight, self.palette.bodyFont.ascender - self.palette.bodyFont.descender);
   CGFloat textInset = textHeight <= (self.palette.bodyFont.ascender - self.palette.bodyFont.descender) + 1.0 ? self.palette.space3 : self.palette.space5;
-  CGFloat targetHeight = MAX(self.palette.composerButtonHeight, MIN(self.maximumExpandedHeight, ceil(textHeight + (textInset * 2.0) + chrome)));
+  CGFloat attachmentHeight = [self attachmentRowHeight];
+  self.textTopConstraint.constant = self.palette.space3 + attachmentHeight;
+  CGFloat targetHeight = attachmentHeight + MAX(self.palette.composerButtonHeight, MIN(self.maximumExpandedHeight, ceil(textHeight + (textInset * 2.0) + chrome)));
 
-  [self updateTextVerticalInsetForHeight:targetHeight textHeight:textHeight];
+  [self updateTextVerticalInsetForHeight:targetHeight - attachmentHeight textHeight:textHeight];
   [self updatePlaceholderVisibility];
 
   if (fabs(self.heightConstraint.constant - targetHeight) > 0.5) {
@@ -304,6 +371,179 @@
 
 - (void)updatePlaceholderVisibility {
   self.placeholderLabel.hidden = self.textView.string.length > 0;
+}
+
+- (CGFloat)attachmentRowHeight {
+  return self.attachmentsEnabled && self.attachmentURLs.count ? self.palette.composerButtonHeight + self.palette.space3 : self.palette.space0;
+}
+
+- (void)setAttachmentsEnabled:(BOOL)enabled {
+  _attachmentsEnabled = enabled;
+  if (enabled && !self.attachButton) [self buildAttachmentInterface];
+  self.attachButton.hidden = !enabled;
+  __weak typeof(self) weakSelf = self;
+  ((TLComposerTextView *)self.textView).fileDropEnabled = ^BOOL{ return weakSelf.attachmentsEnabled && weakSelf.attachmentsEditable; };
+  ((TLComposerTextView *)self.textView).filePasteHandler = enabled ? ^BOOL(NSPasteboard *pasteboard) {
+    return [weakSelf receiveAttachmentPasteboard:pasteboard];
+  } : (BOOL (^)(NSPasteboard *))nil;
+  if (enabled) {
+    [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+    [self.textView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+  } else [self unregisterDraggedTypes];
+  [self applyAttachmentPalette];
+  [self recalculateHeight];
+}
+
+- (void)setAttachmentsEditable:(BOOL)editable {
+  _attachmentsEditable = editable;
+  self.attachButton.enabled = editable;
+  for (NSButton *button in self.attachmentStack.arrangedSubviews) button.enabled = editable;
+}
+
+- (void)buildAttachmentInterface {
+  self.attachButton = [[TLGlassButton alloc] initWithUsesGlassEffect:NO];
+  self.attachButton.hoverSurfaceOnly = YES;
+  self.attachButton.image = [NSImage imageWithSystemSymbolName:@"paperclip" accessibilityDescription:@"Attach files or folders"];
+  self.attachButton.toolTip = @"Attach files or folders";
+  self.attachButton.target = self;
+  self.attachButton.action = @selector(chooseAttachments:);
+  [self.contentView addSubview:self.attachButton];
+  self.attachmentScrollView = [[NSScrollView alloc] init];
+  self.attachmentScrollView.translatesAutoresizingMaskIntoConstraints = NO;
+  self.attachmentScrollView.drawsBackground = NO;
+  self.attachmentScrollView.hasHorizontalScroller = YES;
+  self.attachmentScrollView.autohidesScrollers = YES;
+  self.attachmentStack = [[NSStackView alloc] init];
+  self.attachmentStack.translatesAutoresizingMaskIntoConstraints = NO;
+  self.attachmentStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  self.attachmentStack.alignment = NSLayoutAttributeCenterY;
+  self.attachmentScrollView.documentView = self.attachmentStack;
+  [self.contentView addSubview:self.attachmentScrollView];
+  self.attachLeadingConstraint = [self.attachButton.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor];
+  self.attachWidthConstraint = [self.attachButton.widthAnchor constraintEqualToConstant:self.sendButtonSize];
+  self.attachHeightConstraint = [self.attachButton.heightAnchor constraintEqualToConstant:self.sendButtonSize];
+  self.attachmentHeightConstraint = [self.attachmentScrollView.heightAnchor constraintEqualToConstant:self.palette.composerButtonHeight];
+  self.attachmentTopConstraint = [self.attachmentScrollView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor];
+  self.attachmentLeadingConstraint = [self.attachmentScrollView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor];
+  self.attachmentTrailingConstraint = [self.attachmentScrollView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor];
+  [NSLayoutConstraint activateConstraints:@[
+    self.attachLeadingConstraint, self.attachWidthConstraint, self.attachHeightConstraint,
+    [self.attachButton.centerYAnchor constraintEqualToAnchor:self.sendButton.centerYAnchor],
+    self.attachmentTopConstraint, self.attachmentLeadingConstraint, self.attachmentTrailingConstraint,
+    self.attachmentHeightConstraint,
+    [self.attachmentStack.leadingAnchor constraintEqualToAnchor:self.attachmentScrollView.contentView.leadingAnchor],
+    [self.attachmentStack.topAnchor constraintEqualToAnchor:self.attachmentScrollView.contentView.topAnchor],
+    [self.attachmentStack.heightAnchor constraintEqualToAnchor:self.attachmentScrollView.contentView.heightAnchor],
+  ]];
+}
+
+- (void)applyAttachmentPalette {
+  if (!self.attachButton) return;
+  self.attachButton.palette = self.palette;
+  self.attachLeadingConstraint.constant = self.palette.space3;
+  self.attachWidthConstraint.constant = self.sendButtonSize;
+  self.attachHeightConstraint.constant = self.sendButtonSize;
+  self.textLeadingConstraint.constant = self.attachmentsEnabled ? self.palette.space3 * 2 + self.sendButtonSize : self.palette.space6;
+  self.attachmentTopConstraint.constant = self.palette.space3;
+  self.attachmentLeadingConstraint.constant = self.palette.space5;
+  self.attachmentTrailingConstraint.constant = -self.palette.space5;
+  self.attachmentHeightConstraint.constant = self.palette.composerButtonHeight;
+  self.attachmentStack.spacing = self.palette.space3;
+  self.attachmentScrollView.hidden = !self.attachmentsEnabled || !self.attachmentURLs.count;
+  for (TLHoverIconButton *button in self.attachmentStack.arrangedSubviews) {
+    button.palette = self.palette;
+    button.font = self.palette.smallFont;
+    button.contentTintColor = self.palette.controlText;
+  }
+}
+
+- (void)setAttachmentURLs:(NSArray<NSURL *> *)URLs {
+  _attachmentURLs = [URLs copy] ?: @[];
+  for (NSView *view in self.attachmentStack.arrangedSubviews.copy) {
+    [self.attachmentStack removeArrangedSubview:view];
+    [view removeFromSuperview];
+  }
+  NSUInteger index = 0;
+  for (NSURL *URL in _attachmentURLs) {
+    TLAttachmentChipButton *button = [[TLAttachmentChipButton alloc] init];
+    button.palette = self.palette;
+    BOOL directory = URL.hasDirectoryPath;
+    [NSFileManager.defaultManager fileExistsAtPath:URL.path isDirectory:&directory];
+    button.image = [NSImage imageWithSystemSymbolName:directory ? @"folder" : @"doc" accessibilityDescription:nil];
+    button.imagePosition = NSImageLeft;
+    button.imageScaling = NSImageScaleProportionallyDown;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.title = [URL.lastPathComponent stringByAppendingString:@"  ×"];
+    button.toolTip = [@"Remove " stringByAppendingString:URL.path];
+    button.accessibilityLabel = [@"Remove attachment " stringByAppendingString:URL.lastPathComponent];
+    button.bordered = NO;
+    button.target = self;
+    button.action = @selector(removeAttachment:);
+    button.tag = index++;
+    button.enabled = self.attachmentsEditable;
+    button.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    [button.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth / 3].active = YES;
+    [self.attachmentStack addArrangedSubview:button];
+  }
+  [self applyAttachmentPalette];
+  [self recalculateHeight];
+  if (self.attachmentsChangeHandler) self.attachmentsChangeHandler();
+}
+
+- (void)addAttachmentURLs:(NSArray<NSURL *> *)URLs {
+  if (!self.attachmentsEnabled || !self.attachmentsEditable) return;
+  NSMutableArray *next = [self.attachmentURLs mutableCopy];
+  for (NSURL *URL in URLs) if (URL.isFileURL && ![next containsObject:URL]) [next addObject:URL];
+  self.attachmentURLs = next;
+}
+
+- (void)removeAttachment:(NSButton *)sender {
+  if (!self.attachmentsEditable || sender.tag < 0 || (NSUInteger)sender.tag >= self.attachmentURLs.count) return;
+  NSMutableArray *next = [self.attachmentURLs mutableCopy];
+  [next removeObjectAtIndex:sender.tag];
+  self.attachmentURLs = next;
+}
+
+- (void)chooseAttachments:(id)sender {
+  if (!self.attachmentsEditable) return;
+  NSOpenPanel *panel = NSOpenPanel.openPanel;
+  panel.canChooseFiles = YES;
+  panel.canChooseDirectories = YES;
+  panel.allowsMultipleSelection = YES;
+  panel.prompt = @"Attach";
+  [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result) {
+    if (result == NSModalResponseOK) [self addAttachmentURLs:panel.URLs];
+  }];
+}
+
+- (BOOL)receiveAttachmentPasteboard:(NSPasteboard *)pasteboard {
+  NSArray *URLs = [pasteboard readObjectsForClasses:@[NSURL.class] options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}];
+  if (URLs.count) { [self addAttachmentURLs:URLs]; return YES; }
+  NSData *imageData = [pasteboard dataForType:NSPasteboardTypePNG];
+  if (!imageData) {
+    NSData *tiff = [pasteboard dataForType:NSPasteboardTypeTIFF];
+    if (tiff) imageData = [[NSBitmapImageRep imageRepWithData:tiff] representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+  }
+  if (!imageData) return NO;
+  if (!self.attachmentsEditable) return YES;
+  NSError *error = nil;
+  if (!self.clipboardDirectory) {
+    self.clipboardDirectory = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+  }
+  NSURL *URL = [self.clipboardDirectory URLByAppendingPathComponent:[NSString stringWithFormat:@"Pasted image %@.png", NSUUID.UUID.UUIDString]];
+  if ([NSFileManager.defaultManager createDirectoryAtURL:self.clipboardDirectory withIntermediateDirectories:YES attributes:nil error:&error] &&
+      [imageData writeToURL:URL options:NSDataWritingAtomic error:&error]) [self addAttachmentURLs:@[URL]];
+  else if (error) [NSApp presentError:error];
+  return YES;
+}
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+  return self.attachmentsEnabled && self.attachmentsEditable &&
+    [sender.draggingPasteboard canReadObjectForClasses:@[NSURL.class] options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}] ? NSDragOperationCopy : NSDragOperationNone;
+}
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender { return [self draggingEntered:sender]; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+  return [self draggingEntered:sender] != NSDragOperationNone && [self receiveAttachmentPasteboard:sender.draggingPasteboard];
 }
 
 @end

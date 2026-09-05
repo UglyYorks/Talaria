@@ -117,5 +117,13 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     version = 4;
   }
 
+  if (version < 5) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      return [connection executeSQL:"ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'"
+                              error:transactionError] && TLDatabaseSetSchemaVersion(connection, 5, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 5;
+  }
   return version == targetVersion;
 }

@@ -51,6 +51,7 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
 // Reference context is sent to the model, never displayed or stored as the user's message.
 @property (nonatomic, copy, nullable) NSString *referenceContext;
 @property (nonatomic) BOOL streamsPartialContent;
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *attachments;
 
 - (instancetype)initWithDatabase:(TLDatabase *)database agentOrchestrator:(TLAgentOrchestrator *)agentOrchestrator;
 - (instancetype)initWithMessageStore:(id<TLAssistantTurnMessageStore>)messageStore

@@ -96,6 +96,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   if (self) {
     _role = [TLRoleUser copy];
     _content = @"";
+    _attachments = @[];
   }
   return self;
 }
@@ -105,6 +106,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.role = self.role;
   copy.content = self.content;
   copy.thinking = self.thinking;
+  copy.attachments = self.attachments;
   return copy;
 }
 

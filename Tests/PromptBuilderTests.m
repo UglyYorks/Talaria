@@ -478,7 +478,7 @@ static void TestDatabasePersistence(void) {
                @"deleted chats cannot be loaded");
 
   database = nil;
-  TLAssertTrue(TLReadSQLiteUserVersion(url) == 4, @"sets database schema user_version");
+  TLAssertTrue(TLReadSQLiteUserVersion(url) == 5, @"sets database schema user_version");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
 
