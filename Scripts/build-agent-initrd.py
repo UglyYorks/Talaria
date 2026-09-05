@@ -16,7 +16,7 @@ ARCH = "aarch64"
 BASE_URL = "https://dl-cdn.alpinelinux.org/alpine"
 DEFAULT_PACKAGES = (
     "python3", "ca-certificates-bundle", "bash", "curl", "git", "xz",
-    "build-base", "ripgrep",
+    "build-base", "ripgrep", "ncurses-terminfo-base",
 )
 DEPENDENCY_SPLIT_RE = re.compile(r"([<>=~].*)$")
 
@@ -292,6 +292,7 @@ def main():
     parser.add_argument("--base-initrd", required=True, type=Path)
     parser.add_argument("--modloop", required=True, type=Path)
     parser.add_argument("--agent-script", required=True, type=Path)
+    parser.add_argument("--terminal-script", required=True, type=Path)
     parser.add_argument("--init-script", required=True, type=Path)
     parser.add_argument("--cache-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
@@ -313,6 +314,9 @@ def main():
         normalize_usr_merge(overlay)
         for module in args.agent_script.parent.glob("*.py"):
             install_file(module, overlay / "opt/talaria" / module.name, 0o644)
+        install_file(args.terminal_script, overlay / "opt/talaria/terminal_service.py", 0o644)
+        write_text(overlay / "etc/profile.d/talaria-terminal.sh",
+                   'export PATH="$HOME/.hermes/hermes-agent/venv/bin:$HOME/.local/bin:$PATH"\n')
         install_file(args.init_script, overlay / "talaria-init", 0o755)
         install_file(args.modloop, overlay / "modloop-virt", 0o644)
         write_text(overlay / "etc/hosts", "127.0.0.1 localhost\n::1 localhost\n")

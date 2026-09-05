@@ -18,7 +18,7 @@
 #import "TLHermesOnboardingWindowController.h"
 #import "TLAgentCreationWindowController.h"
 #import "TLAgentFolderAccessWindowController.h"
-#import "TLVMDebugTerminalWindowController.h"
+#import "TLVMTerminalSession.h"
 #import "TLWorkspaceTabsController.h"
 #import "UIComponents.h"
 #import "design_system/TLWorkspaceOutlineView.h"
@@ -29,6 +29,7 @@
 #import "WorkspaceTabRuntime.h"
 #import "Widgetbook.h"
 #import "design_system/TLButton.h"
+#import "design_system/TLThemedButton.h"
 #import "design_system/TLASCIIPlanetScreensaverView.h"
 #import "design_system/TLGlassButton.h"
 #import "design_system/TLMessageInput.h"
@@ -240,7 +241,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) TLOnboardingDemoWindowController *onboardingDemoWindowController;
 @property (nonatomic, strong) TLHermesOnboardingWindowController *hermesOnboardingWindowController;
 @property (nonatomic, strong) TLAgentCreationWindowController *agentCreationWindowController;
-@property (nonatomic, strong) TLVMDebugTerminalWindowController *debugTerminalWindowController;
+@property (nonatomic) BOOL openingDebugTerminal;
+@property (nonatomic, weak) TLThemedButton *debugTerminalButton;
+@property (nonatomic, strong) NSTimer *debugTerminalStateTimer;
 @property (nonatomic, strong, nullable) TLASCIIPlanetScreensaverView *screensaverView;
 @property (nonatomic) NSRect mainWindowFrameBeforeOnboarding;
 @property (nonatomic) BOOL hasMainWindowFrameBeforeOnboarding;
@@ -394,6 +397,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)dealloc {
+  [self.debugTerminalStateTimer invalidate];
   if (self.effectiveAppearanceObserverInstalled) {
     [NSApp removeObserver:self
                forKeyPath:@"effectiveAppearance"
@@ -3008,6 +3012,14 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
+  if (!self.debugTerminalStateTimer) {
+    __weak typeof(self) weakSelf = self;
+    self.debugTerminalStateTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
+      TalariaWindowController *controller = weakSelf;
+      if ([controller isWorkspaceTabActive:controller.debugTab]) [controller refreshDebugTerminalAvailability];
+    }];
+  }
+
   if (!self.debugTab) {
     NSView *contentView = [self buildDebugTabContent];
     self.debugTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindDebug
@@ -3024,6 +3036,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self.appStateManager addWorkspaceTab:self.debugTab activate:NO];
   }
 
+  [self refreshDebugTerminalAvailability];
   [self activateTabKind:TLWorkspaceTabKindDebug tabID:self.debugTab.tabID];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -3034,6 +3047,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.widgetbookMode || !self.debugTab) {
     return;
   }
+  [self refreshDebugTerminalAvailability];
   [self activateTabKind:TLWorkspaceTabKindDebug tabID:self.debugTab.tabID];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -3053,17 +3067,36 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [[self contentViewForTab:self.debugTab] removeFromSuperview];
   [self removeRuntimeForKind:self.debugTab.kind tabID:self.debugTab.tabID];
   self.debugTab = nil;
+  [self.debugTerminalStateTimer invalidate];
+  self.debugTerminalStateTimer = nil;
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
   [self updateControlStates];
 }
 
+- (void)refreshDebugTerminalAvailability {
+  BOOL running = [self.agentOrchestrator isDefaultAgentRunning];
+  self.debugTerminalButton.enabled = running && !self.openingDebugTerminal;
+  self.debugTerminalButton.toolTip = running ? nil : @"The agent VM must be running to open a terminal.";
+}
+
 - (void)openDebugTerminal:(id)sender {
-  if (!self.debugTerminalWindowController) {
-    self.debugTerminalWindowController = [[TLVMDebugTerminalWindowController alloc]
-      initWithPalette:self.palette agentOrchestrator:self.agentOrchestrator];
-  }
-  [self.debugTerminalWindowController showFromWindow:self.window];
+  [self refreshDebugTerminalAvailability];
+  if (self.openingDebugTerminal || ![self.agentOrchestrator isDefaultAgentRunning]) return;
+  self.openingDebugTerminal = YES;
+  [self rebuildDebugTabContentForCurrentPalette];
+  [self.agentOrchestrator connectToDefaultAgentTerminal:^(VZVirtioSocketConnection *connection, NSError *error) {
+    self.openingDebugTerminal = NO;
+    [self rebuildDebugTabContentForCurrentPalette];
+    if (!connection) { if (error) [NSApp presentError:error]; return; }
+    NSError *sessionError = nil;
+    TLVMTerminalSession *session = [[TLVMTerminalSession alloc] initWithConnection:connection
+      executableURL:NSBundle.mainBundle.executableURL error:&sessionError];
+    if (!session) { [NSApp presentError:sessionError]; return; }
+    [session openInTerminalWithCompletion:^(NSError *launchError) {
+      if (launchError) [NSApp presentError:launchError];
+    }];
+  }];
 }
 
 - (void)rebuildDebugTabContentForCurrentPalette {
@@ -3084,36 +3117,39 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (NSView *)buildDebugTabContent {
   TLThemePalette *palette = self.palette;
-  TLTokenView *content = [[TLTokenView alloc] init];
+  NSScrollView *scrollView = [[NSScrollView alloc] init];
+  scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+  scrollView.hasVerticalScroller = YES;
+  scrollView.autohidesScrollers = YES;
+  scrollView.drawsBackground = YES;
+  scrollView.backgroundColor = palette.tabBackground;
+  TLFlippedView *content = [[TLFlippedView alloc] init];
   content.translatesAutoresizingMaskIntoConstraints = NO;
-  content.fillColor = palette.tabBackground;
+  scrollView.documentView = content;
 
   NSTextField *titleLabel = [self labelWithString:@"Debug" font:palette.titleFont color:palette.appText];
-  NSTextField *subtitleLabel = [self labelWithString:@"Inspect the active agent VM from a private shell session."
+  NSTextField *subtitleLabel = [self labelWithString:@"Inspect the agent VM or reset Talaria for a fresh start."
                                                 font:palette.bodyFont
                                                color:palette.textMuted];
+  subtitleLabel.usesSingleLineMode = NO;
+  subtitleLabel.maximumNumberOfLines = 0;
+  subtitleLabel.lineBreakMode = NSLineBreakByWordWrapping;
   NSTextField *terminalLabel = [self labelWithString:@"VM terminal" font:palette.labelFont color:palette.labelText];
-  NSTextField *terminalDescription = [self labelWithString:@"Open a terminal window for commands such as pwd, ls, cd, and cat. Commands run inside the VM, not on your Mac."
+  NSTextField *terminalDescription = [self labelWithString:@"Open macOS Terminal connected to the VM. Use an interactive shell with tab completion, command history, keyboard shortcuts, and terminal apps."
                                                      font:palette.bodyFont
                                                     color:palette.textMuted];
+  terminalDescription.usesSingleLineMode = NO;
   terminalDescription.maximumNumberOfLines = 0;
   terminalDescription.lineBreakMode = NSLineBreakByWordWrapping;
 
-  NSButton *openButton = [NSButton buttonWithTitle:@"Open VM terminal" target:self action:@selector(openDebugTerminal:)];
+  TLThemedButton *openButton = [TLThemedButton buttonWithTitle:self.openingDebugTerminal ? @"Connecting…" : @"Open in Terminal" target:self action:@selector(openDebugTerminal:)];
+  self.debugTerminalButton = openButton;
+  [self refreshDebugTerminalAvailability];
   openButton.translatesAutoresizingMaskIntoConstraints = NO;
   openButton.bezelStyle = NSBezelStyleRounded;
   openButton.controlSize = NSControlSizeLarge;
-  openButton.font = palette.labelFont;
-  openButton.bezelColor = palette.primaryActionSurface;
-  openButton.contentTintColor = palette.primaryActionText;
-
-  NSButton *closeButton = [NSButton buttonWithTitle:@"Close" target:self action:@selector(closeDebugTab:)];
-  closeButton.translatesAutoresizingMaskIntoConstraints = NO;
-  closeButton.bezelStyle = NSBezelStyleRounded;
-  closeButton.controlSize = NSControlSizeLarge;
-  closeButton.font = palette.labelFont;
-  closeButton.bezelColor = palette.secondaryActionSurface;
-  closeButton.contentTintColor = palette.secondaryActionText;
+  openButton.palette = palette;
+  openButton.primary = YES;
 
   TLTokenView *card = [[TLTokenView alloc] init];
   card.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3122,22 +3158,43 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   for (NSView *view in @[terminalLabel, terminalDescription, openButton]) {
     [card addSubview:view];
   }
-  for (NSView *view in @[titleLabel, subtitleLabel, closeButton, card]) {
+  NSTextField *resetLabel = [self labelWithString:@"Reset app" font:palette.labelFont color:palette.labelText];
+  NSTextField *resetDescription = [self labelWithString:@"Permanently erase all chats, settings, saved API token, browser data, and Talaria VMs and their files. Restart at onboarding. This affects every copy of Talaria on this Mac."
+                                                  font:palette.bodyFont color:palette.textMuted];
+  resetDescription.usesSingleLineMode = NO;
+  resetDescription.maximumNumberOfLines = 0;
+  resetDescription.lineBreakMode = NSLineBreakByWordWrapping;
+  TLThemedButton *resetButton = [TLThemedButton buttonWithTitle:@"Reset everything…" target:NSApp.delegate action:@selector(resetApp:)];
+  resetButton.translatesAutoresizingMaskIntoConstraints = NO;
+  resetButton.bezelStyle = NSBezelStyleRounded;
+  resetButton.controlSize = NSControlSizeLarge;
+  resetButton.palette = palette;
+  resetButton.primary = NO;
+  TLTokenView *resetCard = [[TLTokenView alloc] init];
+  resetCard.translatesAutoresizingMaskIntoConstraints = NO;
+  resetCard.fillColor = palette.controlSurface;
+  resetCard.cornerRadius = palette.radiusMedium;
+  for (NSView *view in @[resetLabel, resetDescription, resetButton]) [resetCard addSubview:view];
+  for (NSView *view in @[titleLabel, subtitleLabel, card, resetCard]) {
     [content addSubview:view];
   }
 
+  for (NSView *view in @[subtitleLabel, terminalDescription, resetDescription, openButton, resetButton]) {
+    [self allowHorizontalWindowExpansionForView:view];
+  }
   [NSLayoutConstraint activateConstraints:@[
+    [content.leadingAnchor constraintEqualToAnchor:scrollView.contentView.leadingAnchor],
+    [content.topAnchor constraintEqualToAnchor:scrollView.contentView.topAnchor],
+    [content.widthAnchor constraintEqualToAnchor:scrollView.contentView.widthAnchor],
+    [content.heightAnchor constraintGreaterThanOrEqualToAnchor:scrollView.contentView.heightAnchor],
+    [content.bottomAnchor constraintGreaterThanOrEqualToAnchor:resetCard.bottomAnchor constant:palette.space11],
     [titleLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:palette.space12],
     [titleLabel.topAnchor constraintEqualToAnchor:content.topAnchor constant:palette.space11],
-    [closeButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
-    [closeButton.centerYAnchor constraintEqualToAnchor:titleLabel.centerYAnchor],
-    [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
-    [closeButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
     [subtitleLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:closeButton.leadingAnchor constant:-palette.space8],
+    [subtitleLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
     [subtitleLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:palette.space2],
     [card.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [card.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
+    [card.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-palette.space12],
     [card.topAnchor constraintEqualToAnchor:subtitleLabel.bottomAnchor constant:palette.space10],
     [terminalLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:palette.space8],
     [terminalLabel.topAnchor constraintEqualToAnchor:card.topAnchor constant:palette.space8],
@@ -3145,13 +3202,25 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [terminalDescription.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-palette.space8],
     [terminalDescription.topAnchor constraintEqualToAnchor:terminalLabel.bottomAnchor constant:palette.space3],
     [openButton.leadingAnchor constraintEqualToAnchor:terminalLabel.leadingAnchor],
-    [openButton.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-palette.space8],
+    [openButton.trailingAnchor constraintLessThanOrEqualToAnchor:card.trailingAnchor constant:-palette.space8],
     [openButton.topAnchor constraintEqualToAnchor:terminalDescription.bottomAnchor constant:palette.space6],
     [openButton.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-palette.space8],
-    [openButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth],
     [openButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
+    [resetCard.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+    [resetCard.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+    [resetCard.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:palette.space8],
+    [resetLabel.leadingAnchor constraintEqualToAnchor:resetCard.leadingAnchor constant:palette.space8],
+    [resetLabel.topAnchor constraintEqualToAnchor:resetCard.topAnchor constant:palette.space8],
+    [resetDescription.leadingAnchor constraintEqualToAnchor:resetLabel.leadingAnchor],
+    [resetDescription.trailingAnchor constraintEqualToAnchor:resetCard.trailingAnchor constant:-palette.space8],
+    [resetDescription.topAnchor constraintEqualToAnchor:resetLabel.bottomAnchor constant:palette.space3],
+    [resetButton.leadingAnchor constraintEqualToAnchor:resetLabel.leadingAnchor],
+    [resetButton.trailingAnchor constraintLessThanOrEqualToAnchor:resetDescription.trailingAnchor],
+    [resetButton.topAnchor constraintEqualToAnchor:resetDescription.bottomAnchor constant:palette.space6],
+    [resetButton.bottomAnchor constraintEqualToAnchor:resetCard.bottomAnchor constant:-palette.space8],
+    [resetButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
   ]];
-  return content;
+  return scrollView;
 }
 
 - (NSView *)buildAgentsTabContent {
@@ -4905,7 +4974,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self.agentsView setNeedsDisplay:YES];
   }
   [self rebuildDebugTabContentForCurrentPalette];
-  [self.debugTerminalWindowController updatePalette:self.palette];
   self.agentsTableView.backgroundColor = self.palette.tabBackground;
   if (self.createAgentButton) {
     [self styleButton:self.createAgentButton background:self.palette.primaryActionSurface foreground:self.palette.primaryActionText];
