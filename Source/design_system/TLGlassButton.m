@@ -38,6 +38,7 @@
   [self updateHoverSurface];
 }
 - (void)setPalette:(TLThemePalette *)palette { _palette = palette; [self updateHoverSurface]; }
+- (void)setIdleSurfaceColor:(NSColor *)color { _idleSurfaceColor = color; [self updateHoverSurface]; }
 - (void)setEnabled:(BOOL)enabled { [super setEnabled:enabled]; [self updateHoverSurface]; }
 - (void)setHoverSurfaceOnly:(BOOL)hoverSurfaceOnly {
   _hoverSurfaceOnly = hoverSurfaceOnly;
@@ -55,7 +56,7 @@
   self.layer.cornerRadius = MIN(NSWidth(self.bounds), NSHeight(self.bounds)) / 2.0;
   self.layer.backgroundColor = TLCGColor(self.enabled && (self.hovered || self.pressed)
     ? (self.pressed ? self.palette.sidebarActiveSurface : self.palette.chromeHoverSurface)
-    : self.palette.transparentSurface);
+    : (self.idleSurfaceColor ?: self.palette.transparentSurface));
 }
 @end
 

@@ -75,6 +75,34 @@
 }
 @end
 
+// Draw the cross around the control's center, without NSButtonCell's native
+// image/bezel offsets, so its visible strokes align with the circular surface.
+@interface TLAttachmentCloseButtonCell : NSButtonCell
+@property (nonatomic) CGFloat strokeWidth;
+@end
+@implementation TLAttachmentCloseButtonCell
+- (void)drawInteriorWithFrame:(NSRect)frame inView:(NSView *)view {
+  NSButton *button = (NSButton *)view;
+  CGFloat halfSize = button.font.pointSize / 2;
+  NSPoint center = NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds));
+  NSBezierPath *cross = [NSBezierPath bezierPath];
+  cross.lineWidth = self.strokeWidth;
+  cross.lineCapStyle = NSLineCapStyleRound;
+  [cross moveToPoint:NSMakePoint(center.x - halfSize, center.y - halfSize)];
+  [cross lineToPoint:NSMakePoint(center.x + halfSize, center.y + halfSize)];
+  [cross moveToPoint:NSMakePoint(center.x - halfSize, center.y + halfSize)];
+  [cross lineToPoint:NSMakePoint(center.x + halfSize, center.y - halfSize)];
+  [button.contentTintColor setStroke];
+  [cross stroke];
+}
+@end
+
+@interface TLAttachmentCloseButton : TLHoverIconButton
+@end
+@implementation TLAttachmentCloseButton
++ (Class)cellClass { return TLAttachmentCloseButtonCell.class; }
+@end
+
 @interface TLAttachmentChipView : NSView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong) NSImage *image;
@@ -98,7 +126,7 @@
     _label = [NSTextField labelWithString:@""];
     _label.lineBreakMode = NSLineBreakByTruncatingMiddle;
     _label.usesSingleLineMode = YES;
-    _closeButton = [[TLHoverIconButton alloc] init];
+    _closeButton = [[TLAttachmentCloseButton alloc] init];
     _closeButton.hoverSurfaceOnly = YES;
     _closeButton.imagePosition = NSImageOnly;
     _closeButton.title = @"";
@@ -109,11 +137,11 @@
   return self;
 }
 - (CGFloat)imageLeadingInset {
-  return self.image && !self.image.template ? self.palette.space4 : self.palette.space6;
+  return self.image && !self.image.template ? self.palette.space2 * 2 : self.palette.space6;
 }
 - (NSSize)intrinsicContentSize {
   CGFloat width = self.imageLeadingInset + self.image.size.width + self.palette.space4 +
-    self.label.intrinsicContentSize.width + self.palette.space4 + self.palette.space12 + self.palette.space2;
+    self.label.intrinsicContentSize.width + self.palette.space4 + self.palette.space11 + self.palette.space3;
   return NSMakeSize(ceil(width), self.palette.fieldHeight);
 }
 - (void)setImage:(NSImage *)image {
@@ -139,18 +167,18 @@
   self.imageView.contentTintColor = palette.controlText;
   self.closeButton.palette = palette;
   self.closeButton.contentTintColor = palette.controlText;
-  self.closeButton.layer.borderColor = TLCGColor(palette.controlBorder);
-  self.closeButton.layer.borderWidth = palette.borderWidth;
-  NSImage *cross = [NSImage imageWithSystemSymbolName:@"xmark" accessibilityDescription:nil];
-  self.closeButton.image = [cross imageWithSymbolConfiguration:[NSImageSymbolConfiguration
-    configurationWithPointSize:palette.space6 weight:NSFontWeightRegular]] ?: cross;
+  self.closeButton.layer.borderWidth = palette.space0;
+  self.closeButton.idleSurfaceColor = palette.controlSurface;
+  self.closeButton.font = [NSFont systemFontOfSize:palette.space5];
+  ((TLAttachmentCloseButtonCell *)self.closeButton.cell).strokeWidth = palette.borderWidth;
+  self.closeButton.needsDisplay = YES;
   [self invalidateIntrinsicContentSize];
   self.needsLayout = YES;
 }
 - (void)layout {
   [super layout];
   CGFloat height = NSHeight(self.bounds);
-  CGFloat inset = self.palette.space2;
+  CGFloat inset = self.palette.space3;
   CGFloat diameter = height - inset * 2;
   self.layer.cornerRadius = height / 2;
   self.closeButton.frame = NSMakeRect(NSWidth(self.bounds) - inset - diameter, inset, diameter, diameter);
