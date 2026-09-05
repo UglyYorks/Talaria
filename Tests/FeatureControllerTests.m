@@ -19,6 +19,7 @@
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLButton.h"
 #import "design_system/TLThemedButton.h"
+#import "TLHistoryPanelController.h"
 #import "design_system/TLWorkspaceOutlineView.h"
 #import "design_system/TLChromeTabView.h"
 
@@ -1744,9 +1745,90 @@ static void TestRunningAgentRepairAction(void) {
   Check(!start.enabled && !stop.enabled, @"setup disables duplicate install and stop actions");
 }
 
+@interface TLHistorySelectionProbe : NSObject <TLHistoryPanelControllerDelegate>
+@property NSInteger selected;
+@property NSInteger deleted;
+@end
+@implementation TLHistorySelectionProbe
+- (void)historyPanelController:(TLHistoryPanelController *)controller didSelectChatID:(NSInteger)chatID { self.selected = chatID; }
+- (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteChatID:(NSInteger)chatID { self.deleted = chatID; }
+@end
+
+static void TestHermesHistorySearchAndLayout(void) {
+  TLHistorySelectionProbe *probe = [[TLHistorySelectionProbe alloc] init];
+  TLHistoryPanelController *controller = [[TLHistoryPanelController alloc] initWithPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  controller.delegate = probe;
+  TLChatSummary *first = [[TLChatSummary alloc] init];
+  first.chatID = 10; first.title = @"Café research"; first.hermesSessionID = @"session-a"; first.updatedAt = @"2026-09-05 08:00:00";
+  TLChatSummary *second = [[TLChatSummary alloc] init];
+  second.chatID = 20; second.title = @"Browser project"; second.hermesSessionID = @"session-b"; second.updatedAt = first.updatedAt;
+  controller.chats = @[first, second];
+  controller.searchPreviews = @{@20: @"Investigate browser automation"};
+  NSSearchField *search = [controller valueForKey:@"searchField"];
+  NSTableView *table = [controller valueForKey:@"tableView"];
+  NSTextField *status = [controller valueForKey:@"statusLabel"];
+  [controller reloadData];
+  Check(table.numberOfRows == 2, @"history lists all received Hermes sessions");
+  search.stringValue = @"CAFE";
+  [NSNotificationCenter.defaultCenter postNotificationName:NSControlTextDidChangeNotification object:search];
+  Check(table.numberOfRows == 1, @"history search ignores case and accents");
+  search.stringValue = @"automation";
+  [controller reloadData];
+  [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  Check(probe.selected == 20, @"filtered selection opens its actual session");
+  [table setValue:@0 forKey:@"contextMenuRow"];
+  NSMenuItem *deleteItem = table.menu.itemArray.firstObject;
+  [NSApp sendAction:deleteItem.action to:deleteItem.target from:deleteItem];
+  Check(probe.deleted == 20, @"filtered deletion targets its actual session");
+  search.stringValue = @"missing";
+  [controller reloadData];
+  Check(table.numberOfRows == 0 && [status.stringValue isEqualToString:@"No matching sessions"], @"search has an empty result state");
+  controller.loading = YES;
+  Check(!table.enabled && [status.stringValue containsString:@"Loading"], @"loading disables row actions");
+  controller.loading = NO;
+  controller.statusMessage = @"Hermes unavailable";
+  Check([status.stringValue isEqualToString:@"Hermes unavailable"], @"history exposes gateway errors");
+  controller.statusMessage = @"";
+  search.stringValue = @"";
+  [controller reloadData];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1200, 600)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  NSView *panel = controller.panelView;
+  [window.contentView addSubview:panel];
+  [NSLayoutConstraint activateConstraints:@[
+    [panel.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [panel.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [panel.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [panel.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+  ]];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@1200, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 600)];
+      [window.contentView layoutSubtreeIfNeeded];
+      Check(fabs(NSWidth(window.contentView.bounds) - width.doubleValue) < 1, @"history never constrains the window maximum width");
+      NSView *column = panel.subviews.firstObject;
+      Check(fabs(NSMidX(column.frame) - NSMidX(panel.bounds)) < 1, @"history column is horizontally centered");
+      Check(NSWidth(column.frame) <= palette.messageInputMaxWidth + 1 && NSWidth(column.frame) <= width.doubleValue + 1,
+            @"history column matches chat width and fits narrow windows");
+      Check(NSWidth(search.frame) > 0 && NSMaxX([search convertRect:search.bounds toView:panel]) <= width.doubleValue,
+            @"history search fits inside narrow windows");
+      NSBitmapImageRep *image = [panel bitmapImageRepForCachingDisplayInRect:panel.bounds];
+      [panel cacheDisplayInRect:panel.bounds toBitmapImageRep:image];
+      [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithFormat:@"build/history-%@-%@.png", theme, width] atomically:YES];
+    }
+  }
+  [window close];
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestHermesHistorySearchAndLayout();
     TestNativeEmojiInput();
     TestFolderAccessTable();
     TestAgentCreationForm();

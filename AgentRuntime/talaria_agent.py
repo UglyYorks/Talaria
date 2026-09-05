@@ -246,6 +246,25 @@ def tui_gateway(token="", model=""):
         return _tui_gateway
 
 
+def hermes_history(request, output=None):
+    try:
+        gateway = tui_gateway(trim(request.get("token")), trim(request.get("model")))
+        action = request.get("action")
+        if action == "list":
+            result = gateway.history_sessions()
+        elif action == "open":
+            result = gateway.history_session(trim(request.get("session_id")))
+        elif action == "delete":
+            result = gateway.delete_history_session(trim(request.get("session_id")))
+        else:
+            raise RuntimeError("Unknown Hermes history action.")
+        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
+              "text": json.dumps(result)}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not {request.get('action', 'load')} Hermes history: {exc}", output)
+
+
 def fetch_hermes_commands(request, output=None):
     try:
         catalogue = tui_gateway(trim(request.get("token")), trim(request.get("model"))).catalog()
@@ -359,6 +378,9 @@ def handle_request(request, output=None, cancellation=None):
     if operation == "install_hermes":
         install_hermes(request, output)
         return 0
+    if operation == "hermes_history":
+        hermes_history(request, output)
+        return
     if operation == "hermes_commands":
         fetch_hermes_commands(request, output)
         return 0

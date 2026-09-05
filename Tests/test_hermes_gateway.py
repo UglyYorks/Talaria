@@ -31,6 +31,70 @@ class GatewayTests(unittest.TestCase):
         self.gateway.mapping_path = self.gateway.home / 'sessions.json'
         self.gateway.call = Mock()
 
+    def test_history_expands_beyond_default_window_and_preserves_alias(self):
+        rows = [{"id": f"session-{i}", "title": "", "preview": f"Topic {i}", "started_at": 1700000000}
+                for i in range(250)]
+        self.gateway.mappings = {"talaria-chat": "session-0", "session-0": "session-0"}
+        self.gateway.call.side_effect = lambda method, params: {"sessions": rows[:params["limit"]]}
+        result = self.gateway.history_sessions()["sessions"]
+        self.assertEqual(len(result), 250)
+        self.assertEqual(result[0]["hermes_session_id"], "talaria-chat")
+        self.assertEqual(result[0]["title"], "Topic 0")
+        self.assertEqual(result[0]["created_at"], "2023-11-14 22:13:20")
+        self.assertEqual([c.args[1]["limit"] for c in self.gateway.call.call_args_list], [200, 400])
+
+    def test_history_invalid_or_unavailable_list_is_not_empty_success(self):
+        self.gateway.call.return_value = {}
+        with self.assertRaisesRegex(RuntimeError, "invalid session list"):
+            self.gateway.history_sessions()
+        self.gateway.call.side_effect = RPCError({"code": -32601, "message": "method unavailable"})
+        with self.assertRaisesRegex(RPCError, "method unavailable"):
+            self.gateway.history_sessions()
+
+    def test_history_resume_restores_original_alias_and_transcript(self):
+        self.gateway.mappings = {"talaria-chat": "saved"}
+        self.gateway.call.side_effect = [
+            {"session_id": "runtime", "resumed": "saved", "info": {"model": "original-model"}},
+            {"messages": [{"role": "user", "text": "Hello"}, {"role": "tool", "name": "terminal"},
+                          {"role": "assistant", "text": "World", "reasoning": "Thought"}]}]
+        result = self.gateway.history_session("saved")
+        self.assertEqual([m["content"] for m in result["messages"]], ["Hello", "World"])
+        self.assertEqual(result["messages"][1]["thinking"], "Thought")
+        self.assertEqual(result["model"], "original-model")
+        self.assertEqual(self.gateway.sessions, {"talaria-chat": {"id": "runtime", "model": "original-model"}})
+        self.gateway.call.assert_called_with("session.history", {"session_id": "runtime"})
+
+    def test_history_missing_session_never_creates_replacement(self):
+        self.gateway.call.side_effect = RPCError({"code": 4007, "message": "session not found"})
+        with self.assertRaisesRegex(RPCError, "session not found"):
+            self.gateway.history_session("missing")
+        self.gateway.call.assert_called_once_with("session.resume", {"session_id": "missing"})
+
+    def test_history_deletion_closes_idle_runtime_and_clears_aliases(self):
+        self.gateway.mappings = {"chat": "saved", "other": "elsewhere"}
+        self.gateway.sessions = {"chat": {"id": "runtime", "model": "model"}}
+        self.gateway.call.side_effect = [{}, {"deleted": "saved"}]
+        self.assertEqual(self.gateway.delete_history_session("saved"), {"deleted": "saved"})
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list], ["session.close", "session.delete"])
+        self.assertEqual(self.gateway.mappings, {"other": "elsewhere"})
+        self.assertEqual(self.gateway.sessions, {})
+
+    def test_history_deletion_refuses_streaming_or_pending_approval(self):
+        self.gateway.mappings = {"chat": "saved"}
+        self.gateway.sessions = {"chat": {"id": "runtime", "model": "model"}}
+        self.gateway.listeners = {"runtime": queue.Queue()}
+        with self.assertRaisesRegex(RuntimeError, "finish"):
+            self.gateway.delete_history_session("saved")
+        self.gateway.call.assert_not_called()
+
+    def test_worker_history_errors_do_not_return_a_success_event(self):
+        with patch.object(worker, "tui_gateway") as gateway:
+            gateway.return_value.history_sessions.side_effect = RuntimeError("Unavailable")
+            output = io.BytesIO()
+            worker.handle_request({"operation": "hermes_history", "action": "list", "request_id": "req"}, output)
+            events = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual([event["type"] for event in events], ["error"])
+
     def catalogue(self, names, aliases=None):
         return {'pairs': [[name, name + ' description'] for name in names], 'canon': aliases or {}}
 

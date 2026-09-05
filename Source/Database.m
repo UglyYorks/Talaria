@@ -193,6 +193,78 @@ static NSString *TLTitleFromMessage(NSString *content) {
   }
 }
 
+// Hermes owns history. These records only adapt it to Talaria's existing tab/message cache.
+- (nullable TLChatRecord *)cacheHermesSession:(NSDictionary *)session
+                                   messages:(nullable NSArray<NSDictionary *> *)messages
+                                      error:(NSError **)error {
+  @synchronized (self) {
+    NSString *(^string)(id) = ^NSString *(id value) { return [value isKindOfClass:NSString.class] ? value : @""; };
+    NSString *sessionID = string(session[@"hermes_session_id"]);
+    if (!sessionID.length) { TLSetDatabaseError(error, @"Hermes session identity is missing."); return nil; }
+    __block NSInteger chatID = 0;
+    BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
+      TLSQLiteStatement *upsert = [self.sqliteConnection prepareSQL:
+        "INSERT INTO chats (title, model, icon, hermes_session_id, created_at, updated_at) "
+        "VALUES (?1, ?2, '', ?3, ?4, ?5) ON CONFLICT(hermes_session_id) DO UPDATE SET "
+        "title = excluded.title, model = CASE WHEN excluded.model = '' THEN chats.model ELSE excluded.model END, "
+        "created_at = excluded.created_at, updated_at = excluded.updated_at" error:transactionError];
+      if (!upsert) return NO;
+      [upsert bindText:string(session[@"title"]) atIndex:1];
+      [upsert bindText:string(session[@"model"]) atIndex:2];
+      [upsert bindText:sessionID atIndex:3];
+      [upsert bindText:string(session[@"created_at"]) atIndex:4];
+      [upsert bindText:string(session[@"updated_at"]) atIndex:5];
+      if (![upsert stepDone:transactionError]) return NO;
+      TLSQLiteStatement *lookup = [self.sqliteConnection prepareSQL:"SELECT id FROM chats WHERE hermes_session_id = ?1" error:transactionError];
+      if (!lookup) return NO;
+      [lookup bindText:sessionID atIndex:1];
+      if ([lookup step] != SQLITE_ROW) { [self.sqliteConnection setCurrentError:transactionError]; return NO; }
+      chatID = sqlite3_column_int64(lookup.handle, 0);
+      if (!messages) return YES;
+      TLChatRecord *previous = [self loadChatWithID:chatID error:transactionError];
+      if (!previous) return NO;
+      TLSQLiteStatement *remove = [self.sqliteConnection prepareSQL:"DELETE FROM messages WHERE chat_id = ?1" error:transactionError];
+      if (!remove) return NO;
+      [remove bindInt64:chatID atIndex:1];
+      if (![remove stepDone:transactionError]) return NO;
+      NSMutableArray<TLStoredChatMessage *> *oldMessages = [previous.messages mutableCopy];
+      for (id item in messages) {
+        if (![item isKindOfClass:NSDictionary.class] || ![self isValidRole:string(item[@"role"])] ||
+            ![item[@"content"] isKindOfClass:NSString.class]) {
+          TLSetDatabaseError(transactionError, @"Hermes returned an invalid transcript.");
+          return NO; // Rolls back both the transcript and metadata.
+        }
+        NSArray *attachments = @[];
+        NSString *thinking = string(item[@"thinking"]);
+        // Attachment files belong to Talaria; retain their descriptors on matching turns.
+        for (TLStoredChatMessage *old in [oldMessages copy]) {
+          if ([old.role isEqual:item[@"role"]] && [old.content isEqual:item[@"content"]]) {
+            attachments = old.attachments ?: @[];
+            if (!thinking.length) thinking = old.thinking ?: @"";
+            [oldMessages removeObjectIdenticalTo:old];
+            break;
+          }
+        }
+        NSData *data = [NSJSONSerialization dataWithJSONObject:attachments options:0 error:transactionError];
+        if (!data) return NO;
+        TLSQLiteStatement *insert = [self.sqliteConnection prepareSQL:
+          "INSERT INTO messages (chat_id, role, content, thinking, attachments, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+          error:transactionError];
+        if (!insert) return NO;
+        [insert bindInt64:chatID atIndex:1];
+        [insert bindText:item[@"role"] atIndex:2];
+        [insert bindText:item[@"content"] atIndex:3];
+        [insert bindText:thinking atIndex:4];
+        [insert bindText:[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] atIndex:5];
+        [insert bindText:string(item[@"created_at"]) atIndex:6];
+        if (![insert stepDone:transactionError]) return NO;
+      }
+      return YES;
+    } error:error];
+    return saved ? [self loadChatWithID:chatID error:error] : nil;
+  }
+}
+
 - (NSArray<TLChatSummary *> *)listChats:(NSError **)error {
   @synchronized (self) {
     const char *sql =
