@@ -1,7 +1,6 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import "TLBrowserTabController.h"
-#import "TLNotesTabController.h"
 #import "TLSettingsTabController.h"
 #import "AgentOrchestrator.h"
 #import "ModelPickerView.h"
@@ -241,8 +240,7 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
   [controller setValue:@YES forKey:@"isSending"];
   [controller setValue:@(-2) forKey:@"nextDraftChatID"];
   [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
-  NSArray *headerKeys = @[@"createChatButton", @"sidebarToggleButton", @"agentWalletButton",
-                         @"taskStatusSidebarButton", @"notesShortcutButton", @"historyShortcutButton"];
+  NSArray *headerKeys = @[@"createChatButton", @"sidebarToggleButton"];
   for (NSString *key in headerKeys) {
     TLButton *button = [[TLButton alloc] init];
     button.enabled = NO;
@@ -384,37 +382,6 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 - (void)goBackInSession:(TLChromiumBrowserSession *)session { self.backCount += 1; }
 @end
 
-static void TestNotesThemePreservesEditing(void) {
-  TLNotesTabController *controller = [[TLNotesTabController alloc]
-    initWithPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
-  NSWindow *window = HostController(controller);
-  [controller updateNotesMessageInputWidth];
-  NSView *originalView = controller.view;
-  NSTextView *editor = controller.notesPromptTextView;
-  editor.string = @"An unfinished notes prompt";
-  [window makeFirstResponder:editor];
-  editor.selectedRange = NSMakeRange(3, 6);
-  NSScrollView *article = [controller valueForKey:@"notesArticleView"];
-  [article.contentView scrollToPoint:NSMakePoint(0, 40)];
-  NSPoint origin = article.contentView.bounds.origin;
-  NSRange selection = editor.selectedRange;
-  TLThemePalette *dark = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
-  [controller applyPalette:dark];
-  Check(controller.view == originalView && controller.notesPromptTextView == editor, @"notes theme keeps the same view and editor");
-  Check([editor.string isEqualToString:@"An unfinished notes prompt"], @"notes draft survives theme change");
-  Check(NSEqualRanges(editor.selectedRange, selection) && window.firstResponder == editor, @"notes focus and selection survive theme change");
-  Check(NSEqualPoints(article.contentView.bounds.origin, origin), @"notes scroll position survives theme change");
-  Check([((TLTokenView *)controller.view).fillColor isEqual:dark.tabBackground], @"notes root reapplies semantic theme");
-  Check([editor.textColor isEqual:dark.controlText], @"notes editor reapplies semantic theme");
-  __block NSString *sentPrompt = nil;
-  controller.sendPromptHandler = ^(NSString *prompt) { sentPrompt = prompt; };
-  [NSApp sendAction:controller.notesMessageInput.sendButton.action to:controller.notesMessageInput.sendButton.target from:editor];
-  Check([sentPrompt isEqualToString:@"An unfinished notes prompt"] && editor.string.length == 0, @"notes controller owns prompt submission and clearing");
-  [controller close];
-  Check(editor.delegate == nil && controller.sendPromptHandler == nil, @"notes closing clears callbacks");
-  [window close];
-}
-
 static void TestSettingsThemeAndLateCatalogue(void) {
   TLFeatureCatalogueMock *catalogue = [[TLFeatureCatalogueMock alloc] init];
   TLFeatureSettingsStoreMock *store = [[TLFeatureSettingsStoreMock alloc] init];
@@ -520,7 +487,6 @@ static void TestBrowserOwnsCallbacksAndSession(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
-    TestNotesThemePreservesEditing();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();

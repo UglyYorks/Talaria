@@ -221,7 +221,7 @@
   CGFloat height = self.palette.space0;
   if (hasImage && hasTitle) {
     CGFloat iconLength = [self contentIconLengthForFont:font];
-    NSSize titleSize = [title sizeWithAttributes:@{NSFontAttributeName: font}];
+    NSSize titleSize = self.contentLabel.intrinsicContentSize;
     width = iconLength + self.palette.space3 + ceil(titleSize.width);
     height = MAX(iconLength, ceil(titleSize.height));
   } else {
@@ -341,7 +341,7 @@
   self.contentLabel.textColor = foregroundColor;
   self.contentLabel.alignment = NSTextAlignmentCenter;
   self.contentImageView.image = self.image;
-  self.contentImageView.contentTintColor = foregroundColor;
+  self.contentImageView.contentTintColor = self.image.isTemplate ? foregroundColor : nil;
   CGFloat iconLength = [self contentIconLengthForFont:font];
   self.contentImageWidthConstraint.constant = iconLength;
   self.contentImageHeightConstraint.constant = iconLength;

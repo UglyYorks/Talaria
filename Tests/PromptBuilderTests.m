@@ -10,6 +10,7 @@
 #import "BrowserPageContext.h"
 #import "ChatIconGenerator.h"
 #import "Database.h"
+#import "DatabaseMigrator.h"
 #import "NotchOverlayState.h"
 #import "OpenRouterClient.h"
 #import "PromptBuilder.h"
@@ -482,6 +483,58 @@ static void TestDatabasePersistence(void) {
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
 
+static void TestCompatibleVersion5Database(void) {
+  for (NSUInteger variant = 1; variant <= 3; variant++) {
+    NSURL *url = TLTemporaryDatabaseURL(@"TalariaVersion5Compatibility");
+    NSError *error = nil;
+    TLSQLiteConnection *connection = [TLSQLiteConnection openURL:url error:&error];
+    TLAssertTrue(TLDatabaseMigrate(connection, 4, &error), @"creates version-4 compatibility fixture");
+    const char *attachments = "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';";
+    const char *profile = "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT '🤖';"
+      "ALTER TABLE agents ADD COLUMN soul TEXT NOT NULL DEFAULT '';"
+      "ALTER TABLE agents ADD COLUMN folder_paths TEXT NOT NULL DEFAULT '[]';"
+      "CREATE UNIQUE INDEX agents_vm_directory ON agents(vm_directory);";
+    if (variant & 1) TLAssertTrue([connection executeSQL:attachments error:&error], @"adds attachment schema");
+    if (variant & 2) TLAssertTrue([connection executeSQL:profile error:&error], @"adds agent profile schema");
+    TLAssertTrue([connection executeSQL:"PRAGMA user_version = 5" error:&error], @"marks newer schema");
+    TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
+    TLAssertTrue(database != nil && error == nil, @"opens each known additive version-5 schema");
+    TLChatRecord *chat = [database createChatWithModel:@"test-model" error:&error];
+    TLStoredChatMessage *message = [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"kept" thinking:nil]
+      chatID:chat.chatID error:&error];
+    TLAssertTrue(message != nil, @"older message writes work with newer schema defaults");
+    if (variant & 1) {
+      [connection executeSQL:"UPDATE messages SET attachments = '[{\"name\":\"keep.txt\"}]'" error:&error];
+      [database saveChatTitle:@"Renamed" chatID:chat.chatID error:&error];
+      TLSQLiteStatement *check = [connection prepareSQL:"SELECT attachments FROM messages" error:&error];
+      TLAssertTrue([check step] == SQLITE_ROW, @"retains attachment row");
+      TLAssertEqualObjects([check stringAtColumn:0], @"[{\"name\":\"keep.txt\"}]", @"preserves newer attachment metadata");
+    }
+    TLAgentRecord *agent = [database createAgentWithName:@"Kept agent" guestKind:TLAgentGuestKindLinux
+      runtime:TLAgentRuntimePython vmDirectory:@"/tmp/compatibility-agent" error:&error];
+    TLAssertTrue(agent != nil, @"older agent writes work with newer schema defaults");
+    if (variant & 2) {
+      [connection executeSQL:"UPDATE agents SET avatar = 'Y', soul = 'keep', folder_paths = '[\"/tmp/keep\"]'" error:&error];
+      [database updateAgentWithID:agent.agentID status:TLAgentStatusStopped lastError:nil error:&error];
+      TLSQLiteStatement *check = [connection prepareSQL:"SELECT avatar, soul, folder_paths FROM agents" error:&error];
+      TLAssertTrue([check step] == SQLITE_ROW, @"retains agent profile row");
+      TLAssertEqualObjects([check stringAtColumn:0], @"Y", @"preserves newer avatar");
+      TLAssertEqualObjects([check stringAtColumn:1], @"keep", @"preserves newer agent instructions");
+      TLAssertEqualObjects([check stringAtColumn:2], @"[\"/tmp/keep\"]", @"preserves newer agent folders");
+    }
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 5, @"never downgrades newer schema version");
+    [connection executeSQL:"PRAGMA user_version = 6" error:&error];
+    error = nil;
+    TLAssertTrue(!TLDatabaseMigrate(connection, 4, &error) && error != nil, @"rejects unknown future versions");
+    [connection executeSQL:"PRAGMA user_version = 5; ALTER TABLE messages ADD COLUMN unknown_required TEXT NOT NULL DEFAULT 'x'" error:nil];
+    error = nil;
+    TLAssertTrue(!TLDatabaseMigrate(connection, 4, &error) && error != nil, @"rejects unknown version-5 schema changes");
+    database = nil;
+    connection = nil;
+    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  }
+}
+
 static void TestMessageDeletion(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaMessageDeletionTests");
   NSError *error = nil;
@@ -941,6 +994,7 @@ int main(int argc, const char *argv[]) {
     TestOpenRouterReasoningParsing();
     TestOpenRouterModelParsing();
     TestDatabasePersistence();
+    TestCompatibleVersion5Database();
     TestMessageDeletion();
     TestChatIconGenerator();
     TestAgentOrchestrator();

@@ -4,6 +4,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *palette);
+
 typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
   TLBorderEdgeNone = 0,
   TLBorderEdgeTop = 1 << 0,
@@ -65,8 +67,7 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 
 typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {
   TLSidebarShortcutKindWebsite = 0,
-  TLSidebarShortcutKindNotes,
-  TLSidebarShortcutKindHistory,
+  TLSidebarShortcutKindHistory = 2,
 };
 
 @interface TLSidebarShortcutButton : NSControl

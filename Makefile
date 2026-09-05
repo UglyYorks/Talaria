@@ -38,7 +38,6 @@ GLASS_PANE_TEST_EXECUTABLE := $(BUILD_DIR)/GlassPaneTests
 MARKDOWN_IT := Vendor/markdown-it/markdown-it.min.js
 READABILITY_FILES := Vendor/readability/Readability.js Vendor/readability/LICENSE.md
 SIDEBAR_PLANET := assets/sidebar-planet.png
-AGENT_CARD_IMAGE := assets/agent-card.png
 APP_ICON := assets/Talaria.icns
 INBOX_ICON_FILES := $(wildcard assets/inbox-icons/*.svg)
 BOOKMARK_ICON_FILES := $(wildcard assets/browser-bookmarks/*.png)
@@ -114,13 +113,12 @@ $(SIGNING_CONFIG): FORCE | check-signing-identity
 	@printf '%s\n' '$(CODE_SIGN_IDENTITY)' > "$@.tmp"
 	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
 
-$(APP_BUILD_STAMP): Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(AGENT_CARD_IMAGE) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
+$(APP_BUILD_STAMP): Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources" "$(APP_BUNDLE)/Contents/Frameworks"
 	xcrun clang++ $(APP_OBJECTS) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(APP_EXECUTABLE)"
 	cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
 	cp "$(SIDEBAR_PLANET)" "$(APP_BUNDLE)/Contents/Resources/sidebar-planet.png"
-	cp "$(AGENT_CARD_IMAGE)" "$(APP_BUNDLE)/Contents/Resources/agent-card.png"
 	cp "$(APP_ICON)" "$(APP_BUNDLE)/Contents/Resources/Talaria.icns"
 	ditto "assets/inbox-icons" "$(APP_BUNDLE)/Contents/Resources/inbox-icons"
 	ditto "assets/browser-bookmarks" "$(APP_BUNDLE)/Contents/Resources/browser-bookmarks"
@@ -260,7 +258,7 @@ test: audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTC
 $(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLGlassButton.m Source/design_system/TLBrowserChatPane.m Source/MarkdownRenderer.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
 	mkdir -p "$(BUILD_DIR)"
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework WebKit -o "$@"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -framework WebKit -o "$@"
 
 $(NOTCH_VIEW_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/NotchOverlayState.m Source/NotchOverlayController.m Tests/NotchOverlayViewTests.m
 	mkdir -p "$(BUILD_DIR)"

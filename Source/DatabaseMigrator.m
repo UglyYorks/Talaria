@@ -20,10 +20,51 @@ static BOOL TLDatabaseSetSchemaVersion(TLSQLiteConnection *connection, NSInteger
   return [connection executeSQL:sql.UTF8String error:error];
 }
 
+// Version 5 was introduced by two independent worktrees. Both retain the
+// version-4 columns and only add defaulted TEXT fields that older writes preserve.
+static BOOL TLDatabaseHasCompatibleVersion5Schema(TLSQLiteConnection *connection) {
+  NSDictionary<NSString *, NSArray<NSString *> *> *requiredColumns = @{
+    @"chats": @[@"id", @"title", @"model", @"created_at", @"updated_at", @"icon", @"hermes_session_id"],
+    @"messages": @[@"id", @"chat_id", @"role", @"content", @"thinking", @"created_at"],
+    @"agents": @[@"id", @"name", @"guest_kind", @"runtime", @"status", @"vm_directory", @"last_error", @"created_at", @"updated_at"],
+    @"settings": @[@"key", @"value"],
+  };
+  NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *knownAdditions = @{
+    @"messages": @{@"attachments": @"'[]'"},
+    @"agents": @{@"avatar": @"'🤖'", @"soul": @"''", @"folder_paths": @"'[]'"},
+  };
+  BOOL hasKnownAddition = NO;
+  for (NSString *table in requiredColumns) {
+    NSString *sql = [NSString stringWithFormat:@"PRAGMA table_info(%@)", table];
+    TLSQLiteStatement *columns = [connection prepareSQL:sql.UTF8String error:nil];
+    if (!columns) return NO;
+    NSMutableSet *missing = [NSMutableSet setWithArray:requiredColumns[table]];
+    int result;
+    while ((result = [columns step]) == SQLITE_ROW) {
+      NSString *name = [columns stringAtColumn:1];
+      if ([missing containsObject:name]) {
+        [missing removeObject:name];
+        continue;
+      }
+      NSString *expectedDefault = knownAdditions[table][name];
+      if (!expectedDefault || ![[[columns stringAtColumn:2] uppercaseString] isEqualToString:@"TEXT"] ||
+          ![[columns stringAtColumn:4] isEqualToString:expectedDefault]) return NO;
+      hasKnownAddition = YES;
+    }
+    if (result != SQLITE_DONE || missing.count > 0) return NO;
+  }
+  return hasKnownAddition;
+}
+
 BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, NSError **error) {
   NSInteger version = TLDatabaseSchemaVersion(connection, error);
   if (version < 0) {
     return NO;
+  }
+
+  if (version == 5 && targetVersion == 4 && TLDatabaseHasCompatibleVersion5Schema(connection)) {
+    // Do not downgrade the version or alter data owned by the newer features.
+    return YES;
   }
 
   if (version > targetVersion) {
