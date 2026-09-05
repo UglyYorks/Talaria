@@ -224,6 +224,7 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (NSStackView *)buildSidebarTileGrid;
 - (void)rebuildSidebarAgents;
 - (NSView *)buildDebugTabContent;
+- (void)refreshDebugTerminalAvailability;
 - (void)installAppStateBindings;
 - (void)renderWorkspaceTabs;
 - (void)updateWorkspaceMode;
@@ -418,6 +419,68 @@ static void TestThemedButtonRenderedColors(void) {
     }
   }
   [window close];
+}
+
+@interface TLTerminalStateStore : NSObject
+@property (nonatomic, copy) NSArray<TLAgentRecord *> *agents;
+@property (nonatomic) NSInteger currentAgentID;
+@end
+@implementation TLTerminalStateStore
+- (NSArray *)listAgents:(NSError **)error { return self.agents; }
+@end
+
+@interface TLTerminalStateVM : NSObject
+@property (nonatomic) BOOL running;
+@property (nonatomic) NSInteger connections;
+@property (nonatomic, strong) TLAgentRecord *connectedAgent;
+@end
+@implementation TLTerminalStateVM
+- (BOOL)isAgentRunning:(TLAgentRecord *)agent { return self.running; }
+- (void)connectToAgent:(TLAgentRecord *)agent port:(uint32_t)port timeout:(NSTimeInterval)timeout completion:(TLAgentVMConnectionCompletionHandler)completion {
+  Check(port == 7048, @"terminal connects to its interactive service");
+  self.connections++;
+  self.connectedAgent = agent;
+  completion(nil, nil);
+}
+- (void)startAgent:(TLAgentRecord *)agent completion:(TLAgentVMCompletionHandler)completion {
+  Check(NO, @"opening a terminal must never start a VM");
+}
+@end
+
+static void TestTerminalRequiresRunningVM(void) {
+  TLTerminalStateStore *store = [TLTerminalStateStore new];
+  TLTerminalStateVM *vm = [TLTerminalStateVM new];
+  TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc]
+    initWithDatabase:(id)store agentClient:(id)[NSObject new] vmService:(id)vm];
+  TalariaWindowController *controller = [[TalariaWindowController alloc] initWithWindow:nil];
+  [controller setValue:orchestrator forKey:@"agentOrchestrator"];
+  [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
+  NSView *content = [controller buildDebugTabContent];
+  NSButton *button = [controller valueForKey:@"debugTerminalButton"];
+  Check(content != nil && !button.enabled, @"terminal is disabled when there is no VM");
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = 42;
+  store.currentAgentID = 42;
+  TLAgentRecord *otherAgent = [TLAgentRecord new];
+  otherAgent.agentID = 99;
+  agent.status = TLAgentStatusRunning; // Persisted status alone must not enable it.
+  for (NSNumber *state in @[@0, @1, @2, @1]) {
+    store.agents = state.intValue ? @[agent, otherAgent] : @[];
+    vm.running = state.intValue == 2;
+    [controller refreshDebugTerminalAvailability];
+    Check(button.enabled == vm.running, @"button follows actual VM state, including shutdown");
+    NSInteger before = vm.connections;
+    __block BOOL completed = NO;
+    [orchestrator connectToDefaultAgentTerminal:^(VZVirtioSocketConnection *connection, NSError *error) {
+      Check(vm.running ? error == nil : error != nil, @"stopped or missing VM rejects terminal connection");
+      completed = YES;
+    }];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+    while (!completed && deadline.timeIntervalSinceNow > 0)
+      [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    Check(completed && vm.connections == before + (vm.running ? 1 : 0), @"only a running VM receives a connection");
+    if (vm.running) Check(vm.connectedAgent.agentID == 42, @"terminal uses the existing default agent");
+  }
 }
 
 static void TestDebugResetLayout(void) {
@@ -1619,6 +1682,7 @@ int main(void) {
     TestRunningAgentRepairAction();
     TestThemedButtonRenderedColors();
     TestDebugResetLayout();
+    TestTerminalRequiresRunningVM();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();

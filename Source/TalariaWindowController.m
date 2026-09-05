@@ -242,6 +242,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) TLHermesOnboardingWindowController *hermesOnboardingWindowController;
 @property (nonatomic, strong) TLAgentCreationWindowController *agentCreationWindowController;
 @property (nonatomic) BOOL openingDebugTerminal;
+@property (nonatomic, weak) TLThemedButton *debugTerminalButton;
+@property (nonatomic, strong) NSTimer *debugTerminalStateTimer;
 @property (nonatomic, strong, nullable) TLASCIIPlanetScreensaverView *screensaverView;
 @property (nonatomic) NSRect mainWindowFrameBeforeOnboarding;
 @property (nonatomic) BOOL hasMainWindowFrameBeforeOnboarding;
@@ -395,6 +397,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)dealloc {
+  [self.debugTerminalStateTimer invalidate];
   if (self.effectiveAppearanceObserverInstalled) {
     [NSApp removeObserver:self
                forKeyPath:@"effectiveAppearance"
@@ -3009,6 +3012,14 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
+  if (!self.debugTerminalStateTimer) {
+    __weak typeof(self) weakSelf = self;
+    self.debugTerminalStateTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
+      TalariaWindowController *controller = weakSelf;
+      if ([controller isWorkspaceTabActive:controller.debugTab]) [controller refreshDebugTerminalAvailability];
+    }];
+  }
+
   if (!self.debugTab) {
     NSView *contentView = [self buildDebugTabContent];
     self.debugTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindDebug
@@ -3025,6 +3036,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self.appStateManager addWorkspaceTab:self.debugTab activate:NO];
   }
 
+  [self refreshDebugTerminalAvailability];
   [self activateTabKind:TLWorkspaceTabKindDebug tabID:self.debugTab.tabID];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -3035,6 +3047,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.widgetbookMode || !self.debugTab) {
     return;
   }
+  [self refreshDebugTerminalAvailability];
   [self activateTabKind:TLWorkspaceTabKindDebug tabID:self.debugTab.tabID];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -3054,13 +3067,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [[self contentViewForTab:self.debugTab] removeFromSuperview];
   [self removeRuntimeForKind:self.debugTab.kind tabID:self.debugTab.tabID];
   self.debugTab = nil;
+  [self.debugTerminalStateTimer invalidate];
+  self.debugTerminalStateTimer = nil;
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
   [self updateControlStates];
 }
 
+- (void)refreshDebugTerminalAvailability {
+  BOOL running = [self.agentOrchestrator isDefaultAgentRunning];
+  self.debugTerminalButton.enabled = running && !self.openingDebugTerminal;
+  self.debugTerminalButton.toolTip = running ? nil : @"The agent VM must be running to open a terminal.";
+}
+
 - (void)openDebugTerminal:(id)sender {
-  if (self.openingDebugTerminal) return;
+  [self refreshDebugTerminalAvailability];
+  if (self.openingDebugTerminal || ![self.agentOrchestrator isDefaultAgentRunning]) return;
   self.openingDebugTerminal = YES;
   [self rebuildDebugTabContentForCurrentPalette];
   [self.agentOrchestrator connectToDefaultAgentTerminal:^(VZVirtioSocketConnection *connection, NSError *error) {
@@ -3120,8 +3142,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   terminalDescription.maximumNumberOfLines = 0;
   terminalDescription.lineBreakMode = NSLineBreakByWordWrapping;
 
-  TLThemedButton *openButton = [TLThemedButton buttonWithTitle:self.openingDebugTerminal ? @"Starting VM…" : @"Open in Terminal" target:self action:@selector(openDebugTerminal:)];
-  openButton.enabled = !self.openingDebugTerminal;
+  TLThemedButton *openButton = [TLThemedButton buttonWithTitle:self.openingDebugTerminal ? @"Connecting…" : @"Open in Terminal" target:self action:@selector(openDebugTerminal:)];
+  self.debugTerminalButton = openButton;
+  [self refreshDebugTerminalAvailability];
   openButton.translatesAutoresizingMaskIntoConstraints = NO;
   openButton.bezelStyle = NSBezelStyleRounded;
   openButton.controlSize = NSControlSizeLarge;

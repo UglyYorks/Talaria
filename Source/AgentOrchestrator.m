@@ -515,11 +515,30 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }];
 }
 
+- (TLAgentRecord *)existingAgentForTerminal:(NSError **)error {
+  NSArray<TLAgentRecord *> *agents = [self.database listAgents:error];
+  NSInteger currentID = self.database.currentAgentID;
+  for (TLAgentRecord *agent in agents) {
+    if (agent.agentID == currentID) return agent;
+  }
+  return agents.lastObject;
+}
+
+- (BOOL)isDefaultAgentRunning {
+  TLAgentRecord *agent = [self existingAgentForTerminal:nil];
+  return agent && [self.vmService isAgentRunning:agent];
+}
+
 - (void)connectToDefaultAgentTerminal:(TLAgentVMConnectionCompletionHandler)completion {
-  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
-    if (!agent) { completion(nil, error); return; }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSError *error = nil;
+    TLAgentRecord *agent = [self existingAgentForTerminal:&error];
+    if (!agent || ![self.vmService isAgentRunning:agent]) {
+      completion(nil, error ?: TLAgentOrchestratorError(@"The agent VM is not running."));
+      return;
+    }
     [self.vmService connectToAgent:agent port:7048 timeout:30 completion:completion];
-  }];
+  });
 }
 
 - (void)fetchModelCatalogueWithToken:(NSString *)token completion:(TLAgentModelCatalogueHandler)completion {
