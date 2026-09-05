@@ -18,7 +18,7 @@
 #import "TLHermesOnboardingWindowController.h"
 #import "TLAgentCreationWindowController.h"
 #import "TLAgentFolderAccessWindowController.h"
-#import "TLVMDebugTerminalWindowController.h"
+#import "TLVMTerminalSession.h"
 #import "TLWorkspaceTabsController.h"
 #import "UIComponents.h"
 #import "design_system/TLWorkspaceOutlineView.h"
@@ -241,7 +241,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) TLOnboardingDemoWindowController *onboardingDemoWindowController;
 @property (nonatomic, strong) TLHermesOnboardingWindowController *hermesOnboardingWindowController;
 @property (nonatomic, strong) TLAgentCreationWindowController *agentCreationWindowController;
-@property (nonatomic, strong) TLVMDebugTerminalWindowController *debugTerminalWindowController;
+@property (nonatomic) BOOL openingDebugTerminal;
 @property (nonatomic, strong, nullable) TLASCIIPlanetScreensaverView *screensaverView;
 @property (nonatomic) NSRect mainWindowFrameBeforeOnboarding;
 @property (nonatomic) BOOL hasMainWindowFrameBeforeOnboarding;
@@ -3060,11 +3060,21 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openDebugTerminal:(id)sender {
-  if (!self.debugTerminalWindowController) {
-    self.debugTerminalWindowController = [[TLVMDebugTerminalWindowController alloc]
-      initWithPalette:self.palette agentOrchestrator:self.agentOrchestrator];
-  }
-  [self.debugTerminalWindowController showFromWindow:self.window];
+  if (self.openingDebugTerminal) return;
+  self.openingDebugTerminal = YES;
+  [self rebuildDebugTabContentForCurrentPalette];
+  [self.agentOrchestrator connectToDefaultAgentTerminal:^(VZVirtioSocketConnection *connection, NSError *error) {
+    self.openingDebugTerminal = NO;
+    [self rebuildDebugTabContentForCurrentPalette];
+    if (!connection) { if (error) [NSApp presentError:error]; return; }
+    NSError *sessionError = nil;
+    TLVMTerminalSession *session = [[TLVMTerminalSession alloc] initWithConnection:connection
+      executableURL:NSBundle.mainBundle.executableURL error:&sessionError];
+    if (!session) { [NSApp presentError:sessionError]; return; }
+    [session openInTerminalWithCompletion:^(NSError *launchError) {
+      if (launchError) [NSApp presentError:launchError];
+    }];
+  }];
 }
 
 - (void)rebuildDebugTabContentForCurrentPalette {
@@ -3103,14 +3113,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   subtitleLabel.maximumNumberOfLines = 0;
   subtitleLabel.lineBreakMode = NSLineBreakByWordWrapping;
   NSTextField *terminalLabel = [self labelWithString:@"VM terminal" font:palette.labelFont color:palette.labelText];
-  NSTextField *terminalDescription = [self labelWithString:@"Open a terminal window for commands such as pwd, ls, cd, and cat. Commands run inside the VM, not on your Mac."
+  NSTextField *terminalDescription = [self labelWithString:@"Open macOS Terminal connected to the VM. Use an interactive shell with tab completion, command history, keyboard shortcuts, and terminal apps."
                                                      font:palette.bodyFont
                                                     color:palette.textMuted];
   terminalDescription.usesSingleLineMode = NO;
   terminalDescription.maximumNumberOfLines = 0;
   terminalDescription.lineBreakMode = NSLineBreakByWordWrapping;
 
-  TLThemedButton *openButton = [TLThemedButton buttonWithTitle:@"Open VM terminal" target:self action:@selector(openDebugTerminal:)];
+  TLThemedButton *openButton = [TLThemedButton buttonWithTitle:self.openingDebugTerminal ? @"Starting VM…" : @"Open in Terminal" target:self action:@selector(openDebugTerminal:)];
+  openButton.enabled = !self.openingDebugTerminal;
   openButton.translatesAutoresizingMaskIntoConstraints = NO;
   openButton.bezelStyle = NSBezelStyleRounded;
   openButton.controlSize = NSControlSizeLarge;
@@ -4940,7 +4951,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self.agentsView setNeedsDisplay:YES];
   }
   [self rebuildDebugTabContentForCurrentPalette];
-  [self.debugTerminalWindowController updatePalette:self.palette];
   self.agentsTableView.backgroundColor = self.palette.tabBackground;
   if (self.createAgentButton) {
     [self styleButton:self.createAgentButton background:self.palette.primaryActionSurface foreground:self.palette.primaryActionText];

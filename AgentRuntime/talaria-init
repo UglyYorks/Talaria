@@ -86,6 +86,14 @@ load_base_modules
 configure_network
 mount_workspace
 
+log "starting interactive terminal service on vsock port 7048"
+(
+  while true; do
+    /usr/bin/python3 /opt/talaria/terminal_service.py --port 7048
+    $BB sleep 1
+  done
+) &
+
 log "starting Python agent service on vsock port $AGENT_PORT"
 while true; do
   /usr/bin/python3 /opt/talaria/talaria_agent.py --serve-vsock "$AGENT_PORT"

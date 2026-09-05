@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 
 #import "AppDelegate.h"
+#import "TLTerminalClient.h"
 #import "ChromiumBrowserController.h"
 
 #include "include/cef_application_mac.h"
@@ -41,6 +42,7 @@
 
 int main(int argc, char *argv[]) {
   @autoreleasepool {
+    if (argc == 3 && strcmp(argv[1], "--vm-terminal") == 0) return TLRunTerminalClient(argv[2]);
     TLChromiumBrowserControllerConfigureMainArgs(argc, argv);
 
     NSApplication *application = [TLApplication sharedApplication];

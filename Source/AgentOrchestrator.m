@@ -515,6 +515,13 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }];
 }
 
+- (void)connectToDefaultAgentTerminal:(TLAgentVMConnectionCompletionHandler)completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent) { completion(nil, error); return; }
+    [self.vmService connectToAgent:agent port:7048 timeout:30 completion:completion];
+  }];
+}
+
 - (void)fetchModelCatalogueWithToken:(NSString *)token completion:(TLAgentModelCatalogueHandler)completion {
   [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *agentError) {
     if (!agent) {
