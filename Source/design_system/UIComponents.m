@@ -2982,6 +2982,8 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     _displayName = @"";
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.wantsLayer = YES;
+    [self setContentHuggingPriority:NSLayoutPriorityDefaultHigh
+                    forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     _avatarView = [[TLAvatarInitialView alloc] init];
     [self addSubview:_avatarView];
@@ -3035,7 +3037,11 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 
 - (NSSize)intrinsicContentSize {
-  return NSMakeSize(NSViewNoIntrinsicMetric, self.palette.fieldHeight);
+  TLThemePalette *palette = self.palette;
+  CGFloat width = palette.sidebarActionItemHorizontalInset * 2.0 +
+    palette.sidebarActionIconSize + palette.sidebarActionItemContentGap +
+    ceil(self.titleLabel.intrinsicContentSize.width) + palette.space3 + palette.space6;
+  return NSMakeSize(width, palette.fieldHeight);
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {

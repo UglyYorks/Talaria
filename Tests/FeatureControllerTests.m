@@ -240,7 +240,7 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
   [controller setValue:@YES forKey:@"isSending"];
   [controller setValue:@(-2) forKey:@"nextDraftChatID"];
   [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
-  NSArray *headerKeys = @[@"createChatButton", @"sidebarToggleButton", @"historySidebarButton"];
+  NSArray *headerKeys = @[@"createChatButton", @"sidebarToggleButton"];
   for (NSString *key in headerKeys) {
     TLButton *button = [[TLButton alloc] init];
     button.enabled = NO;

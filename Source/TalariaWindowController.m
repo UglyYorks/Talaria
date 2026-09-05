@@ -156,7 +156,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSView *sidebarAgentPaneSurface;
 @property (nonatomic, strong) NSStackView *sidebarInboxStack;
 @property (nonatomic, strong) TLSidebarShortcutsView *sidebarShortcutsView;
-@property (nonatomic, strong) TLSidebarNavigationButton *historySidebarButton;
 @property (nonatomic, strong) TLSidebarInboxPaneView *sidebarInboxPaneView;
 @property (nonatomic, strong) TLSidebarInboxStackView *gmailInboxStackView;
 @property (nonatomic, strong) TLSidebarInboxStackView *slackInboxStackView;
@@ -1043,7 +1042,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSStackView *actionStack = [[NSStackView alloc] init];
   actionStack.translatesAutoresizingMaskIntoConstraints = NO;
   actionStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  actionStack.alignment = NSLayoutAttributeWidth;
+  actionStack.alignment = NSLayoutAttributeLeading;
   actionStack.distribution = NSStackViewDistributionFill;
   actionStack.spacing = self.palette.space0;
   [actionStack setContentHuggingPriority:NSLayoutPriorityRequired
@@ -1051,17 +1050,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [actionStack setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                        forOrientation:NSLayoutConstraintOrientationVertical];
 
-  self.historySidebarButton = [[TLSidebarNavigationButton alloc] init];
-  self.historySidebarButton.palette = self.palette;
-  self.historySidebarButton.title = @"History";
-  self.historySidebarButton.systemIconName = @"clock";
-  self.historySidebarButton.target = self;
-  self.historySidebarButton.action = @selector(showHistoryScreen:);
-  self.historySidebarButton.toolTip = @"History";
   self.sidebarUserButton = [self sidebarUserButtonWithDisplayName:@"Yaroslav"];
 
-  [actionStack addArrangedSubview:self.historySidebarButton];
   [actionStack addArrangedSubview:self.sidebarUserButton];
+  [self.sidebarUserButton.trailingAnchor constraintLessThanOrEqualToAnchor:actionStack.trailingAnchor].active = YES;
   return actionStack;
 }
 
@@ -1734,6 +1726,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Yaroslav"];
   menu.autoenablesItems = NO;
 
+  NSMenuItem *historyItem = [[NSMenuItem alloc] initWithTitle:@"History"
+                                                       action:@selector(showHistoryScreen:)
+                                                keyEquivalent:@""];
+  historyItem.target = self;
+  historyItem.image = [self symbolImageNamed:@"clock" accessibilityDescription:@"History"];
+  [menu addItem:historyItem];
+
   NSMenuItem *agentsItem = [[NSMenuItem alloc] initWithTitle:@"Agents"
                                                       action:@selector(showAgents:)
                                                keyEquivalent:@""];
@@ -1754,6 +1753,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   settingsItem.target = self;
   settingsItem.image = [self symbolImageNamed:@"gearshape" accessibilityDescription:@"Settings"];
   [menu addItem:settingsItem];
+
+  if (@available(macOS 27.0, *)) {
+    for (NSMenuItem *item in menu.itemArray) {
+      item.preferredImageVisibility = NSMenuItemImageVisibilityVisible;
+    }
+  }
 
   NSView *sourceView = [sender isKindOfClass:NSView.class] ? (NSView *)sender : self.sidebarUserButton;
   [menu popUpMenuPositioningItem:nil
@@ -4517,8 +4522,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self updateSidebarContentInsets];
   self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
 
-  self.historySidebarButton.palette = self.palette;
-  self.historySidebarButton.selected = [self isHistoryScreenActive];
   self.sidebarUserButton.palette = self.palette;
   self.sidebarUserButton.displayName = @"Yaroslav";
 }
@@ -4730,7 +4733,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.widgetbookMode) {
     self.createChatButton.enabled = NO;
     self.sidebarToggleButton.enabled = NO;
-    self.historySidebarButton.enabled = NO;
     self.sidebarUserButton.enabled = NO;
     self.sendButton.enabled = NO;
     self.historyPanelController.enabled = NO;
@@ -4752,7 +4754,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
-  self.historySidebarButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
   self.sendButton.enabled = !self.isSending && chatActive && prompt.length > 0;
   self.historyPanelController.enabled = YES;
