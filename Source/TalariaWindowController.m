@@ -1058,7 +1058,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [messagesView.topAnchor constraintEqualToAnchor:chatWorkspace.topAnchor],
     [messagesView.bottomAnchor constraintEqualToAnchor:chatWorkspace.bottomAnchor],
     [self.messageInput.centerXAnchor constraintEqualToAnchor:chatWorkspace.centerXAnchor],
-    [self.slashCommandListView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor],
+    [self.slashCommandListView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor constant:-self.palette.space6],
     self.slashCommandListWidthConstraint,
     self.slashCommandListBottomConstraint,
     self.slashCommandListHeightConstraint,
