@@ -30,6 +30,7 @@
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, strong) NSLayoutConstraint *heightConstraint;
 @property (nonatomic, copy) NSString *text;
+@property (nonatomic, copy) NSString *renderedText;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong) NSColor *textColor;
 @property (nonatomic, strong) NSFont *baseFont;
@@ -192,6 +193,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
 
 - (void)loadHTML {
   self.documentReady = NO;
+  self.renderedText = self.text;
   NSString *html = TLMarkdownHTML(self.text, self.palette, self.textColor, self.baseFont, self.rendersMarkdown);
   [self.webView loadHTMLString:html baseURL:NSBundle.mainBundle.resourceURL];
 }
@@ -204,15 +206,19 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
 
 - (void)updateText:(NSString *)text {
   self.text = text ?: @"";
-  if (!self.documentReady || self.contentUpdateScheduled) { return; }
+  if (!self.documentReady || self.contentUpdateScheduled || [self.text isEqualToString:self.renderedText]) { return; }
   self.contentUpdateScheduled = YES;
   __weak typeof(self) weakSelf = self;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
     TLMarkdownWebView *view = weakSelf;
     if (!view) return;
     view.contentUpdateScheduled = NO;
-    NSString *script = [NSString stringWithFormat:@"window.talariaRender(%@)", TLJSONString(view.text)];
+    if ([view.text isEqualToString:view.renderedText]) return;
+    NSString *renderedText = view.text;
+    view.renderedText = renderedText;
+    NSString *script = [NSString stringWithFormat:@"window.talariaRender(%@)", TLJSONString(renderedText)];
     [view.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+      if (error && [weakSelf.renderedText isEqualToString:renderedText]) weakSelf.renderedText = nil;
       [weakSelf scheduleHeightUpdate];
     }];
   });

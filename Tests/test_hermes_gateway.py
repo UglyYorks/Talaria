@@ -39,6 +39,16 @@ class GatewayTests(unittest.TestCase):
         self.gateway.call.assert_called_once_with('session.resume', {'session_id': 'talaria_1'})
         self.assertEqual(json.loads(self.gateway.mapping_path.read_text()), {'talaria_1': 'talaria_1'})
 
+    def test_warm_session_skips_rpc_and_mapping_writes(self):
+        self.gateway.call.return_value = {'session_id': 'runtime', 'stored_session_id': 'saved'}
+        self.gateway.session('chat', 'model')
+        self.gateway.call.reset_mock()
+        with patch.object(Path, 'write_text') as write:
+            for _ in range(3):
+                self.assertEqual(self.gateway.session('chat', 'model'), 'runtime')
+            write.assert_not_called()
+        self.gateway.call.assert_not_called()
+
     def test_create_only_on_missing_session(self):
         self.gateway.call.side_effect = [RPCError({'code': 4007, 'message': 'session not found'}),
                                         {'session_id': 'runtime', 'stored_session_id': 'saved'}]

@@ -112,7 +112,6 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   NSMutableString *assistantContent = [NSMutableString string];
   NSMutableString *assistantThinking = [NSMutableString string];
   TLStreamingBlockBuffer *assistantContentDisplay = [[TLStreamingBlockBuffer alloc] init];
-  TLStreamingBlockBuffer *assistantThinkingDisplay = [[TLStreamingBlockBuffer alloc] init];
 
   TLChatMessage *userMessage = [TLChatMessage messageWithRole:TLRoleUser content:trimmedPrompt thinking:nil];
   userMessage.attachments = attachments;
@@ -152,8 +151,8 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     BOOL cancelled = [streamError.domain isEqualToString:NSURLErrorDomain] && streamError.code == NSURLErrorCancelled;
     // Flush even on stream failure: unfinished markdown and thinking are still
     // the user's generated content and must remain available for recovery.
-    assistantMessage.content = [assistantContentDisplay flush];
-    NSString *displayThinking = [assistantThinkingDisplay flush];
+    assistantMessage.content = [assistantContent copy];
+    NSString *displayThinking = [assistantThinking copy];
     assistantMessage.thinking = displayThinking.length > 0 ? displayThinking : nil;
 
     NSError *assistantSaveError = nil;
@@ -195,15 +194,16 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     BOOL displayChanged = NO;
     if (kind == TLAgentStreamDeltaKindThinking) {
       [assistantThinking appendString:text];
-      NSString *displayThinking = [assistantThinkingDisplay appendText:text];
+      NSString *displayThinking = [assistantThinking copy];
       if (![assistantMessage.thinking isEqualToString:displayThinking]) {
         assistantMessage.thinking = displayThinking.length > 0 ? displayThinking : nil;
         displayChanged = YES;
       }
     } else {
       [assistantContent appendString:text];
-      NSString *displayContent = [assistantContentDisplay appendText:text];
-      if (strongSelf.streamsPartialContent) { displayContent = [assistantContent copy]; }
+      // Partial streaming needs no Markdown scan of the growing response.
+      NSString *displayContent = strongSelf.streamsPartialContent
+        ? [assistantContent copy] : [assistantContentDisplay appendText:text];
       if (![assistantMessage.content isEqualToString:displayContent]) {
         assistantMessage.content = displayContent;
         displayChanged = YES;

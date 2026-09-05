@@ -196,6 +196,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic) CGFloat sidebarResizeStartWidth;
 @property (nonatomic) BOOL sidebarVisible;
 @property (nonatomic) BOOL effectiveAppearanceObserverInstalled;
+@property (nonatomic) BOOL streamingRenderScheduled;
+@property (nonatomic) NSUInteger streamingRenderGeneration;
 
 @property (nonatomic, strong) TLHistoryPanelController *historyPanelController;
 @property (nonatomic, strong) TLTokenView *agentsView;
@@ -2321,7 +2323,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return;
     }
     if (strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive]) {
-      [strongSelf renderMessages];
+      [strongSelf scheduleStreamingMessageRender];
       [strongSelf updateControlStates];
     }
   } completionHandler:^(TLAssistantTurnResult *result) {
@@ -3466,6 +3468,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     if (updatedAgent) {
       [strongSelf selectAgentWithID:updatedAgent.agentID];
     }
+    if (!error && updatedAgent.agentID == strongSelf.database.currentAgentID) {
+      [strongSelf prepareHermesCommands];
+    }
   }];
 }
 
@@ -3641,10 +3646,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   controller.errorHandler = ^(NSString *message) { [weakSelf presentErrorMessage:message]; };
   controller.settingsSavedHandler = ^(TLAppSettings *settings) {
     TalariaWindowController *windowController = weakSelf;
+    BOOL inferenceChanged = ![windowController.settings.openRouterToken isEqualToString:settings.openRouterToken] ||
+      ![windowController.settings.selectedModel isEqualToString:settings.selectedModel];
     windowController.settings = settings;
     windowController.palette = [TLThemePalette paletteForPreference:settings.theme];
     [windowController closeSettingsTab:windowController];
     [windowController applyTheme];
+    if (inferenceChanged) [windowController prepareHermesCommands];
   };
   return controller.view;
 }
@@ -3777,7 +3785,23 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self renderMessagesScrollingToBottom:YES];
 }
 
+- (void)scheduleStreamingMessageRender {
+  if (self.streamingRenderScheduled) return;
+  self.streamingRenderScheduled = YES;
+  NSUInteger generation = ++self.streamingRenderGeneration;
+  __weak typeof(self) weakSelf = self;
+  // Batch native layout work too; WebKit separately coalesces DOM updates.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    TalariaWindowController *controller = weakSelf;
+    if (!controller || generation != controller.streamingRenderGeneration) return;
+    [controller renderMessages];
+  });
+}
+
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
+  // Completion, navigation and theme changes render immediately and supersede a pending batch.
+  self.streamingRenderScheduled = NO;
+  self.streamingRenderGeneration += 1;
   NSPoint previousScrollOrigin = self.messageScrollView.contentView.bounds.origin;
   // Persistence replaces transient messages with stored records. Keep their
   // already-loaded views when the displayed message at that position is unchanged.
@@ -4006,6 +4030,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)resetMessageRowCache {
+  self.streamingRenderScheduled = NO;
+  self.streamingRenderGeneration += 1;
   for (NSView *view in self.messageRowViews.objectEnumerator) {
     [self detachMessageRowFromStack:view];
   }
