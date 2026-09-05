@@ -10,11 +10,27 @@ static NSError *TLAgentOrchestratorError(NSString *message) {
                          userInfo:@{NSLocalizedDescriptionKey: message ?: @""}];
 }
 
+static NSArray<NSString *> *TLValidatedAgentFolders(NSArray<NSString *> *folderPaths, NSError **error) {
+  NSMutableOrderedSet<NSString *> *folders = [NSMutableOrderedSet orderedSet];
+  for (NSString *path in folderPaths) {
+    NSString *normalized = path.stringByStandardizingPath;
+    BOOL directory = NO;
+    if (!normalized.isAbsolutePath || ![NSFileManager.defaultManager fileExistsAtPath:normalized isDirectory:&directory] || !directory) {
+      if (error) *error = TLAgentOrchestratorError(@"Choose existing local folders for this agent.");
+      return nil;
+    }
+    [folders addObject:normalized];
+  }
+  return folders.array;
+}
+
 static NSString *TLAgentOrchestratorTrim(NSString *value) {
   return [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
 }
 
 static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
+  NSString *rawInput = messages.lastObject.content ?: @"";
+  if ([rawInput hasPrefix:@"/"]) { return rawInput; }
   NSMutableArray<NSString *> *parts = [NSMutableArray array];
   for (TLChatMessage *message in messages) {
     if ([message.role isEqualToString:TLRoleSystem] && message.content.length > 0) {
@@ -31,6 +47,14 @@ static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
   return [builder build];
 }
 
+static NSURL *TLHermesCommandCacheURL(TLAgentRecord *agent) {
+  return [NSURL fileURLWithPath:[agent.vmDirectory stringByAppendingPathComponent:@"hermes-commands-cache.json"]];
+}
+
+static BOOL TLValidHermesCatalogue(id catalogue) {
+  return [catalogue isKindOfClass:NSDictionary.class] && [catalogue[@"pairs"] isKindOfClass:NSArray.class];
+}
+
 typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NSError *_Nullable error);
 
 @interface TLAgentOrchestrator ()
@@ -38,6 +62,8 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 @property (nonatomic, strong) TLDatabase *database;
 @property (nonatomic, strong) id<TLAgentStreaming> agentClient;
 @property (nonatomic, strong) TLAgentVMService *vmService;
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *initializingAgentIDs;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, TLAgentStreamCompletionHandler> *chatCompletions;
 
 - (void)withDefaultRunningAgent:(TLAgentReadyCompletionHandler)completion;
 - (void)completeDefaultAgent:(TLAgentRecord *)agent
@@ -56,6 +82,8 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     _database = database;
     _agentClient = agentClient;
     _vmService = vmService;
+    _initializingAgentIDs = [NSMutableSet set];
+    _chatCompletions = [NSMutableDictionary dictionary];
   }
   return self;
 }
@@ -68,19 +96,68 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   return self.vmService.virtualizationSupported;
 }
 
+// Hermes is installed in the persistent workspace shared with the VM. Inspect
+// directory entries rather than following Linux symlinks on the macOS host.
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent {
+  NSString *workspace = [agent.vmDirectory stringByAppendingPathComponent:@"workspace"];
+  for (NSString *relative in @[@".hermes/hermes-agent/venv/bin/hermes", @".local/bin/hermes"]) {
+    NSString *path = [workspace stringByAppendingPathComponent:relative];
+    NSString *type = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileType];
+    if ([type isEqualToString:NSFileTypeRegular] || [type isEqualToString:NSFileTypeSymbolicLink]) return YES;
+  }
+  return NO;
+}
+
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent {
+  return agent && [self.vmService isAgentRunning:agent];
+}
+
+- (NSString *)displayStatusForAgent:(TLAgentRecord *)agent {
+  if ([self isInitializingAgentWithID:agent.agentID]) return @"Installing Hermes…";
+  if ([agent.status isEqualToString:TLAgentStatusStarting]) return @"Starting VM…";
+  if ([agent.status isEqualToString:TLAgentStatusStopping]) return @"Stopping VM…";
+  NSString *vm = [self isVMRunningForAgent:agent] ? @"VM running" : @"VM stopped";
+  if ([agent.status isEqualToString:TLAgentStatusError]) return [vm stringByAppendingString:@" · Error"];
+  if (![self hasHermesInstallationForAgent:agent]) {
+    return [self isVMRunningForAgent:agent] ? @"VM is running, but setup is required" : @"VM is stopped; setup is required";
+  }
+  return [self isVMRunningForAgent:agent] ? @"Running" : @"Stopped";
+}
+
 - (NSArray<TLAgentRecord *> *)listAgents:(NSError **)error {
-  return [self.database listAgents:error];
+  NSArray<TLAgentRecord *> *agents = [self.database listAgents:error];
+  for (TLAgentRecord *agent in agents) {
+    if ([self isInitializingAgentWithID:agent.agentID]) agent.status = TLAgentStatusInitializing;
+  }
+  return agents;
+}
+
+- (BOOL)isInitializingAgentWithID:(NSInteger)agentID {
+  @synchronized (self.initializingAgentIDs) {
+    return [self.initializingAgentIDs containsObject:@(agentID)];
+  }
 }
 
 - (TLAgentRecord *)createAgentWithName:(NSString *)name error:(NSError **)error {
-  NSString *trimmedName = TLAgentOrchestratorTrim(name ?: @"");
-  NSString *agentName = trimmedName.length > 0 ? trimmedName : @"Agent";
+  return [self createAgentWithName:name avatar:@"🤖" soul:@"" folderPaths:@[] error:error];
+}
+
+- (TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
+                                 soul:(NSString *)soul folderPaths:(NSArray<NSString *> *)folderPaths
+                                error:(NSError **)error {
+  NSString *agentName = TLAgentOrchestratorTrim(name ?: @"");
+  if (!agentName.length) {
+    if (error) *error = TLAgentOrchestratorError(@"Give your agent a name.");
+    return nil;
+  }
+  NSArray<NSString *> *folders = TLValidatedAgentFolders(folderPaths, error);
+  if (!folders) return nil;
+  // Preserve the previous selection while the new VM is being provisioned.
+  NSInteger currentID = self.database.currentAgentID;
+  if (currentID > 0 && ![self.database setCurrentAgentID:currentID error:error]) return nil;
   NSString *vmDirectory = [self.vmService newVMDirectoryPathForAgentName:agentName];
-  TLAgentRecord *agent = [self.database createAgentWithName:agentName
-                                                  guestKind:TLAgentGuestKindLinux
-                                                    runtime:TLAgentRuntimePython
-                                                vmDirectory:vmDirectory
-                                                      error:error];
+  TLAgentRecord *agent = [self.database createAgentWithName:agentName avatar:avatar soul:soul
+                                               folderPaths:folders vmDirectory:vmDirectory error:error];
   if (!agent) {
     return nil;
   }
@@ -107,6 +184,10 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }
 
   if (agents.count > 0) {
+    NSInteger currentID = self.database.currentAgentID;
+    for (TLAgentRecord *agent in agents) {
+      if (agent.agentID == currentID) return agent;
+    }
     return agents.lastObject;
   }
 
@@ -114,6 +195,14 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (void)startAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion {
+  if ([self isInitializingAgentWithID:agentID]) {
+    [self completeAgentOperationWithAgent:nil error:TLAgentOrchestratorError(@"This agent is still initializing.") completion:completion];
+    return;
+  }
+  [self startVMForAgentWithID:agentID completion:completion];
+}
+
+- (void)startVMForAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion {
   NSError *loadError = nil;
   TLAgentRecord *agent = [self.database agentWithID:agentID error:&loadError];
   if (!agent) {
@@ -151,6 +240,10 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (void)stopAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion {
+  if ([self isInitializingAgentWithID:agentID]) {
+    [self completeAgentOperationWithAgent:nil error:TLAgentOrchestratorError(@"This agent is still initializing.") completion:completion];
+    return;
+  }
   NSError *loadError = nil;
   TLAgentRecord *agent = [self.database agentWithID:agentID error:&loadError];
   if (!agent) {
@@ -187,7 +280,27 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }];
 }
 
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)folderPaths error:(NSError **)error {
+  NSArray<NSString *> *folders = TLValidatedAgentFolders(folderPaths, error);
+  if (!folders) return nil;
+  return [self.database updateAgentWithID:agentID folderPaths:folders error:error];
+}
+
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name
+                             avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error {
+  NSString *agentName = TLAgentOrchestratorTrim(name ?: @"");
+  if (!agentName.length) {
+    if (error) *error = TLAgentOrchestratorError(@"Give your agent a name.");
+    return nil;
+  }
+  return [self.database updateAgentWithID:agentID name:agentName avatar:avatar soul:soul error:error];
+}
+
 - (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error {
+  if ([self isInitializingAgentWithID:agentID]) {
+    if (error) *error = TLAgentOrchestratorError(@"This agent is still initializing.");
+    return NO;
+  }
   TLAgentRecord *agent = [self.database agentWithID:agentID error:error];
   if (!agent) {
     return NO;
@@ -200,6 +313,16 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   return [self.database deleteAgentWithID:agentID error:error];
 }
 
+- (void)cancelChatWithRequestID:(NSString *)requestID {
+  TLAgentStreamCompletionHandler completion = self.chatCompletions[requestID];
+  if (!completion) return;
+  [self.chatCompletions removeObjectForKey:requestID];
+  if ([self.agentClient respondsToSelector:@selector(cancelChatWithRequestID:)]) {
+    [self.agentClient cancelChatWithRequestID:requestID];
+  }
+  completion([NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
+}
+
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
                                   sessionID:(NSString *)sessionID
                                       token:(NSString *)token
@@ -207,21 +330,51 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
                                    messages:(NSArray<TLChatMessage *> *)messages
                                       delta:(TLAgentStreamDeltaHandler)delta
                                  completion:(TLAgentStreamCompletionHandler)completion {
+  self.chatCompletions[requestID] = completion;
+  TLAgentStreamCompletionHandler finish = ^(NSError *error) {
+    TLAgentStreamCompletionHandler callback = self.chatCompletions[requestID];
+    [self.chatCompletions removeObjectForKey:requestID];
+    if (callback) callback(error);
+  };
   [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *agentError) {
+    if (!self.chatCompletions[requestID]) return;
     if (!agent) {
-      [self completeStreamWithError:(agentError ?: TLAgentOrchestratorError(@"Could not open an agent VM.")) completion:completion];
+      [self completeStreamWithError:(agentError ?: TLAgentOrchestratorError(@"Could not open an agent VM.")) completion:finish];
       return;
     }
 
-    if (sessionID.length > 0 &&
-        [self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:delta:completion:)]) {
-      [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
-                                               token:token model:model prompt:TLHermesInputFromMessages(messages)
-                                               delta:delta completion:completion];
+    if (sessionID.length == 0) {
+      [self completeStreamWithError:TLAgentOrchestratorError(@"A Hermes session is required for conversation turns.") completion:finish];
       return;
     }
-    [self.agentClient streamChatWithAgent:agent requestID:requestID token:token model:model
-                                 messages:messages delta:delta completion:completion];
+    if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:delta:completion:)]) {
+      [self completeStreamWithError:TLAgentOrchestratorError(@"The Hermes TUI gateway is required. Update the agent runtime.") completion:finish];
+      return;
+    }
+    [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
+                                             token:token model:model prompt:TLHermesInputFromMessages(messages)
+                                             delta:delta completion:finish];
+  }];
+}
+
+- (void)generateTextWithDefaultAgentRequestID:(NSString *)requestID
+                                       token:(NSString *)token
+                                       model:(NSString *)model
+                                instructions:(NSString *)instructions
+                                       input:(NSString *)input
+                                       delta:(TLAgentStreamDeltaHandler)delta
+                                  completion:(TLAgentStreamCompletionHandler)completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) {
+      [self completeStreamWithError:error ?: TLAgentOrchestratorError(@"Could not open an agent VM.") completion:completion];
+      return;
+    }
+    if (![self.agentClient respondsToSelector:@selector(generateHermesTextWithAgent:requestID:token:model:instructions:input:delta:completion:)]) {
+      [self completeStreamWithError:TLAgentOrchestratorError(@"The Hermes TUI gateway is required for supporting-model tasks.") completion:completion];
+      return;
+    }
+    [self.agentClient generateHermesTextWithAgent:agent requestID:requestID token:token model:model
+                                   instructions:instructions input:input delta:delta completion:completion];
   }];
 }
 
@@ -262,22 +415,42 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     [self completeAgentOperationWithAgent:nil error:createError completion:completion];
     return;
   }
-  [self startAgentWithID:agent.agentID completion:^(TLAgentRecord *runningAgent, NSError *startError) {
-    if (!runningAgent || startError) {
-      if (completion) completion(runningAgent, startError);
+  [self installHermesForAgentWithID:agent.agentID progress:progress completion:completion];
+}
+
+- (void)installHermesForAgentWithID:(NSInteger)agentID progress:(TLHermesInstallProgressHandler)progress
+                        completion:(TLAgentOperationCompletionHandler)completion {
+  @synchronized (self.initializingAgentIDs) {
+    if ([self.initializingAgentIDs containsObject:@(agentID)]) {
+      [self completeAgentOperationWithAgent:nil error:TLAgentOrchestratorError(@"This agent is already initializing.") completion:completion];
       return;
     }
+    [self.initializingAgentIDs addObject:@(agentID)];
+  }
+  // Keep provisioning alive independently of the creation sheet, and clear it on every terminal path.
+  TLAgentOperationCompletionHandler finish = ^(TLAgentRecord *agent, NSError *installError) {
+    NSError *saveError = nil;
+    TLAgentRecord *updatedAgent = agent;
+    if (agent) {
+      updatedAgent = [self.database updateAgentWithID:agentID
+        status:installError ? TLAgentStatusError : TLAgentStatusRunning
+        lastError:installError.localizedDescription error:&saveError] ?: agent;
+      if (!installError && !saveError) [self.database setCurrentAgentID:agentID error:&saveError];
+    }
+    @synchronized (self.initializingAgentIDs) { [self.initializingAgentIDs removeObject:@(agentID)]; }
+    [self completeAgentOperationWithAgent:updatedAgent error:installError ?: saveError completion:completion];
+  };
+  [self startVMForAgentWithID:agentID completion:^(TLAgentRecord *runningAgent, NSError *startError) {
+    if (!runningAgent || startError) { finish(runningAgent, startError); return; }
     if (![self.agentClient respondsToSelector:@selector(installHermesWithAgent:requestID:progress:completion:)]) {
-      if (completion) completion(runningAgent, TLAgentOrchestratorError(@"This VM runtime cannot install Hermes Agent."));
+      finish(runningAgent, TLAgentOrchestratorError(@"This VM runtime cannot install Hermes Agent."));
       return;
     }
     NSString *requestID = NSUUID.UUID.UUIDString;
     [self.agentClient installHermesWithAgent:runningAgent requestID:requestID
                                     progress:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
       if (progress && [deltaRequestID isEqualToString:requestID]) progress(text);
-    } completion:^(NSError *installError) {
-      if (completion) completion(runningAgent, installError);
-    }];
+    } completion:^(NSError *installError) { finish(runningAgent, installError); }];
   }];
 }
 
@@ -305,6 +478,43 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }];
 }
 
+- (NSDictionary *)cachedHermesCommands {
+  // The file belongs to one agent, so reinstalling/deleting it cannot leak another
+  // installation's skills or custom commands into the picker. Cache only metadata.
+  NSArray<TLAgentRecord *> *agents = [self.database listAgents:nil];
+  TLAgentRecord *agent = [self.database agentWithID:self.database.currentAgentID error:nil] ?: agents.lastObject;
+  if (!agent) return nil;
+  NSData *data = [NSData dataWithContentsOfURL:TLHermesCommandCacheURL(agent)];
+  if (!data) return nil;
+  id saved = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if (![saved isKindOfClass:NSDictionary.class] || ![saved[@"version"] isEqual:@1] ||
+      !TLValidHermesCatalogue(saved[@"catalogue"])) return nil;
+  return saved[@"catalogue"];
+}
+
+- (void)fetchHermesCommandsWithToken:(NSString *)token
+                               model:(NSString *)model
+                          completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(fetchHermesCommandsWithAgent:token:model:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to discover Hermes commands."));
+      return;
+    }
+    [self.agentClient fetchHermesCommandsWithAgent:agent token:token model:model completion:^(NSDictionary *catalogue, NSError *fetchError) {
+      if (!fetchError && !TLValidHermesCatalogue(catalogue)) {
+        fetchError = TLAgentOrchestratorError(@"Hermes returned an invalid command catalogue.");
+      }
+      if (!fetchError) {
+        NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"version": @1, @"catalogue": catalogue} options:0 error:nil];
+        // A cache write failure must not discard a successful live discovery.
+        [data writeToURL:TLHermesCommandCacheURL(agent) options:NSDataWritingAtomic error:nil];
+      }
+      completion(fetchError ? nil : catalogue, fetchError);
+    }];
+  }];
+}
+
 - (void)fetchModelCatalogueWithToken:(NSString *)token completion:(TLAgentModelCatalogueHandler)completion {
   [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *agentError) {
     if (!agent) {
@@ -327,6 +537,11 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     [self completeDefaultAgent:nil
                          error:agentError ?: TLAgentOrchestratorError(@"Could not create a default agent.")
                     completion:completion];
+    return;
+  }
+
+  if ([self isInitializingAgentWithID:agent.agentID]) {
+    [self completeDefaultAgent:nil error:TLAgentOrchestratorError(@"This agent is still initializing. Try again when setup finishes.") completion:completion];
     return;
   }
 

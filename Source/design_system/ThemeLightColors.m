@@ -13,6 +13,8 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.taskStatusPillBorder = TLColorWithAlpha(palette.gray400, 0.24);
   palette.topbarBorder = TLColorWithAlpha(palette.gray400, 0.38);
   palette.brandMark = palette.gray700;
+  palette.agentRunningIndicator = palette.green500;
+  palette.agentSetupRequiredIndicator = TLColorFromHex(0xca8a04);
   palette.statusItemIcon = palette.black;
   palette.textMuted = palette.gray500;
   palette.labelText = palette.gray600;
@@ -31,7 +33,6 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.sidebarUrgentNotificationPulseSurface = TLColorWithAlpha(palette.red500, 0.42);
   palette.sidebarUrgentNotificationBadgeSurface = palette.red500;
   palette.sidebarUrgentNotificationBadgeText = palette.white;
-  palette.sidebarNotesShortcutIcon = palette.labelText;
   palette.sidebarHistoryShortcutIcon = palette.labelText;
   palette.tabBorder = palette.controlBorder;
   palette.tabActiveBorder = palette.controlFocus;
@@ -50,15 +51,6 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.messageShadow = palette.black;
   palette.contentShadow = TLColorWithAlpha(palette.messageShadow, 0.08);
   palette.glassButtonHoverTint = TLColorWithAlpha(palette.labelText, 0.10);
-  palette.agentWalletTransactionsSurface = TLColorWithAlpha(palette.gray200, 0.40);
-  palette.agentWalletTransactionPrimaryText = palette.gray900;
-  palette.agentWalletBalanceCaptionText = TLColorFromHex(0x808080);
-  palette.agentWalletTransactionDateText = TLColorFromHex(0x808080);
-  palette.agentWalletTransactionDetailText = TLColorFromHex(0x6e6e6e);
-  palette.agentWalletIssuerText = TLColorWithAlpha(palette.gray600, 0.64);
-  palette.agentWalletTopUpSurface = TLColorWithAlpha(palette.green500, 0.16);
-  palette.agentWalletTopUpHoverSurface = TLColorWithAlpha(palette.green500, 0.22);
-  palette.agentWalletTopUpText = palette.green500;
   palette.thinkingBorder = palette.gray300;
   palette.thinkingText = palette.gray600;
   palette.markdownCodeSurface = palette.gray100;
@@ -70,8 +62,10 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.markdownTableHeaderSurface = palette.gray100;
   palette.markdownTableAlternateRowSurface = TLColorWithAlpha(palette.markdownTableHeaderSurface, 0.40);
   palette.markdownLinkText = palette.blue600;
+  palette.chatInputBackdrop = TLColorWithAlpha(palette.tabBackground, 0.90);
   palette.composerBorder = TLColorWithAlpha(palette.gray400, 0.38);
   palette.composerSurface = palette.gray50;
+  palette.suggestionBackdropTint = TLColorWithAlpha(palette.tabBackground, 0.70);
   palette.slashCommandItemSurface = palette.transparentSurface;
   palette.slashCommandItemText = palette.appText;
   palette.slashCommandItemHighlightedSurface = palette.chromeHoverSurface;

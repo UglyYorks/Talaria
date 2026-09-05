@@ -33,6 +33,7 @@
     return;
   }
   CefScopedSendingEvent sendingEvent;
+  if ([(TLAppDelegate *)self.delegate handleTabShortcutEvent:event]) return;
   [super sendEvent:event];
 }
 

@@ -1,5 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "design_system/UIComponents.h"
+#import "design_system/TLGlassButton.h"
+#import "design_system/TLTransitionCoordinator.h"
 #import "InputSuggestions.h"
 #import "TLBrowserHeightTransition.h"
 #import "ChromiumRunLoop.h"
@@ -39,6 +41,65 @@ static id Evaluate(WKWebView *view, NSString *script) {
   while (!done && deadline.timeIntervalSinceNow > 0) [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
   Check(done && !failure, [NSString stringWithFormat:@"JavaScript completed: %@", failure]);
   return value;
+}
+
+static void TestAvatarInitialCentering(void) {
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    NSImage *avatar = TLAvatarImageForDisplayName(@"Yaroslav", palette);
+    NSInteger pixels = (NSInteger)(avatar.size.width * 2);
+    NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+      pixelsWide:pixels pixelsHigh:pixels bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+      isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
+    [NSGraphicsContext saveGraphicsState];
+    NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap];
+    [avatar drawInRect:NSMakeRect(0, 0, pixels, pixels)];
+    [NSGraphicsContext restoreGraphicsState];
+    NSColor *text = [palette.userMessageText colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    NSInteger minX = pixels, minY = pixels, maxX = -1, maxY = -1;
+    for (NSInteger y = 0; y < pixels; y++) {
+      for (NSInteger x = 0; x < pixels; x++) {
+        NSColor *pixel = [bitmap colorAtX:x y:y];
+        CGFloat difference = fabs(pixel.redComponent - text.redComponent) +
+          fabs(pixel.greenComponent - text.greenComponent) + fabs(pixel.blueComponent - text.blueComponent);
+        if (pixel.alphaComponent > 0.9 && difference < 0.3) {
+          minX = MIN(minX, x); maxX = MAX(maxX, x);
+          minY = MIN(minY, y); maxY = MAX(maxY, y);
+        }
+      }
+    }
+    Check(maxX >= minX && maxY >= minY, @"avatar renders its initial");
+    Check(fabs((minX + maxX + 1) * 0.5 - pixels * 0.5) <= 1 &&
+          fabs((minY + maxY + 1) * 0.5 - pixels * 0.5) <= 1,
+          @"visible avatar initial is centered within one retina pixel");
+  }
+}
+
+static void TestGlassAccountButtonSizing(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 300, 100)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
+  button.title = @"Yaroslav";
+  [window.contentView addSubview:button];
+  [NSLayoutConstraint activateConstraints:@[
+    [button.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [button.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+  ]];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    button.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    button.image = TLAvatarImageForDisplayName(button.title, button.palette);
+    [window.contentView layoutSubtreeIfNeeded];
+    NSTextField *label = [button valueForKey:@"contentLabel"];
+    NSImageView *avatar = [button valueForKey:@"contentImageView"];
+    Check(NSWidth(label.frame) >= label.intrinsicContentSize.width - 0.5,
+          @"glass account button reserves enough width for the full name");
+    Check(NSWidth(button.frame) < NSWidth(window.contentView.bounds),
+          @"glass account button fits its content rather than the sidebar width");
+    Check(avatar.image != nil && !avatar.image.isTemplate && avatar.contentTintColor == nil,
+          @"account avatar preserves its own colors in both themes");
+  }
+  [window close];
 }
 
 static void TestBrowserChatPane(void) {
@@ -127,6 +188,25 @@ static void TestBrowserChatPane(void) {
   [pane setPresented:NO animated:NO];
   Check(pane.hidden && ![pane.layer animationForKey:@"browser-chat-presentation"], @"immediate state change cancels ongoing animation");
   [window orderOut:nil];
+}
+
+static void TestHermesSuggestions(void) {
+  NSDictionary *catalogue = @{
+    @"pairs": @[@[@"/help", @"Help"], @[@"/model", @"Switch model"], @[@"/new-skill", @"Installed skill"],
+                @[@"/help", @"Duplicate"], @[@"invalid", @"Malformed"], @[@42, @"Malformed"], @[]],
+    @"canon": @{@"/h": @"/help", @"/help": @"/help", @"/missing": @"/absent"},
+    @"commands": @{@"/model": @{@"argument_mode": @"mixed"}, @"/help": @{@"argument_mode": NSNull.null}}
+  };
+  NSArray *commands = [TLInputSuggestions hermesCommandsFromCatalogue:catalogue];
+  Check([[[TLInputSuggestions slashCommandsForInput:@"/h" commands:commands] firstObject][@"command"] isEqualToString:@"/h"], @"exact alias ranks before longer prefix matches");
+  Check(commands.count == 4, @"dynamic catalogue includes skills and aliases, ignores malformed and duplicate rows");
+  Check([commands[1][@"argument_mode"] isEqualToString:@"mixed"], @"retains Hermes argument metadata");
+  Check([TLInputSuggestions slashCommandsForInput:@"/" commands:commands].count == 4, @"slash shows every discovered command");
+  Check([TLInputSuggestions slashCommandsForInput:@"/MO" commands:commands].count == 1, @"case-insensitive command filtering");
+  Check([TLInputSuggestions slashCommandsForInput:@"/model " commands:commands].count == 0, @"space enters arguments without reselecting a command");
+  Check([TLInputSuggestions slashCommandsForInput:@"/model openai/test" commands:commands].count == 0, @"arguments never trigger URL suggestions or replace command text");
+  Check([TLInputSuggestions slashCommandsForInput:@"hello" commands:commands].count == 0, @"normal messages are not slash commands");
+  Check([TLInputSuggestions hermesCommandsFromCatalogue:@{}].count == 0, @"missing catalogue has no invented commands");
 }
 
 static void TestURLSuggestions(void) {
@@ -458,6 +538,58 @@ static void TestCommandDescriptions(void) {
   [window close];
 }
 
+static void TestSendStopImageTransition(void) {
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 80)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  window.contentView = input;
+  [input layoutSubtreeIfNeeded];
+  TLGlassButton *button = input.sendButton;
+  NSButton *native = [button valueForKey:@"button"];
+  TLCommandTarget *target = [[TLCommandTarget alloc] init];
+  button.target = target;
+  button.action = @selector(activate:);
+  __block NSTimeInterval now = 0;
+  TLTransitionCoordinator *transitions = [[TLTransitionCoordinator alloc] initWithClock:^{ return now; }
+    automaticallyAdvances:NO];
+  [button setValue:transitions forKey:@"imageTransitions"];
+  NSImage *send = button.image;
+  input.showsStopButton = YES;
+  NSImage *stop = button.image;
+  Check(stop != send && [button.toolTip isEqual:@"Stop response"], @"logical action switches immediately");
+  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    Check(native.image == send, @"outgoing Send remains visible at animation start");
+    now = button.palette.buttonImageReplacementDuration * .25;
+    [transitions advance];
+    Check(native.image == send && native.alphaValue > 0 && native.alphaValue < 1 &&
+      native.layer.transform.m11 < 1, @"Send shrinks and fades before the replacement");
+    [native performClick:nil];
+    Check(target.activationCount == 1, @"the action remains clickable while animating");
+    now = button.palette.buttonImageReplacementDuration * .5;
+    [transitions advance];
+    Check(native.image == stop && native.alphaValue == 0, @"icon switches only after fading out fully");
+    now = button.palette.buttonImageReplacementDuration * .75;
+    [transitions advance];
+    Check(native.image == stop && native.alphaValue > 0 && native.alphaValue < 1 &&
+      native.layer.transform.m11 < 1, @"Stop grows and fades in after replacement");
+    // Reverse mid-animation, as happens when the user types and immediately clears a draft.
+    input.showsStopButton = NO;
+    input.showsStopButton = YES;
+    button.palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
+    Check([button.toolTip isEqual:@"Stop response"], @"rapid replacements keep the latest action");
+    [transitions finishAllTransitions];
+  }
+  Check(native.image == button.image && native.alphaValue == 1 &&
+    CATransform3DIsIdentity(native.layer.transform) && !transitions.hasTransitions,
+    @"animation settles on the latest icon at full opacity and size");
+  [input removeFromSuperview];
+  input.showsStopButton = NO;
+  Check(native.image == button.image && native.alphaValue == 1 && !transitions.hasTransitions,
+    @"detached composers swap immediately without leaving an invisible button");
+  [window close];
+}
+
 int main(void) {
   @autoreleasepool {
     [TLFocusTestApplication sharedApplication];
@@ -468,9 +600,11 @@ int main(void) {
       [NSRunLoop.mainRunLoop runMode:mode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
       Check(calls == 1, @"CEF work runs once in normal, termination-modal, and event-tracking modes");
     }
+    TestHermesSuggestions();
     TestURLSuggestions();
     TestBrowserChatPane();
     TestNativeMessageComposer();
+    TestSendStopImageTransition();
     TestBrowserComposer();
     TestBrowserHeightAnimation();
     TestCommandDescriptions();
@@ -522,6 +656,8 @@ int main(void) {
       Check(target.activationCount == before + 1, @"disabled web choice cannot activate");
       row.enabled = YES;
     }
+    TestAvatarInitialCentering();
+    TestGlassAccountButtonSizing();
     NSLog(@"GlassPaneTests passed");
   }
   return 0;

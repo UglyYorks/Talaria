@@ -26,6 +26,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL usesGlassEffect;
 @property (nonatomic) BOOL hoverSurfaceOnly;
 
+// For icon-only buttons: shrink/fade the old image, then grow/fade the new one.
+// The logical image and action remain current throughout the visual transition.
+- (void)setImage:(nullable NSImage *)image animated:(BOOL)animated;
+
 - (instancetype)initWithUsesGlassEffect:(BOOL)usesGlassEffect;
 
 @end

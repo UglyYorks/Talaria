@@ -30,10 +30,18 @@ NS_ASSUME_NONNULL_BEGIN
                                     vmDirectory:(NSString *)vmDirectory
                                           error:(NSError **)error;
 - (nullable TLAgentRecord *)agentWithID:(NSInteger)agentID error:(NSError **)error;
+- (nullable TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
+                                         soul:(NSString *)soul folderPaths:(NSArray<NSString *> *)folderPaths
+                                  vmDirectory:(NSString *)vmDirectory error:(NSError **)error;
+- (NSInteger)currentAgentID;
+- (BOOL)setCurrentAgentID:(NSInteger)agentID error:(NSError **)error;
 - (nullable TLAgentRecord *)updateAgentWithID:(NSInteger)agentID
                                        status:(NSString *)status
                                     lastError:(nullable NSString *)lastError
                                         error:(NSError **)error;
+- (nullable TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)folderPaths error:(NSError **)error;
+- (nullable TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name
+                                      avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error;
 - (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error;
 
 @end

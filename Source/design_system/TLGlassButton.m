@@ -1,4 +1,5 @@
 #import "TLGlassButton.h"
+#import "TLTransitionCoordinator.h"
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
@@ -73,6 +74,8 @@
 
 @interface TLGlassButton ()
 @property (nonatomic, strong) NSButton *button;
+@property (nonatomic, strong) NSImage *presentedImage;
+@property (nonatomic, strong) TLTransitionCoordinator *imageTransitions;
 @property (nonatomic, strong, nullable) NSView *glassView;
 @property (nonatomic, strong) NSView *controlView;
 @property (nonatomic, strong) TLGlassButtonContentStackView *contentStack;
@@ -222,7 +225,7 @@
   CGFloat height = self.palette.space0;
   if (hasImage && hasTitle) {
     CGFloat iconLength = [self contentIconLengthForFont:font];
-    NSSize titleSize = [title sizeWithAttributes:@{NSFontAttributeName: font}];
+    NSSize titleSize = self.contentLabel.intrinsicContentSize;
     width = iconLength + self.palette.space3 + ceil(titleSize.width);
     height = MAX(iconLength, ceil(titleSize.height));
   } else {
@@ -264,6 +267,7 @@
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
   if (!self.window) {
+    [self.imageTransitions finishAllTransitions];
     self.hovered = NO;
   }
   [self applyGlassState];
@@ -341,14 +345,15 @@
   self.contentLabel.font = font;
   self.contentLabel.textColor = foregroundColor;
   self.contentLabel.alignment = NSTextAlignmentCenter;
-  self.contentImageView.image = self.image;
-  self.contentImageView.contentTintColor = foregroundColor;
+  self.contentImageView.image = self.presentedImage;
+  self.contentImageView.contentTintColor = self.image.isTemplate ? foregroundColor : nil;
   CGFloat iconLength = [self contentIconLengthForFont:font];
   self.contentImageWidthConstraint.constant = iconLength;
   self.contentImageHeightConstraint.constant = iconLength;
 
   self.button.title = usesCustomContent ? @"" : title;
-  self.button.image = usesCustomContent ? nil : self.image;
+  self.button.image = usesCustomContent ? nil : self.presentedImage;
+  self.button.accessibilityLabel = title.length ? title : self.image.accessibilityDescription;
   self.button.font = font;
   self.button.contentTintColor = foregroundColor;
   if (usesCustomContent) {
@@ -400,8 +405,54 @@
 }
 
 - (void)setImage:(NSImage *)image {
+  [self setImage:image animated:NO];
+}
+
+- (void)setImage:(NSImage *)image animated:(BOOL)animated {
+  if (_image == image) return;
+  BOOL animate = animated && self.window && self.presentedImage && image && self.title.length == 0 &&
+    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  CGFloat initialVisibility = self.button.alphaValue;
+  NSImage *outgoing = self.presentedImage;
+  [self.imageTransitions cancelTransitionForKey:@"image"];
   _image = image;
+  if (!animate) {
+    self.presentedImage = image;
+    self.button.alphaValue = 1;
+    self.button.layer.transform = CATransform3DIdentity;
+    [self applyButtonContent];
+    return;
+  }
+  if (!self.imageTransitions) self.imageTransitions = [[TLTransitionCoordinator alloc] init];
+  self.button.wantsLayer = YES;
   [self applyButtonContent];
+  __weak typeof(self) weakSelf = self;
+  [self.imageTransitions startTransitionForKey:@"image" duration:self.palette.buttonImageReplacementDuration
+    update:^(CGFloat progress) {
+      TLGlassButton *owner = weakSelf;
+      if (!owner) return;
+      BOOL incoming = progress >= 0.5;
+      CGFloat visibility = incoming ? (progress - 0.5) * 2 : initialVisibility * (1 - progress * 2);
+      NSImage *presented = incoming ? image : outgoing;
+      if (owner.presentedImage != presented) {
+        owner.presentedImage = presented;
+        [owner applyButtonContent];
+      }
+      owner.button.alphaValue = visibility;
+      // AppKit owns the layer anchor; scale around the visual center without changing it.
+      CALayer *layer = owner.button.layer;
+      CGFloat x = NSWidth(owner.button.bounds) * (0.5 - layer.anchorPoint.x);
+      CGFloat y = NSHeight(owner.button.bounds) * (0.5 - layer.anchorPoint.y);
+      CATransform3D transform = CATransform3DMakeTranslation(x, y, 0);
+      transform = CATransform3DScale(transform, visibility, visibility, 1);
+      layer.transform = CATransform3DTranslate(transform, -x, -y, 0);
+    } completion:^(BOOL finished) {
+      if (!finished) return;
+      weakSelf.presentedImage = weakSelf.image;
+      weakSelf.button.alphaValue = 1;
+      weakSelf.button.layer.transform = CATransform3DIdentity;
+      [weakSelf applyButtonContent];
+    }];
 }
 
 - (void)setTitle:(NSString *)title {

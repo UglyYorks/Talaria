@@ -1,12 +1,20 @@
+#import "design_system/TLInputSuggestionPanelView.h"
+#import "design_system/TLInputSuggestionListView.h"
+#import "design_system/TLMessageInput.h"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <WebKit/WebKit.h>
 #import "TLBrowserTabController.h"
-#import "TLNotesTabController.h"
 #import "TLSettingsTabController.h"
 #import "AgentOrchestrator.h"
+#import "AssistantTurnRunner.h"
 #import "ModelPickerView.h"
 #import "UIComponents.h"
 #import "TalariaWindowController.h"
+#import "TLAgentCreationWindowController.h"
+#import "TLAgentFolderAccessWindowController.h"
+#import "design_system/TLEmojiPicker.h"
+#import "design_system/TLFolderAccessPicker.h"
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLButton.h"
 #import "design_system/TLWorkspaceOutlineView.h"
@@ -209,17 +217,115 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 }
 
 @interface TalariaWindowController (FeatureControllerTests)
-- (void)installAppStateBindings;
-- (void)sendMessage:(id)sender;
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)URLs;
-- (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)selector;
+- (BOOL)textView:(NSTextView *)view doCommandBySelector:(SEL)selector;
+- (void)sendMessage:(id)sender;
+- (NSStackView *)buildSidebarTileGrid;
+- (void)rebuildSidebarAgents;
+- (void)installAppStateBindings;
 - (void)renderWorkspaceTabs;
 - (void)updateWorkspaceMode;
 - (void)updateControlStates;
+- (void)activateComposerButton:(id)sender;
+- (void)sendMessage:(id)sender allowAutomaticRouting:(BOOL)allowAutomaticRouting;
+- (void)loadChatWithID:(NSInteger)chatID;
+- (void)applySavedChatSummary:(TLChatSummary *)summary;
+- (NSString *)displayTitleForWorkspaceTab:(TLWorkspaceTab *)tab;
 - (void)startNewChatWithModel:(NSString *)model focus:(BOOL)focus;
+- (void)renderMessages;
+- (void)resetMessageRowCache;
 - (void)workspaceTabsController:(nullable TLWorkspaceTabsController *)controller
                        moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index;
 @end
+
+@interface TLMessageStackRecorder : NSStackView
+@property (nonatomic) NSUInteger removalCount;
+@end
+@implementation TLMessageStackRecorder
+- (void)removeView:(NSView *)view {
+  self.removalCount++;
+  [super removeView:view];
+}
+@end
+
+static id EvaluateChatScript(WKWebView *web, NSString *script) {
+  __block BOOL done = NO;
+  __block id value = nil;
+  __block NSError *failure = nil;
+  [web evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+    value = result; failure = error; done = YES;
+  }];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+  while (!done && deadline.timeIntervalSinceNow > 0) {
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+  }
+  Check(done && !failure, [NSString stringWithFormat:@"chat JavaScript completes: %@", failure]);
+  return value;
+}
+
+static void TestStreamingKeepsMessageViewsAttached(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 600)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TalariaWindowController *controller = [[TalariaWindowController alloc] initWithWindow:window];
+  [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
+  [controller resetMessageRowCache];
+  TLMessageStackRecorder *stack = [[TLMessageStackRecorder alloc] initWithFrame:window.contentView.bounds];
+  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  stack.alignment = NSLayoutAttributeWidth;
+  NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:window.contentView.bounds];
+  scroll.documentView = stack;
+  [window.contentView addSubview:scroll];
+  [controller setValue:scroll forKey:@"messageScrollView"];
+  [controller setValue:stack forKey:@"messageStack"];
+  [controller setValue:stack forKey:@"messageDocumentView"];
+  TLChatMessage *user = [TLChatMessage messageWithRole:TLRoleUser content:@"Write a long answer" thinking:nil];
+  TLChatMessage *assistant = [TLChatMessage messageWithRole:TLRoleAssistant content:@"First paragraph.\n\n" thinking:nil];
+  NSMutableArray *messages = [NSMutableArray arrayWithObjects:user, assistant, nil];
+  [controller setValue:messages forKey:@"messages"];
+  [controller renderMessages];
+  NSArray *rows = stack.arrangedSubviews.copy;
+  NSMapTable *markdownViews = [controller valueForKey:@"messageMarkdownViews"];
+  NSView *markdown = [markdownViews objectForKey:assistant];
+  WKWebView *web = [markdown valueForKey:@"webView"];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+  while (![[markdown valueForKey:@"documentReady"] boolValue] && deadline.timeIntervalSinceNow > 0) {
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+  }
+  Check([[markdown valueForKey:@"documentReady"] boolValue], @"initial chat document loads");
+  EvaluateChatScript(web, @"window.streamingTestMarker = 42");
+  NSUInteger constraintCount = stack.constraints.count;
+  for (NSString *chunk in @[@"Another ", @"sentence.\n\n```swift\n", @"print(\"hi\")", @"\n```\n\nDone."]) {
+    assistant.content = [assistant.content stringByAppendingString:chunk];
+    [controller renderMessages];
+    Check([stack.arrangedSubviews isEqual:rows] && stack.removalCount == 0,
+          @"streaming keeps every message row attached instead of tearing down the conversation");
+    Check([markdownViews objectForKey:assistant] == markdown && [markdown valueForKey:@"webView"] == web,
+          @"deltas reuse the loaded Markdown view and WebKit document");
+    Check([[markdown valueForKey:@"text"] isEqual:assistant.content], @"each delta reaches the existing renderer");
+    Check(stack.constraints.count == constraintCount, @"streaming does not accumulate width constraints");
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    Check([EvaluateChatScript(web, @"window.streamingTestMarker") integerValue] == 42,
+          @"rendering new text never reloads the web document");
+    Check([EvaluateChatScript(web, @"document.body.innerText") containsString:@"First paragraph."],
+          @"already visible answer text remains present throughout the stream");
+  }
+  Check([EvaluateChatScript(web, @"document.body.innerText") containsString:@"Done."], @"final streamed text is rendered");
+  TLStoredChatMessage *saved = [TLStoredChatMessage messageWithRole:assistant.role content:assistant.content thinking:assistant.thinking];
+  saved.messageID = 7;
+  messages[1] = saved;
+  [controller renderMessages];
+  Check([stack.arrangedSubviews isEqual:rows] && [markdownViews objectForKey:saved] == markdown && stack.removalCount == 0,
+        @"saving the completed answer preserves its visible row and renderer");
+  [messages removeObjectAtIndex:1];
+  [controller renderMessages];
+  Check(stack.arrangedSubviews.count == 1 && stack.arrangedSubviews.firstObject == rows.firstObject &&
+        ![markdownViews objectForKey:saved], @"deleting an answer removes only its own row and renderer");
+  [controller resetMessageRowCache];
+  Check(stack.arrangedSubviews.count == 0 && [[controller valueForKey:@"messageMarkdownViews"] count] == 0,
+        @"theme and conversation resets discard the old renderers");
+  [window close];
+}
 
 /// Keep service/rendering side effects out of this navigation/state regression.
 @interface TLSendingNavigationController : TalariaWindowController
@@ -312,16 +418,61 @@ static void TestAttachmentSendPreparation(void) {
         [controller.preparedPrompt isEqual:@"https://example.com"], @"prepared files and original request reach the turn together");
 }
 
+@interface TLStopTestRunner : TLAssistantTurnRunner
+@property NSUInteger stopCount;
+@end
+@implementation TLStopTestRunner
+- (BOOL)running { return self.stopCount == 0; }
+- (void)cancel { self.stopCount++; }
+@end
+
+static void TestStreamingComposerStopButton(void) {
+  TLSendingNavigationController *controller = [[TLSendingNavigationController alloc] initWithWindow:nil];
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  TLStopTestRunner *runner = [[TLStopTestRunner alloc] initWithMessageStore:(id)[[NSObject alloc] init] streaming:(id)[[NSObject alloc] init]];
+  TLChatRecord *chat = [[TLChatRecord alloc] init]; chat.chatID = 17;
+  [controller setValue:input forKey:@"messageInput"];
+  [controller setValue:input.textView forKey:@"promptTextView"];
+  [controller setValue:input.sendButton forKey:@"sendButton"];
+  [controller setValue:input.palette forKey:@"palette"];
+  [controller setValue:[NSMutableDictionary dictionaryWithObject:runner forKey:@17] forKey:@"turnRunners"];
+  [controller setValue:chat forKey:@"activeChat"];
+
+  [controller updateControlStates];
+  Check(input.showsStopButton && input.sendButton.image != nil && input.sendButton.enabled && input.sendButton.alphaValue == 1 &&
+    [input.sendButton.toolTip isEqual:@"Stop response"], @"empty streaming composer has an active Stop button");
+  for (NSString *draft in @[@"Next question", @" "]) {
+    input.textView.string = draft;
+    [controller updateControlStates];
+    Check(!input.showsStopButton && !input.sendButton.enabled && [input.sendButton.toolTip isEqual:@"Send"],
+      @"any draft restores Send and cannot accidentally stop the response");
+  }
+  input.textView.string = @"";
+  chat.chatID = 18;
+  [controller updateControlStates];
+  Check(!input.showsStopButton, @"another chat cannot stop the originating chat's response");
+  chat.chatID = 17;
+  [controller updateControlStates];
+  Check(input.showsStopButton, @"clearing the draft restores Stop");
+  [controller activateComposerButton:input.sendButton];
+  Check(runner.stopCount == 1, @"the composer Stop action cancels generation");
+  [[controller valueForKey:@"turnRunners"] removeAllObjects];
+  [controller updateControlStates];
+  Check(!input.showsStopButton && !input.sendButton.enabled, @"finished empty composer returns to disabled Send");
+  input.textView.string = @"Next question";
+  [controller updateControlStates];
+  Check(input.sendButton.enabled && !input.showsStopButton, @"draft can be sent after stopping");
+}
+
 static void TestNavigationWhileSendingPreservesTurn(void) {
   TLSendingNavigationController *controller = [[TLSendingNavigationController alloc] initWithWindow:nil];
   NSMutableArray *originalMessages = [NSMutableArray arrayWithObject:@"in-flight response"];
   [controller setValue:originalMessages forKey:@"messages"];
-  [controller setValue:originalMessages forKey:@"sendingMessages"];
-  [controller setValue:@YES forKey:@"isSending"];
+  [controller setValue:[NSMutableDictionary dictionaryWithObject:originalMessages forKey:@17] forKey:@"turnMessagesByChat"];
+  [controller setValue:[NSMutableDictionary dictionaryWithObject:[[NSObject alloc] init] forKey:@17] forKey:@"turnRunners"];
   [controller setValue:@(-2) forKey:@"nextDraftChatID"];
   [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
-  NSArray *headerKeys = @[@"createChatButton", @"sidebarToggleButton", @"agentWalletButton",
-                         @"taskStatusSidebarButton", @"notesShortcutButton", @"historyShortcutButton"];
+  NSArray *headerKeys = @[@"createChatButton", @"sidebarToggleButton"];
   for (NSString *key in headerKeys) {
     TLButton *button = [[TLButton alloc] init];
     button.enabled = NO;
@@ -336,15 +487,241 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
         @"new tab can open while a response is running");
   Check([controller valueForKey:@"messages"] != originalMessages && originalMessages.count == 1,
         @"navigation replaces the display buffer without clearing the running turn");
-  Check([controller valueForKey:@"sendingMessages"] == originalMessages,
+  Check([[controller valueForKey:@"turnMessagesByChat"] objectForKey:@17] == originalMessages,
         @"running turn keeps its own buffer");
   for (NSString *key in headerKeys) {
     Check([[controller valueForKey:key] isEnabled], @"header remains enabled while sending");
   }
   prompt.string = @"next draft";
   [controller updateControlStates];
-  Check(prompt.editable && !send.enabled, @"draft editing stays available but concurrent sends remain blocked");
-  Check([[controller valueForKey:@"isSending"] boolValue], @"navigation does not cancel the turn");
+  Check(prompt.editable && send.enabled, @"a new chat can send while another chat is streaming");
+  Check([[controller valueForKey:@"hasSendingTurns"] boolValue] && ![[controller valueForKey:@"isSending"] boolValue],
+    @"navigation keeps the original turn running without marking the new chat busy");
+}
+
+@interface TLConcurrentTestRequest : NSObject
+@property NSString *requestID;
+@property NSString *sessionID;
+@property (copy) TLAgentStreamDeltaHandler delta;
+@property (copy) TLAgentStreamCompletionHandler completion;
+@end
+@implementation TLConcurrentTestRequest
+@end
+
+@interface TLConcurrentTestStream : NSObject <TLAssistantTurnStreaming>
+@property NSMutableArray<TLConcurrentTestRequest *> *requests;
+@property NSMutableArray<NSString *> *cancelledRequests;
+@end
+@implementation TLConcurrentTestStream
+- (instancetype)init {
+  if ((self = [super init])) { _requests = [NSMutableArray array]; _cancelledRequests = [NSMutableArray array]; }
+  return self;
+}
+- (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID sessionID:(NSString *)sessionID
+  token:(NSString *)token model:(NSString *)model messages:(NSArray<TLChatMessage *> *)messages
+  delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
+  TLConcurrentTestRequest *request = [[TLConcurrentTestRequest alloc] init];
+  request.requestID = requestID; request.sessionID = sessionID; request.delta = delta; request.completion = completion;
+  [self.requests addObject:request];
+}
+- (void)cancelChatWithRequestID:(NSString *)requestID { [self.cancelledRequests addObject:requestID]; }
+@end
+
+@interface TLConcurrentTestStore : NSObject <TLAssistantTurnMessageStore>
+@property NSMutableDictionary<NSNumber *, TLChatRecord *> *chats;
+@property NSInteger nextMessageID;
+@end
+@implementation TLConcurrentTestStore
+- (instancetype)init {
+  if ((self = [super init])) _chats = [NSMutableDictionary dictionary];
+  return self;
+}
+- (TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error {
+  TLStoredChatMessage *saved = [TLStoredChatMessage messageWithRole:message.role content:message.content thinking:message.thinking];
+  saved.messageID = ++self.nextMessageID;
+  TLChatRecord *chat = self.chats[@(chatID)];
+  chat.messages = [(chat.messages ?: @[]) arrayByAddingObject:saved];
+  return saved;
+}
+- (TLChatRecord *)chatWithID:(NSInteger)chatID error:(NSError **)error { return self.chats[@(chatID)]; }
+@end
+
+@interface TLConcurrentChatController : TLSendingNavigationController
+@property TLConcurrentTestStore *store;
+@property TLConcurrentTestStream *stream;
+@end
+@implementation TLConcurrentChatController
+- (TLAssistantTurnRunner *)newAssistantTurnRunner {
+  return [[TLAssistantTurnRunner alloc] initWithMessageStore:self.store streaming:self.stream];
+}
+- (void)refreshChatsKeepingActiveSelection {}
+- (void)generateChatIconIfNeededForChatID:(NSInteger)chatID messages:(NSArray *)messages {}
+- (void)presentErrorMessage:(NSString *)message { Check(NO, [@"unexpected concurrent chat error: " stringByAppendingString:message]); }
+@end
+
+static void TestConcurrentChatStreams(void) {
+  TLConcurrentChatController *controller = [[TLConcurrentChatController alloc] initWithWindow:nil];
+  controller.store = [[TLConcurrentTestStore alloc] init];
+  controller.stream = [[TLConcurrentTestStream alloc] init];
+  [controller setValue:controller.store forKey:@"database"];
+  TLAppSettings *settings = [TLAppSettings defaultSettings];
+  settings.openRouterToken = @"test-token"; settings.selectedModel = @"test-model";
+  [controller setValue:settings forKey:@"settings"];
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  [controller setValue:input forKey:@"messageInput"];
+  [controller setValue:input.textView forKey:@"promptTextView"];
+  [controller setValue:input.sendButton forKey:@"sendButton"];
+  [controller setValue:input.palette forKey:@"palette"];
+  for (NSNumber *chatID in @[@17, @18]) {
+    TLChatRecord *chat = [[TLChatRecord alloc] init];
+    chat.chatID = chatID.integerValue; chat.hermesSessionID = chatID.stringValue; chat.messages = @[];
+    controller.store.chats[chatID] = chat;
+  }
+  [controller loadChatWithID:17];
+  input.textView.string = @"Question A";
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+  TLConcurrentTestRequest *a = controller.stream.requests.lastObject;
+  a.delta(a.requestID, TLAgentStreamDeltaKindContent, @"Answer A");
+  NSMutableArray *messagesA = [controller valueForKey:@"messages"];
+  [controller loadChatWithID:18];
+  input.textView.string = @"Question B";
+  [controller updateControlStates];
+  Check(input.sendButton.enabled && !input.showsStopButton, @"chat B can send while A streams");
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+  TLConcurrentTestRequest *b = controller.stream.requests.lastObject;
+  NSMutableArray *messagesB = [controller valueForKey:@"messages"];
+  Check(controller.stream.requests.count == 2 && [a.sessionID isEqual:@"17"] && [b.sessionID isEqual:@"18"],
+    @"two independent runners dispatch separate Hermes sessions");
+  a.delta(a.requestID, TLAgentStreamDeltaKindContent, @" continues");
+  b.delta(b.requestID, TLAgentStreamDeltaKindContent, @"Answer B");
+  Check([((TLChatMessage *)messagesA.lastObject).content isEqual:@"Answer A continues"] &&
+    [((TLChatMessage *)messagesB.lastObject).content isEqual:@"Answer B"], @"interleaved deltas stay in their own chats");
+  input.textView.string = @"do not duplicate B";
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+  Check(controller.stream.requests.count == 2, @"a second turn in the same busy chat is still blocked");
+  [controller loadChatWithID:17];
+  Check([controller valueForKey:@"messages"] == messagesA && input.showsStopButton,
+    @"returning to a streaming chat restores its live buffer and Stop button");
+  [controller loadChatWithID:18];
+  Check([input.textView.string isEqual:@"do not duplicate B"], @"returning to a busy chat preserves its unsent draft");
+  input.textView.string = @"";
+  [controller updateControlStates];
+  [controller activateComposerButton:input.sendButton];
+  Check([controller.stream.cancelledRequests isEqual:@[b.requestID]] &&
+    [[controller valueForKey:@"turnRunners"] count] == 1, @"Stop B leaves A running");
+  input.textView.string = @"Another question B";
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+  TLConcurrentTestRequest *b2 = controller.stream.requests.lastObject;
+  input.textView.string = @"unsent draft";
+  b.delta(b.requestID, TLAgentStreamDeltaKindContent, @"stale B");
+  b.completion(nil);
+  a.delta(a.requestID, TLAgentStreamDeltaKindContent, @" finished");
+  a.completion(nil);
+  Check([[controller valueForKey:@"isSending"] boolValue] && [[controller valueForKey:@"turnRunners"] count] == 1 &&
+    [input.textView.string isEqual:@"unsent draft"], @"background completion cannot unlock B or replace its draft");
+  input.textView.string = @"";
+  [controller updateControlStates];
+  Check(input.showsStopButton && input.sendButton.enabled, @"B's Stop remains active after A finishes");
+  b2.delta(b2.requestID, TLAgentStreamDeltaKindContent, @"Second B answer");
+  b2.completion(nil);
+  [controller loadChatWithID:17];
+  Check([((TLChatMessage *)[[controller valueForKey:@"messages"] lastObject]).content isEqual:@"Answer A continues finished"],
+    @"completed background output persists to its original conversation");
+  [controller loadChatWithID:18];
+  Check([((TLChatMessage *)[[controller valueForKey:@"messages"] lastObject]).content isEqual:@"Second B answer"] &&
+    ![[controller valueForKey:@"hasSendingTurns"] boolValue], @"all chats finish independently without stale callbacks");
+}
+
+// Real database and tab metadata paths, with only unrelated UI/services suppressed.
+@interface TLChatTitleTestController : TalariaWindowController
+@property TLConcurrentTestStream *stream;
+@end
+@implementation TLChatTitleTestController
+- (TLAssistantTurnRunner *)newAssistantTurnRunner {
+  return [[TLAssistantTurnRunner alloc] initWithMessageStore:[self valueForKey:@"database"] streaming:self.stream];
+}
+- (void)renderMessages {}
+- (void)resetMessageRowCache {}
+- (void)showChatWorkspace {}
+- (void)reloadWorkspaceTabs {}
+- (void)updateControlStates {}
+- (void)selectActiveChatInHistory {}
+- (void)generateChatIconIfNeededForChatID:(NSInteger)chatID messages:(NSArray *)messages {}
+- (void)presentErrorMessage:(NSString *)message { Check(NO, message); }
+@end
+
+static TLChatTitleTestController *TitleController(TLDatabase *database) {
+  TLChatTitleTestController *controller = [[TLChatTitleTestController alloc] initWithWindow:nil];
+  controller.stream = [[TLConcurrentTestStream alloc] init];
+  [controller setValue:database forKey:@"database"];
+  [controller setValue:[[TLAppStateManager alloc] init] forKey:@"appStateManager"];
+  [controller setValue:[[NSView alloc] init] forKey:@"chatWorkspace"];
+  [controller setValue:[NSMutableDictionary dictionary] forKey:@"workspaceTabRuntimes"];
+  [controller setValue:[NSMutableArray array] forKey:@"chats"];
+  [controller setValue:@(-1) forKey:@"nextDraftChatID"];
+  TLAppSettings *settings = [TLAppSettings defaultSettings];
+  settings.openRouterToken = @"test-token"; settings.selectedModel = @"test-model";
+  [controller setValue:settings forKey:@"settings"];
+  TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  [controller setValue:input forKey:@"messageInput"];
+  [controller setValue:input.textView forKey:@"promptTextView"];
+  [controller setValue:input.palette forKey:@"palette"];
+  return controller;
+}
+
+static void CheckChatTabTitle(TLChatTitleTestController *controller, NSInteger chatID, NSString *title) {
+  TLAppStateManager *state = [controller valueForKey:@"appStateManager"];
+  TLWorkspaceTab *tab = [state workspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID];
+  Check([tab.title isEqual:title] && [tab.toolTip isEqual:title] &&
+    [[controller displayTitleForWorkspaceTab:tab] isEqual:title], @"saved chat title stays consistent in tab, tooltip, and display");
+}
+
+static void TestStreamingChatTitlesPersist(void) {
+  NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+  NSURL *url = [directory URLByAppendingPathComponent:@"titles.sqlite3"];
+  id credentials = [[NSObject alloc] init]; // No credentials are accessed by these database operations.
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:credentials error:nil];
+  Check(database != nil, @"title fixture database opens");
+  TLChatTitleTestController *controller = TitleController(database);
+  NSTextView *prompt = [controller valueForKey:@"promptTextView"];
+  NSMutableArray<NSNumber *> *chatIDs = [NSMutableArray array];
+  NSArray<NSString *> *titles = @[@"Write a long essay", @"Explain the stars"];
+  for (NSString *title in titles) {
+    [controller startNewChatWithModel:@"test-model" focus:NO];
+    prompt.string = title;
+    [controller sendMessage:nil allowAutomaticRouting:NO];
+    NSInteger chatID = [[controller valueForKeyPath:@"activeChat.chatID"] integerValue];
+    [chatIDs addObject:@(chatID)];
+    CheckChatTabTitle(controller, chatID, title);
+    Check([[[database chatWithID:chatID error:nil] title] isEqual:title], @"title is durable before the first stream delta");
+  }
+  Check([[controller valueForKey:@"turnRunners"] count] == 2, @"both naming fixtures are still streaming");
+  for (NSUInteger pass = 0; pass < 3; pass++) {
+    for (NSNumber *chatID in chatIDs) {
+      [controller loadChatWithID:chatID.integerValue];
+      for (NSUInteger index = 0; index < chatIDs.count; index++) CheckChatTabTitle(controller, chatIDs[index].integerValue, titles[index]);
+    }
+  }
+  // Simulate a missing history entry when a background icon request finishes.
+  [controller setValue:[NSMutableArray array] forKey:@"chats"];
+  CheckChatTabTitle(controller, chatIDs[0].integerValue, titles[0]);
+  TLChatSummary *saved = [database saveChatIcon:@"📝" chatID:chatIDs[0].integerValue error:nil];
+  [controller applySavedChatSummary:saved];
+  CheckChatTabTitle(controller, chatIDs[0].integerValue, titles[0]);
+  Check([[controller valueForKey:@"chats"] count] == 1, @"background metadata fills a missing cache entry");
+  TLConcurrentTestRequest *first = controller.stream.requests[0];
+  first.delta(first.requestID, TLAgentStreamDeltaKindContent, @"Partial answer");
+  [controller loadChatWithID:chatIDs[0].integerValue];
+  [controller activateComposerButton:nil];
+  TLConcurrentTestRequest *second = controller.stream.requests[1];
+  second.delta(second.requestID, TLAgentStreamDeltaKindContent, @"Completed answer");
+  second.completion(nil);
+  for (NSUInteger index = 0; index < chatIDs.count; index++) CheckChatTabTitle(controller, chatIDs[index].integerValue, titles[index]);
+  TLDatabase *reopened = [[TLDatabase alloc] initWithURL:url credentialStore:credentials error:nil];
+  TLChatTitleTestController *restored = TitleController(reopened);
+  for (NSNumber *chatID in chatIDs) [restored loadChatWithID:chatID.integerValue];
+  for (NSUInteger index = 0; index < chatIDs.count; index++) CheckChatTabTitle(restored, chatIDs[index].integerValue, titles[index]);
+  [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
 }
 
 /// Exercise the real state subscriptions and drag delegate without constructing app services or UI.
@@ -463,37 +840,6 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 - (void)goBackInSession:(TLChromiumBrowserSession *)session { self.backCount += 1; }
 @end
 
-static void TestNotesThemePreservesEditing(void) {
-  TLNotesTabController *controller = [[TLNotesTabController alloc]
-    initWithPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
-  NSWindow *window = HostController(controller);
-  [controller updateNotesMessageInputWidth];
-  NSView *originalView = controller.view;
-  NSTextView *editor = controller.notesPromptTextView;
-  editor.string = @"An unfinished notes prompt";
-  [window makeFirstResponder:editor];
-  editor.selectedRange = NSMakeRange(3, 6);
-  NSScrollView *article = [controller valueForKey:@"notesArticleView"];
-  [article.contentView scrollToPoint:NSMakePoint(0, 40)];
-  NSPoint origin = article.contentView.bounds.origin;
-  NSRange selection = editor.selectedRange;
-  TLThemePalette *dark = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
-  [controller applyPalette:dark];
-  Check(controller.view == originalView && controller.notesPromptTextView == editor, @"notes theme keeps the same view and editor");
-  Check([editor.string isEqualToString:@"An unfinished notes prompt"], @"notes draft survives theme change");
-  Check(NSEqualRanges(editor.selectedRange, selection) && window.firstResponder == editor, @"notes focus and selection survive theme change");
-  Check(NSEqualPoints(article.contentView.bounds.origin, origin), @"notes scroll position survives theme change");
-  Check([((TLTokenView *)controller.view).fillColor isEqual:dark.tabBackground], @"notes root reapplies semantic theme");
-  Check([editor.textColor isEqual:dark.controlText], @"notes editor reapplies semantic theme");
-  __block NSString *sentPrompt = nil;
-  controller.sendPromptHandler = ^(NSString *prompt) { sentPrompt = prompt; };
-  [NSApp sendAction:controller.notesMessageInput.sendButton.action to:controller.notesMessageInput.sendButton.target from:editor];
-  Check([sentPrompt isEqualToString:@"An unfinished notes prompt"] && editor.string.length == 0, @"notes controller owns prompt submission and clearing");
-  [controller close];
-  Check(editor.delegate == nil && controller.sendPromptHandler == nil, @"notes closing clears callbacks");
-  [window close];
-}
-
 static void TestSettingsThemeAndLateCatalogue(void) {
   TLFeatureCatalogueMock *catalogue = [[TLFeatureCatalogueMock alloc] init];
   TLFeatureSettingsStoreMock *store = [[TLFeatureSettingsStoreMock alloc] init];
@@ -506,9 +852,9 @@ static void TestSettingsThemeAndLateCatalogue(void) {
   TLModelPickerView *picker = [controller valueForKey:@"mainModelPicker"];
   NSSearchField *search = [picker valueForKey:@"searchField"];
   NSPopUpButton *theme = [controller valueForKey:@"themePopup"];
-  NSMutableArray<TLOpenRouterModel *> *models = [NSMutableArray array];
+  NSMutableArray<TLAgentModel *> *models = [NSMutableArray array];
   for (NSUInteger index = 0; index < 40; index += 1) {
-    TLOpenRouterModel *model = [[TLOpenRouterModel alloc] init];
+    TLAgentModel *model = [[TLAgentModel alloc] init];
     model.modelID = [NSString stringWithFormat:@"test/model-%lu", (unsigned long)index];
     model.name = model.modelID;
     [models addObject:model];
@@ -596,15 +942,562 @@ static void TestBrowserOwnsCallbacksAndSession(void) {
   Check(releasedController == nil, @"browser callbacks do not retain their controller");
 }
 
+@interface TLAgentSelectionStoreMock : NSObject
+@property (nonatomic) NSInteger currentAgentID;
+@end
+@implementation TLAgentSelectionStoreMock
+@end
+
+static void TestRealSidebarAgents(void) {
+  TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 320, 64)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TalariaWindowController *controller = [[TalariaWindowController alloc] initWithWindow:window];
+  [controller setValue:palette forKey:@"palette"];
+  TLAgentSelectionStoreMock *store = [TLAgentSelectionStoreMock new];
+  store.currentAgentID = 12;
+  [controller setValue:store forKey:@"database"];
+  NSMutableArray *agents = [NSMutableArray array];
+  for (NSInteger index = 10; index < 15; index++) {
+    TLAgentRecord *agent = [TLAgentRecord new];
+    agent.agentID = index;
+    agent.name = [NSString stringWithFormat:@"Agent %ld", (long)index];
+    agent.avatar = @[@"🦊", @"🐼", @"🌙", @"🐙", @"🦉"][(NSUInteger)(index - 10)];
+    [agents addObject:agent];
+  }
+  [controller setValue:agents forKey:@"agents"];
+  NSStackView *grid = [controller buildSidebarTileGrid];
+  [controller setValue:grid forKey:@"sidebarTileGrid"];
+  [window.contentView addSubview:grid];
+  [NSLayoutConstraint activateConstraints:@[
+    [grid.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [grid.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [grid.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [grid.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+  ]];
+  [window.contentView layoutSubtreeIfNeeded];
+  [controller rebuildSidebarAgents];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSScrollView *scroll = (NSScrollView *)grid.arrangedSubviews.firstObject;
+  NSStackView *tiles = (NSStackView *)scroll.documentView;
+  Check(tiles.arrangedSubviews.count == 5, @"sidebar contains only persisted agents");
+  NSUInteger selected = 0;
+  for (TLIconTileView *tile in tiles.arrangedSubviews) {
+    if (tile.selected) selected++;
+    Check(NSWidth(tile.bounds) > 0 && NSHeight(tile.bounds) > 0, @"agent tiles remain visible in scrolling sidebar");
+  }
+  Check(selected == 1 && ((TLIconTileView *)tiles.arrangedSubviews[2]).selected, @"sidebar marks actual selected agent");
+  Check(NSWidth(tiles.bounds) > NSWidth(scroll.bounds), @"extra agents remain horizontally scrollable");
+  NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_SIDEBAR_PREVIEW"];
+  if (preview.length) {
+    NSBitmapImageRep *bitmap = [window.contentView bitmapImageRepForCachingDisplayInRect:window.contentView.bounds];
+    [window.contentView cacheDisplayInRect:window.contentView.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:preview atomically:YES];
+  }
+  [controller setValue:@[] forKey:@"agents"];
+  [controller rebuildSidebarAgents];
+  scroll = (NSScrollView *)grid.arrangedSubviews.firstObject;
+  tiles = (NSStackView *)scroll.documentView;
+  Check(tiles.arrangedSubviews.count == 0, @"empty sidebar contains no placeholder or creation tiles");
+  [window close];
+}
+
+static void TestNativeEmojiInput(void) {
+  TLEmojiPicker *picker = [[TLEmojiPicker alloc] init];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 200, 100)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  [window.contentView addSubview:picker];
+  Check([window makeFirstResponder:picker] && window.firstResponder == picker && picker.inputContext.client == picker,
+        @"native emoji input targets the avatar control instead of another form field");
+  __block NSUInteger changes = 0;
+  picker.emojiChangedHandler = ^(NSString *emoji) { changes++; };
+  for (NSString *emoji in @[@"🥹", @"👩🏽‍💻", @"🏳️‍🌈", @"🇦🇺", @"1️⃣", @"👨‍👩‍👧‍👦"]) {
+    [picker insertText:[[NSAttributedString alloc] initWithString:emoji] replacementRange:NSMakeRange(NSNotFound, 0)];
+    Check([picker.emoji isEqual:emoji] && [picker.title isEqual:emoji], @"native picker commits a complete emoji, including compound sequences");
+  }
+  Check(changes == 6, @"native selection updates the avatar");
+  NSString *previous = picker.emoji;
+  for (NSString *invalid in @[@"", @"hello", @"1", @"#", @"*", @"🦊🐼"]) {
+    [picker insertText:invalid replacementRange:picker.selectedRange];
+  }
+  Check([picker.emoji isEqual:previous] && changes == 6, @"non-emoji text and multiple emojis preserve the avatar");
+  [picker setMarkedText:@"search" selectedRange:NSMakeRange(6, 0) replacementRange:picker.selectedRange];
+  Check(picker.hasMarkedText && [picker.emoji isEqual:previous], @"composition does not replace the avatar before commit");
+  [picker unmarkText];
+  Check(!picker.hasMarkedText && [picker.emoji isEqual:previous], @"cancelled selection preserves the avatar");
+  picker.enabled = NO;
+  [picker insertText:@"🦊" replacementRange:picker.selectedRange];
+  Check([picker.emoji isEqual:previous], @"disabled picker cannot change an agent during provisioning");
+  [window close];
+}
+
+static void TestFolderAccessTable(void) {
+  TLFolderAccessPicker *picker = [[TLFolderAccessPicker alloc] init];
+  Check([picker.tableView isKindOfClass:NSTableView.class] && picker.folderPaths.count == 0,
+        @"folder access starts with an empty native table");
+  NSArray<NSButton *> *shortcuts = [picker valueForKey:@"shortcutButtons"];
+  Check(shortcuts.count == 5, @"offers disk, home, desktop, documents and downloads shortcuts");
+  [shortcuts[0] performClick:nil];
+  [shortcuts[1] performClick:nil];
+  [shortcuts[1] performClick:nil];
+  NSString *home = NSFileManager.defaultManager.homeDirectoryForCurrentUser.path.stringByStandardizingPath;
+  Check([picker.folderPaths isEqual:@[@"/", home]], @"disk and home shortcuts add real paths without duplicates");
+  [shortcuts[2] performClick:nil];
+  [shortcuts[3] performClick:nil];
+  [shortcuts[4] performClick:nil];
+  Check(picker.folderPaths.count == 5 && picker.tableView.numberOfRows == 5, @"common location shortcuts populate native rows");
+  [picker.tableView selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(1, 3)] byExtendingSelection:NO];
+  [picker setPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  Check(picker.tableView.selectedRowIndexes.count == 3, @"theme changes preserve folder selection");
+  NSButton *remove = [picker valueForKey:@"removeButton"];
+  Check(remove.enabled, @"remove becomes available for selected folders");
+  [remove performClick:nil];
+  Check(picker.folderPaths.count == 2 && [picker.folderPaths.firstObject isEqual:@"/"], @"removes all selected rows while preserving remaining paths");
+  NSArray *remaining = picker.folderPaths;
+  picker.enabled = NO;
+  [shortcuts[1] performClick:nil];
+  Check([picker.folderPaths isEqual:remaining] && !remove.enabled && !shortcuts[1].enabled,
+        @"folder permissions cannot be changed during provisioning");
+  picker.enabled = YES;
+  [picker.tableView selectAll:nil];
+  [remove performClick:nil];
+  Check(picker.folderPaths.count == 0 && !remove.enabled && ![[picker valueForKey:@"emptyLabel"] isHidden],
+        @"removing every folder restores the empty state");
+}
+
+@interface TLAgentCreationStoreMock : NSObject
+@property (nonatomic) NSUInteger creationCount;
+@property (nonatomic, strong) TLAgentRecord *savedProfile;
+@end
+@implementation TLAgentCreationStoreMock
+- (TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar soul:(NSString *)soul
+                         folderPaths:(NSArray<NSString *> *)paths error:(NSError **)error {
+  if (!name.length) {
+    if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Give your agent a name."}];
+    return nil;
+  }
+  self.creationCount++;
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = 42;
+  agent.name = name;
+  return agent;
+}
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error {
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = agentID;
+  agent.name = name;
+  agent.avatar = avatar;
+  agent.soul = soul;
+  self.savedProfile = agent;
+  return agent;
+}
+@end
+
+static void TestAgentCreationForm(void) {
+  TLThemePalette *dark = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  TLAgentCreationWindowController *controller = [[TLAgentCreationWindowController alloc] initWithPalette:dark orchestrator:(id)[TLAgentCreationStoreMock new]];
+  NSWindow *window = controller.window;
+  [window.contentView layoutSubtreeIfNeeded];
+  NSTextField *name = [controller valueForKey:@"nameField"];
+  NSTextView *soul = [controller valueForKey:@"soulView"];
+  TLEmojiPicker *avatar = [controller valueForKey:@"avatarPicker"];
+  name.stringValue = @"Atlas";
+  soul.string = @"My agent's soul";
+  avatar.emoji = @"🦊";
+  [controller applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  Check([name.stringValue isEqual:@"Atlas"] && [soul.string isEqual:@"My agent's soul"] && [avatar.emoji isEqual:@"🦊"],
+        @"theme changes preserve the agent profile draft");
+  Check([[controller valueForKey:@"folderPaths"] count] == 0, @"agent creation defaults to no folder access");
+  Check(NSWidth(name.bounds) > 0 && NSHeight(soul.bounds) > 0, @"profile fields are laid out");
+  NSButton *create = [controller valueForKey:@"createButton"];
+  NSRect buttonFrame = [create convertRect:create.bounds toView:window.contentView];
+  Check(NSContainsRect(window.contentView.bounds, buttonFrame), @"creation action stays visible below the native form");
+  TLFolderAccessPicker *folders = [controller valueForKey:@"folderPicker"];
+  folders.folderPaths = @[@"/", NSFileManager.defaultManager.homeDirectoryForCurrentUser.path,
+    [NSFileManager.defaultManager.homeDirectoryForCurrentUser.path stringByAppendingPathComponent:@"Documents"]];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSRect tableFrame = [folders.tableView.enclosingScrollView convertRect:folders.tableView.enclosingScrollView.bounds toView:window.contentView];
+  Check(NSContainsRect(window.contentView.bounds, tableFrame) && NSMinY(tableFrame) > NSMaxY(buttonFrame),
+        @"folder table fits above the footer without an outer scrollbar");
+  NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_FORM_PREVIEW"];
+  if (preview.length) {
+    for (NSNumber *darkMode in @[@YES, @NO]) {
+      [controller applyPalette:[TLThemePalette paletteForPreference:darkMode.boolValue ? TLThemePreferenceDark : TLThemePreferenceLight]];
+      [window.contentView layoutSubtreeIfNeeded];
+      NSBitmapImageRep *bitmap = [window.contentView bitmapImageRepForCachingDisplayInRect:window.contentView.bounds];
+      [window.contentView cacheDisplayInRect:window.contentView.bounds toBitmapImageRep:bitmap];
+      NSString *path = darkMode.boolValue ? preview : [preview.stringByDeletingPathExtension stringByAppendingString:@"-light.png"];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+    }
+  }
+  NSWindow *parent = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 800, 700)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  parent.releasedWhenClosed = NO;
+  [controller showFromWindow:parent];
+  name.stringValue = @"";
+  [create performClick:nil];
+  Check([controller valueForKey:@"createdAgentID"] && [[controller valueForKey:@"createdAgentID"] integerValue] == 0,
+        @"validation failure does not submit an agent");
+  Check(window.sheetParent == parent, @"invalid profile stays in the creation sheet");
+  name.stringValue = @"Atlas";
+  __block NSUInteger submissions = 0;
+  controller.agentCreatedHandler = ^(TLAgentRecord *agent) {
+    submissions++;
+    Check(!window.visible && agent.agentID == 42, @"creation sheet closes before background initialization is handed off");
+  };
+  [create performClick:nil];
+  [create performClick:nil];
+  Check(submissions == 1, @"creation hands off exactly once without waiting for an installer");
+  [parent close];
+  [window close];
+}
+
+static void TestAgentSettingsForm(void) {
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = 17;
+  agent.name = @"Atlas";
+  agent.avatar = @"🦊";
+  agent.soul = @"Be thoughtful and curious.";
+  TLAgentCreationStoreMock *store = [TLAgentCreationStoreMock new];
+  TLAgentCreationWindowController *controller = [[TLAgentCreationWindowController alloc] initWithAgent:agent
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark] orchestrator:(id)store];
+  NSTextField *name = [controller valueForKey:@"nameField"];
+  TLEmojiPicker *avatar = [controller valueForKey:@"avatarPicker"];
+  NSTextView *soul = [controller valueForKey:@"soulView"];
+  Check([name.stringValue isEqual:agent.name] && [avatar.emoji isEqual:agent.avatar] && [soul.string isEqual:agent.soul], @"settings preload the selected agent profile");
+  [controller.window.contentView layoutSubtreeIfNeeded];
+  NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_SETTINGS_PREVIEW"];
+  if (preview.length) {
+    NSView *view = controller.window.contentView;
+    NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+    [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:preview atomically:YES];
+  }
+  name.stringValue = @"Nova";
+  avatar.emoji = @"🌟";
+  soul.string = @"";
+  [controller applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  NSButton *cancel = [controller valueForKey:@"cancelButton"];
+  [cancel performClick:nil];
+  Check(store.savedProfile == nil, @"cancel does not mutate the profile");
+  __block BOOL saved = NO;
+  controller.agentUpdatedHandler = ^(TLAgentRecord *updated) { saved = YES; };
+  NSButton *save = [controller valueForKey:@"createButton"];
+  [save performClick:nil];
+  Check(saved && store.savedProfile.agentID == 17 && store.creationCount == 0, @"editing saves the selected agent without provisioning another VM");
+  Check([store.savedProfile.name isEqual:@"Nova"] && [store.savedProfile.avatar isEqual:@"🌟"] && store.savedProfile.soul.length == 0,
+    @"profile draft survives theme changes and saves all three fields");
+  [controller.window close];
+}
+
+@interface TLFolderAccessStoreMock : NSObject
+@property (nonatomic, copy) NSArray<NSString *> *savedPaths;
+@property (nonatomic) NSInteger savedAgentID;
+@property (nonatomic) BOOL failSave;
+@end
+@implementation TLFolderAccessStoreMock
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)paths error:(NSError **)error {
+  if (self.failSave) {
+    if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Folder unavailable"}];
+    return nil;
+  }
+  self.savedPaths = paths;
+  self.savedAgentID = agentID;
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = agentID;
+  return agent;
+}
+@end
+
+static void TestAgentFolderEditing(void) {
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = 72;
+  agent.name = @"Atlas";
+  agent.avatar = @"🦊";
+  agent.folderPaths = @[@"/", NSFileManager.defaultManager.homeDirectoryForCurrentUser.path];
+  TLFolderAccessStoreMock *store = [TLFolderAccessStoreMock new];
+  TLAgentFolderAccessWindowController *controller = [[TLAgentFolderAccessWindowController alloc]
+    initWithAgent:agent palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark] orchestrator:(id)store];
+  TLFolderAccessPicker *picker = [controller valueForKey:@"folderPicker"];
+  Check([picker.folderPaths isEqual:agent.folderPaths], @"folder editor opens the selected agent's saved folders");
+  [controller.window.contentView layoutSubtreeIfNeeded];
+  NSRect frame = [picker convertRect:picker.bounds toView:controller.window.contentView];
+  Check(NSContainsRect(controller.window.contentView.bounds, frame), @"folder editor table fits inside its sheet");
+  NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_FOLDERS_PREVIEW"];
+  if (preview.length) {
+    [NSApp activateIgnoringOtherApps:YES];
+    [controller.window makeKeyAndOrderFront:nil];
+    for (NSNumber *dark in @[@YES, @NO]) {
+      [controller applyPalette:[TLThemePalette paletteForPreference:dark.boolValue ? TLThemePreferenceDark : TLThemePreferenceLight]];
+      [controller.window.contentView layoutSubtreeIfNeeded];
+      [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+      NSView *view = controller.window.contentView;
+      NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+      [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+      NSString *path = dark.boolValue ? preview : [preview.stringByDeletingPathExtension stringByAppendingString:@"-light.png"];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+    }
+  }
+  picker.folderPaths = @[];
+  [controller applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  Check(picker.folderPaths.count == 0 && agent.folderPaths.count == 2 && store.savedPaths == nil,
+    @"theme changes preserve the draft without modifying saved agent folders");
+  NSButton *cancel = [controller valueForKey:@"cancelButton"];
+  [cancel performClick:nil];
+  Check(store.savedPaths == nil, @"cancel leaves the saved folder list untouched");
+  __block BOOL saved = NO;
+  controller.savedHandler = ^{ saved = YES; };
+  store.failSave = YES;
+  NSButton *save = [controller valueForKey:@"saveButton"];
+  [save performClick:nil];
+  Check(!saved && [[controller valueForKey:@"statusLabel"] stringValue].length > 0, @"save failure reports an error and preserves the draft");
+  store.failSave = NO;
+  [save performClick:nil];
+  Check(saved && store.savedAgentID == 72 && store.savedPaths.count == 0, @"save removes all folders only for the selected agent");
+  [controller.window close];
+}
+
+@interface TalariaWindowController (SuggestionTypingTests)
+- (NSView *)buildSlashCommandListView;
+- (void)textDidChange:(NSNotification *)notification;
+- (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)selector;
+@end
+
+@interface TLTypingPickerController : TalariaWindowController
+@property (nonatomic) NSUInteger refreshCount;
+@property (nonatomic) NSUInteger layoutCount;
+@end
+@implementation TLTypingPickerController
+- (void)updateControlStates { self.layoutCount++; }
+- (void)updateMessageScrollInsets { self.layoutCount++; }
+- (BOOL)isChatWorkspaceActive { return YES; }
+- (void)refreshHermesCommandsIfNeeded { self.refreshCount++; }
+@end
+
+static void DrainSuggestionTimer(void) {
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.06];
+  while (deadline.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runUntilDate:deadline];
+}
+
+static void TestSuggestionTypingAndVirtualization(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500, 600)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLTypingPickerController *controller = [[TLTypingPickerController alloc] initWithWindow:window];
+  TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  [controller setValue:palette forKey:@"palette"];
+  [controller setValue:window.contentView forKey:@"rootView"];
+  TLMessageInput *input = [[TLMessageInput alloc] initWithFrame:NSMakeRect(0, 0, 500, 60)];
+  input.translatesAutoresizingMaskIntoConstraints = YES;
+  [window.contentView addSubview:input];
+  [controller setValue:input forKey:@"messageInput"];
+  [controller setValue:input.textView forKey:@"promptTextView"];
+  NSView *pane = [controller buildSlashCommandListView];
+  [window.contentView addSubview:pane];
+  [NSLayoutConstraint activateConstraints:@[
+    [controller valueForKey:@"slashCommandListWidthConstraint"], [controller valueForKey:@"slashCommandListHeightConstraint"],
+    [pane.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [pane.topAnchor constraintEqualToAnchor:window.contentView.topAnchor]]];
+  NSMutableArray *commands = [NSMutableArray array];
+  for (NSUInteger i = 0; i < 5000; i++) {
+    [commands addObject:@{@"kind": @"hermes", @"command": [NSString stringWithFormat:@"/command%lu", (unsigned long)i],
+                         @"description": @"Dynamic Hermes command", @"title": @"Command", @"icon": @"terminal"}];
+  }
+  [commands addObject:@{@"kind": @"hermes", @"command": @"/model", @"description": @"Choose model", @"icon": @"terminal"}];
+  [controller setValue:commands forKey:@"hermesCommands"];
+  input.textView.string = @"/";
+  NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
+  [controller textDidChange:nil];
+  NSLog(@"Slash typing callback with %lu commands: %.3f ms", (unsigned long)commands.count,
+    (NSProcessInfo.processInfo.systemUptime - start) * 1000);
+  Check(controller.refreshCount == 0 && pane.hidden && controller.layoutCount == 0,
+        @"typing returns before command lookup, view creation, or forced workspace layout");
+  Check([input.textView.string isEqualToString:@"/"], @"slash is already in the composer while suggestions are pending");
+  DrainSuggestionTimer();
+  Check(controller.refreshCount == 1 && !pane.hidden, @"suggestions appear after the input event");
+  TLInputSuggestionListView *list = [controller valueForKey:@"slashCommandScrollView"];
+  NSTableView *table = [list valueForKey:@"table"];
+  TLInputSuggestionListView *widthProbe = [[TLInputSuggestionListView alloc] init];
+  widthProbe.suggestions = @[@{@"command": @"Open river.ai"}, @{@"command": @"Send message"}];
+  CGFloat compactWidth = [widthProbe preferredWidthWithMaximum:700];
+  Check(compactWidth > 0 && compactWidth < 300, @"short suggestions hug their contents");
+  widthProbe.suggestions = @[@{@"command": @"Open river.ai", @"description": @"A description that needs additional room"}];
+  Check([widthProbe preferredWidthWithMaximum:700] > compactWidth, @"descriptions contribute to preferred width");
+  Check([widthProbe preferredWidthWithMaximum:100] == 100, @"content width stays within the available maximum");
+
+  for (NSNumber *width in @[@200, @500]) {
+    input.frame = NSMakeRect(0, 0, width.doubleValue, 60);
+    [controller textDidChange:nil];
+    DrainSuggestionTimer();
+    [window.contentView layoutSubtreeIfNeeded];
+    Check(table.numberOfRows == (NSInteger)commands.count, @"large catalogue remains complete");
+    Check(list.scrollingEnabled && list.hasVerticalScroller, @"long catalogue scrolls after reaching the viewport limit");
+    Check(NSWidth(pane.frame) <= width.doubleValue, [NSString stringWithFormat:@"suggestions fit composers: requested %@, input %.0f, pane %.0f", width, NSWidth(input.bounds), NSWidth(pane.frame)]);
+    __block NSUInteger materialized = 0;
+    [table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger index) { materialized++; }];
+    Check(materialized > 0 && materialized < 30, @"only viewport rows are materialized, independent of catalogue size");
+    list.selectedIndex = commands.count - 1;
+    [window.contentView layoutSubtreeIfNeeded];
+    Check(NSIntersectsRect(table.visibleRect, [table rectOfRow:commands.count - 1]), @"keyboard selection reaches commands beyond the viewport");
+    TLSlashCommandItemView *last = [table viewAtColumn:0 row:commands.count - 1 makeIfNecessary:NO];
+    Check(last.selected && [last.command isEqualToString:@"/model"], @"reused row reflects selection and current command");
+  }
+  list.selectedIndex = 0;
+  [window.contentView layoutSubtreeIfNeeded];
+  TLSlashCommandItemView *pointerRow = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
+  NSPoint pointerPoint = [table convertPoint:NSMakePoint(NSMidX(table.bounds), NSMidY([table rectOfRow:1])) toView:nil];
+  NSEvent *move = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:pointerPoint modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
+  [list mouseMoved:move];
+  Check(list.selectedIndex == 1 && [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == 1, @"mouse selection updates the keyboard navigation index");
+  [controller textView:input.textView doCommandBySelector:@selector(moveDown:)];
+  [pointerRow mouseEntered:move];
+  Check(list.selectedIndex == 2 && !pointerRow.selected, @"stationary hover cannot override the latest keyboard selection");
+  Check(CGColorEqualToColor(pointerRow.layer.backgroundColor, TLCGColor(list.palette.slashCommandItemSurface)), @"hovered row does not retain a second highlight");
+  [list mouseMoved:move];
+  Check(list.selectedIndex == 1 && pointerRow.selected, @"actual mouse movement takes selection back from keyboard");
+  __block NSUInteger selectedRows = 0;
+  [table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger index) {
+    TLSlashCommandItemView *cell = [table viewAtColumn:0 row:index makeIfNecessary:NO];
+    if (cell.selected) selectedRows++;
+  }];
+  Check(selectedRows == 1, @"only one materialized suggestion is selected");
+  NSUInteger previous = controller.refreshCount;
+  input.textView.string = @"/co"; [controller textDidChange:nil];
+  input.textView.string = @"/mod"; [controller textDidChange:nil];
+  Check(controller.refreshCount == previous, @"rapid edits do not synchronously rebuild suggestions");
+  DrainSuggestionTimer();
+  Check(controller.refreshCount == previous + 1 && list.suggestions.count == 1, @"rapid edits coalesce to the latest prompt");
+  input.textView.string = @"/mo"; [controller textDidChange:nil];
+  Check([controller textView:input.textView doCommandBySelector:@selector(insertTab:)], @"Tab resolves a pending suggestion update");
+  Check([input.textView.string isEqualToString:@"/model "], @"Tab uses current input rather than stale rows");
+  input.textView.string = @"/"; [controller textDidChange:nil];
+  previous = controller.refreshCount;
+  Check([controller textView:input.textView doCommandBySelector:@selector(cancelOperation:)], @"Escape cancels a pending picker");
+  DrainSuggestionTimer();
+  Check(pane.hidden && controller.refreshCount == previous, @"cancelled updates cannot reopen the picker");
+  pane.hidden = NO;
+  ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListWidthConstraint"]).constant = 200;
+  ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListHeightConstraint"]).constant = 100;
+  list.suggestions = @[@{@"kind": @"status", @"command": @"Loading"}, @{@"kind": @"hermes", @"command": @"/help"}];
+  Check(![list isSuggestionEnabledAtIndex:0] && [list isSuggestionEnabledAtIndex:1], @"status is inert and commands remain actionable");
+  __block NSUInteger activated = NSNotFound;
+  list.activationHandler = ^(NSUInteger index) { activated = index; };
+  [window.contentView layoutSubtreeIfNeeded];
+  TLSlashCommandItemView *retry = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
+  [retry sendAction:retry.action to:retry.target];
+  Check(activated == 1, @"reused mouse targets activate the current row");
+  list.suggestions = @[@{@"kind": @"status", @"command": @"Hermes is not installed"}];
+  ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListHeightConstraint"]).constant = palette.slashCommandRowHeight + palette.space2 * 2;
+  [window.contentView layoutSubtreeIfNeeded];
+  NSTableCellView *single = [table viewAtColumn:0 row:0 makeIfNecessary:YES];
+  [single layoutSubtreeIfNeeded];
+  NSTextField *label = single.textField;
+  Check([single isKindOfClass:NSTableCellView.class] && !label.selectable && !label.editable, @"errors use plain non-selectable text, not command controls");
+  list.selectedIndex = 0;
+  Check(list.selectedIndex == -1, @"status text cannot be selected by keyboard");
+  NSRect labelRect = [label convertRect:label.bounds toView:list.contentView];
+  Check(NSMinY(labelRect) >= NSMinY(list.contentView.bounds) && NSMaxY(labelRect) <= NSMaxY(list.contentView.bounds),
+        [NSString stringWithFormat:@"single row fits: label %@ clip %@ cell %@ table %@ row %@", NSStringFromRect(labelRect), NSStringFromRect(list.contentView.bounds), NSStringFromRect(single.frame), NSStringFromRect(table.frame), NSStringFromRect([table rectOfRow:0])]);
+  list.palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
+  Check([label.textColor isEqual:list.palette.textMuted], @"theme changes update status text");
+  [controller setValue:@[] forKey:@"hermesCommands"];
+  [controller setValue:@"Hermes is not installed" forKey:@"hermesCommandsError"];
+  input.textView.string = @"/";
+  [controller textDidChange:nil];
+  DrainSuggestionTimer();
+  Check(list.suggestions.count == 1 && [list.suggestions[0][@"kind"] isEqualToString:@"status"], @"discovery failures render as status text");
+  Check(![controller textView:input.textView doCommandBySelector:@selector(moveDown:)] &&
+        [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == -1,
+        @"arrow keys cannot select the error message");
+  Check(!list.scrollingEnabled && !list.hasVerticalScroller, @"one error message has no scrollbar");
+  Check([pane isKindOfClass:TLInputSuggestionPanelView.class] && ![pane isKindOfClass:TLGlassPaneView.class], @"suggestions use background blur without glass treatment");
+  TLInputSuggestionPanelView *backdrop = (TLInputSuggestionPanelView *)pane;
+  Check(backdrop.blendingMode == NSVisualEffectBlendingModeWithinWindow, @"suggestions blur the content behind them");
+  for (NSNumber *preference in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    TLThemePalette *theme = [TLThemePalette paletteForPreference:preference.integerValue];
+    backdrop.palette = theme;
+    NSColor *tint = [theme.suggestionBackdropTint colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    NSColor *expected = [theme.tabBackground colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    Check(fabs(tint.redComponent - expected.redComponent) < 0.01 && fabs(tint.greenComponent - expected.greenComponent) < 0.01 &&
+          fabs(tint.blueComponent - expected.blueComponent) < 0.01 && tint.alphaComponent > 0 && tint.alphaComponent < 1,
+          @"backdrop tint matches the chat background with reduced opacity in both themes");
+  }
+  [controller setValue:nil forKey:@"hermesCommandsError"];
+  for (NSUInteger count = 1; count <= 9; count++) {
+    [controller setValue:[commands subarrayWithRange:NSMakeRange(0, count)] forKey:@"hermesCommands"];
+    [controller textDidChange:nil];
+    DrainSuggestionTimer();
+    [window.contentView layoutSubtreeIfNeeded];
+    BOOL overflow = list.contentHeight > NSHeight(list.contentView.bounds) + 0.5;
+    Check(list.hasVerticalScroller == overflow && list.scrollingEnabled == overflow, @"scrolling only appears when content exceeds the available height");
+    if (!overflow) Check(NSHeight(list.contentView.bounds) >= list.contentHeight, @"short lists fit all rows without scrolling");
+  }
+  [window close];
+}
+
+@interface TalariaWindowController (AgentRepairTests)
+- (TLAgentRecord *)selectedAgent;
+- (void)updateAgentControlStates;
+- (void)startSelectedAgent:(id)sender;
+- (void)initializeAgentWithID:(NSInteger)agentID;
+@end
+@interface TLRepairController : TalariaWindowController
+@property(nonatomic, strong) TLAgentRecord *testAgent;
+@property(nonatomic) NSInteger repairAgentID;
+@end
+@implementation TLRepairController
+- (TLAgentRecord *)selectedAgent { return self.testAgent; }
+- (void)initializeAgentWithID:(NSInteger)agentID { self.repairAgentID = agentID; }
+@end
+@interface TLRepairOrchestrator : NSObject
+@end
+@implementation TLRepairOrchestrator
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent { return YES; }
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent { return NO; }
+@end
+static void TestRunningAgentRepairAction(void) {
+  TLRepairController *controller = [[TLRepairController alloc] initWithWindow:nil];
+  controller.testAgent = [[TLAgentRecord alloc] init];
+  controller.testAgent.agentID = 42;
+  controller.testAgent.status = TLAgentStatusRunning;
+  [controller setValue:[[TLRepairOrchestrator alloc] init] forKey:@"agentOrchestrator"];
+  [controller setValue:[[TLWorkspaceTab alloc] init] forKey:@"agentsTab"];
+  NSButton *start = [[NSButton alloc] init];
+  NSButton *stop = [[NSButton alloc] init];
+  [controller setValue:start forKey:@"startAgentButton"];
+  [controller setValue:stop forKey:@"stopAgentButton"];
+  [controller updateAgentControlStates];
+  Check(start.enabled && [start.title isEqualToString:@"Install Hermes"], @"missing Hermes can be installed while the VM is running");
+  Check(stop.enabled, @"running VM can still be stopped before setup");
+  [controller startSelectedAgent:nil];
+  Check(controller.repairAgentID == 42, @"repair targets the selected existing agent");
+  controller.testAgent.status = TLAgentStatusInitializing;
+  [controller updateAgentControlStates];
+  Check(!start.enabled && !stop.enabled, @"setup disables duplicate install and stop actions");
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
-    TestNotesThemePreservesEditing();
+    TestNativeEmojiInput();
+    TestFolderAccessTable();
+    TestAgentCreationForm();
+    TestAgentFolderEditing();
+    TestAgentSettingsForm();
+    TestRealSidebarAgents();
+    TestSuggestionTypingAndVirtualization();
+    TestRunningAgentRepairAction();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();
+    TestStreamingChatTitlesPersist();
+    TestConcurrentChatStreams();
     TestAttachmentSendPreparation();
+    TestStreamingComposerStopButton();
     TestNavigationWhileSendingPreservesTurn();
+    TestStreamingKeepsMessageViewsAttached();
     TestCompactButtonHitAreaAndMovingHover();
     TestUnifiedWorkspaceOutline();
     NSLog(@"FeatureControllerTests passed");

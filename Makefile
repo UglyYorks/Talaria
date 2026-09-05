@@ -8,7 +8,7 @@ APP_ENTITLEMENTS := Entitlements.plist
 # Override with an Apple Development identity when one becomes available.
 CODE_SIGN_IDENTITY ?= Talaria Local Development
 SIGNING_CONFIG := $(BUILD_DIR)/.signing-identity
-AGENT_RUNTIME_FILES := $(shell find AgentRuntime -type f 2>/dev/null)
+AGENT_RUNTIME_FILES := $(wildcard AgentRuntime/*.py) AgentRuntime/talaria-init
 AGENT_LINUX_RUNTIME_DIR := $(BUILD_DIR)/agent-runtime/linux-arm64
 AGENT_LINUX_RUNTIME_STAMP := $(AGENT_LINUX_RUNTIME_DIR)/.download.stamp
 AGENT_LINUX_KERNEL_ZBOOT := $(AGENT_LINUX_RUNTIME_DIR)/vmlinuz-virt
@@ -36,9 +36,10 @@ TAB_LAYOUT_TEST_EXECUTABLE := $(BUILD_DIR)/TabLayoutTests
 NOTCH_VIEW_TEST_EXECUTABLE := $(BUILD_DIR)/NotchOverlayViewTests
 GLASS_PANE_TEST_EXECUTABLE := $(BUILD_DIR)/GlassPaneTests
 MARKDOWN_IT := Vendor/markdown-it/markdown-it.min.js
+MATH_RESOURCES := Source/MarkdownMath.js $(shell find Vendor/katex -type f)
+MARKDOWN_RESOURCES_STAMP := $(BUILD_DIR)/.markdown-resources.stamp
 READABILITY_FILES := Vendor/readability/Readability.js Vendor/readability/LICENSE.md
 SIDEBAR_PLANET := assets/sidebar-planet.png
-AGENT_CARD_IMAGE := assets/agent-card.png
 APP_ICON := assets/Talaria.icns
 INBOX_ICON_FILES := $(wildcard assets/inbox-icons/*.svg)
 BOOKMARK_ICON_FILES := $(wildcard assets/browser-bookmarks/*.png)
@@ -114,17 +115,18 @@ $(SIGNING_CONFIG): FORCE | check-signing-identity
 	@printf '%s\n' '$(CODE_SIGN_IDENTITY)' > "$@.tmp"
 	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
 
-$(APP_BUILD_STAMP): Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(AGENT_CARD_IMAGE) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
+$(APP_BUILD_STAMP): Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources" "$(APP_BUNDLE)/Contents/Frameworks"
 	xcrun clang++ $(APP_OBJECTS) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(APP_EXECUTABLE)"
 	cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
 	cp "$(SIDEBAR_PLANET)" "$(APP_BUNDLE)/Contents/Resources/sidebar-planet.png"
-	cp "$(AGENT_CARD_IMAGE)" "$(APP_BUNDLE)/Contents/Resources/agent-card.png"
 	cp "$(APP_ICON)" "$(APP_BUNDLE)/Contents/Resources/Talaria.icns"
 	ditto "assets/inbox-icons" "$(APP_BUNDLE)/Contents/Resources/inbox-icons"
 	ditto "assets/browser-bookmarks" "$(APP_BUNDLE)/Contents/Resources/browser-bookmarks"
 	cp "$(MARKDOWN_IT)" "$(APP_BUNDLE)/Contents/Resources/markdown-it.min.js"
+	cp Source/MarkdownMath.js "$(APP_BUNDLE)/Contents/Resources/MarkdownMath.js"
+	ditto Vendor/katex "$(APP_BUNDLE)/Contents/Resources/katex"
 	cp Vendor/readability/Readability.js "$(APP_BUNDLE)/Contents/Resources/Readability.js"
 	cp Vendor/readability/LICENSE.md "$(APP_BUNDLE)/Contents/Resources/Readability-LICENSE.md"
 	mkdir -p "$(APP_BUNDLE)/Contents/Resources/AgentRuntime/linux-arm64"
@@ -206,7 +208,7 @@ $(CEF_ARCHIVE_PATH):
 	  exit 1; \
 	fi
 
-$(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py AgentRuntime/openrouter_agent.py AgentRuntime/talaria-init
+$(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILES)
 	mkdir -p "$(AGENT_LINUX_RUNTIME_DIR)"
 	curl -fL -o "$(AGENT_LINUX_KERNEL_ZBOOT).tmp" "$(ALPINE_NETBOOT_URL)/vmlinuz-virt"
 	mv "$(AGENT_LINUX_KERNEL_ZBOOT).tmp" "$(AGENT_LINUX_KERNEL_ZBOOT)"
@@ -238,7 +240,7 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py AgentRuntime/openrou
 	  --kernel-output "$(AGENT_LINUX_KERNEL)" \
 	  --base-initrd "$(AGENT_LINUX_BASE_INITRD)" \
 	  --modloop "$(AGENT_LINUX_MODLOOP)" \
-	  --agent-script AgentRuntime/openrouter_agent.py \
+	  --agent-script AgentRuntime/talaria_agent.py \
 	  --init-script AgentRuntime/talaria-init \
 	  --cache-dir "$(AGENT_LINUX_APK_CACHE)" \
 	  --output "$(AGENT_LINUX_INITRD)"
@@ -246,7 +248,7 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py AgentRuntime/openrou
 	test -s "$(AGENT_LINUX_INITRD)"
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
-test: $(BUILD_DIR)/ChatAttachmentTests audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests
+test: $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
 	"$(BUILD_DIR)/ChatAttachmentTests"
 	"$(TEST_EXECUTABLE)"
 	"$(TAB_LAYOUT_TEST_EXECUTABLE)"
@@ -257,11 +259,28 @@ test: $(BUILD_DIR)/ChatAttachmentTests audit-theme-colors $(TEST_EXECUTABLE) $(T
 	"$(BUILD_DIR)/AppStateManagerTests"
 	"$(BUILD_DIR)/TransitionCoordinatorTests"
 	"$(BUILD_DIR)/FeatureControllerTests"
+	"$(BUILD_DIR)/TabShortcutTests"
+	python3 Tests/AgentRuntimeTests.py
+	"$(BUILD_DIR)/MarkdownMathTests"
 
-$(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLGlassButton.m Source/design_system/TLBrowserChatPane.m Source/MarkdownRenderer.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
+test: $(BUILD_DIR)/MarkdownMathTests
+
+$(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES)
 	mkdir -p "$(BUILD_DIR)"
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework WebKit -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -o "$@"
+	cp Source/MarkdownMath.js "$(BUILD_DIR)/MarkdownMath.js"
+	ditto Vendor/katex "$(BUILD_DIR)/katex"
+	touch "$@"
+
+$(BUILD_DIR)/MarkdownMathTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Tests/MarkdownMathTests.m Tests/Fixtures/latex-formulas.md $(MARKDOWN_RESOURCES_STAMP)
+	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
+
+$(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/FeatureControllerTests: | $(MARKDOWN_RESOURCES_STAMP)
+
+$(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/MarkdownRenderer.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
+	mkdir -p "$(BUILD_DIR)"
+	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -framework WebKit -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -o "$@"
 
 $(NOTCH_VIEW_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/NotchOverlayState.m Source/NotchOverlayController.m Tests/NotchOverlayViewTests.m
 	mkdir -p "$(BUILD_DIR)"
@@ -274,7 +293,7 @@ $(TAB_LAYOUT_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedCo
 audit-theme-colors:
 	python3 Scripts/audit-theme-colors.py
 
-$(TEST_EXECUTABLE): Source/ChatAttachmentStore.m Source/TalariaModels.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/OpenRouterSupport.m Source/OpenRouterParsing.m Source/OpenRouterRequestFactory.m Source/OpenRouterStream.m Source/OpenRouterClient.m Source/ChatIconGenerator.m Source/AgentClient.m Source/AgentVMService.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Source/WorkspaceState.m Source/AppStateManager.m Tests/PromptBuilderTests.m
+$(TEST_EXECUTABLE): Source/ChatAttachmentStore.m Source/TalariaModels.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/AgentVMService.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Source/WorkspaceState.m Source/AppStateManager.m Tests/PromptBuilderTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ $(TEST_FRAMEWORKS) -o "$@"
 
@@ -313,3 +332,9 @@ $(BUILD_DIR)/FeatureControllerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(
 $(BUILD_DIR)/ChatAttachmentTests: Source/ChatAttachmentStore.m Source/TalariaModels.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/PromptMessages.m Source/PromptBuilder.m Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/TLMessageInput.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLGlassButton.m Tests/ChatAttachmentTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework AppKit -framework QuartzCore -framework Security -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -lsqlite3 -o "$@"
+$(BUILD_DIR)/TabShortcutTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/TabShortcutTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
+
+.PHONY: test-hermes-gateway
+test-hermes-gateway:
+	python3 -B -m unittest discover -s Tests -p "test_*.py"

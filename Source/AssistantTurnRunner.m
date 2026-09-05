@@ -46,6 +46,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
 @property (nonatomic, strong) id<TLAssistantTurnStreaming> streaming;
 @property (nonatomic, readwrite) BOOL running;
 @property (nonatomic, copy) NSString *activeRequestID;
+@property (nonatomic, copy) TLAgentStreamCompletionHandler finishStream;
 @end
 
 @implementation TLAssistantTurnRunner
@@ -61,6 +62,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   if (self) {
     _messageStore = messageStore;
     _streaming = streaming;
+    _streamsPartialContent = YES;
   }
   return self;
 }
@@ -96,7 +98,10 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   NSArray *attachments = [self.attachments copy] ?: @[];
   if (attachments.count) {
     TLPromptBuilder *builder = [[TLPromptBuilder alloc] init];
-    [builder addPartWithContent:requestMessages.lastObject.content importance:TLPromptImportanceRequired
+    NSString *request = requestMessages.lastObject.content;
+    // An attached slash-prefixed request is chat text, not a TUI command.
+    if ([request hasPrefix:@"/"]) request = [@"User request:\n" stringByAppendingString:request];
+    [builder addPartWithContent:request importance:TLPromptImportanceRequired
                       strategy:TLPromptCompactionStrategyWhole name:@"user-request"];
     [builder addPartWithContent:TLBuildAttachmentContext(attachments) importance:TLPromptImportanceRequired
                       strategy:TLPromptCompactionStrategyWhole name:@"attachments"];
@@ -138,6 +143,43 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   messages[assistantMessageIndex - 1] = savedUser;
 
   __weak typeof(self) weakSelf = self;
+  self.finishStream = ^(NSError *streamError) {
+    TLAssistantTurnRunner *strongSelf = weakSelf;
+    if (!strongSelf || !strongSelf.running || ![strongSelf.activeRequestID isEqualToString:requestID]) {
+      return;
+    }
+
+    BOOL cancelled = [streamError.domain isEqualToString:NSURLErrorDomain] && streamError.code == NSURLErrorCancelled;
+    // Flush even on stream failure: unfinished markdown and thinking are still
+    // the user's generated content and must remain available for recovery.
+    assistantMessage.content = [assistantContentDisplay flush];
+    NSString *displayThinking = [assistantThinkingDisplay flush];
+    assistantMessage.thinking = displayThinking.length > 0 ? displayThinking : nil;
+
+    NSError *assistantSaveError = nil;
+    TLChatMessage *resultAssistant = assistantMessage;
+    if (streamError && assistantContent.length == 0 && assistantThinking.length == 0) {
+      [messages removeObjectIdenticalTo:assistantMessage];
+      resultAssistant = nil;
+    } else {
+      TLStoredChatMessage *savedAssistant = [strongSelf.messageStore saveMessage:assistantMessage
+                                                                        chatID:chat.chatID
+                                                                         error:&assistantSaveError];
+      if (!savedAssistant && !assistantSaveError) {
+        assistantSaveError = TLAssistantTurnError(@"Could not save assistant message.");
+      }
+      if (savedAssistant && !assistantSaveError) {
+        resultAssistant = savedAssistant;
+        NSUInteger currentIndex = [messages indexOfObjectIdenticalTo:assistantMessage];
+        if (currentIndex != NSNotFound) messages[currentIndex] = savedAssistant;
+      }
+    }
+    TLAssistantTurnResult *result = [[TLAssistantTurnResult alloc]
+      initWithGenerationStatus:cancelled ? TLAssistantTurnGenerationStatusCancelled : (streamError ? TLAssistantTurnGenerationStatusFailed : TLAssistantTurnGenerationStatusSucceeded)
+      generationError:cancelled ? nil : streamError persistenceError:assistantSaveError
+      userMessage:savedUser assistantMessage:resultAssistant];
+    [strongSelf finishWithResult:result updateHandler:updateHandler completionHandler:completionHandler];
+  };
   [self.streaming streamChatWithDefaultAgentRequestID:requestID
                                                     sessionID:chat.hermesSessionID
                                                         token:trimmedToken
@@ -171,44 +213,18 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     if (displayChanged && updateHandler) {
       updateHandler();
     }
-  } completion:^(NSError *streamError) {
-    TLAssistantTurnRunner *strongSelf = weakSelf;
-    if (!strongSelf || !strongSelf.running || ![strongSelf.activeRequestID isEqualToString:requestID]) {
-      return;
-    }
-
-    // Flush even on stream failure: unfinished markdown and thinking are still
-    // the user's generated content and must remain available for recovery.
-    assistantMessage.content = [assistantContentDisplay flush];
-    NSString *displayThinking = [assistantThinkingDisplay flush];
-    assistantMessage.thinking = displayThinking.length > 0 ? displayThinking : nil;
-
-    NSError *assistantSaveError = nil;
-    TLChatMessage *resultAssistant = assistantMessage;
-    if (streamError && assistantContent.length == 0 && assistantThinking.length == 0) {
-      [messages removeObjectIdenticalTo:assistantMessage];
-      resultAssistant = nil;
-    } else {
-      TLStoredChatMessage *savedAssistant = [strongSelf.messageStore saveMessage:assistantMessage
-                                                                        chatID:chat.chatID
-                                                                         error:&assistantSaveError];
-      if (!savedAssistant && !assistantSaveError) {
-        assistantSaveError = TLAssistantTurnError(@"Could not save assistant message.");
-      }
-      if (savedAssistant && !assistantSaveError) {
-        resultAssistant = savedAssistant;
-        NSUInteger currentIndex = [messages indexOfObjectIdenticalTo:assistantMessage];
-        if (currentIndex != NSNotFound) messages[currentIndex] = savedAssistant;
-      }
-    }
-    TLAssistantTurnResult *result = [[TLAssistantTurnResult alloc]
-      initWithGenerationStatus:streamError ? TLAssistantTurnGenerationStatusFailed : TLAssistantTurnGenerationStatusSucceeded
-      generationError:streamError persistenceError:assistantSaveError
-      userMessage:savedUser assistantMessage:resultAssistant];
-    [strongSelf finishWithResult:result updateHandler:updateHandler completionHandler:completionHandler];
-  }];
+  } completion:self.finishStream];
 
   return YES;
+}
+
+- (void)cancel {
+  if (!self.running || !self.finishStream) return;
+  NSString *requestID = self.activeRequestID;
+  TLAgentStreamCompletionHandler finish = self.finishStream;
+  // Finalize first so already queued deltas cannot change the saved partial reply.
+  finish([NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
+  [self.streaming cancelChatWithRequestID:requestID];
 }
 
 - (NSError *)validationErrorForChat:(TLChatRecord *)chat
@@ -241,6 +257,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
 - (void)finishWithResult:(TLAssistantTurnResult *)result
           updateHandler:(TLAssistantTurnUpdateHandler)updateHandler
       completionHandler:(TLAssistantTurnCompletionHandler)completionHandler {
+  self.finishStream = nil;
   self.running = NO;
   self.activeRequestID = nil;
   if (updateHandler) {

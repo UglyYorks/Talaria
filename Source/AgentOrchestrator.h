@@ -18,12 +18,26 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                      agentClient:(id<TLAgentStreaming>)agentClient
                        vmService:(TLAgentVMService *)vmService NS_DESIGNATED_INITIALIZER;
 
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent;
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent;
+- (NSString *)displayStatusForAgent:(TLAgentRecord *)agent;
+
 - (nullable NSArray<TLAgentRecord *> *)listAgents:(NSError **)error;
 - (nullable TLAgentRecord *)createAgentWithName:(NSString *)name error:(NSError **)error;
+- (nullable TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
+                                         soul:(NSString *)soul folderPaths:(NSArray<NSString *> *)folderPaths
+                                        error:(NSError **)error;
+- (void)installHermesForAgentWithID:(NSInteger)agentID progress:(TLHermesInstallProgressHandler)progress
+                        completion:(TLAgentOperationCompletionHandler)completion;
 - (nullable TLAgentRecord *)defaultAgentCreatingIfNeeded:(NSError **)error;
 - (void)startAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion;
 - (void)stopAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion;
+- (nullable TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)folderPaths error:(NSError **)error;
+- (nullable TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name
+                                      avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error;
 - (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error;
+
+- (void)cancelChatWithRequestID:(NSString *)requestID;
 
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
                                   sessionID:(NSString *)sessionID
@@ -35,12 +49,24 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 - (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID
                   completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *_Nullable attachments, NSError *_Nullable error))completion;
 - (BOOL)removeAttachmentsForSessionID:(NSString *)sessionID error:(NSError **)error;
+- (void)generateTextWithDefaultAgentRequestID:(NSString *)requestID
+                                       token:(NSString *)token
+                                       model:(NSString *)model
+                                instructions:(NSString *)instructions
+                                       input:(NSString *)input
+                                       delta:(TLAgentStreamDeltaHandler)delta
+                                  completion:(TLAgentStreamCompletionHandler)completion;
 - (void)createFreshHermesAgentWithProgress:(TLHermesInstallProgressHandler)progress
                                 completion:(TLAgentOperationCompletionHandler)completion;
 - (void)runShellCommandWithDefaultAgentSessionID:(NSString *)sessionID
                                          command:(NSString *)command
                                           output:(void (^)(NSString *text))output
                                       completion:(TLAgentStreamCompletionHandler)completion;
+// Last successful TUI discovery for the current agent; never starts a VM.
+- (nullable NSDictionary *)cachedHermesCommands;
+- (void)fetchHermesCommandsWithToken:(NSString *)token
+                               model:(NSString *)model
+                          completion:(void (^)(NSDictionary *_Nullable catalogue, NSError *_Nullable error))completion;
 - (void)fetchModelCatalogueWithToken:(NSString *)token
                            completion:(TLAgentModelCatalogueHandler)completion;
 

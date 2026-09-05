@@ -65,27 +65,27 @@
 - (void)loadCatalogue:(id)sender {
   if (self.isClosed) return;
   NSUInteger request = ++self.catalogueRequest;
-  self.catalogueStatusLabel.stringValue = @"Loading OpenRouter catalogue";
+  self.catalogueStatusLabel.stringValue = @"Loading Hermes model catalogue";
   self.reloadButton.enabled = NO;
   self.reloadButton.alphaValue = self.palette.disabledOpacity;
   [self.mainModelPicker setStatusText:@"Loading catalogue"];
   [self.supportingModelPicker setStatusText:@"Loading catalogue"];
   __weak typeof(self) weakSelf = self;
   [self.agentOrchestrator fetchModelCatalogueWithToken:self.tokenField.stringValue
-    completion:^(NSArray<TLOpenRouterModel *> *models, NSError *error) {
+    completion:^(NSArray<TLAgentModel *> *models, NSError *error) {
       TLSettingsTabController *controller = weakSelf;
       if (!controller || controller.isClosed || controller.catalogueRequest != request) return;
       controller.reloadButton.enabled = YES;
       controller.reloadButton.alphaValue = 1.0;
       if (error) {
-        controller.catalogueStatusLabel.stringValue = error.localizedDescription ?: @"Could not load OpenRouter catalogue.";
+        controller.catalogueStatusLabel.stringValue = error.localizedDescription ?: @"Could not load Hermes model catalogue.";
         [controller.mainModelPicker setStatusText:@"Catalogue unavailable"];
         [controller.supportingModelPicker setStatusText:@"Catalogue unavailable"];
         return;
       }
       [controller.mainModelPicker setModels:models];
       [controller.supportingModelPicker setModels:models];
-      NSString *status = [NSString stringWithFormat:@"%lu OpenRouter text models loaded", (unsigned long)models.count];
+      NSString *status = [NSString stringWithFormat:@"%lu models loaded from Hermes", (unsigned long)models.count];
       controller.catalogueStatusLabel.stringValue = status;
       [controller.mainModelPicker setStatusText:status];
       [controller.supportingModelPicker setStatusText:status];
@@ -121,7 +121,7 @@
                                                 font:palette.bodyFont colorToken:@"textMuted"];
   NSTextField *providerSectionLabel = [self labelWithString:@"AI provider" font:palette.labelFont colorToken:@"appText"];
   NSTextField *appearanceSectionLabel = [self labelWithString:@"Appearance" font:palette.labelFont colorToken:@"appText"];
-  NSTextField *catalogueStatusLabel = [self labelWithString:@"OpenRouter catalogue" font:palette.smallFont colorToken:@"textMuted"];
+  NSTextField *catalogueStatusLabel = [self labelWithString:@"Hermes model catalogue" font:palette.smallFont colorToken:@"textMuted"];
   NSSecureTextField *tokenField = [[NSSecureTextField alloc] init];
   NSButton *rememberButton = [NSButton checkboxWithTitle:@"Remember token" target:nil action:nil];
   NSPopUpButton *themePopup = [[NSPopUpButton alloc] init];

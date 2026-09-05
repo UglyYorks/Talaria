@@ -1,3 +1,5 @@
+#import "design_system/TLInputSuggestionPanelView.h"
+#import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
 #import "PromptBuilder.h"
 #import "AgentOrchestrator.h"
@@ -11,14 +13,16 @@
 #import "TLHistoryPanelController.h"
 #import "TLBrowserTabController.h"
 #import "TLSettingsTabController.h"
-#import "TLNotesTabController.h"
 #import "TLMainWindow.h"
 #import "TLOnboardingDemoWindowController.h"
 #import "TLHermesOnboardingWindowController.h"
+#import "TLAgentCreationWindowController.h"
+#import "TLAgentFolderAccessWindowController.h"
 #import "TLVMDebugTerminalWindowController.h"
 #import "TLWorkspaceTabsController.h"
 #import "UIComponents.h"
 #import "design_system/TLWorkspaceOutlineView.h"
+#import "design_system/TLAgentTableCells.h"
 #import "design_system/TLTransitionCoordinator.h"
 #import "design_system/TLChromeTabView.h"
 #import "WorkspaceState.h"
@@ -103,16 +107,27 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return layout;
 }
 
-@interface TalariaWindowController () <NSWindowDelegate, NSTextViewDelegate, NSTableViewDataSource, NSTableViewDelegate, NSPopoverDelegate, TLHistoryPanelControllerDelegate, TLWorkspaceTabsControllerDelegate>
+@interface TLClosedWorkspaceTab : NSObject
+@property (nonatomic, copy) TLWorkspaceTab *tab;
+@property (nonatomic) NSUInteger index;
+@property (nonatomic, strong) TLChatRecord *draftChat;
+@property (nonatomic, copy) NSString *prompt;
+@end
+@implementation TLClosedWorkspaceTab
+@end
+
+@interface TalariaWindowController () <NSWindowDelegate, NSTextViewDelegate, NSTableViewDataSource, NSTableViewDelegate, TLHistoryPanelControllerDelegate, TLWorkspaceTabsControllerDelegate>
 
 @property (nonatomic, strong) TLDatabase *database;
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
-@property (nonatomic, strong) TLAssistantTurnRunner *assistantTurnRunner;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLAssistantTurnRunner *> *turnRunners;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray<TLChatMessage *> *> *turnMessagesByChat;
 @property (nonatomic, strong) TLChatIconGenerator *chatIconGenerator;
 @property (nonatomic, strong) TLAppStateManager *appStateManager;
 @property (nonatomic, strong) NSMutableArray<TLAppStateSubscription *> *appStateSubscriptions;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, TLWorkspaceTabRuntime *> *workspaceTabRuntimes;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *chatIconRequests;
+@property (nonatomic, strong) NSMutableArray<TLClosedWorkspaceTab *> *closedWorkspaceTabs;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong) TLAppSettings *settings;
 @property (nonatomic, strong) NSMutableArray<TLChatSummary *> *chats;
@@ -120,20 +135,21 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong, nullable) TLWorkspaceTab *historyTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *settingsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *agentsTab;
-@property (nonatomic, strong, nullable) TLWorkspaceTab *notesTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *debugTab;
 @property (nonatomic, strong) TLChatRecord *activeChat;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<NSURL *> *> *attachmentDrafts;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *attachmentPromptDrafts;
-@property (nonatomic) BOOL preparingAttachments;
+@property (nonatomic, readonly) BOOL preparingAttachments;
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *preparingAttachmentChats;
 @property (nonatomic) NSInteger nextBrowserTabID;
 @property (nonatomic) NSInteger nextDraftChatID;
 @property (nonatomic, strong) NSMutableArray<TLChatMessage *> *messages;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageRowViews;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSString *> *messageRowSignatures;
-@property (nonatomic) BOOL isSending;
-@property (nonatomic) NSInteger sendingChatID;
-@property (nonatomic, strong) NSMutableArray<TLChatMessage *> *sendingMessages;
+@property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageMarkdownViews;
+@property (nonatomic, copy) NSArray<TLChatMessage *> *renderedMessages;
+@property (nonatomic, readonly) BOOL isSending;
+@property (nonatomic, readonly) BOOL hasSendingTurns;
 @property (nonatomic) BOOL isLoading;
 @property (nonatomic) BOOL widgetbookMode;
 @property (nonatomic, copy) NSString *errorMessage;
@@ -162,8 +178,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSView *sidebarAgentPaneSurface;
 @property (nonatomic, strong) NSStackView *sidebarInboxStack;
 @property (nonatomic, strong) TLSidebarShortcutsView *sidebarShortcutsView;
-@property (nonatomic, strong) TLSidebarShortcutButton *notesShortcutButton;
-@property (nonatomic, strong) TLSidebarShortcutButton *historyShortcutButton;
 @property (nonatomic, strong) TLSidebarInboxPaneView *sidebarInboxPaneView;
 @property (nonatomic, strong) TLSidebarInboxStackView *gmailInboxStackView;
 @property (nonatomic, strong) TLSidebarInboxStackView *slackInboxStackView;
@@ -175,7 +189,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackHeightConstraint;
-@property (nonatomic, strong) TLSidebarNavigationButton *taskStatusSidebarButton;
 @property (nonatomic, strong) TLSidebarUserButton *sidebarUserButton;
 @property (nonatomic, strong) TLSidebarResizeHandle *sidebarResizeHandle;
 @property (nonatomic) CGFloat sidebarPreferredWidth;
@@ -185,13 +198,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @property (nonatomic, strong) TLHistoryPanelController *historyPanelController;
 @property (nonatomic, strong) TLTokenView *agentsView;
-@property (nonatomic, strong) TLNotesTabController *notesTabController;
 @property (nonatomic, strong) TLSettingsTabController *settingsTabController;
 @property (nonatomic, strong) NSTableView *agentsTableView;
 @property (nonatomic, strong) NSTextField *agentsStatusLabel;
 @property (nonatomic, strong) NSButton *createAgentButton;
 @property (nonatomic, strong) NSButton *startAgentButton;
 @property (nonatomic, strong) NSButton *stopAgentButton;
+@property (nonatomic, strong) NSButton *agentSettingsButton;
+@property (nonatomic, strong) TLAgentCreationWindowController *agentSettingsWindowController;
+@property (nonatomic, strong) NSButton *folderAccessButton;
+@property (nonatomic, strong) TLAgentFolderAccessWindowController *agentFolderAccessWindowController;
 @property (nonatomic, strong) NSButton *deleteAgentButton;
 @property (nonatomic, strong) NSButton *closeAgentsButton;
 @property (nonatomic, strong) NSScrollView *messageScrollView;
@@ -206,26 +222,30 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @property (nonatomic, strong) TLButton *createChatButton;
 @property (nonatomic, strong) TLButton *sidebarToggleButton;
-@property (nonatomic, strong) TLTaskStatusPillView *agentWalletButton;
-@property (nonatomic, strong) NSPopover *agentWalletPopover;
-@property (nonatomic, strong) NSPopover *taskStatusPopover;
-@property (nonatomic, strong) TLGlassPaneView *slashCommandListView;
-@property (nonatomic, strong) NSStackView *slashCommandListStack;
+@property (nonatomic, strong) TLInputSuggestionPanelView *slashCommandListView;
+@property (nonatomic, strong) TLInputSuggestionListView *slashCommandScrollView;
+@property (nonatomic, strong) NSTimer *slashCommandUpdateTimer;
+@property (nonatomic) BOOL renderingSlashCommands;
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *hermesCommands;
+@property (nonatomic, strong) NSDate *hermesCommandsFetchedAt;
+@property (nonatomic) NSInteger hermesCommandsAgentID;
+@property (nonatomic) BOOL loadingHermesCommands;
+@property (nonatomic, copy) NSString *hermesCommandsRequestID;
+@property (nonatomic, copy) NSString *hermesCommandsError;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *visibleSlashCommands;
-@property (nonatomic, copy) NSArray<TLSlashCommandItemView *> *slashCommandRows;
 @property (nonatomic) NSInteger selectedSlashCommandIndex;
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListHeightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListBottomConstraint;
 @property (nonatomic, strong) TLOnboardingDemoWindowController *onboardingDemoWindowController;
 @property (nonatomic, strong) TLHermesOnboardingWindowController *hermesOnboardingWindowController;
+@property (nonatomic, strong) TLAgentCreationWindowController *agentCreationWindowController;
 @property (nonatomic, strong) TLVMDebugTerminalWindowController *debugTerminalWindowController;
 @property (nonatomic, strong, nullable) TLASCIIPlanetScreensaverView *screensaverView;
 @property (nonatomic) NSRect mainWindowFrameBeforeOnboarding;
 @property (nonatomic) BOOL hasMainWindowFrameBeforeOnboarding;
 @property (nonatomic, strong) NSImage *mainWindowSnapshotBeforeOnboarding;
 @property (nonatomic, strong) NSWindow *mainWindowRevealOverlayWindow;
-@property (nonatomic) BOOL agentWalletCardDetailsVisible;
 @property (nonatomic, strong) TLGlassButton *sendButton;
 
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)fileURLs;
@@ -240,20 +260,17 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)handleEffectiveAppearanceChanged;
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)slashCommandsMatchingPrompt:(NSString *)prompt;
 - (NSView *)buildSlashCommandListView;
-- (NSView *)slashCommandRowWithCommand:(NSDictionary<NSString *, NSString *> *)command;
 - (CGFloat)slashCommandListWidthForCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands;
 - (void)applySlashCommandListPalette;
 - (void)setSelectedSlashCommandIndexAndUpdateRows:(NSInteger)selectedIndex;
 - (BOOL)moveSlashCommandSelectionByOffset:(NSInteger)offset;
 - (BOOL)performSelectedSlashCommand;
-- (BOOL)performSlashCommandIfNeededForPrompt:(NSString *)prompt;
 - (void)updateSlashCommandList;
 - (void)openAppFromOnboarding;
 - (void)revealMainWindowFromOnboarding;
 - (NSImage *)snapshotOfMainWindow;
 - (void)finishMainWindowRevealWithFinalFrame:(NSRect)finalFrame;
 - (void)hideSlashCommandList;
-- (void)runSlashCommandFromItem:(id)sender;
 - (void)showOnboardingDemoWindow:(id)sender;
 - (void)showScreensaver;
 - (void)hideScreensaver;
@@ -276,17 +293,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)setActiveChat:(TLChatRecord *)chat {
   if (!self.attachmentDrafts) self.attachmentDrafts = [NSMutableDictionary dictionary];
   if (!self.attachmentPromptDrafts) self.attachmentPromptDrafts = [NSMutableDictionary dictionary];
+  if (_activeChat && chat && _activeChat.chatID == chat.chatID) {
+    _activeChat = chat;
+    return;
+  }
   if (_activeChat) {
     self.attachmentDrafts[@(_activeChat.chatID)] = self.messageInput.attachmentURLs ?: @[];
-    self.attachmentPromptDrafts[@(_activeChat.chatID)] = self.promptTextView.string ?: @"";
+    self.attachmentPromptDrafts[@(_activeChat.chatID)] = [self.promptTextView.string copy] ?: @"";
   }
   _activeChat = chat;
+  self.promptTextView.string = chat ? self.attachmentPromptDrafts[@(chat.chatID)] ?: @"" : @"";
   [self.messageInput setAttachmentURLs:chat ? self.attachmentDrafts[@(chat.chatID)] ?: @[] : @[] animated:NO];
 }
 
 - (void)restoreAttachmentDraft:(NSArray<NSURL *> *)URLs prompt:(NSString *)prompt chatID:(NSInteger)chatID {
   self.attachmentDrafts[@(chatID)] = URLs;
-  self.attachmentPromptDrafts[@(chatID)] = prompt;
+  self.attachmentPromptDrafts[@(chatID)] = [prompt copy];
   if (self.activeChat.chatID == chatID) {
     self.messageInput.attachmentURLs = URLs;
     self.promptTextView.string = prompt;
@@ -330,8 +352,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self) {
     _database = database;
     _agentOrchestrator = agentOrchestrator;
-    _assistantTurnRunner = [[TLAssistantTurnRunner alloc] initWithDatabase:database
-                                                         agentOrchestrator:agentOrchestrator];
+    _turnRunners = [NSMutableDictionary dictionary];
+    _turnMessagesByChat = [NSMutableDictionary dictionary];
     _chatIconGenerator = [[TLChatIconGenerator alloc] initWithAgentOrchestrator:agentOrchestrator];
     _appStateManager = appStateManager ?: [[TLAppStateManager alloc] init];
     _appStateSubscriptions = [NSMutableArray array];
@@ -347,6 +369,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     _messages = [NSMutableArray array];
     _messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
     _messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
+    _messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
     _errorMessage = @"";
     _sidebarVisible = YES;
     _widgetbookMode = TLWidgetbookModeEnabled();
@@ -458,6 +481,121 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return NO;
 }
 
+- (NSUInteger)activeWorkspaceTabIndex {
+  TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
+  return [snapshot.workspaceTabs indexOfObjectPassingTest:^BOOL(TLWorkspaceTab *tab, NSUInteger index, BOOL *stop) {
+    return tab.kind == snapshot.activeTabKind && tab.tabID == snapshot.activeTabID;
+  }];
+}
+
+- (BOOL)canPerformTabCommand:(TLTabCommand)command {
+  if (self.widgetbookMode) return NO;
+  NSUInteger count = [self workspaceTabs].count;
+  NSUInteger index = [self activeWorkspaceTabIndex];
+  if (command >= TLTabCommandSelectFirst && command <= TLTabCommandSelectLast) {
+    return command == TLTabCommandSelectLast ? count > 0 : (NSUInteger)(command - TLTabCommandSelectFirst) < count;
+  }
+  switch (command) {
+    case TLTabCommandNew:
+    case TLTabCommandCloseWindow: return YES;
+    case TLTabCommandClose: return count <= 1 || (index != NSNotFound && [self activeWorkspaceTab].closeable);
+    case TLTabCommandReopen: return self.closedWorkspaceTabs.count > 0;
+    case TLTabCommandNext:
+    case TLTabCommandPrevious: return count > 1;
+    case TLTabCommandMoveLeft: return index != NSNotFound && index > 0;
+    case TLTabCommandMoveRight: return index != NSNotFound && index + 1 < count;
+    default: return NO;
+  }
+}
+
+- (void)selectWorkspaceTabAtIndex:(NSUInteger)index {
+  NSArray<TLWorkspaceTab *> *tabs = [self workspaceTabs];
+  if (index >= tabs.count || index == [self activeWorkspaceTabIndex]) return;
+  TLWorkspaceTab *tab = tabs[index];
+  SEL action = [self runtimeForTab:tab].openAction;
+  if (!action) return;
+  NSButton *sender = [[NSButton alloc] init];
+  sender.tag = tab.tabID;
+  [NSApp sendAction:action to:self from:sender];
+}
+
+- (void)performTabCommand:(TLTabCommand)command {
+  if (![self canPerformTabCommand:command]) return;
+  NSUInteger count = [self workspaceTabs].count;
+  NSUInteger index = [self activeWorkspaceTabIndex];
+  if (command >= TLTabCommandSelectFirst && command <= TLTabCommandSelectLast) {
+    [self selectWorkspaceTabAtIndex:command == TLTabCommandSelectLast ? count - 1 : command - TLTabCommandSelectFirst];
+    return;
+  }
+  switch (command) {
+    case TLTabCommandNew: [self startNewChatFromButton:self]; break;
+    case TLTabCommandClose: [self closeActiveTabOrWindow:self]; break;
+    case TLTabCommandCloseWindow: [self.window performClose:self]; break;
+    case TLTabCommandReopen: [self reopenLastClosedWorkspaceTab]; break;
+    case TLTabCommandNext:
+      [self selectWorkspaceTabAtIndex:index == NSNotFound ? 0 : (index + 1) % count]; break;
+    case TLTabCommandPrevious:
+      [self selectWorkspaceTabAtIndex:index == NSNotFound ? count - 1 : (index + count - 1) % count]; break;
+    case TLTabCommandMoveLeft:
+    case TLTabCommandMoveRight:
+      [self workspaceTabsController:self.workspaceTabsController moveTab:[self activeWorkspaceTab]
+                            toIndex:command == TLTabCommandMoveLeft ? index - 1 : index + 1];
+      break;
+    default: break;
+  }
+}
+
+- (void)rememberClosedWorkspaceTab:(TLWorkspaceTab *)tab {
+  TLClosedWorkspaceTab *closed = [[TLClosedWorkspaceTab alloc] init];
+  closed.tab = tab;
+  closed.index = [[self workspaceTabs] indexOfObjectPassingTest:^BOOL(TLWorkspaceTab *candidate, NSUInteger index, BOOL *stop) {
+    return candidate.kind == tab.kind && candidate.tabID == tab.tabID;
+  }];
+  if (closed.index == NSNotFound) return;
+  if (tab.kind == TLWorkspaceTabKindChat && self.activeChat.chatID == tab.tabID) {
+    closed.prompt = self.promptTextView.string;
+    if (tab.tabID <= 0) closed.draftChat = self.activeChat;
+  }
+  if (!self.closedWorkspaceTabs) self.closedWorkspaceTabs = [NSMutableArray array];
+  [self.closedWorkspaceTabs addObject:closed];
+  // Keep only lightweight metadata; closed browsers release their live session.
+  if (self.closedWorkspaceTabs.count > 50) [self.closedWorkspaceTabs removeObjectAtIndex:0];
+}
+
+- (void)reopenLastClosedWorkspaceTab {
+  TLClosedWorkspaceTab *closed = self.closedWorkspaceTabs.lastObject;
+  if (!closed) return;
+  [self.closedWorkspaceTabs removeLastObject];
+  TLWorkspaceTab *tab = closed.tab;
+  switch (tab.kind) {
+    case TLWorkspaceTabKindChat:
+      if (tab.tabID <= 0) {
+        [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:self.chatWorkspace
+          openAction:@selector(openChatTab:) closeAction:@selector(closeChatTab:)] forTab:tab];
+        [self.appStateManager addWorkspaceTab:tab activate:NO];
+      }
+      [self loadChatWithID:tab.tabID];
+      if (self.activeChat.chatID == tab.tabID) {
+        if (closed.draftChat) self.activeChat = closed.draftChat;
+        if (closed.prompt) self.promptTextView.string = closed.prompt;
+        [self updateControlStates];
+      }
+      break;
+    case TLWorkspaceTabKindBrowser:
+      [self openBrowserTabWithURL:tab.URL];
+      tab = [self activeWorkspaceTab];
+      break;
+    case TLWorkspaceTabKindHistory: [self showHistoryScreen:self]; break;
+    case TLWorkspaceTabKindSettings: [self showSettings:self]; break;
+    case TLWorkspaceTabKindAgents: [self showAgents:self]; break;
+    case TLWorkspaceTabKindDebug: [self showDebug:self]; break;
+  }
+  if (tab && [self.appStateManager hasWorkspaceTabWithKind:tab.kind tabID:tab.tabID]) {
+    [self workspaceTabsController:self.workspaceTabsController moveTab:tab
+                          toIndex:MIN(closed.index, [self workspaceTabs].count - 1)];
+  }
+}
+
 - (void)closeActiveTabOrWindow:(id)sender {
   NSArray<TLWorkspaceTab *> *tabs = [self workspaceTabs];
   if (tabs.count <= 1) {
@@ -496,7 +634,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self layoutTrafficLightButtons];
   [self updateSidebarLayoutAnimated:NO];
   [self updateMessageInputWidthForWindowWidth:NSWidth(self.window.frame)];
-  [self updateNotesMessageInputWidth];
 }
 
 - (NSSize)windowWillResize:(NSWindow *)sender toSize:(NSSize)frameSize {
@@ -690,39 +827,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   TLHoverStackView *tileGrid = [[TLHoverStackView alloc] init];
   tileGrid.translatesAutoresizingMaskIntoConstraints = NO;
   tileGrid.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  tileGrid.alignment = NSLayoutAttributeHeight;
+  tileGrid.alignment = NSLayoutAttributeCenterY;
   tileGrid.distribution = NSStackViewDistributionFill;
   tileGrid.spacing = self.palette.space5;
 
-  TLIconTileView *planetTile = [[TLIconTileView alloc] init];
-  planetTile.palette = self.palette;
-  planetTile.image = [self sidebarPlanetImage];
-  if (!planetTile.image) {
-    planetTile.systemIconName = @"globe.europe.africa.fill";
-  }
-  planetTile.selected = YES;
-  planetTile.imageSize = self.palette.space12 + self.palette.space2;
-  planetTile.toolTip = @"Jupiter";
-
-  TLIconTileView *saturnTile = [[TLIconTileView alloc] init];
-  saturnTile.palette = self.palette;
-  saturnTile.image = [self sidebarSaturnImage];
-  saturnTile.imageSize = planetTile.imageSize;
-  saturnTile.toolTip = @"Saturn - shared";
-  saturnTile.badgeSystemIconName = @"person.2.fill";
-
-  [tileGrid addArrangedSubview:planetTile];
-  [tileGrid addArrangedSubview:saturnTile];
-  NSView *remainingSpace = [[NSView alloc] init];
-  [tileGrid addArrangedSubview:remainingSpace];
-  NSLayoutConstraint *preferredWidth = [planetTile.widthAnchor constraintEqualToConstant:self.palette.sidebarAgentTileMaximumWidth];
-  preferredWidth.priority = NSLayoutPriorityDefaultHigh;
-  [NSLayoutConstraint activateConstraints:@[
-    preferredWidth,
-    [planetTile.widthAnchor constraintLessThanOrEqualToConstant:self.palette.sidebarAgentTileMaximumWidth],
-    [saturnTile.widthAnchor constraintEqualToAnchor:planetTile.widthAnchor],
-    [remainingSpace.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.space0],
-  ]];
   __weak typeof(self) weakSelf = self;
   tileGrid.hoverChanged = ^(BOOL hovered) {
     if (hovered) {
@@ -734,136 +842,73 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return tileGrid;
 }
 
-- (NSImage *)sidebarSaturnImage {
-  CGFloat size = self.palette.space16 + self.palette.space6;
-  NSAttributedString *planet = [[NSAttributedString alloc] initWithString:@"\U0001FA90"
+- (NSImage *)avatarImageForAgent:(TLAgentRecord *)agent {
+  CGFloat size = self.palette.agentMenuAvatarSize;
+  NSAttributedString *emoji = [[NSAttributedString alloc] initWithString:agent.avatar.length ? agent.avatar : @"🤖"
     attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:self.palette.space16]}];
   return [NSImage imageWithSize:NSMakeSize(size, size) flipped:NO drawingHandler:^BOOL(NSRect bounds) {
-    NSSize textSize = planet.size;
-    [planet drawAtPoint:NSMakePoint((NSWidth(bounds) - textSize.width) / 2.0,
-                                   (NSHeight(bounds) - textSize.height) / 2.0)];
+    NSSize textSize = emoji.size;
+    [emoji drawAtPoint:NSMakePoint((NSWidth(bounds) - textSize.width) / 2,
+                                   (NSHeight(bounds) - textSize.height) / 2)];
     return YES;
   }];
 }
 
-- (NSView *)sidebarAgentRowWithName:(NSString *)name
-                            shared:(BOOL)shared
-                            avatar:(NSImage *)avatar
-                          selected:(BOOL)selected
-                          services:(NSArray<NSImage *> *)services
-                      serviceNames:(NSArray<NSString *> *)serviceNames {
-  TLSelectionStackView *row = [[TLSelectionStackView alloc] init];
-  row.palette = self.palette;
-  row.selected = selected;
-  row.wantsLayer = YES;
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-  row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  row.alignment = NSLayoutAttributeCenterY;
-  row.distribution = NSStackViewDistributionFill;
-  row.spacing = self.palette.space8;
-  row.edgeInsets = NSEdgeInsetsMake(self.palette.space8, self.palette.space6,
-                                    self.palette.space8, self.palette.space6);
-
-  NSImageView *avatarView = [[NSImageView alloc] init];
-  avatarView.translatesAutoresizingMaskIntoConstraints = NO;
-  avatarView.image = avatar;
-  avatarView.imageScaling = NSImageScaleProportionallyUpOrDown;
-  NSView *avatarSlot = [[NSView alloc] init];
-  avatarSlot.translatesAutoresizingMaskIntoConstraints = NO;
-  [avatarSlot addSubview:avatarView];
-  [NSLayoutConstraint activateConstraints:@[
-    [avatarSlot.widthAnchor constraintEqualToConstant:self.palette.agentMenuAvatarSize],
-    [avatarSlot.heightAnchor constraintEqualToConstant:self.palette.space16],
-    [avatarView.widthAnchor constraintEqualToConstant:self.palette.agentMenuAvatarSize],
-    [avatarView.heightAnchor constraintEqualToConstant:self.palette.agentMenuAvatarSize],
-    [avatarView.centerXAnchor constraintEqualToAnchor:avatarSlot.centerXAnchor],
-    [avatarView.centerYAnchor constraintEqualToAnchor:avatarSlot.centerYAnchor],
-  ]];
-  [row addArrangedSubview:avatarSlot];
-  [row setCustomSpacing:self.palette.space5 afterView:avatarSlot];
-
-  NSStackView *details = [[NSStackView alloc] init];
-  details.orientation = NSUserInterfaceLayoutOrientationVertical;
-  details.alignment = NSLayoutAttributeLeading;
-  details.distribution = NSStackViewDistributionFill;
-  details.spacing = self.palette.space5;
-  NSStackView *heading = [[NSStackView alloc] init];
-  heading.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  heading.alignment = NSLayoutAttributeCenterY;
-  heading.distribution = NSStackViewDistributionFill;
-  heading.spacing = self.palette.space5;
-  [heading addArrangedSubview:[self labelWithString:name font:self.palette.labelFont color:self.palette.appText]];
-  if (shared) {
-    NSStackView *sharedLabel = [[NSStackView alloc] init];
-    sharedLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    sharedLabel.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    sharedLabel.alignment = NSLayoutAttributeCenterY;
-    sharedLabel.distribution = NSStackViewDistributionFill;
-    sharedLabel.spacing = self.palette.space2;
-    NSImageView *sharedIcon = [[NSImageView alloc] init];
-    sharedIcon.translatesAutoresizingMaskIntoConstraints = NO;
-    sharedIcon.image = [NSImage imageWithSystemSymbolName:@"person.2" accessibilityDescription:nil];
-    sharedIcon.contentTintColor = self.palette.textMuted;
-    sharedIcon.imageScaling = NSImageScaleProportionallyUpOrDown;
-    [sharedIcon.widthAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-    [sharedIcon.heightAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-    NSView *iconSlot = [[NSView alloc] init];
-    iconSlot.translatesAutoresizingMaskIntoConstraints = NO;
-    [iconSlot addSubview:sharedIcon];
-    [NSLayoutConstraint activateConstraints:@[
-      [iconSlot.widthAnchor constraintEqualToAnchor:sharedIcon.widthAnchor],
-      [iconSlot.heightAnchor constraintEqualToAnchor:sharedIcon.heightAnchor],
-      [sharedIcon.leadingAnchor constraintEqualToAnchor:iconSlot.leadingAnchor],
-      [sharedIcon.centerYAnchor constraintEqualToAnchor:iconSlot.centerYAnchor constant:self.palette.agentSharedIconDownwardOffset],
-    ]];
-    [sharedLabel addArrangedSubview:iconSlot];
-    [sharedLabel addArrangedSubview:[self labelWithString:@"shared" font:self.palette.smallFont color:self.palette.textMuted]];
-    NSView *sharedSlot = [[NSView alloc] init];
-    sharedSlot.translatesAutoresizingMaskIntoConstraints = NO;
-    [sharedSlot addSubview:sharedLabel];
-    [NSLayoutConstraint activateConstraints:@[
-      [sharedSlot.widthAnchor constraintEqualToAnchor:sharedLabel.widthAnchor],
-      [sharedSlot.heightAnchor constraintEqualToAnchor:sharedLabel.heightAnchor],
-      [sharedLabel.leadingAnchor constraintEqualToAnchor:sharedSlot.leadingAnchor],
-      [sharedLabel.centerYAnchor constraintEqualToAnchor:sharedSlot.centerYAnchor constant:self.palette.agentSharedLabelDownwardOffset],
-    ]];
-    [heading addArrangedSubview:sharedSlot];
+- (void)rebuildSidebarAgents {
+  if (!self.sidebarTileGrid) return;
+  [self.sidebarAgentPaneSurface removeFromSuperview];
+  self.sidebarAgentPaneSurface = nil;
+  self.sidebarAgentPane = nil;
+  for (NSView *view in self.sidebarTileGrid.arrangedSubviews.copy) {
+    [self.sidebarTileGrid removeArrangedSubview:view];
+    [view removeFromSuperview];
   }
-  [details addArrangedSubview:heading];
-
-  NSStackView *serviceRow = [[NSStackView alloc] init];
-  serviceRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  serviceRow.distribution = NSStackViewDistributionFill;
-  serviceRow.spacing = self.palette.space5;
-  for (NSUInteger index = 0; index < services.count; index++) {
-    NSImageView *icon = [[NSImageView alloc] init];
-    icon.translatesAutoresizingMaskIntoConstraints = NO;
-    icon.image = services[index];
-    icon.imageScaling = NSImageScaleProportionallyUpOrDown;
-    icon.toolTip = serviceNames[index];
-    [icon setAccessibilityLabel:serviceNames[index]];
-    [icon.widthAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-    [icon.heightAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-    [serviceRow addArrangedSubview:icon];
+  NSScrollView *scroll = [[NSScrollView alloc] init];
+  scroll.translatesAutoresizingMaskIntoConstraints = NO;
+  scroll.drawsBackground = NO;
+  scroll.hasHorizontalScroller = YES;
+  scroll.autohidesScrollers = YES;
+  NSStackView *tiles = [[NSStackView alloc] init];
+  tiles.translatesAutoresizingMaskIntoConstraints = NO;
+  tiles.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  tiles.alignment = NSLayoutAttributeCenterY;
+  tiles.spacing = self.palette.space5;
+  NSInteger currentID = self.database.currentAgentID;
+  TLIconTileView *currentTile = nil;
+  for (TLAgentRecord *agent in self.agents) {
+    TLIconTileView *tile = [[TLIconTileView alloc] init];
+    tile.palette = self.palette;
+    tile.image = [self avatarImageForAgent:agent];
+    tile.imageSize = self.palette.space12 + self.palette.space2;
+    tile.selected = agent.agentID == currentID;
+    tile.toolTip = [NSString stringWithFormat:@"%@%@ — Local Hermes", agent.name, tile.selected ? @" (Current)" : @""];
+    tile.accessibilityLabel = tile.toolTip;
+    tile.accessibilitySelected = tile.selected;
+    tile.tag = agent.agentID;
+    tile.target = self;
+    tile.action = @selector(activateSidebarAgent:);
+    [tiles addArrangedSubview:tile];
+    [tile.widthAnchor constraintEqualToConstant:self.palette.sidebarAgentTileMaximumWidth].active = YES;
+    [tile.heightAnchor constraintEqualToAnchor:tiles.heightAnchor].active = YES;
+    if (tile.selected) currentTile = tile;
   }
-  [details addArrangedSubview:serviceRow];
-  [row addArrangedSubview:details];
-  NSView *spacer = [[NSView alloc] init];
-  [spacer.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.space0].active = YES;
-  [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-  [details setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-  [row addArrangedSubview:spacer];
-  NSImageView *selectionIcon = [[NSImageView alloc] init];
-  selectionIcon.translatesAutoresizingMaskIntoConstraints = NO;
-  selectionIcon.image = selected
-    ? [NSImage imageWithSystemSymbolName:@"checkmark.circle.fill" accessibilityDescription:@"Selected agent"]
-    : nil;
-  selectionIcon.contentTintColor = self.palette.appText;
-  selectionIcon.imageScaling = NSImageScaleProportionallyUpOrDown;
-  [selectionIcon.widthAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-  [selectionIcon.heightAnchor constraintEqualToConstant:self.palette.sidebarActionIconSize].active = YES;
-  [row addArrangedSubview:selectionIcon];
-  return row;
+  scroll.documentView = tiles;
+  [self.sidebarTileGrid addArrangedSubview:scroll];
+  [scroll.widthAnchor constraintEqualToAnchor:self.sidebarTileGrid.widthAnchor].active = YES;
+  [scroll.heightAnchor constraintEqualToAnchor:self.sidebarTileGrid.heightAnchor].active = YES;
+  [tiles.heightAnchor constraintEqualToAnchor:scroll.contentView.heightAnchor].active = YES;
+  [self.sidebarTileGrid layoutSubtreeIfNeeded];
+  if (currentTile) [tiles scrollRectToVisible:currentTile.frame];
+}
+
+- (void)activateSidebarAgent:(NSControl *)sender {
+  if (self.hasSendingTurns) return;
+  NSError *error = nil;
+  if (![self.database setCurrentAgentID:sender.tag error:&error]) {
+    [self presentErrorMessage:error.localizedDescription];
+    return;
+  }
+  [self refreshAgents];
 }
 
 - (void)showSidebarAgentPane {
@@ -878,24 +923,30 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   pane.spacing = self.palette.space2;
   pane.edgeInsets = NSEdgeInsetsMake(self.palette.space3, self.palette.space3,
                                      self.palette.space5, self.palette.space3);
-  [pane addArrangedSubview:[self sidebarAgentRowWithName:@"Jupiter" shared:NO
-    avatar:[self sidebarPlanetImage]
-    selected:((TLIconTileView *)self.sidebarTileGrid.arrangedSubviews[0]).selected
-    services:@[[self inboxIconNamed:@"gmail"], [self inboxIconNamed:@"google-calendar"]]
-    serviceNames:@[@"Gmail", @"Google Calendar"]]];
-  [pane addArrangedSubview:[self sidebarAgentRowWithName:@"Saturn" shared:YES
-    avatar:[self sidebarSaturnImage]
-    selected:((TLIconTileView *)self.sidebarTileGrid.arrangedSubviews[1]).selected
-    services:@[[self inboxIconNamed:@"slack"], [self browserBookmarkIconNamed:@"github"]]
-    serviceNames:@[@"Slack", @"GitHub"]]];
+  NSInteger currentID = self.database.currentAgentID;
+  for (TLAgentRecord *agent in self.agents) {
+    NSString *title = [NSString stringWithFormat:@"%@  %@%@", agent.avatar, agent.name,
+      agent.agentID == currentID ? @"  ✓" : @""];
+    NSButton *row = [NSButton buttonWithTitle:title target:self action:@selector(activateSidebarAgent:)];
+    row.tag = agent.agentID;
+    row.bordered = NO;
+    row.alignment = NSTextAlignmentLeft;
+    row.font = self.palette.labelFont;
+    row.contentTintColor = self.palette.appText;
+    row.enabled = !self.hasSendingTurns;
+    row.toolTip = [NSString stringWithFormat:@"%@ — Local Hermes%@", agent.name,
+      agent.agentID == currentID ? @" (Current)" : @""];
+    [pane addArrangedSubview:row];
+    [row.heightAnchor constraintEqualToConstant:self.palette.settingsActionHeight].active = YES;
+  }
   NSButton *addButton = [[NSButton alloc] init];
-  TLSpacedButtonCell *addCell = [[TLSpacedButtonCell alloc] initTextCell:@"Create agent"];
+  TLSpacedButtonCell *addCell = [[TLSpacedButtonCell alloc] initTextCell:@"Manage Agents"];
   addCell.imageTitleSpacing = self.palette.menuActionIconTextSpacing;
   addCell.imageUpwardOffset = self.palette.menuActionIconUpwardOffset;
   addButton.cell = addCell;
   addButton.target = self;
   addButton.action = @selector(openAgentsFromSidebarPane:);
-  addButton.image = [NSImage imageWithSystemSymbolName:@"person.badge.plus" accessibilityDescription:@"Create agent"];
+  addButton.image = [NSImage imageWithSystemSymbolName:@"person.2" accessibilityDescription:@"Manage Agents"];
   addButton.imagePosition = NSImageLeft;
   addButton.imageHugsTitle = YES;
   addButton.bordered = NO;
@@ -978,24 +1029,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   self.sidebarShortcutsView = [[TLSidebarShortcutsView alloc] init];
   self.sidebarShortcutsView.palette = self.palette;
-
-  self.notesShortcutButton = [[TLSidebarShortcutButton alloc] init];
-  self.notesShortcutButton.palette = self.palette;
-  self.notesShortcutButton.title = @"Notes";
-  self.notesShortcutButton.systemIconName = @"doc.text";
-  self.notesShortcutButton.shortcutKind = TLSidebarShortcutKindNotes;
-  self.notesShortcutButton.target = self;
-  self.notesShortcutButton.action = @selector(showNotes:);
-  [self.sidebarShortcutsView addShortcutButton:self.notesShortcutButton];
-
-  self.historyShortcutButton = [[TLSidebarShortcutButton alloc] init];
-  self.historyShortcutButton.palette = self.palette;
-  self.historyShortcutButton.title = @"History";
-  self.historyShortcutButton.systemIconName = @"clock";
-  self.historyShortcutButton.shortcutKind = TLSidebarShortcutKindHistory;
-  self.historyShortcutButton.target = self;
-  self.historyShortcutButton.action = @selector(showHistoryScreen:);
-  [self.sidebarShortcutsView addShortcutButton:self.historyShortcutButton];
 
   NSArray<NSDictionary<NSString *, NSString *> *> *bookmarks = @[
     @{@"title": @"Google", @"icon": @"google", @"URL": @"https://www.google.com/"},
@@ -1097,7 +1130,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSStackView *actionStack = [[NSStackView alloc] init];
   actionStack.translatesAutoresizingMaskIntoConstraints = NO;
   actionStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  actionStack.alignment = NSLayoutAttributeWidth;
+  actionStack.alignment = NSLayoutAttributeLeading;
   actionStack.distribution = NSStackViewDistributionFill;
   actionStack.spacing = self.palette.space0;
   [actionStack setContentHuggingPriority:NSLayoutPriorityRequired
@@ -1105,26 +1138,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [actionStack setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                        forOrientation:NSLayoutConstraintOrientationVertical];
 
-  self.taskStatusSidebarButton = [self makeTaskStatusSidebarButton];
   self.sidebarUserButton = [self sidebarUserButtonWithDisplayName:@"Yaroslav"];
 
-  [actionStack addArrangedSubview:self.taskStatusSidebarButton];
-  [actionStack setCustomSpacing:self.palette.space0 afterView:self.taskStatusSidebarButton];
   [actionStack addArrangedSubview:self.sidebarUserButton];
+  [self.sidebarUserButton.trailingAnchor constraintLessThanOrEqualToAnchor:actionStack.trailingAnchor].active = YES;
   return actionStack;
-}
-
-- (TLSidebarNavigationButton *)sidebarActionButtonWithTitle:(NSString *)title
-                                             systemIconName:(NSString *)systemIconName
-                                                     action:(SEL)action {
-  TLSidebarNavigationButton *button = [[TLSidebarNavigationButton alloc] init];
-  button.palette = self.palette;
-  button.title = title;
-  button.systemIconName = systemIconName;
-  button.target = self;
-  button.action = action;
-  button.toolTip = title;
-  return button;
 }
 
 - (TLSidebarUserButton *)sidebarUserButtonWithDisplayName:(NSString *)displayName {
@@ -1200,7 +1218,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [messagesView.topAnchor constraintEqualToAnchor:chatWorkspace.topAnchor],
     [messagesView.bottomAnchor constraintEqualToAnchor:chatWorkspace.bottomAnchor],
     [self.messageInput.centerXAnchor constraintEqualToAnchor:chatWorkspace.centerXAnchor],
-    [self.slashCommandListView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor],
+    [self.slashCommandListView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor constant:self.palette.space4],
     self.slashCommandListWidthConstraint,
     self.slashCommandListBottomConstraint,
     self.slashCommandListHeightConstraint,
@@ -1283,15 +1301,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.workspaceTabsController.animationActivityChanged = ^(BOOL animating) {
     animatedCreateButton.hoverSuppressed = animating;
   };
-  self.agentWalletButton = [self makeAgentWalletButton];
 
   [self.topbar addSubview:self.tabStack];
   [self.topbar addSubview:self.createChatButton];
   [self.topbar addSubview:self.sidebarToggleButton];
-  [self.topbar addSubview:self.agentWalletButton];
 
   NSSize headerButtonSize = self.createChatButton.intrinsicContentSize;
-  NSSize walletPillSize = self.agentWalletButton.intrinsicContentSize;
   self.tabStackLeadingConstraint = [self.tabStack.leadingAnchor constraintEqualToAnchor:self.topbar.leadingAnchor
                                                                                 constant:[self tabStackLeadingConstant]];
   NSLayoutConstraint *tabStackTrailingConstraint =
@@ -1299,10 +1314,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
                                                  constant:[self createChatButtonTabOverlap]];
   tabStackTrailingConstraint.priority = NSLayoutPriorityDefaultHigh;
   self.workspaceTabsController.createTabButtonSpacingConstraint = tabStackTrailingConstraint;
-  NSLayoutConstraint *createButtonWalletSpacingConstraint =
-    [self.createChatButton.trailingAnchor constraintLessThanOrEqualToAnchor:self.agentWalletButton.leadingAnchor
-                                                                    constant:-[self agentWalletPillGap]];
-  createButtonWalletSpacingConstraint.priority = NSLayoutPriorityDefaultHigh;
+  NSLayoutConstraint *createButtonTrailingConstraint =
+    [self.createChatButton.trailingAnchor constraintLessThanOrEqualToAnchor:self.topbar.trailingAnchor
+                                                                    constant:-self.palette.space4];
+  createButtonTrailingConstraint.priority = NSLayoutPriorityDefaultHigh;
   [NSLayoutConstraint activateConstraints:@[
     [self.sidebarToggleButton.leadingAnchor constraintEqualToAnchor:self.topbar.leadingAnchor
                                                            constant:self.palette.trafficLightLeftInset + self.palette.trafficLightReservedWidth - self.palette.space5],
@@ -1312,13 +1327,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.tabStackLeadingConstraint,
     tabStackTrailingConstraint,
     [self.tabStack.bottomAnchor constraintEqualToAnchor:self.topbar.bottomAnchor],
-    createButtonWalletSpacingConstraint,
+    createButtonTrailingConstraint,
     [self.createChatButton.centerYAnchor constraintEqualToAnchor:self.topbar.centerYAnchor constant:[self createChatButtonVerticalOffset]],
     [self.createChatButton.widthAnchor constraintEqualToConstant:headerButtonSize.width],
     [self.createChatButton.heightAnchor constraintEqualToConstant:headerButtonSize.height],
-    [self.agentWalletButton.trailingAnchor constraintEqualToAnchor:self.topbar.trailingAnchor constant:-[self agentWalletPillTrailingInset]],
-    [self.agentWalletButton.centerYAnchor constraintEqualToAnchor:self.topbar.centerYAnchor],
-    [self.agentWalletButton.heightAnchor constraintEqualToConstant:walletPillSize.height],
   ]];
 
   return self.topbar;
@@ -1517,6 +1529,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (row) { [self detachMessageRowFromStack:row]; }
   [self.messageRowViews removeObjectForKey:message];
   [self.messageRowSignatures removeObjectForKey:message];
+  [self.messageMarkdownViews removeObjectForKey:message];
   [self.messages removeObjectAtIndex:index];
   [self refreshChatsKeepingActiveSelection];
   [self renderMessagesScrollingToBottom:NO];
@@ -1525,6 +1538,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (NSView *)buildMessageInput {
   self.messageInput = [[TLGlassMessageInput alloc] init];
+  ((TLGlassMessageInput *)self.messageInput).usesChatBackdrop = YES;
   self.messageInput.palette = self.palette;
   self.messageInput.attachmentsEnabled = YES;
   __weak typeof(self) weakSelf = self;
@@ -1537,7 +1551,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.promptTextView.delegate = self;
   self.sendButton = self.messageInput.sendButton;
   self.sendButton.target = self;
-  self.sendButton.action = @selector(sendMessage:);
+  self.sendButton.action = @selector(activateComposerButton:);
   return self.messageInput;
 }
 
@@ -1566,6 +1580,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.palette = [TLThemePalette paletteForPreference:self.settings.theme];
   self.chats = [loadedChats mutableCopy];
   self.agents = [loadedAgents mutableCopy];
+  [self rebuildSidebarAgents];
 
   if (self.appStateManager.snapshot.workspaceTabs.count > 0) {
     [self hydrateWorkspaceTabsFromAppState];
@@ -1582,6 +1597,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self renderMessages];
   if (!self.settings.onboardingCompleted) {
     dispatch_async(dispatch_get_main_queue(), ^{ [self showOnboardingDemoWindow:self]; });
+  } else {
+    // Restore suggestions immediately, then warm the VM/gateway before the first /.
+    [self prepareHermesCommands];
   }
 }
 
@@ -1630,18 +1648,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
           [self addWorkspaceContentView:runtime.contentView];
         }
         break;
-      case TLWorkspaceTabKindNotes:
-        self.notesTab = tab;
-        if (!runtime) {
-          runtime = [TLWorkspaceTabRuntime runtimeWithContentView:[self buildNotesTabContent]
-                                                       openAction:@selector(openNotesTab:)
-                                                      closeAction:@selector(closeNotesTab:)];
-          [self setRuntime:runtime forTab:tab];
-        }
-        if (runtime.contentView) {
-          [self addWorkspaceContentView:runtime.contentView];
-        }
-        break;
       case TLWorkspaceTabKindDebug:
         self.debugTab = tab;
         if (!runtime) {
@@ -1681,8 +1687,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self showSettings:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindAgents) {
     [self showAgents:self];
-  } else if (snapshot.activeTabKind == TLWorkspaceTabKindNotes) {
-    [self showNotes:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindDebug) {
     [self showDebug:self];
   }
@@ -1731,7 +1735,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.chats = [nextChats mutableCopy];
   [self reloadHistoryPanel];
   [self selectActiveChatInHistory];
-  [self reloadWorkspaceTabs];
 
   for (TLChatSummary *summary in self.chats) {
     if (summary.chatID == self.activeChat.chatID) {
@@ -1742,6 +1745,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
   }
 
+  [self synchronizeChatTabTitles];
+  [self reloadWorkspaceTabs];
 }
 
 - (void)loadChatWithID:(NSInteger)chatID {
@@ -1758,6 +1763,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.activeChat = chat;
+  [self applySavedChatSummary:chat];
   [self addChatToSessionIfNeeded:chat.chatID activate:YES];
   [self showChatWorkspace];
   self.messages = [NSMutableArray array];
@@ -1765,7 +1771,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   for (TLStoredChatMessage *storedMessage in chat.messages) {
     [self.messages addObject:[storedMessage copy]];
   }
-  if (self.isSending && self.sendingChatID == chatID) self.messages = self.sendingMessages;
+  NSMutableArray<TLChatMessage *> *streamingMessages = self.turnMessagesByChat[@(chatID)];
+  if (streamingMessages) self.messages = streamingMessages;
 
   self.promptTextView.string = self.attachmentPromptDrafts[@(chatID)] ?: @"";
   self.errorMessage = @"";
@@ -1823,12 +1830,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Yaroslav"];
   menu.autoenablesItems = NO;
 
-  NSMenuItem *agentsItem = [[NSMenuItem alloc] initWithTitle:@"Agents"
-                                                      action:@selector(showAgents:)
-                                               keyEquivalent:@""];
-  agentsItem.target = self;
-  agentsItem.image = [self symbolImageNamed:@"cpu" accessibilityDescription:@"Agents"];
-  [menu addItem:agentsItem];
+  NSMenuItem *historyItem = [[NSMenuItem alloc] initWithTitle:@"History"
+                                                       action:@selector(showHistoryScreen:)
+                                                keyEquivalent:@""];
+  historyItem.target = self;
+  historyItem.image = [self symbolImageNamed:@"clock" accessibilityDescription:@"History"];
+  [menu addItem:historyItem];
 
   NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:@"Debug"
                                                      action:@selector(showDebug:)
@@ -1844,83 +1851,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   settingsItem.image = [self symbolImageNamed:@"gearshape" accessibilityDescription:@"Settings"];
   [menu addItem:settingsItem];
 
+  if (@available(macOS 27.0, *)) {
+    for (NSMenuItem *item in menu.itemArray) {
+      item.preferredImageVisibility = NSMenuItemImageVisibilityVisible;
+    }
+  }
+
   NSView *sourceView = [sender isKindOfClass:NSView.class] ? (NSView *)sender : self.sidebarUserButton;
   [menu popUpMenuPositioningItem:nil
                        atLocation:NSMakePoint(self.palette.space0, -self.palette.space2)
                            inView:sourceView];
-}
-
-- (void)showAgentWalletPopover:(id)sender {
-  if (self.agentWalletPopover.isShown) {
-    self.agentWalletButton.forcesHoverState = NO;
-    [self.agentWalletPopover close];
-    return;
-  }
-
-  [self.taskStatusPopover close];
-  self.taskStatusPopover = nil;
-  self.taskStatusSidebarButton.forcesHoverState = NO;
-
-  NSPopover *popover = [[NSPopover alloc] init];
-  popover.behavior = NSPopoverBehaviorTransient;
-  popover.animates = YES;
-  popover.delegate = self;
-  self.agentWalletCardDetailsVisible = NO;
-  popover.contentViewController = [self agentWalletPopoverViewController];
-  self.agentWalletPopover = popover;
-  self.agentWalletButton.forcesHoverState = YES;
-
-  NSView *sourceView = [sender isKindOfClass:NSView.class] ? (NSView *)sender : self.agentWalletButton;
-  [popover showRelativeToRect:sourceView.bounds ofView:sourceView preferredEdge:NSMinYEdge];
-}
-
-- (void)showTaskStatusPopover:(id)sender {
-  if (self.taskStatusPopover.isShown) {
-    self.taskStatusSidebarButton.forcesHoverState = NO;
-    [self.taskStatusPopover close];
-    return;
-  }
-
-  [self.agentWalletPopover close];
-  self.agentWalletPopover = nil;
-  self.agentWalletButton.forcesHoverState = NO;
-
-  NSPopover *popover = [[NSPopover alloc] init];
-  popover.behavior = NSPopoverBehaviorTransient;
-  popover.animates = YES;
-  popover.delegate = self;
-  popover.contentViewController = [self taskStatusPopoverViewController];
-  self.taskStatusPopover = popover;
-  self.taskStatusSidebarButton.forcesHoverState = YES;
-
-  NSView *sourceView = [sender isKindOfClass:NSView.class] ? (NSView *)sender : self.taskStatusSidebarButton;
-  [popover showRelativeToRect:sourceView.bounds ofView:sourceView preferredEdge:NSMaxXEdge];
-}
-
-- (void)popoverDidClose:(NSNotification *)notification {
-  if (notification.object == self.agentWalletPopover) {
-    self.agentWalletButton.forcesHoverState = NO;
-    self.agentWalletPopover = nil;
-    self.agentWalletCardDetailsVisible = NO;
-    return;
-  }
-
-  if (notification.object == self.taskStatusPopover) {
-    self.taskStatusSidebarButton.forcesHoverState = NO;
-    self.taskStatusPopover = nil;
-  }
-}
-
-- (void)openAgentWalletPurchaseChat:(NSButton *)sender {
-  NSInteger chatID = sender.tag;
-  if (chatID <= 0) {
-    return;
-  }
-
-  [self.agentWalletPopover close];
-  self.agentWalletPopover = nil;
-  self.agentWalletButton.forcesHoverState = NO;
-  [self openChatTabWithID:chatID];
 }
 
 - (void)showChatWorkspace {
@@ -1949,6 +1889,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:self.historyTab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:self.historyTab];
 
   [self.appStateManager removeWorkspaceTabWithKind:self.historyTab.kind tabID:self.historyTab.tabID];
   [self removeRuntimeForKind:self.historyTab.kind tabID:self.historyTab.tabID];
@@ -1989,6 +1930,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:tab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:tab];
 
   BOOL closingActiveChat = self.activeChat && self.activeChat.chatID == chatID;
   [self.appStateManager removeWorkspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID];
@@ -2119,6 +2061,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:tab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:tab];
   TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
   [runtime.featureController close];
   [runtime.contentView removeFromSuperview];
@@ -2224,7 +2167,37 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return YES;
 }
 
+- (BOOL)preparingAttachments {
+  return self.activeChat && [self.preparingAttachmentChats containsObject:@(self.activeChat.chatID)];
+}
+
+- (BOOL)isSending {
+  return self.activeChat && (self.turnRunners[@(self.activeChat.chatID)] != nil || self.preparingAttachments);
+}
+
+- (BOOL)hasSendingTurns {
+  return self.turnRunners.count > 0 || self.preparingAttachmentChats.count > 0;
+}
+
+- (TLAssistantTurnRunner *)newAssistantTurnRunner {
+  return [[TLAssistantTurnRunner alloc] initWithDatabase:self.database agentOrchestrator:self.agentOrchestrator];
+}
+
+- (BOOL)canStopResponse {
+  return self.turnRunners[@(self.activeChat.chatID)].running && [self isChatWorkspaceActive] &&
+    self.promptTextView.string.length == 0 && self.messageInput.attachmentURLs.count == 0;
+}
+
+- (void)activateComposerButton:(id)sender {
+  if ([self canStopResponse]) {
+    [self.turnRunners[@(self.activeChat.chatID)] cancel];
+  } else {
+    [self sendMessage:sender];
+  }
+}
+
 - (void)sendMessage:(id)sender {
+  [self flushSlashCommandUpdate];
   if (!self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) {
     return;
   }
@@ -2238,7 +2211,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   NSArray<NSURL *> *sourceURLs = self.messageInput.attachmentURLs;
   if (sourceURLs.count) allowAutomaticRouting = NO;
-  if (self.isSending || (nextPrompt.length == 0 && sourceURLs.count == 0)) {
+  if (self.preparingAttachments || (!nextPrompt.length && !sourceURLs.count)) return;
+  if (self.isSending) {
+    if (sourceURLs.count || ![nextPrompt hasPrefix:@"/"] || !self.activeChat) return;
+    self.promptTextView.string = @"";
+    [self updateControlStates];
+    __weak typeof(self) weakSelf = self;
+    [self.agentOrchestrator streamChatWithDefaultAgentRequestID:NSUUID.UUID.UUIDString
+                                                      sessionID:self.activeChat.hermesSessionID
+                                                          token:token model:model
+                                                       messages:@[[TLChatMessage messageWithRole:TLRoleUser content:nextPrompt thinking:nil]]
+                                                          delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {
+    } completion:^(NSError *error) {
+      if (error) [weakSelf presentErrorMessage:error.localizedDescription];
+    }];
     return;
   }
 
@@ -2254,10 +2240,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self updateMessageScrollInsets];
     [self updateSlashCommandList];
     [self openBrowserTabWithURL:browserURL];
-    return;
-  }
-
-  if (allowAutomaticRouting && [self performSlashCommandIfNeededForPrompt:nextPrompt]) {
     return;
   }
 
@@ -2283,17 +2265,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   TLChatRecord *chat = self.activeChat;
   NSMutableArray<TLChatMessage *> *turnMessages = self.messages;
   if (sourceURLs.count) {
-    self.isSending = YES;
-    self.preparingAttachments = YES;
-    self.sendingChatID = chat.chatID;
-    self.sendingMessages = turnMessages;
+    if (!self.preparingAttachmentChats) self.preparingAttachmentChats = [NSMutableSet set];
+    [self.preparingAttachmentChats addObject:@(chat.chatID)];
     [self updateControlStates];
     [self.agentOrchestrator prepareAttachmentURLs:sourceURLs sessionID:chat.hermesSessionID
       completion:^(NSArray *attachments, NSError *error) {
-        self.preparingAttachments = NO;
+        [self.preparingAttachmentChats removeObject:@(chat.chatID)];
         if (!attachments) {
-          self.isSending = NO;
-          self.sendingMessages = nil;
           [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
           [self presentErrorMessage:error.localizedDescription ?: @"Could not copy attachments."];
           [self updateControlStates];
@@ -2311,9 +2289,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)beginPreparedTurnWithChat:(TLChatRecord *)chat messages:(NSMutableArray<TLChatMessage *> *)turnMessages
                           token:(NSString *)token model:(NSString *)model prompt:(NSString *)nextPrompt
                     attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs {
-  self.sendingChatID = chat.chatID;
-  self.sendingMessages = turnMessages;
-  self.isSending = YES;
   self.attachmentDrafts[@(chat.chatID)] = @[];
   self.attachmentPromptDrafts[@(chat.chatID)] = @"";
   if (self.activeChat.chatID == chat.chatID) {
@@ -2322,11 +2297,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.errorMessage = @"";
     [self.messageInput recalculateHeight];
   }
-  self.assistantTurnRunner.attachments = attachments;
+  TLAssistantTurnRunner *runner = [self newAssistantTurnRunner];
+  if (!self.turnRunners) self.turnRunners = [NSMutableDictionary dictionary];
+  if (!self.turnMessagesByChat) self.turnMessagesByChat = [NSMutableDictionary dictionary];
+  self.turnRunners[@(chat.chatID)] = runner;
+  self.turnMessagesByChat[@(chat.chatID)] = turnMessages;
+  runner.attachments = attachments;
   __weak typeof(self) weakSelf = self;
 
   NSError *startError = nil;
-  BOOL started = [self.assistantTurnRunner startTurnWithChat:chat
+  BOOL started = [runner startTurnWithChat:chat
                                                        token:token
                                                        model:model
                                                     messages:turnMessages
@@ -2338,15 +2318,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
     if (strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive]) {
       [strongSelf renderMessages];
+      [strongSelf updateControlStates];
     }
-    [strongSelf updateControlStates];
   } completionHandler:^(TLAssistantTurnResult *result) {
     TalariaWindowController *strongSelf = weakSelf;
     if (!strongSelf) {
       return;
     }
 
-    strongSelf.isSending = NO;
+    [strongSelf.turnRunners removeObjectForKey:@(chat.chatID)];
+    [strongSelf.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
     BOOL showingOrigin = strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive];
     if (result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       [strongSelf restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
@@ -2357,13 +2338,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       [strongSelf updateMessageScrollInsets];
     }
 
+    if ([nextPrompt hasPrefix:@"/"]) strongSelf.hermesCommandsFetchedAt = nil;
     [strongSelf refreshChatsKeepingActiveSelection];
     if (result.generationStatus == TLAssistantTurnGenerationStatusSucceeded &&
         result.persistenceStatus == TLAssistantTurnPersistenceStatusSucceeded) {
       [strongSelf generateChatIconIfNeededForChatID:chat.chatID messages:turnMessages];
     }
     if (showingOrigin) [strongSelf renderMessages];
-    strongSelf.sendingMessages = nil;
     [strongSelf updateControlStates];
     if (showingOrigin) [strongSelf.window makeFirstResponder:strongSelf.promptTextView];
 
@@ -2384,10 +2365,14 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
   } error:&startError];
 
-  self.assistantTurnRunner.attachments = @[];
+  // The first prompt saves the durable title synchronously, before any deltas.
+  // Publish it now so background streaming tabs never fall back to "New chat".
+  if (started && self.turnRunners[@(chat.chatID)]) {
+    [self refreshChatsKeepingActiveSelection];
+  }
   if (!started) {
-    self.isSending = NO;
-    self.sendingMessages = nil;
+    [self.turnRunners removeObjectForKey:@(chat.chatID)];
+    [self.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
     [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     [self presentErrorMessage:startError.localizedDescription ?: @"Could not start assistant turn."];
     [self updateControlStates];
@@ -2395,36 +2380,50 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)slashCommandsMatchingPrompt:(NSString *)prompt {
-  NSString *trimmedPrompt = [prompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (![trimmedPrompt hasPrefix:@"/"]) {
-    return [TLInputSuggestions webSuggestionsForInput:trimmedPrompt];
-  }
-  if ([trimmedPrompt rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) {
-    return @[];
-  }
-
-  NSArray<NSDictionary<NSString *, NSString *> *> *commands = [self availableSlashCommands];
-  NSString *query = trimmedPrompt.length > 1 ? [[trimmedPrompt substringFromIndex:1] lowercaseString] : @"";
-  if (query.length == 0) {
-    return commands;
-  }
-
-  NSMutableArray<NSDictionary<NSString *, NSString *> *> *matches = [NSMutableArray array];
-  for (NSDictionary<NSString *, NSString *> *command in commands) {
-    NSString *name = [[command[@"command"] substringFromIndex:1] lowercaseString];
-    if ([name hasPrefix:query]) {
-      [matches addObject:command];
-    }
-  }
-  return matches;
+  NSString *trimmed = [prompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (![trimmed hasPrefix:@"/"]) return [TLInputSuggestions webSuggestionsForInput:trimmed];
+  return [TLInputSuggestions slashCommandsForInput:prompt commands:[self availableSlashCommands]];
 }
 
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)availableSlashCommands {
-  return @[];
+  return self.hermesCommands ?: @[];
+}
+
+- (void)prepareHermesCommands {
+  self.hermesCommandsAgentID = self.database.currentAgentID;
+  self.hermesCommandsRequestID = nil;
+  self.loadingHermesCommands = NO;
+  self.hermesCommandsFetchedAt = nil;
+  self.hermesCommandsError = nil;
+  NSDictionary *cached = [self.agentOrchestrator cachedHermesCommands];
+  self.hermesCommands = cached ? [TLInputSuggestions hermesCommandsFromCatalogue:cached] : @[];
+  // Let AppKit finish presenting the window before beginning VM startup.
+  dispatch_async(dispatch_get_main_queue(), ^{ [self refreshHermesCommandsIfNeeded]; });
+}
+
+- (void)refreshHermesCommandsIfNeeded {
+  if (self.loadingHermesCommands || (self.hermesCommandsFetchedAt && -self.hermesCommandsFetchedAt.timeIntervalSinceNow < 60)) return;
+  self.loadingHermesCommands = YES;
+  self.hermesCommandsError = nil;
+  NSString *requestID = NSUUID.UUID.UUIDString;
+  self.hermesCommandsRequestID = requestID;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator fetchHermesCommandsWithToken:self.settings.openRouterToken ?: @""
+                                               model:self.settings.selectedModel ?: @""
+                                          completion:^(NSDictionary *catalogue, NSError *error) {
+    TalariaWindowController *strongSelf = weakSelf;
+    if (!strongSelf) return;
+    if (![strongSelf.hermesCommandsRequestID isEqualToString:requestID]) return;
+    strongSelf.loadingHermesCommands = NO;
+    strongSelf.hermesCommandsFetchedAt = NSDate.date;
+    strongSelf.hermesCommandsError = error.localizedDescription;
+    if (catalogue) strongSelf.hermesCommands = [TLInputSuggestions hermesCommandsFromCatalogue:catalogue];
+    [strongSelf updateSlashCommandList];
+  }];
 }
 
 - (NSView *)buildSlashCommandListView {
-  self.slashCommandListView = [[TLGlassPaneView alloc] init];
+  self.slashCommandListView = [[TLInputSuggestionPanelView alloc] init];
   self.slashCommandListView.translatesAutoresizingMaskIntoConstraints = NO;
   self.slashCommandListView.hidden = YES;
   self.slashCommandListView.wantsLayer = YES;
@@ -2432,43 +2431,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.slashCommandListWidthConstraint = [self.slashCommandListView.widthAnchor constraintEqualToConstant:self.palette.space0];
   self.slashCommandListHeightConstraint = [self.slashCommandListView.heightAnchor constraintEqualToConstant:self.palette.space0];
 
-  self.slashCommandListStack = [[NSStackView alloc] init];
-  self.slashCommandListStack.translatesAutoresizingMaskIntoConstraints = NO;
-  self.slashCommandListStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  self.slashCommandListStack.alignment = NSLayoutAttributeLeading;
-  self.slashCommandListStack.distribution = NSStackViewDistributionFill;
-  self.slashCommandListStack.spacing = self.palette.space3;
-  [self.slashCommandListView addSubview:self.slashCommandListStack];
-
-  NSLayoutConstraint *stackTopConstraint = [self.slashCommandListStack.topAnchor constraintEqualToAnchor:self.slashCommandListView.topAnchor
-                                                                                                constant:self.palette.space2];
-  NSLayoutConstraint *stackBottomConstraint = [self.slashCommandListStack.bottomAnchor constraintEqualToAnchor:self.slashCommandListView.bottomAnchor
-                                                                                                      constant:-self.palette.space2];
-  stackTopConstraint.priority = NSLayoutPriorityDefaultLow;
-  stackBottomConstraint.priority = NSLayoutPriorityDefaultLow;
+  self.slashCommandScrollView = [[TLInputSuggestionListView alloc] init];
+  __weak typeof(self) weakSelf = self;
+  self.slashCommandScrollView.selectionHandler = ^(NSInteger index) { weakSelf.selectedSlashCommandIndex = index; };
+  self.slashCommandScrollView.activationHandler = ^(NSUInteger index) { [weakSelf performInputSuggestionAtIndex:index]; };
+  [self.slashCommandListView addSubview:self.slashCommandScrollView];
   [NSLayoutConstraint activateConstraints:@[
-    [self.slashCommandListStack.leadingAnchor constraintEqualToAnchor:self.slashCommandListView.leadingAnchor constant:self.palette.space3],
-    [self.slashCommandListStack.trailingAnchor constraintEqualToAnchor:self.slashCommandListView.trailingAnchor constant:-self.palette.space3],
-    stackTopConstraint,
-    stackBottomConstraint,
-    self.slashCommandListHeightConstraint,
+    [self.slashCommandScrollView.leadingAnchor constraintEqualToAnchor:self.slashCommandListView.leadingAnchor constant:self.palette.space3],
+    [self.slashCommandScrollView.trailingAnchor constraintEqualToAnchor:self.slashCommandListView.trailingAnchor constant:-self.palette.space3],
+    [self.slashCommandScrollView.topAnchor constraintEqualToAnchor:self.slashCommandListView.topAnchor constant:self.palette.space2],
+    [self.slashCommandScrollView.bottomAnchor constraintEqualToAnchor:self.slashCommandListView.bottomAnchor constant:-self.palette.space2],
   ]];
 
   [self applySlashCommandListPalette];
   return self.slashCommandListView;
-}
-
-- (NSView *)slashCommandRowWithCommand:(NSDictionary<NSString *, NSString *> *)command {
-  TLSlashCommandItemView *row = [[TLSlashCommandItemView alloc] init];
-  row.palette = self.palette;
-  row.command = command[@"command"] ?: @"";
-  row.commandDescription = command[@"description"] ?: @"";
-  row.systemIconName = command[@"icon"] ?: @"text.bubble";
-  row.enabled = ![command[@"kind"] isEqualToString:@"web"] || command[@"URL"].length > 0;
-  row.target = self;
-  row.action = @selector(runSlashCommandFromItem:);
-  row.toolTip = command[@"title"];
-  return row;
 }
 
 - (void)applySlashCommandListPalette {
@@ -2476,32 +2452,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
   self.slashCommandListView.palette = self.palette;
-  self.slashCommandListStack.spacing = self.palette.space2;
+  self.slashCommandScrollView.palette = self.palette;
   self.slashCommandListBottomConstraint.constant = -self.palette.space5;
-  for (TLSlashCommandItemView *row in self.slashCommandRows) {
-    row.palette = self.palette;
-  }
 }
 
 - (CGFloat)slashCommandListWidthForCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {
-  CGFloat maximumCommandWidth = self.palette.space0;
-  NSDictionary<NSAttributedStringKey, id> *attributes = @{NSFontAttributeName: self.palette.bodyFont};
-  for (NSDictionary<NSString *, NSString *> *command in commands) {
-    NSString *commandText = command[@"command"] ?: @"";
-    NSRect labelBounds = [commandText boundingRectWithSize:NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX)
-                                                   options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                                attributes:attributes];
-    CGFloat rowWidth = (self.palette.space3 * 2.0) +
-      (self.palette.space8 * 2.0) +
-      self.palette.sidebarActionIconSize + self.palette.space4 +
-      ceil(NSWidth(labelBounds));
-    NSString *description = command[@"description"] ?: @"";
-    if (description.length > 0) {
-      rowWidth += self.palette.space6 + ceil([description sizeWithAttributes:attributes].width);
-    }
-    maximumCommandWidth = MAX(maximumCommandWidth, rowWidth);
-  }
-
   CGFloat availableInputWidth = NSWidth(self.messageInput.bounds);
   if (availableInputWidth <= self.palette.space0) {
     availableInputWidth = self.messageInputWidthConstraint.constant;
@@ -2510,49 +2465,33 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     availableInputWidth = self.palette.messageInputMaxWidth;
   }
 
-  return MIN(availableInputWidth, ceil(maximumCommandWidth));
+  CGFloat maximum = availableInputWidth * 0.9;
+  CGFloat padding = self.palette.space3 * 2;
+  return MIN(maximum, padding + [self.slashCommandScrollView preferredWidthWithMaximum:MAX(0, maximum - padding)]);
 }
 
 - (void)showSlashCommandListWithCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {
   CGFloat rowHeight = self.palette.slashCommandRowHeight;
   CGFloat padding = self.palette.space2;
-  CGFloat spacing = commands.count > 1 ? self.palette.space2 * (commands.count - 1) : self.palette.space0;
-  CGFloat height = (rowHeight * commands.count) + (padding * 2.0) + spacing;
 
-  for (NSView *view in self.slashCommandListStack.arrangedSubviews.copy) {
-    [self.slashCommandListStack removeArrangedSubview:view];
-    [view removeFromSuperview];
-  }
-  NSMutableArray<TLSlashCommandItemView *> *rows = [NSMutableArray arrayWithCapacity:commands.count];
-  for (NSDictionary<NSString *, NSString *> *command in commands) {
-    TLSlashCommandItemView *row = (TLSlashCommandItemView *)[self slashCommandRowWithCommand:command];
-    row.tag = rows.count;
-    [self.slashCommandListStack addArrangedSubview:row];
-    [row.heightAnchor constraintEqualToConstant:rowHeight].active = YES;
-    [row.widthAnchor constraintEqualToAnchor:self.slashCommandListStack.widthAnchor].active = YES;
-    [rows addObject:row];
-  }
+  BOOL changed = ![self.visibleSlashCommands isEqualToArray:commands];
   self.visibleSlashCommands = [commands copy];
-  self.slashCommandRows = [rows copy];
-  self.selectedSlashCommandIndex = -1;
+  self.slashCommandScrollView.suggestions = commands;
+  if (changed) self.selectedSlashCommandIndex = -1;
   [self applySlashCommandListPalette];
+  CGFloat availableHeight = MAX(rowHeight + padding * 2, NSHeight(self.rootView.bounds) * 0.4);
+  CGFloat contentHeight = self.slashCommandScrollView.contentHeight;
+  CGFloat heightLimit = MIN(availableHeight, (rowHeight + self.palette.space2) * 8 + padding * 2);
+  self.slashCommandListHeightConstraint.constant = MIN(contentHeight + padding * 2, heightLimit);
+  self.slashCommandScrollView.scrollingEnabled = contentHeight + padding * 2 > heightLimit;
   self.slashCommandListWidthConstraint.constant = [self slashCommandListWidthForCommands:commands];
-  self.slashCommandListHeightConstraint.constant = height;
   self.slashCommandListView.hidden = NO;
   [self updateMessageScrollInsets];
 }
 
 - (void)setSelectedSlashCommandIndexAndUpdateRows:(NSInteger)selectedIndex {
-  NSInteger boundedIndex = selectedIndex;
-  if (boundedIndex < 0 || boundedIndex >= (NSInteger)self.slashCommandRows.count) {
-    boundedIndex = -1;
-  }
-  self.selectedSlashCommandIndex = boundedIndex;
-  [self.slashCommandRows enumerateObjectsUsingBlock:^(TLSlashCommandItemView *row,
-                                                       NSUInteger index,
-                                                       BOOL *stop) {
-    row.selected = (NSInteger)index == boundedIndex;
-  }];
+  self.slashCommandScrollView.selectedIndex = selectedIndex;
+  self.selectedSlashCommandIndex = self.slashCommandScrollView.selectedIndex;
 }
 
 - (BOOL)moveSlashCommandSelectionByOffset:(NSInteger)offset {
@@ -2565,12 +2504,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   for (NSInteger attempt = 0; attempt < commandCount; attempt++) {
     nextIndex = nextIndex < 0 ? (offset < 0 ? commandCount - 1 : 0)
       : (nextIndex + offset + commandCount) % commandCount;
-    if (self.slashCommandRows[(NSUInteger)nextIndex].enabled) {
-      break;
+    if ([self.slashCommandScrollView isSuggestionEnabledAtIndex:(NSUInteger)nextIndex]) {
+      [self setSelectedSlashCommandIndexAndUpdateRows:nextIndex];
+      return YES;
     }
   }
-  [self setSelectedSlashCommandIndexAndUpdateRows:nextIndex];
-  return YES;
+  [self setSelectedSlashCommandIndexAndUpdateRows:-1];
+  return NO;
 }
 
 - (BOOL)performSelectedSlashCommand {
@@ -2582,7 +2522,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (BOOL)performInputSuggestionAtIndex:(NSUInteger)index {
-  if (self.isSending || index >= self.visibleSlashCommands.count || !self.slashCommandRows[index].enabled) {
+  if (self.isSending || index >= self.visibleSlashCommands.count || ![self.slashCommandScrollView isSuggestionEnabledAtIndex:index]) {
     return NO;
   }
   NSDictionary<NSString *, NSString *> *suggestion = self.visibleSlashCommands[index];
@@ -2604,11 +2544,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self sendMessage:self allowAutomaticRouting:NO];
     return YES;
   }
-  return [self performSlashCommandIfNeededForPrompt:suggestion[@"command"]];
-}
-
-- (BOOL)performSlashCommandIfNeededForPrompt:(NSString *)prompt {
-  return NO;
+  NSString *command = suggestion[@"command"];
+  NSString *current = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if ([current caseInsensitiveCompare:command] == NSOrderedSame) {
+    [self hideSlashCommandList];
+    [self sendMessage:self allowAutomaticRouting:NO];
+  } else {
+    self.promptTextView.string = [command stringByAppendingString:@" "];
+    [self.messageInput recalculateHeight];
+    [self hideSlashCommandList];
+    [self.window makeFirstResponder:self.promptTextView];
+    [self.promptTextView setSelectedRange:NSMakeRange(self.promptTextView.string.length, 0)];
+    [self updateControlStates];
+  }
+  return YES;
 }
 
 - (void)addUrgentNotification {
@@ -2722,12 +2671,42 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)updateSlashCommandList {
+  if (self.renderingSlashCommands) return;
+  [self.slashCommandUpdateTimer invalidate];
+  __weak typeof(self) weakSelf = self;
+  // Return the keystroke to AppKit before filtering, fetching, or rendering suggestions.
+  self.slashCommandUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:NO block:^(NSTimer *timer) {
+    [weakSelf flushSlashCommandUpdate];
+  }];
+}
+
+- (void)flushSlashCommandUpdate {
+  if (!self.slashCommandUpdateTimer) return;
+  [self.slashCommandUpdateTimer invalidate];
+  self.slashCommandUpdateTimer = nil;
+  self.renderingSlashCommands = YES;
+  [self renderSlashCommandList];
+  [self updateControlStates];
+  self.renderingSlashCommands = NO;
+}
+
+- (void)renderSlashCommandList {
   if (self.isSending || self.messageInput.attachmentURLs.count || ![self isChatWorkspaceActive] || !self.messageInput.window || NSIsEmptyRect(self.messageInput.bounds)) {
     [self hideSlashCommandList];
     return;
   }
 
-  NSArray<NSDictionary<NSString *, NSString *> *> *commands = [self slashCommandsMatchingPrompt:self.promptTextView.string ?: @""];
+  NSString *input = self.promptTextView.string ?: @"";
+  BOOL slashInput = [[input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] hasPrefix:@"/"];
+  if (slashInput) [self refreshHermesCommandsIfNeeded];
+  NSArray<NSDictionary<NSString *, NSString *> *> *commands = [self slashCommandsMatchingPrompt:input];
+  if (slashInput && self.loadingHermesCommands && self.hermesCommands.count == 0) {
+    commands = @[@{@"kind": @"status", @"command": @"Loading Hermes commands…",
+                  @"title": @"Starting Hermes for first discovery", @"description": @"", @"icon": @"terminal"}];
+  } else if (slashInput && self.hermesCommandsError.length) {
+    commands = [commands arrayByAddingObject:@{@"kind": @"status", @"command": self.hermesCommandsError,
+                  @"title": self.hermesCommandsError}];
+  }
   if (commands.count == 0) {
     [self hideSlashCommandList];
     return;
@@ -2736,33 +2715,23 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self showSlashCommandListWithCommands:commands];
   NSString *trimmedPrompt = [self.promptTextView.string
       stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (trimmedPrompt.length > 1) {
+  if (trimmedPrompt.length > 1 && self.selectedSlashCommandIndex < 0) {
     [self moveSlashCommandSelectionByOffset:1];
   }
 }
 
 - (void)hideSlashCommandList {
+  [self.slashCommandUpdateTimer invalidate];
+  self.slashCommandUpdateTimer = nil;
   if (!self.slashCommandListView.hidden || self.slashCommandListHeightConstraint.constant > self.palette.space0) {
-    for (NSView *view in self.slashCommandListStack.arrangedSubviews.copy) {
-      [self.slashCommandListStack removeArrangedSubview:view];
-      [view removeFromSuperview];
-    }
     self.slashCommandListView.hidden = YES;
     self.visibleSlashCommands = @[];
-    self.slashCommandRows = @[];
+    self.slashCommandScrollView.suggestions = @[];
     self.selectedSlashCommandIndex = -1;
     self.slashCommandListWidthConstraint.constant = self.palette.space0;
     self.slashCommandListHeightConstraint.constant = self.palette.space0;
     [self updateMessageScrollInsets];
   }
-}
-
-- (void)runSlashCommandFromItem:(id)sender {
-  if (![sender isKindOfClass:TLSlashCommandItemView.class]) {
-    return;
-  }
-  TLSlashCommandItemView *item = (TLSlashCommandItemView *)sender;
-  [self performInputSuggestionAtIndex:(NSUInteger)item.tag];
 }
 
 - (void)showOnboardingDemoWindow:(id)sender {
@@ -2792,9 +2761,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
         completed.onboardingCompleted = YES;
         TLAppSettings *completedSettings = [strongSelf.database saveAppSettings:completed error:nil];
         if (completedSettings) strongSelf.settings = completedSettings;
-        NSArray<TLAgentRecord *> *agents = [strongSelf.agentOrchestrator listAgents:nil];
-        if (agents) strongSelf.agents = [agents mutableCopy];
-        [strongSelf.agentsTableView reloadData];
+        [strongSelf refreshAgents];
+        [strongSelf prepareHermesCommands];
       }
       [strongSelf.hermesOnboardingWindowController finishWithError:installError];
     }];
@@ -3022,6 +2990,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:self.agentsTab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:self.agentsTab];
 
   [self.appStateManager removeWorkspaceTabWithKind:self.agentsTab.kind tabID:self.agentsTab.tabID];
   [[self contentViewForTab:self.agentsTab] removeFromSuperview];
@@ -3078,6 +3047,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:self.debugTab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:self.debugTab];
 
   [self.appStateManager removeWorkspaceTabWithKind:self.debugTab.kind tabID:self.debugTab.tabID];
   [[self contentViewForTab:self.debugTab] removeFromSuperview];
@@ -3096,83 +3066,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.debugTerminalWindowController showFromWindow:self.window];
 }
 
-- (void)showNotes:(id)sender {
-  if (self.widgetbookMode) {
-    return;
-  }
-
-  if (!self.notesTab) {
-    NSView *contentView = [self buildNotesTabContent];
-    self.notesTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindNotes
-                                          tabID:0
-                                          title:@"Notes"
-                                        toolTip:@"Notes"
-                                            URL:nil
-                                      closeable:YES];
-    [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:contentView
-                                                        openAction:@selector(openNotesTab:)
-                                                       closeAction:@selector(closeNotesTab:)]
-              forTab:self.notesTab];
-    [self addWorkspaceContentView:contentView];
-    [self.appStateManager addWorkspaceTab:self.notesTab activate:NO];
-  }
-
-  [self activateTabKind:TLWorkspaceTabKindNotes tabID:self.notesTab.tabID];
-  [self updateWorkspaceMode];
-  [self reloadWorkspaceTabs];
-  [self updateControlStates];
-}
-
-- (void)openNotesTab:(id)sender {
-  if (self.widgetbookMode || !self.notesTab) {
-    return;
-  }
-
-  [self activateTabKind:TLWorkspaceTabKindNotes tabID:self.notesTab.tabID];
-  [self updateWorkspaceMode];
-  [self reloadWorkspaceTabs];
-  [self updateControlStates];
-}
-
-- (void)closeNotesTab:(id)sender {
-  if (!self.notesTab) {
-    return;
-  }
-  if ([self closeWindowIfOnlyWorkspaceTab:self.notesTab]) {
-    return;
-  }
-
-  [self.appStateManager removeWorkspaceTabWithKind:self.notesTab.kind tabID:self.notesTab.tabID];
-  [[self contentViewForTab:self.notesTab] removeFromSuperview];
-  [self removeRuntimeForKind:self.notesTab.kind tabID:self.notesTab.tabID];
-  self.notesTab = nil;
-  self.notesTabController = nil;
-
-
-  [self updateWorkspaceMode];
-  [self reloadWorkspaceTabs];
-  [self updateControlStates];
-}
-
-- (NSView *)buildNotesTabContent {
-  TLNotesTabController *controller = [[TLNotesTabController alloc] initWithPalette:self.palette];
-  self.notesTabController = controller;
-  controller.inputEnabled = !self.isSending && !self.widgetbookMode;
-  __weak typeof(self) weakSelf = self;
-  controller.sendPromptHandler = ^(NSString *prompt) {
-    TalariaWindowController *windowController = weakSelf;
-    if (!windowController || windowController.isSending || windowController.widgetbookMode) return;
-    if (!windowController.activeChat) {
-      [windowController startNewChatWithModel:windowController.settings.selectedModel focus:NO];
-    } else {
-      [windowController showChatWorkspace];
-    }
-    windowController.promptTextView.string = prompt;
-    [windowController sendMessage:windowController];
-  };
-  return controller.view;
-}
-
 - (void)rebuildDebugTabContentForCurrentPalette {
   if (!self.debugTab) {
     return;
@@ -3187,14 +3080,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [previousContentView removeFromSuperview];
   [self addWorkspaceContentView:nextContentView];
   nextContentView.hidden = ![self isWorkspaceTabActive:self.debugTab];
-}
-
-- (void)updateNotesMessageInputWidth {
-  [self.notesTabController updateNotesMessageInputWidth];
-}
-
-- (void)updateNotesPromptControlState {
-  self.notesTabController.inputEnabled = !self.isSending && !self.widgetbookMode;
 }
 
 - (NSView *)buildDebugTabContent {
@@ -3281,6 +3166,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.createAgentButton = [self buttonWithTitle:@"New" action:@selector(createAgent:)];
   self.startAgentButton = [self buttonWithTitle:@"Start" action:@selector(startSelectedAgent:)];
   self.stopAgentButton = [self buttonWithTitle:@"Stop" action:@selector(stopSelectedAgent:)];
+  self.agentSettingsButton = [self buttonWithTitle:@"Settings…" action:@selector(editSelectedAgentSettings:)];
+  self.folderAccessButton = [self buttonWithTitle:@"Folder Access…" action:@selector(manageSelectedAgentFolders:)];
   self.deleteAgentButton = [self buttonWithTitle:@"Delete" action:@selector(deleteSelectedAgent:)];
   self.closeAgentsButton = [self buttonWithTitle:@"Close" action:@selector(closeAgentsTab:)];
 
@@ -3292,6 +3179,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   agentActionStack.spacing = palette.space4;
   for (NSButton *button in @[
     self.createAgentButton,
+    self.agentSettingsButton,
+    self.folderAccessButton,
     self.startAgentButton,
     self.stopAgentButton,
     self.deleteAgentButton,
@@ -3313,16 +3202,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   NSArray<NSArray<NSString *> *> *columns = @[
     @[@"name", @"Name"],
-    @[@"guest", @"Guest"],
-    @[@"runtime", @"Runtime"],
-    @[@"status", @"Status"],
     @[@"vm", @"VM directory"],
+    @[@"status", @"Status"],
   ];
   for (NSArray<NSString *> *columnSpec in columns) {
     NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:columnSpec[0]];
     column.title = columnSpec[1];
     column.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
     column.width = [column.identifier isEqualToString:@"vm"] ? palette.controlMinWidth * 4.0 : palette.controlMinWidth * 1.4;
+    if ([column.identifier isEqualToString:@"name"]) {
+      column.minWidth = palette.controlMinWidth * 1.8;
+      column.width = palette.controlMinWidth * 2.5;
+    } else if ([column.identifier isEqualToString:@"status"]) {
+      column.minWidth = ceil([@"VM running · Hermes installed" sizeWithAttributes:@{NSFontAttributeName: palette.bodyFont}].width) + palette.space8 + palette.space4 * 3;
+      column.width = column.minWidth;
+      column.resizingMask = NSTableColumnUserResizingMask;
+    }
     [self.agentsTableView addTableColumn:column];
   }
 
@@ -3362,6 +3257,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self styleButton:self.createAgentButton background:palette.primaryActionSurface foreground:palette.primaryActionText];
   [self styleButton:self.startAgentButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   [self styleButton:self.stopAgentButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
+  [self styleButton:self.agentSettingsButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
+  [self styleButton:self.folderAccessButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   [self styleButton:self.deleteAgentButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   [self styleButton:self.closeAgentsButton background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   [self refreshAgents];
@@ -3384,6 +3281,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.agents = [loadedAgents mutableCopy];
+  if (self.hermesCommandsAgentID != self.database.currentAgentID) {
+    [self prepareHermesCommands];
+    [self updateSlashCommandList];
+  }
+  [self rebuildSidebarAgents];
   [self.agentsTableView reloadData];
   if (selectedAgentID > 0) {
     for (NSUInteger index = 0; index < self.agents.count; index += 1) {
@@ -3416,22 +3318,66 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)createAgent:(id)sender {
-  NSString *name = [NSString stringWithFormat:@"Agent %lu", (unsigned long)self.agents.count + 1];
-  NSError *error = nil;
-  TLAgentRecord *agent = [self.agentOrchestrator createAgentWithName:name error:&error];
-  if (!agent) {
-    [self presentErrorMessage:error.localizedDescription ?: @"Could not create agent."];
-  }
+  if (self.widgetbookMode || self.hasSendingTurns || self.window.attachedSheet) return;
+  [self.sidebarAgentPaneSurface removeFromSuperview];
+  self.sidebarAgentPaneSurface = nil;
+  self.sidebarAgentPane = nil;
+  self.agentCreationWindowController = [[TLAgentCreationWindowController alloc]
+    initWithPalette:self.palette orchestrator:self.agentOrchestrator];
+  __weak typeof(self) weakSelf = self;
+  self.agentCreationWindowController.agentCreatedHandler = ^(TLAgentRecord *agent) {
+    TalariaWindowController *strongSelf = weakSelf;
+    [strongSelf initializeAgentWithID:agent.agentID];
+    [strongSelf showAgents:nil];
+    [strongSelf selectAgentWithID:agent.agentID];
+  };
+  [self.agentCreationWindowController showFromWindow:self.window];
+}
 
+- (void)editSelectedAgentSettings:(id)sender {
+  TLAgentRecord *agent = [self selectedAgent];
+  if (!agent || self.window.attachedSheet) return;
+  self.agentSettingsWindowController = [[TLAgentCreationWindowController alloc]
+    initWithAgent:agent palette:self.palette orchestrator:self.agentOrchestrator];
+  __weak typeof(self) weakSelf = self;
+  self.agentSettingsWindowController.agentUpdatedHandler = ^(TLAgentRecord *updatedAgent) { [weakSelf refreshAgents]; };
+  [self.agentSettingsWindowController showFromWindow:self.window];
+}
+
+- (void)manageSelectedAgentFolders:(id)sender {
+  TLAgentRecord *agent = [self selectedAgent];
+  if (!agent || self.window.attachedSheet) return;
+  self.agentFolderAccessWindowController = [[TLAgentFolderAccessWindowController alloc]
+    initWithAgent:agent palette:self.palette orchestrator:self.agentOrchestrator];
+  __weak typeof(self) weakSelf = self;
+  self.agentFolderAccessWindowController.savedHandler = ^{ [weakSelf refreshAgents]; };
+  [self.agentFolderAccessWindowController showFromWindow:self.window];
+}
+
+- (void)initializeAgentWithID:(NSInteger)agentID {
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator installHermesForAgentWithID:agentID progress:^(NSString *text) {
+    NSString *line = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (line.length) weakSelf.agentsStatusLabel.stringValue = [@"Installing Hermes: " stringByAppendingString:line];
+  } completion:^(TLAgentRecord *agent, NSError *error) {
+    [weakSelf refreshAgents];
+    if (error) [weakSelf presentErrorMessage:error.localizedDescription];
+    else {
+      [weakSelf prepareHermesCommands];
+      [weakSelf updateSlashCommandList];
+    }
+  }];
   [self refreshAgents];
-  if (agent) {
-    [self selectAgentWithID:agent.agentID];
-  }
 }
 
 - (void)startSelectedAgent:(id)sender {
   TLAgentRecord *agent = [self selectedAgent];
   if (!agent) {
+    return;
+  }
+
+  if ([agent.status isEqualToString:TLAgentStatusError] || ![self.agentOrchestrator hasHermesInstallationForAgent:agent]) {
+    [self initializeAgentWithID:agent.agentID];
     return;
   }
 
@@ -3535,6 +3481,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   NSString *identifier = tableColumn.identifier;
+  TLAgentRecord *agent = self.agents[(NSUInteger)row];
+  if ([identifier isEqualToString:@"name"]) {
+    TLAgentNameCellView *cell = [tableView makeViewWithIdentifier:identifier owner:self];
+    if (!cell) cell = [[TLAgentNameCellView alloc] initWithPalette:self.palette];
+    cell.identifier = identifier;
+    [cell configureWithName:agent.name avatar:agent.avatar current:agent.agentID == self.database.currentAgentID palette:self.palette];
+    return cell;
+  }
+  if ([identifier isEqualToString:@"status"]) {
+    TLAgentStatusCellView *cell = [tableView makeViewWithIdentifier:identifier owner:self];
+    if (!cell) cell = [[TLAgentStatusCellView alloc] initWithPalette:self.palette];
+    cell.identifier = identifier;
+    [cell configureWithStatus:[self.agentOrchestrator displayStatusForAgent:agent] running:([self.agentOrchestrator isVMRunningForAgent:agent] && [self.agentOrchestrator hasHermesInstallationForAgent:agent] && ![agent.status isEqualToString:TLAgentStatusError]) initializing:[agent.status isEqualToString:TLAgentStatusInitializing] setupRequired:![self.agentOrchestrator hasHermesInstallationForAgent:agent] palette:self.palette];
+    cell.textField.toolTip = agent.lastError.length > 0 ? agent.lastError : cell.textField.stringValue;
+    return cell;
+  }
   NSTableCellView *cell = [tableView makeViewWithIdentifier:identifier owner:self];
   if (!cell) {
     cell = [[NSTableCellView alloc] init];
@@ -3550,14 +3512,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     ]];
   }
 
-  TLAgentRecord *agent = self.agents[(NSUInteger)row];
-  NSString *value = [self tableValueForAgent:agent columnIdentifier:identifier];
-  cell.textField.stringValue = value;
+  cell.textField.stringValue = agent.vmDirectory;
   cell.textField.font = self.palette.bodyFont;
-  cell.textField.textColor = [agent.status isEqualToString:TLAgentStatusError] && [identifier isEqualToString:@"status"]
-    ? self.palette.thinkingText
-    : self.palette.appText;
-  cell.textField.toolTip = agent.lastError.length > 0 ? agent.lastError : value;
+  cell.textField.textColor = self.palette.appText;
+  cell.textField.toolTip = agent.vmDirectory;
   return cell;
 }
 
@@ -3567,44 +3525,31 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 }
 
-- (NSString *)tableValueForAgent:(TLAgentRecord *)agent columnIdentifier:(NSString *)identifier {
-  if ([identifier isEqualToString:@"name"]) {
-    return agent.name;
-  }
-  if ([identifier isEqualToString:@"guest"]) {
-    return TLAgentDisplayGuestKind(agent.guestKind);
-  }
-  if ([identifier isEqualToString:@"runtime"]) {
-    return TLAgentDisplayRuntime(agent.runtime);
-  }
-  if ([identifier isEqualToString:@"status"]) {
-    return TLAgentDisplayStatus(agent.status);
-  }
-  if ([identifier isEqualToString:@"vm"]) {
-    return agent.vmDirectory;
-  }
-
-  return @"";
-}
-
 - (void)updateAgentControlStates {
-  BOOL controlsAllowed = !self.isSending && !self.widgetbookMode && self.agentsTab != nil;
+  BOOL controlsAllowed = !self.hasSendingTurns && !self.widgetbookMode && self.agentsTab != nil;
   TLAgentRecord *agent = [self selectedAgent];
   BOOL hasAgent = agent != nil;
   BOOL starting = [agent.status isEqualToString:TLAgentStatusStarting];
-  BOOL running = [agent.status isEqualToString:TLAgentStatusRunning];
+  BOOL running = [self.agentOrchestrator isVMRunningForAgent:agent];
+  BOOL needsSetup = hasAgent && ![self.agentOrchestrator hasHermesInstallationForAgent:agent];
+  BOOL failed = [agent.status isEqualToString:TLAgentStatusError];
   BOOL stopping = [agent.status isEqualToString:TLAgentStatusStopping];
-  BOOL busy = starting || stopping;
+  BOOL busy = starting || stopping || [agent.status isEqualToString:TLAgentStatusInitializing];
+  self.startAgentButton.title = failed ? @"Retry setup" : (needsSetup ? @"Install Hermes" : @"Start VM");
 
   self.createAgentButton.enabled = controlsAllowed;
-  self.startAgentButton.enabled = controlsAllowed && hasAgent && !running && !busy;
-  self.stopAgentButton.enabled = controlsAllowed && hasAgent && running;
+  self.startAgentButton.enabled = controlsAllowed && hasAgent && (!running || needsSetup || failed) && !busy;
+  self.stopAgentButton.enabled = controlsAllowed && hasAgent && running && !busy;
   self.deleteAgentButton.enabled = controlsAllowed && hasAgent && !running && !busy;
+  self.agentSettingsButton.enabled = controlsAllowed && hasAgent && !busy;
+  self.folderAccessButton.enabled = controlsAllowed && hasAgent;
   self.closeAgentsButton.enabled = controlsAllowed;
 
   [self updateButtonAlpha:self.createAgentButton];
   [self updateButtonAlpha:self.startAgentButton];
   [self updateButtonAlpha:self.stopAgentButton];
+  [self updateButtonAlpha:self.agentSettingsButton];
+  [self updateButtonAlpha:self.folderAccessButton];
   [self updateButtonAlpha:self.deleteAgentButton];
   [self updateButtonAlpha:self.closeAgentsButton];
 }
@@ -3642,6 +3587,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self closeWindowIfOnlyWorkspaceTab:self.settingsTab]) {
     return;
   }
+  [self rememberClosedWorkspaceTab:self.settingsTab];
 
   [self.appStateManager removeWorkspaceTabWithKind:self.settingsTab.kind tabID:self.settingsTab.tabID];
   [[self contentViewForTab:self.settingsTab] removeFromSuperview];
@@ -3656,6 +3602,25 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
+  if (commandSelector == @selector(cancelOperation:)) {
+    if (self.slashCommandUpdateTimer || !self.slashCommandListView.hidden) { [self hideSlashCommandList]; return YES; }
+  }
+  if (commandSelector == @selector(insertTab:) || commandSelector == @selector(moveUp:) ||
+      commandSelector == @selector(moveDown:) || commandSelector == @selector(insertNewline:)) {
+    [self flushSlashCommandUpdate];
+  }
+  if (commandSelector == @selector(insertTab:) && !self.slashCommandListView.hidden) {
+    if (self.selectedSlashCommandIndex < 0) [self moveSlashCommandSelectionByOffset:1];
+    NSInteger index = self.selectedSlashCommandIndex;
+    if (index >= 0 && [self.visibleSlashCommands[(NSUInteger)index][@"kind"] isEqualToString:@"hermes"]) {
+      self.promptTextView.string = [self.visibleSlashCommands[(NSUInteger)index][@"command"] stringByAppendingString:@" "];
+      [self.messageInput recalculateHeight];
+      [self.promptTextView setSelectedRange:NSMakeRange(self.promptTextView.string.length, 0)];
+      [self hideSlashCommandList];
+      [self updateControlStates];
+      return YES;
+    }
+  }
   if (commandSelector == @selector(moveUp:)) {
     return [self moveSlashCommandSelectionByOffset:-1];
   }
@@ -3675,18 +3640,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)textDidChange:(NSNotification *)notification {
-
-  [self.messageInput recalculateHeight];
-  [self updateMessageScrollInsets];
+  // TextKit has already applied the edit. Do not force the workspace to lay out
+  // before AppKit can paint it; suggestions and composer chrome follow next frame.
   [self updateSlashCommandList];
-  [self updateControlStates];
 }
 
 - (void)pinMessageRowToStackWidth:(NSView *)row {
   static NSString *const TLMessageRowWidthConstraintIdentifier = @"TLMessageRowWidthConstraint";
 
-  for (NSLayoutConstraint *constraint in row.constraints) {
-    if ([constraint.identifier isEqualToString:TLMessageRowWidthConstraintIdentifier]) {
+  for (NSLayoutConstraint *constraint in self.messageStack.constraints) {
+    if (constraint.firstItem == row && [constraint.identifier isEqualToString:TLMessageRowWidthConstraintIdentifier]) {
       return;
     }
   }
@@ -3698,6 +3661,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)addMessageRowToStack:(NSView *)row {
   [self.messageStack addView:row inGravity:NSStackViewGravityTop];
+}
+
+- (void)placeMessageRow:(NSView *)row atIndex:(NSUInteger)index {
+  NSArray<NSView *> *rows = self.messageStack.arrangedSubviews;
+  if (index < rows.count && rows[index] == row) return;
+  [self removeArrangedMessageRowIfNeeded:row];
+  [self.messageStack insertView:row atIndex:index inGravity:NSStackViewGravityTop];
 }
 
 - (BOOL)isUserMessageAtIndex:(NSUInteger)index {
@@ -3740,18 +3710,34 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
   NSPoint previousScrollOrigin = self.messageScrollView.contentView.bounds.origin;
+  // Persistence replaces transient messages with stored records. Keep their
+  // already-loaded views when the displayed message at that position is unchanged.
+  [self.renderedMessages enumerateObjectsUsingBlock:^(TLChatMessage *previous, NSUInteger index, BOOL *stop) {
+    if (index >= self.messages.count || [self.messages indexOfObjectIdenticalTo:previous] != NSNotFound) return;
+    TLChatMessage *current = self.messages[index];
+    NSView *row = [self.messageRowViews objectForKey:previous];
+    if (!row || [self.messageRowViews objectForKey:current] ||
+        ![previous.role isEqualToString:current.role] || ![previous.content isEqualToString:current.content] ||
+        ![(previous.thinking ?: @"") isEqualToString:current.thinking ?: @""]) return;
+    [self.messageRowViews setObject:row forKey:current];
+    [self.messageRowSignatures setObject:[self.messageRowSignatures objectForKey:previous] forKey:current];
+    NSView *markdown = [self.messageMarkdownViews objectForKey:previous];
+    if (markdown) [self.messageMarkdownViews setObject:markdown forKey:current];
+    [self.messageRowViews removeObjectForKey:previous];
+    [self.messageRowSignatures removeObjectForKey:previous];
+    [self.messageMarkdownViews removeObjectForKey:previous];
+  }];
+  self.renderedMessages = self.messages.copy;
   for (TLChatMessage *cachedMessage in self.messageRowViews.keyEnumerator.allObjects) {
     if ([self.messages indexOfObjectIdenticalTo:cachedMessage] == NSNotFound) {
       NSView *staleRow = [self.messageRowViews objectForKey:cachedMessage];
       [self detachMessageRowFromStack:staleRow];
       [self.messageRowViews removeObjectForKey:cachedMessage];
       [self.messageRowSignatures removeObjectForKey:cachedMessage];
+      [self.messageMarkdownViews removeObjectForKey:cachedMessage];
     }
   }
   NSArray<NSView *> *previousRows = self.messageStack.arrangedSubviews.copy;
-  for (NSView *view in previousRows) {
-    [self removeArrangedMessageRowIfNeeded:view];
-  }
 
   if (self.isLoading || self.errorMessage.length > 0 || self.messages.count == 0) {
     [self resetMessageRowCache];
@@ -3765,18 +3751,19 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   NSMutableSet<NSView *> *renderedRows = [NSMutableSet setWithCapacity:self.messages.count];
+  NSUInteger rowIndex = 0;
   for (NSUInteger index = 0; index < self.messages.count; index++) {
     TLChatMessage *message = self.messages[index];
     BOOL showsOutgoingTail = [self showsOutgoingTailForMessageAtIndex:index];
     NSView *row = [self cachedRowForMessage:message showsOutgoingTail:showsOutgoingTail];
     [renderedRows addObject:row];
-    [self addMessageRowToStack:row];
+    [self placeMessageRow:row atIndex:rowIndex++];
     [self pinMessageRowToStackWidth:row];
     if ([self messageShowsAWSOutageIntent:message]) {
       [self.messageStack setCustomSpacing:self.palette.space8 afterView:row];
       NSView *intentWidget = [self AWSOutageIntentWidget];
       [renderedRows addObject:intentWidget];
-      [self addMessageRowToStack:intentWidget];
+      [self placeMessageRow:intentWidget atIndex:rowIndex++];
       [self pinMessageRowToStackWidth:intentWidget];
       [self.messageStack setCustomSpacing:[self messageStackSpacingAfterMessageAtIndex:index] afterView:intentWidget];
     } else {
@@ -3786,7 +3773,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   for (NSView *view in self.messageStack.subviews.copy) {
     if (![renderedRows containsObject:view]) {
-      [view removeFromSuperview];
+      [self detachMessageRowFromStack:view];
     }
   }
 
@@ -3884,7 +3871,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   CGFloat slashCommandListHeight = (!self.slashCommandListView.hidden && self.slashCommandListHeightConstraint.constant > self.palette.space0)
     ? self.slashCommandListHeightConstraint.constant + self.palette.space5
     : self.palette.space0;
-  CGFloat bottomClearance = inputHeight + slashCommandListHeight + self.palette.space10 + self.palette.space8;
+  CGFloat bottomClearance = inputHeight + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
   self.messageScrollView.contentInsets = NSEdgeInsetsMake(self.palette.space0,
                                                           self.palette.space0,
                                                           self.palette.space0,
@@ -3900,6 +3887,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSString *previousSignature = [self.messageRowSignatures objectForKey:message];
 
   if (row && [previousSignature isEqualToString:signature]) {
+    NSView *markdown = [self.messageMarkdownViews objectForKey:message];
+    if (markdown) {
+      TLMarkdownRenderer *renderer = [[TLMarkdownRenderer alloc] initWithPalette:self.palette];
+      [renderer updateMarkdown:[self displayTextForMessage:message] inView:markdown];
+    }
     return row;
   }
 
@@ -3907,17 +3899,17 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self detachMessageRowFromStack:row];
   }
 
+  [self.messageMarkdownViews removeObjectForKey:message];
   row = [self rowForMessage:message showsOutgoingTail:showsOutgoingTail];
   [self.messageRowViews setObject:row forKey:message];
   [self.messageRowSignatures setObject:signature forKey:message];
   return row;
 }
 
-- (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
+- (NSString *)displayTextForMessage:(TLChatMessage *)message {
   BOOL user = [message.role isEqualToString:TLRoleUser];
   BOOL hasResponseContent = message.content.length > 0;
   BOOL showThinking = !user && !hasResponseContent && message.thinking.length > 0;
-  NSString *mode = showThinking ? @"thinking" : @"content";
   NSString *displayText = showThinking
     ? (message.thinking ?: @"")
     : (hasResponseContent ? message.content : ([message.role isEqualToString:TLRoleAssistant] ? @"..." : @""));
@@ -3925,6 +3917,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if ([self messageShowsAWSOutageIntent:message]) {
     displayText = TLAWSOutageAgentMessage;
   }
+  return displayText;
+}
+
+- (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
+  BOOL user = [message.role isEqualToString:TLRoleUser];
+  BOOL showThinking = !user && !message.content.length && message.thinking.length > 0;
+  NSString *mode = showThinking ? @"thinking" : @"content";
   CGFloat layoutWidth = self.messageInputWidthConstraint.constant > 0.0
     ? self.messageInputWidthConstraint.constant
     : self.palette.messageInputMaxWidth;
@@ -3934,7 +3933,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
                                     mode,
                                     layoutWidth,
                                     showsOutgoingTail ? @"tail" : @"body",
-                                    displayText ?: @""];
+                                    user ? [self displayTextForMessage:message] : ([self messageShowsAWSOutageIntent:message] ? @"intent" : @"answer")];
 }
 
 - (void)resetMessageRowCache {
@@ -3943,6 +3942,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   self.messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
   self.messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
+  self.messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
+  self.renderedMessages = @[];
 }
 
 - (NSView *)emptyStateView {
@@ -4027,9 +4028,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [stack addArrangedSubview:[self labelWithString:@"Thinking"
                                                font:self.palette.roleFont
                                               color:self.palette.thinkingText]];
-    [stack addArrangedSubview:[self markdownViewWithString:message.thinking
-                                                  textColor:self.palette.thinkingText
-                                                   baseFont:self.palette.smallFont]];
+    NSView *markdown = [self markdownViewWithString:message.thinking textColor:self.palette.thinkingText baseFont:self.palette.smallFont];
+    [stack addArrangedSubview:markdown];
+    [self.messageMarkdownViews setObject:markdown forKey:message];
   } else if (user) {
     NSMutableString *content = [NSMutableString stringWithString:hasResponseContent ? message.content : @""];
     for (NSDictionary *attachment in message.attachments) {
@@ -4050,6 +4051,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     contentLabel = [self wrappingLabelWithString:content
                                             font:self.palette.messageBodyFont
                                            color:textColor];
+    contentLabel.selectable = YES;
     contentLabel.preferredMaxLayoutWidth = userTextMaxWidth;
     [contentLabel setContentHuggingPriority:NSLayoutPriorityDefaultHigh
                              forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -4068,7 +4070,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       [leadingSpacer.heightAnchor constraintEqualToConstant:lineHeight * 3.0].active = YES;
       [stack addArrangedSubview:leadingSpacer];
     }
-    [stack addArrangedSubview:[self markdownViewWithString:content textColor:textColor baseFont:self.palette.messageBodyFont]];
+    NSView *markdown = [self markdownViewWithString:content textColor:textColor baseFont:self.palette.messageBodyFont];
+    [stack addArrangedSubview:markdown];
+    [self.messageMarkdownViews setObject:markdown forKey:message];
   }
 
   [row addSubview:bubble];
@@ -4109,7 +4113,18 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   renderer.linkHandler = ^(NSURL *URL, NSEventModifierFlags modifierFlags) {
     [weakSelf handleLinkURL:URL modifierFlags:modifierFlags];
   };
-  return [renderer viewForMarkdown:string ?: @"" textColor:textColor baseFont:baseFont];
+  __block __weak NSView *weakView = nil;
+  renderer.heightChangeHandler = ^{
+    TalariaWindowController *controller = weakSelf;
+    if (!controller.isSending ||
+        ![weakView isDescendantOf:controller.messageStack]) return;
+    [controller.messageDocumentView layoutSubtreeIfNeeded];
+    NSRect bottom = NSMakeRect(0, MAX(0, NSHeight(controller.messageDocumentView.bounds) - 1), 1, 1);
+    [controller.messageDocumentView scrollRectToVisible:bottom];
+  };
+  NSView *view = [renderer viewForMarkdown:string ?: @"" textColor:textColor baseFont:baseFont];
+  weakView = view;
+  return view;
 }
 
 - (NSView *)plainTextViewWithString:(NSString *)string textColor:(NSColor *)textColor baseFont:(NSFont *)baseFont {
@@ -4186,771 +4201,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return button;
 }
 
-- (TLTaskStatusPillView *)makeAgentWalletButton {
-  TLTaskStatusPillView *button = [[TLTaskStatusPillView alloc] init];
-  button.palette = self.palette;
-  button.title = @"$12.32";
-  button.showsActivityIndicator = NO;
-  button.target = self;
-  button.action = @selector(showAgentWalletPopover:);
-  button.toolTip = @"Agent wallet";
-  [button setContentHuggingPriority:NSLayoutPriorityDefaultLow
-                      forOrientation:NSLayoutConstraintOrientationHorizontal];
-  [button setContentCompressionResistancePriority:NSLayoutPriorityRequired
-                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
-  return button;
-}
-
-- (TLSidebarNavigationButton *)makeTaskStatusSidebarButton {
-  TLSidebarNavigationButton *button = [self sidebarActionButtonWithTitle:@"8 Subagents"
-                                                          systemIconName:@""
-                                                                  action:@selector(showTaskStatusPopover:)];
-  button.showsActivityIndicatorIcon = YES;
-  button.toolTip = @"Subagents";
-  return button;
-}
-
-- (NSArray<NSDictionary<NSString *, NSString *> *> *)taskStatusMocks {
-  return @[
-    @{ @"title": @"Reviewing sidebar UX", @"detail": @"Checking hover states", @"status": @"running", @"icon": @"sidebar.left" },
-    @{ @"title": @"Compiling app bundle", @"detail": @"Building Talaria.app", @"status": @"running", @"icon": @"hammer" },
-    @{ @"title": @"Refreshing history", @"detail": @"Syncing recent chats", @"status": @"running", @"icon": @"clock.arrow.circlepath" },
-    @{ @"title": @"Syncing agents", @"detail": @"Preparing runtimes", @"status": @"running", @"icon": @"cpu" },
-    @{ @"title": @"Indexing workspace", @"detail": @"Scanning changed files", @"status": @"running", @"icon": @"doc.text.magnifyingglass" },
-    @{ @"title": @"Running theme audit", @"detail": @"Validating palette usage", @"status": @"running", @"icon": @"checkmark.shield" },
-    @{ @"title": @"Preparing preview", @"detail": @"Updating window chrome", @"status": @"running", @"icon": @"sparkles" },
-    @{ @"title": @"Publishing branch", @"detail": @"Waiting for changes", @"status": @"running", @"icon": @"arrow.triangle.branch" },
-  ];
-}
-
-- (NSViewController *)taskStatusPopoverViewController {
-  NSArray<NSDictionary<NSString *, NSString *> *> *tasks = [self taskStatusMocks];
-
-  CGFloat popoverWidth = self.palette.sidebarMaximumWidth;
-  CGFloat rowHeight = self.palette.fieldHeight + self.palette.space8;
-  CGFloat rowSpacingTotal = self.palette.space3 * MAX(0, (NSInteger)tasks.count - 1);
-  CGFloat contentHeight =
-    self.palette.space8 +
-    (rowHeight * tasks.count) +
-    rowSpacingTotal +
-    self.palette.space8;
-
-  NSViewController *viewController = [[NSViewController alloc] init];
-  NSView *contentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, popoverWidth, contentHeight)];
-  contentView.translatesAutoresizingMaskIntoConstraints = NO;
-  contentView.wantsLayer = YES;
-  contentView.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
-
-  NSStackView *stack = [[NSStackView alloc] init];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  stack.alignment = NSLayoutAttributeWidth;
-  stack.distribution = NSStackViewDistributionGravityAreas;
-  stack.spacing = self.palette.space3;
-  [contentView addSubview:stack];
-
-  for (NSDictionary<NSString *, NSString *> *task in tasks) {
-    NSView *row = [self taskStatusPopoverRowWithTitle:task[@"title"]
-                                               detail:task[@"detail"]
-                                               status:task[@"status"]
-                                       systemIconName:task[@"icon"]];
-    [stack addArrangedSubview:row];
-    [row.heightAnchor constraintEqualToConstant:rowHeight].active = YES;
-  }
-
-  [NSLayoutConstraint activateConstraints:@[
-    [contentView.widthAnchor constraintEqualToConstant:popoverWidth],
-    [contentView.heightAnchor constraintEqualToConstant:contentHeight],
-    [stack.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:self.palette.space8],
-    [stack.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-self.palette.space8],
-    [stack.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:self.palette.space8],
-    [stack.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-self.palette.space8],
-  ]];
-
-  viewController.view = contentView;
-  return viewController;
-}
-
-- (NSView *)taskStatusPopoverRowWithTitle:(NSString *)title
-                                   detail:(NSString *)detail
-                                   status:(NSString *)status
-                           systemIconName:(NSString *)systemIconName {
-  NSView *row = [[NSView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-
-  NSImageView *iconView = [[NSImageView alloc] init];
-  iconView.translatesAutoresizingMaskIntoConstraints = NO;
-  iconView.imageAlignment = NSImageAlignCenter;
-  iconView.imageScaling = NSImageScaleProportionallyDown;
-  iconView.image = [self symbolImageNamed:systemIconName accessibilityDescription:title];
-  iconView.image.template = YES;
-  iconView.contentTintColor = self.palette.labelText;
-  [row addSubview:iconView];
-
-  NSTextField *titleLabel = [self labelWithString:title font:self.palette.labelFont color:self.palette.appText];
-  NSTextField *detailLabel = [self labelWithString:detail font:self.palette.smallFont color:self.palette.textMuted];
-
-  NSStackView *textStack = [[NSStackView alloc] init];
-  textStack.translatesAutoresizingMaskIntoConstraints = NO;
-  textStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  textStack.alignment = NSLayoutAttributeLeading;
-  textStack.distribution = NSStackViewDistributionGravityAreas;
-  textStack.spacing = self.palette.space0;
-  [textStack addArrangedSubview:titleLabel];
-  [textStack addArrangedSubview:detailLabel];
-  [row addSubview:textStack];
-
-  NSTextField *statusLabel = [self labelWithString:status font:self.palette.labelFont color:self.palette.textMuted];
-  statusLabel.alignment = NSTextAlignmentRight;
-  [row addSubview:statusLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:self.palette.space3],
-    [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [iconView.widthAnchor constraintEqualToConstant:self.palette.space11],
-    [iconView.heightAnchor constraintEqualToConstant:self.palette.space11],
-
-    [textStack.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:self.palette.space5],
-    [textStack.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:statusLabel.leadingAnchor constant:-self.palette.space5],
-
-    [statusLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-self.palette.space3],
-    [statusLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-  ]];
-
-  return row;
-}
-
-- (NSArray<NSDictionary<NSString *, id> *> *)agentWalletTransactionMocks {
-  NSArray<NSDictionary<NSString *, id> *> *transactionTemplates = @[
-    @{
-      @"title": @"Flowers for Lily",
-      @"detail": @"flowers.com",
-      @"amount": @"-$45.00",
-      @"positive": @NO,
-      @"icon": @"leaf",
-    },
-    @{
-      @"title": @"Top Up",
-      @"detail": @"",
-      @"amount": @"$60.00",
-      @"positive": @YES,
-      @"icon": @"dollarsign.circle",
-    },
-  ];
-  NSMutableArray<NSDictionary<NSString *, id> *> *transactions = [NSMutableArray arrayWithCapacity:transactionTemplates.count];
-  for (NSUInteger index = 0; index < transactionTemplates.count; index += 1) {
-    TLChatSummary *linkedChat = index < self.chats.count ? self.chats[index] : nil;
-    if (!linkedChat && self.activeChat) {
-      linkedChat = self.activeChat;
-    }
-
-    NSString *chatTitle = linkedChat.title.length > 0 ? linkedChat.title : @"Current chat";
-    NSInteger chatID = linkedChat ? linkedChat.chatID : 0;
-    NSMutableDictionary<NSString *, id> *transaction = [transactionTemplates[index] mutableCopy];
-    transaction[@"chatTitle"] = chatTitle;
-    transaction[@"chatID"] = @(chatID);
-    [transactions addObject:transaction];
-  }
-  return transactions;
-}
-
-- (NSImage *)agentWalletCardImage {
-  NSURL *cardURL = [NSBundle.mainBundle URLForResource:@"agent-card" withExtension:@"png"];
-  return cardURL ? [[NSImage alloc] initWithContentsOfURL:cardURL] : [[NSImage alloc] init];
-}
-
-- (CGFloat)agentWalletCardAspectRatio {
-  NSImage *image = [self agentWalletCardImage];
-  if (image.size.height <= 0.0) {
-    return 1.0;
-  }
-
-  return image.size.width / image.size.height;
-}
-
-- (NSView *)agentWalletCardView {
-  TLTokenView *cardContainer = [[TLTokenView alloc] init];
-  cardContainer.translatesAutoresizingMaskIntoConstraints = NO;
-  cardContainer.wantsLayer = YES;
-  cardContainer.fillColor = self.palette.transparentSurface;
-  cardContainer.borderColor = self.palette.transparentSurface;
-  cardContainer.borderEdges = TLBorderEdgeNone;
-  cardContainer.cornerRadius = self.palette.radiusMedium;
-  cardContainer.layer.masksToBounds = NO;
-  cardContainer.layer.shadowColor = TLCGColor(self.palette.contentShadow);
-  cardContainer.layer.shadowOpacity = self.palette.agentWalletCardShadowOpacity;
-  cardContainer.layer.shadowRadius = self.palette.agentWalletCardShadowRadius;
-  cardContainer.layer.shadowOffset = NSMakeSize(self.palette.space0, self.palette.agentWalletCardShadowOffsetY);
-
-  NSImageView *cardView = [[NSImageView alloc] init];
-  cardView.translatesAutoresizingMaskIntoConstraints = NO;
-  cardView.image = [self agentWalletCardImage];
-  cardView.imageAlignment = NSImageAlignCenter;
-  cardView.imageScaling = NSImageScaleProportionallyUpOrDown;
-  [cardContainer addSubview:cardView];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [cardView.leadingAnchor constraintEqualToAnchor:cardContainer.leadingAnchor],
-    [cardView.trailingAnchor constraintEqualToAnchor:cardContainer.trailingAnchor],
-    [cardView.topAnchor constraintEqualToAnchor:cardContainer.topAnchor],
-    [cardView.bottomAnchor constraintEqualToAnchor:cardContainer.bottomAnchor],
-  ]];
-
-  return cardContainer;
-}
-
-- (NSView *)agentWalletOverviewViewWithCardWidth:(CGFloat)cardWidth cardHeight:(CGFloat)cardHeight {
-  NSView *overviewView = [[NSView alloc] init];
-  overviewView.translatesAutoresizingMaskIntoConstraints = NO;
-
-  NSView *cardView = [self agentWalletCardView];
-  [overviewView addSubview:cardView];
-
-  NSStackView *cardActionRow = [[NSStackView alloc] init];
-  cardActionRow.translatesAutoresizingMaskIntoConstraints = NO;
-  cardActionRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  cardActionRow.alignment = NSLayoutAttributeCenterY;
-  cardActionRow.distribution = NSStackViewDistributionFill;
-  cardActionRow.spacing = self.palette.agentWalletOverviewActionGap;
-  [overviewView addSubview:cardActionRow];
-
-  TLGlassButton *topUpButton = [self agentWalletTopUpButton];
-  [cardActionRow addArrangedSubview:topUpButton];
-  [topUpButton.heightAnchor constraintEqualToConstant:self.palette.agentWalletTopUpButtonHeight].active = YES;
-
-  TLGlassButton *manageCardButton = [self agentWalletManageCardButton];
-  [cardActionRow addArrangedSubview:manageCardButton];
-  [manageCardButton.heightAnchor constraintEqualToConstant:self.palette.agentWalletTopUpButtonHeight].active = YES;
-
-  NSStackView *balanceStack = [[NSStackView alloc] init];
-  balanceStack.translatesAutoresizingMaskIntoConstraints = NO;
-  balanceStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  balanceStack.alignment = NSLayoutAttributeCenterX;
-  balanceStack.distribution = NSStackViewDistributionGravityAreas;
-  balanceStack.spacing = self.palette.space3;
-  [overviewView addSubview:balanceStack];
-
-  NSTextField *balanceCaptionLabel = [self labelWithString:@"Available Balance"
-                                                     font:self.palette.agentWalletBalanceCaptionFont
-                                                    color:self.palette.agentWalletBalanceCaptionText];
-  balanceCaptionLabel.alignment = NSTextAlignmentCenter;
-  [balanceStack addArrangedSubview:balanceCaptionLabel];
-
-  NSTextField *balanceLabel = [self labelWithString:@"$12.32"
-                                              font:self.palette.agentWalletBalanceAmountFont
-                                             color:self.palette.agentWalletTransactionPrimaryText];
-  balanceLabel.alignment = NSTextAlignmentCenter;
-  [balanceStack addArrangedSubview:balanceLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [cardView.leadingAnchor constraintEqualToAnchor:overviewView.leadingAnchor],
-    [cardView.topAnchor constraintEqualToAnchor:overviewView.topAnchor],
-    [cardView.widthAnchor constraintEqualToConstant:cardWidth],
-    [cardView.heightAnchor constraintEqualToConstant:cardHeight],
-
-    [cardActionRow.leadingAnchor constraintEqualToAnchor:cardView.leadingAnchor],
-    [cardActionRow.topAnchor constraintEqualToAnchor:cardView.bottomAnchor constant:self.palette.agentWalletOverviewActionRowGap],
-    [cardActionRow.bottomAnchor constraintEqualToAnchor:overviewView.bottomAnchor],
-    [cardActionRow.heightAnchor constraintEqualToConstant:self.palette.agentWalletTopUpButtonHeight],
-
-    [balanceStack.leadingAnchor constraintEqualToAnchor:cardView.trailingAnchor constant:self.palette.agentWalletOverviewContentGap],
-    [balanceStack.trailingAnchor constraintEqualToAnchor:overviewView.trailingAnchor],
-    [balanceStack.centerYAnchor constraintEqualToAnchor:cardView.centerYAnchor],
-    [balanceStack.topAnchor constraintGreaterThanOrEqualToAnchor:overviewView.topAnchor],
-    [balanceStack.bottomAnchor constraintLessThanOrEqualToAnchor:overviewView.bottomAnchor],
-  ]];
-
-  return overviewView;
-}
-
-- (TLGlassButton *)agentWalletOpenCardButton {
-  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
-  button.palette = self.palette;
-  button.title = @"Create Card";
-  button.font = self.palette.agentWalletIntroButtonFont;
-  button.contentTintColor = self.palette.appText;
-  button.target = self;
-  button.action = @selector(openAgentWalletCard:);
-  return button;
-}
-
-- (nullable NSImage *)agentWalletActionButtonImageNamed:(NSString *)name accessibilityDescription:(NSString *)description {
-  NSImage *image = [self symbolImageNamed:name accessibilityDescription:description];
-  if (@available(macOS 11.0, *)) {
-    NSImageSymbolConfiguration *configuration =
-      [NSImageSymbolConfiguration configurationWithPointSize:self.palette.smallFont.pointSize
-                                                      weight:NSFontWeightRegular];
-    image = [image imageWithSymbolConfiguration:configuration] ?: image;
-  }
-  image.template = YES;
-  return image;
-}
-
-- (TLGlassButton *)agentWalletTopUpButton {
-  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
-  button.palette = self.palette;
-  button.title = @"Top up";
-  button.image = [self agentWalletActionButtonImageNamed:@"dollarsign.circle" accessibilityDescription:@"Top up"];
-  button.contentTintColor = self.palette.agentWalletTransactionPrimaryText;
-  button.target = self;
-  button.action = @selector(topUpAgentWallet:);
-  return button;
-}
-
-- (void)topUpAgentWallet:(id)sender {
-}
-
-- (TLGlassButton *)agentWalletManageCardButton {
-  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
-  button.palette = self.palette;
-  button.title = @"Manage Card";
-  button.image = [self agentWalletActionButtonImageNamed:@"creditcard" accessibilityDescription:@"Manage Card"];
-  button.contentTintColor = self.palette.agentWalletTransactionPrimaryText;
-  button.target = self;
-  button.action = @selector(manageAgentWalletCard:);
-  return button;
-}
-
-- (void)manageAgentWalletCard:(id)sender {
-}
-
-- (TLGlassButton *)agentWalletSeeAllButton {
-  TLGlassButton *button = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
-  button.palette = self.palette;
-  button.title = @"see all";
-  button.font = self.palette.smallFont;
-  button.contentTintColor = self.palette.agentWalletTransactionPrimaryText;
-  button.target = self;
-  button.action = @selector(seeAllAgentWalletTransactions:);
-  return button;
-}
-
-- (void)seeAllAgentWalletTransactions:(id)sender {
-}
-
-- (CGFloat)agentWalletPopoverWidth {
-  return self.palette.agentWalletDetailsPopoverWidth;
-}
-
-- (CGFloat)agentWalletIntroPopoverWidth {
-  return self.palette.agentWalletIntroPopoverWidth;
-}
-
-- (CGFloat)agentWalletPopoverPadding {
-  return self.palette.space5 * 2.0;
-}
-
-- (NSSize)agentWalletCardSize {
-  return NSMakeSize(self.palette.agentWalletCardWidth, self.palette.agentWalletCardHeight);
-}
-
-- (NSSize)agentWalletDetailsCardSize {
-  return NSMakeSize(self.palette.agentWalletDetailsCardWidth, self.palette.agentWalletDetailsCardHeight);
-}
-
-- (NSViewController *)agentWalletIntroPopoverViewController {
-  CGFloat popoverWidth = [self agentWalletIntroPopoverWidth];
-  CGFloat padding = [self agentWalletPopoverPadding];
-  NSSize walletCardSize = [self agentWalletCardSize];
-  CGFloat textWidth = popoverWidth - (padding * 2.0);
-  CGFloat buttonWidth = walletCardSize.width - (self.palette.space12 * 2.0);
-  CGFloat buttonHeight = self.palette.agentWalletIntroButtonHeight;
-
-  NSViewController *viewController = [[NSViewController alloc] init];
-  NSView *contentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, popoverWidth, self.palette.space0)];
-  contentView.translatesAutoresizingMaskIntoConstraints = NO;
-  contentView.wantsLayer = YES;
-  contentView.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
-
-  NSView *cardView = [self agentWalletCardView];
-  [contentView addSubview:cardView];
-
-  NSTextField *titleLabel = [self wrappingLabelWithString:@"Give Your Agent Pocket Money"
-                                                     font:self.palette.agentWalletIntroTitleFont
-                                                    color:self.palette.appText];
-  titleLabel.maximumNumberOfLines = 2;
-  titleLabel.preferredMaxLayoutWidth = textWidth;
-  [contentView addSubview:titleLabel];
-
-  NSTextField *descriptionLabel =
-    [self wrappingLabelWithString:@"Open a temporary debit card for your agent to help you with small purchases"
-                             font:self.palette.agentWalletIntroSubtitleFont
-                            color:self.palette.textMuted];
-  descriptionLabel.maximumNumberOfLines = 3;
-  descriptionLabel.preferredMaxLayoutWidth = textWidth;
-  [contentView addSubview:descriptionLabel];
-
-  TLGlassButton *openCardButton = [self agentWalletOpenCardButton];
-  [contentView addSubview:openCardButton];
-
-  NSTextField *issuedLabel = [self labelWithString:@"Issued by AgentCard"
-                                             font:self.palette.smallFont
-                                            color:self.palette.agentWalletIssuerText];
-  issuedLabel.alignment = NSTextAlignmentLeft;
-  [contentView addSubview:issuedLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [cardView.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [cardView.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:padding],
-    [cardView.widthAnchor constraintEqualToConstant:walletCardSize.width],
-    [cardView.heightAnchor constraintEqualToConstant:walletCardSize.height],
-
-    [titleLabel.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [titleLabel.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-padding],
-    [titleLabel.topAnchor constraintEqualToAnchor:cardView.bottomAnchor constant:self.palette.space8],
-
-    [descriptionLabel.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [descriptionLabel.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-padding],
-    [descriptionLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:self.palette.space3],
-    [descriptionLabel.bottomAnchor constraintLessThanOrEqualToAnchor:openCardButton.topAnchor constant:-self.palette.space10],
-
-    [openCardButton.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [openCardButton.topAnchor constraintEqualToAnchor:descriptionLabel.bottomAnchor constant:self.palette.space10],
-    [openCardButton.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-padding],
-    [openCardButton.widthAnchor constraintEqualToConstant:buttonWidth],
-    [openCardButton.heightAnchor constraintEqualToConstant:buttonHeight],
-
-    [issuedLabel.leadingAnchor constraintEqualToAnchor:openCardButton.trailingAnchor constant:self.palette.agentWalletIssuerGap],
-    [issuedLabel.trailingAnchor constraintLessThanOrEqualToAnchor:contentView.trailingAnchor constant:-padding],
-    [issuedLabel.centerYAnchor constraintEqualToAnchor:openCardButton.centerYAnchor],
-    [contentView.widthAnchor constraintEqualToConstant:popoverWidth],
-  ]];
-
-  [contentView layoutSubtreeIfNeeded];
-  NSSize fittingSize = contentView.fittingSize;
-  contentView.frame = NSMakeRect(self.palette.space0,
-                                 self.palette.space0,
-                                 popoverWidth,
-                                 ceil(fittingSize.height));
-
-  viewController.view = contentView;
-  return viewController;
-}
-
-- (void)openAgentWalletCard:(id)sender {
-  self.agentWalletCardDetailsVisible = YES;
-  if (!self.agentWalletPopover.isShown) {
-    return;
-  }
-
-  NSViewController *detailsViewController = [self agentWalletPopoverViewController];
-  self.agentWalletPopover.contentViewController = detailsViewController;
-  self.agentWalletPopover.contentSize = detailsViewController.view.frame.size;
-}
-
-- (NSViewController *)agentWalletPopoverViewController {
-  if (!self.agentWalletCardDetailsVisible) {
-    return [self agentWalletIntroPopoverViewController];
-  }
-
-  NSArray<NSDictionary<NSString *, id> *> *transactions = [self agentWalletTransactionMocks];
-
-  CGFloat popoverWidth = [self agentWalletPopoverWidth];
-  CGFloat padding = [self agentWalletPopoverPadding];
-  CGFloat topPadding = padding;
-  CGFloat bottomPadding = self.palette.space0;
-  CGFloat topUpSectionGap = self.palette.space6;
-  CGFloat transactionsPanelTopPadding = self.palette.space5;
-  NSSize walletCardSize = [self agentWalletDetailsCardSize];
-  CGFloat overviewHeight =
-    walletCardSize.height +
-    self.palette.agentWalletOverviewActionRowGap +
-    self.palette.agentWalletTopUpButtonHeight;
-  CGFloat sectionTitleHeight = MAX(self.palette.space9, self.palette.agentWalletSeeAllButtonHeight);
-  CGFloat dateHeight = self.palette.space10;
-  CGFloat rowHeight = self.palette.fieldHeight + self.palette.space10;
-  CGFloat transactionSeparatorTotal = self.palette.borderWidth * MAX(0, (NSInteger)transactions.count - 1);
-  CGFloat contentHeight =
-    topPadding +
-    overviewHeight +
-    topUpSectionGap +
-    transactionsPanelTopPadding +
-    sectionTitleHeight +
-    self.palette.space8 +
-    dateHeight +
-    self.palette.space3 +
-    (rowHeight * transactions.count) +
-    transactionSeparatorTotal +
-    bottomPadding;
-
-  NSViewController *viewController = [[NSViewController alloc] init];
-  NSView *contentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, popoverWidth, contentHeight)];
-  contentView.translatesAutoresizingMaskIntoConstraints = NO;
-  contentView.wantsLayer = YES;
-  contentView.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
-
-  TLTokenView *transactionsPanel = [[TLTokenView alloc] init];
-  transactionsPanel.translatesAutoresizingMaskIntoConstraints = NO;
-  transactionsPanel.fillColor = self.palette.agentWalletTransactionsSurface;
-  transactionsPanel.borderColor = self.palette.transparentSurface;
-  transactionsPanel.borderEdges = TLBorderEdgeNone;
-  [contentView addSubview:transactionsPanel];
-
-  NSStackView *stack = [[NSStackView alloc] init];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  stack.alignment = NSLayoutAttributeWidth;
-  stack.distribution = NSStackViewDistributionGravityAreas;
-  stack.spacing = self.palette.space0;
-  [contentView addSubview:stack];
-
-  NSView *overviewView = [self agentWalletOverviewViewWithCardWidth:walletCardSize.width
-                                                         cardHeight:walletCardSize.height];
-  [stack addArrangedSubview:overviewView];
-  [overviewView.heightAnchor constraintEqualToConstant:overviewHeight].active = YES;
-  [overviewView.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-  [stack setCustomSpacing:topUpSectionGap + transactionsPanelTopPadding afterView:overviewView];
-
-  NSView *sectionTitleContainer = [[NSView alloc] init];
-  sectionTitleContainer.translatesAutoresizingMaskIntoConstraints = NO;
-  NSTextField *sectionTitleLabel = [self labelWithString:@"Recent Transactions"
-                                                    font:self.palette.agentWalletSectionTitleFont
-                                                   color:self.palette.agentWalletTransactionPrimaryText];
-  sectionTitleLabel.alignment = NSTextAlignmentLeft;
-  [sectionTitleContainer addSubview:sectionTitleLabel];
-  TLGlassButton *seeAllButton = [self agentWalletSeeAllButton];
-  [sectionTitleContainer addSubview:seeAllButton];
-  [stack addArrangedSubview:sectionTitleContainer];
-  [sectionTitleContainer.heightAnchor constraintEqualToConstant:sectionTitleHeight].active = YES;
-  [sectionTitleContainer.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-  [NSLayoutConstraint activateConstraints:@[
-    [sectionTitleLabel.leadingAnchor constraintEqualToAnchor:sectionTitleContainer.leadingAnchor],
-    [sectionTitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:seeAllButton.leadingAnchor constant:-self.palette.space6],
-    [sectionTitleLabel.centerYAnchor constraintEqualToAnchor:sectionTitleContainer.centerYAnchor],
-    [seeAllButton.trailingAnchor constraintEqualToAnchor:sectionTitleContainer.trailingAnchor],
-    [seeAllButton.centerYAnchor constraintEqualToAnchor:sectionTitleContainer.centerYAnchor],
-    [seeAllButton.widthAnchor constraintEqualToConstant:self.palette.agentWalletSeeAllButtonWidth],
-    [seeAllButton.heightAnchor constraintEqualToConstant:self.palette.agentWalletSeeAllButtonHeight],
-  ]];
-  [stack setCustomSpacing:self.palette.space8 afterView:sectionTitleContainer];
-
-  NSTextField *dateLabel = [self labelWithString:@"Thu 27 Aug"
-                                            font:self.palette.agentWalletTransactionDateFont
-                                           color:self.palette.agentWalletTransactionDateText];
-  [stack addArrangedSubview:dateLabel];
-  [dateLabel.heightAnchor constraintEqualToConstant:dateHeight].active = YES;
-  [dateLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-  [stack setCustomSpacing:self.palette.space3 afterView:dateLabel];
-
-  for (NSUInteger index = 0; index < transactions.count; index += 1) {
-    NSDictionary<NSString *, id> *transaction = transactions[index];
-    NSView *row = [self agentWalletTransactionRowWithTitle:transaction[@"title"]
-                                                    detail:transaction[@"detail"]
-                                                    amount:transaction[@"amount"]
-                                                  positive:[transaction[@"positive"] boolValue]
-                                            systemIconName:transaction[@"icon"]
-                                                    chatID:[transaction[@"chatID"] integerValue]];
-    [stack addArrangedSubview:row];
-    [row.heightAnchor constraintEqualToConstant:rowHeight].active = YES;
-    [row.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    if (index + 1 < transactions.count) {
-      NSView *separator = [self agentWalletTransactionSeparatorView];
-      [stack addArrangedSubview:separator];
-      [separator.heightAnchor constraintEqualToConstant:self.palette.borderWidth].active = YES;
-      [separator.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    }
-  }
-
-  [NSLayoutConstraint activateConstraints:@[
-    [contentView.widthAnchor constraintEqualToConstant:popoverWidth],
-    [contentView.heightAnchor constraintEqualToConstant:contentHeight],
-    [transactionsPanel.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
-    [transactionsPanel.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor],
-    [transactionsPanel.topAnchor constraintEqualToAnchor:overviewView.bottomAnchor constant:topUpSectionGap],
-    [transactionsPanel.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor],
-    [stack.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:padding],
-    [stack.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-padding],
-    [stack.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:topPadding],
-    [stack.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-bottomPadding],
-  ]];
-
-  viewController.view = contentView;
-  return viewController;
-}
-
-- (NSView *)agentWalletTransactionSeparatorView {
-  TLTokenView *separator = [[TLTokenView alloc] init];
-  separator.translatesAutoresizingMaskIntoConstraints = NO;
-  separator.fillColor = self.palette.transparentSurface;
-  separator.borderColor = self.palette.topbarBorder;
-  separator.borderEdges = TLBorderEdgeTop;
-  separator.borderWidth = self.palette.borderWidth;
-  separator.alphaValue = self.palette.agentWalletTransactionSeparatorOpacity;
-  return separator;
-}
-
-- (NSView *)agentWalletPositiveAmountBadgeWithAmount:(NSString *)amount {
-  TLTokenView *badge = [[TLTokenView alloc] init];
-  badge.translatesAutoresizingMaskIntoConstraints = NO;
-  badge.fillColor = self.palette.agentWalletTopUpSurface;
-  badge.borderColor = self.palette.transparentSurface;
-  badge.borderEdges = TLBorderEdgeNone;
-  badge.cornerRadius = self.palette.radiusMedium;
-
-  NSTextField *amountLabel = [self labelWithString:amount
-                                              font:self.palette.agentWalletTransactionAmountFont
-                                             color:self.palette.agentWalletTopUpText];
-  amountLabel.alignment = NSTextAlignmentCenter;
-  [badge addSubview:amountLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [amountLabel.leadingAnchor constraintEqualToAnchor:badge.leadingAnchor constant:self.palette.space3],
-    [amountLabel.trailingAnchor constraintEqualToAnchor:badge.trailingAnchor constant:-self.palette.space3],
-    [amountLabel.centerYAnchor constraintEqualToAnchor:badge.centerYAnchor],
-    [badge.heightAnchor constraintEqualToConstant:self.palette.space11],
-  ]];
-
-  return badge;
-}
-
-- (NSView *)agentWalletTransactionRowWithTitle:(NSString *)title
-                                        detail:(NSString *)detail
-                                        amount:(NSString *)amount
-                                      positive:(BOOL)positive
-                                systemIconName:(NSString *)systemIconName
-                                        chatID:(NSInteger)chatID {
-  NSView *row = [[NSView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-
-  NSImageView *iconView = [[NSImageView alloc] init];
-  iconView.translatesAutoresizingMaskIntoConstraints = NO;
-  iconView.imageAlignment = NSImageAlignCenter;
-  iconView.imageScaling = NSImageScaleProportionallyDown;
-  NSImage *iconImage = [self symbolImageNamed:systemIconName accessibilityDescription:title];
-  if (@available(macOS 11.0, *)) {
-    NSImageSymbolConfiguration *iconConfiguration =
-      [NSImageSymbolConfiguration configurationWithPointSize:self.palette.agentWalletTransactionIconSize
-                                                      weight:NSFontWeightRegular];
-    iconImage = [iconImage imageWithSymbolConfiguration:iconConfiguration] ?: iconImage;
-  }
-  iconView.image = iconImage;
-  iconView.image.template = YES;
-  iconView.contentTintColor = self.palette.agentWalletTransactionDateText;
-  [row addSubview:iconView];
-
-  NSTextField *titleLabel = [self labelWithString:title
-                                             font:self.palette.agentWalletTransactionTitleFont
-                                            color:self.palette.agentWalletTransactionPrimaryText];
-  titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-
-  NSStackView *textStack = [[NSStackView alloc] init];
-  textStack.translatesAutoresizingMaskIntoConstraints = NO;
-  textStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  textStack.alignment = NSLayoutAttributeLeading;
-  textStack.distribution = NSStackViewDistributionGravityAreas;
-  textStack.spacing = self.palette.space0;
-  [textStack addArrangedSubview:titleLabel];
-  if (detail.length > 0) {
-    NSTextField *detailLabel = [self labelWithString:detail
-                                                font:self.palette.agentWalletTransactionDetailFont
-                                               color:self.palette.agentWalletTransactionDetailText];
-    detailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [textStack addArrangedSubview:detailLabel];
-  }
-  [row addSubview:textStack];
-
-  NSView *amountView = nil;
-  if (positive) {
-    amountView = [self agentWalletPositiveAmountBadgeWithAmount:amount];
-  } else {
-    NSTextField *amountLabel = [self labelWithString:amount
-                                                font:self.palette.agentWalletTransactionAmountFont
-                                               color:self.palette.agentWalletTransactionPrimaryText];
-    amountLabel.alignment = NSTextAlignmentRight;
-    amountView = amountLabel;
-  }
-  [row addSubview:amountView];
-
-  NSButton *chevronButton = [[NSButton alloc] init];
-  chevronButton.translatesAutoresizingMaskIntoConstraints = NO;
-  chevronButton.bordered = NO;
-  chevronButton.image = [self symbolImageNamed:@"chevron.right" accessibilityDescription:@"Open chat"];
-  chevronButton.image.template = YES;
-  chevronButton.contentTintColor = self.palette.agentWalletTransactionDetailText;
-  chevronButton.imagePosition = NSImageOnly;
-  chevronButton.target = self;
-  chevronButton.action = @selector(openAgentWalletPurchaseChat:);
-  chevronButton.tag = chatID;
-  chevronButton.enabled = chatID > 0;
-  [row addSubview:chevronButton];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [iconView.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
-    [iconView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [iconView.widthAnchor constraintEqualToConstant:self.palette.agentWalletTransactionIconSize],
-    [iconView.heightAnchor constraintEqualToConstant:self.palette.agentWalletTransactionIconSize],
-
-    [textStack.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:self.palette.agentWalletTransactionIconTextGap],
-    [textStack.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:amountView.leadingAnchor constant:-self.palette.space8],
-
-    [chevronButton.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
-    [chevronButton.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [chevronButton.widthAnchor constraintEqualToConstant:self.palette.space9],
-    [chevronButton.heightAnchor constraintEqualToConstant:self.palette.space9],
-
-    [amountView.trailingAnchor constraintEqualToAnchor:chevronButton.leadingAnchor constant:-self.palette.space6],
-    [amountView.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-  ]];
-
-  return row;
-}
-
-- (NSView *)agentWalletPopoverRowWithTitle:(NSString *)title
-                                    amount:(NSString *)amount
-                                 chatTitle:(NSString *)chatTitle
-                                    chatID:(NSInteger)chatID {
-  NSView *row = [[NSView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-
-  NSTextField *titleLabel = [self labelWithString:title font:self.palette.labelFont color:self.palette.appText];
-  titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-
-  NSButton *chatLinkButton = [NSButton buttonWithTitle:chatTitle target:self action:@selector(openAgentWalletPurchaseChat:)];
-  chatLinkButton.translatesAutoresizingMaskIntoConstraints = NO;
-  chatLinkButton.bordered = NO;
-  chatLinkButton.alignment = NSTextAlignmentLeft;
-  chatLinkButton.tag = chatID;
-  chatLinkButton.enabled = chatID > 0;
-  chatLinkButton.cell.lineBreakMode = NSLineBreakByTruncatingTail;
-  NSColor *chatLinkColor = chatID > 0 ? self.palette.markdownLinkText : self.palette.textMuted;
-  chatLinkButton.attributedTitle =
-    [[NSAttributedString alloc] initWithString:chatTitle
-                                    attributes:@{
-                                      NSFontAttributeName: self.palette.smallFont,
-                                      NSForegroundColorAttributeName: chatLinkColor,
-                                      NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
-                                    }];
-
-  NSStackView *textStack = [[NSStackView alloc] init];
-  textStack.translatesAutoresizingMaskIntoConstraints = NO;
-  textStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  textStack.alignment = NSLayoutAttributeLeading;
-  textStack.distribution = NSStackViewDistributionGravityAreas;
-  textStack.spacing = self.palette.space0;
-  [textStack addArrangedSubview:titleLabel];
-  [textStack addArrangedSubview:chatLinkButton];
-  [row addSubview:textStack];
-
-  NSTextField *amountLabel = [self labelWithString:amount font:self.palette.labelFont color:self.palette.appText];
-  amountLabel.alignment = NSTextAlignmentRight;
-  [row addSubview:amountLabel];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [textStack.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:self.palette.space3],
-    [textStack.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-    [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:amountLabel.leadingAnchor constant:-self.palette.space5],
-
-    [chatLinkButton.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor constant:-(self.palette.space8 * 2.0)],
-
-    [amountLabel.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-self.palette.space3],
-    [amountLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-  ]];
-
-  return row;
-}
-
 - (NSButton *)buttonWithTitle:(NSString *)title action:(SEL)action {
   NSButton *button = [NSButton buttonWithTitle:title target:self action:action];
   button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4996,9 +4246,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     ? NSWidth(self.createChatButton.bounds)
     : self.createChatButton.intrinsicContentSize.width;
   CGFloat maximumTabTrailing = topbarWidth -
-    [self agentWalletPillTrailingInset] -
-    [self agentWalletPillWidth] -
-    [self agentWalletPillGap] -
+    self.palette.space4 -
     createButtonWidth +
     [self createChatButtonTabOverlap];
   return MAX(self.palette.space0, maximumTabTrailing - leadingConstant);
@@ -5010,20 +4258,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (CGFloat)createChatButtonVerticalOffset {
   return self.palette.space2 * 0.5;
-}
-
-- (CGFloat)agentWalletPillTrailingInset {
-  return self.palette.space4;
-}
-
-- (CGFloat)agentWalletPillGap {
-  return self.palette.space4;
-}
-
-- (CGFloat)agentWalletPillWidth {
-  return NSWidth(self.agentWalletButton.bounds) > self.palette.space0
-    ? NSWidth(self.agentWalletButton.bounds)
-    : self.agentWalletButton.intrinsicContentSize.width;
 }
 
 - (void)updateWorkspaceTabWidths {
@@ -5043,7 +4277,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (CGFloat)sidebarActionStackHeight {
-  return self.sidebarActionStack.arrangedSubviews.count * self.palette.fieldHeight;
+  return self.sidebarUserButton.intrinsicContentSize.height;
 }
 
 - (CGFloat)currentSidebarContentWidth {
@@ -5187,7 +4421,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     owner.sidebarView.hidden = hideAfterLayout;
     owner.sidebarResizeHandle.hidden = hideAfterLayout;
     owner.sidebarView.alphaValue = 1;
-    [owner updateNotesMessageInputWidth];
     [owner invalidateSidebarResizeCursorRects];
     [owner.workspaceOutline updateOutline];
   }];
@@ -5206,7 +4439,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)addChatToSessionIfNeeded:(NSInteger)chatID activate:(BOOL)activate {
   TLChatSummary *chat = [self summaryForChatID:chatID];
-  NSString *title = chat.title.length > 0 ? chat.title : @"New chat";
+  TLWorkspaceTab *existing = [self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID];
+  NSString *title = chat.title.length > 0 ? chat.title : (existing.title.length > 0 ? existing.title : @"New chat");
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat
                                              tabID:chatID
                                              title:title
@@ -5275,7 +4509,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
   if (tab.kind == TLWorkspaceTabKindSettings) runtime.featureController = self.settingsTabController;
-  if (tab.kind == TLWorkspaceTabKindNotes) runtime.featureController = self.notesTabController;
   self.workspaceTabRuntimes[TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID)] = runtime;
 }
 
@@ -5397,7 +4630,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (NSString *)displayTitleForWorkspaceTab:(TLWorkspaceTab *)tab {
   if (tab.kind == TLWorkspaceTabKindChat) {
     TLChatSummary *chat = [self summaryForChatID:tab.tabID];
-    return chat.title.length > 0 ? chat.title : @"New chat";
+    return chat.title.length > 0 ? chat.title : (tab.title.length > 0 ? tab.title : @"New chat");
   }
   if (tab.kind == TLWorkspaceTabKindBrowser) {
     return tab.title.length > 0 ? tab.title : [self browserTabTitleForURL:tab.URL];
@@ -5431,8 +4664,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return @"gearshape";
     case TLWorkspaceTabKindAgents:
       return @"cpu";
-    case TLWorkspaceTabKindNotes:
-      return @"doc.text";
     case TLWorkspaceTabKindDebug:
       return @"terminal";
     case TLWorkspaceTabKindChat:
@@ -5535,10 +4766,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindAgents &&
         self.agentsTab &&
         self.appStateManager.snapshot.activeTabID == self.agentsTab.tabID;
-    case TLWorkspaceTabKindNotes:
-      return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindNotes &&
-        self.notesTab &&
-        self.appStateManager.snapshot.activeTabID == self.notesTab.tabID;
     case TLWorkspaceTabKindDebug:
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindDebug &&
         self.debugTab &&
@@ -5552,7 +4779,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
   [self contentViewForTab:self.settingsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindSettings);
   [self contentViewForTab:self.agentsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindAgents);
-  [self contentViewForTab:self.notesTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindNotes);
   [self contentViewForTab:self.debugTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindDebug);
 
   for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
@@ -5601,9 +4827,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.sidebarToggleButton.contentTintColor = foreground;
   self.createChatButton.palette = self.palette;
   self.createChatButton.contentTintColor = foreground;
-  self.agentWalletButton.palette = self.palette;
-  self.agentWalletButton.title = @"$12.32";
-  self.agentWalletButton.showsActivityIndicator = NO;
   [self styleSidebarActionButtons];
 }
 
@@ -5611,16 +4834,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.sidebarActionStack.spacing = self.palette.space0;
   [self updateSidebarContentInsets];
   self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
-  [self.sidebarActionStack setCustomSpacing:self.palette.space0 afterView:self.taskStatusSidebarButton];
 
-  self.taskStatusSidebarButton.palette = self.palette;
-  self.taskStatusSidebarButton.title = @"8 Subagents";
-  self.taskStatusSidebarButton.systemIconName = @"";
-  self.taskStatusSidebarButton.showsActivityIndicatorIcon = YES;
-  self.taskStatusSidebarButton.toolTip = @"Subagents";
-  self.taskStatusSidebarButton.selected = NO;
-  self.notesShortcutButton.palette = self.palette;
-  self.historyShortcutButton.palette = self.palette;
   self.sidebarUserButton.palette = self.palette;
   self.sidebarUserButton.displayName = @"Yaroslav";
 }
@@ -5638,12 +4852,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.sidebarAgentPaneSurface removeFromSuperview];
   self.sidebarAgentPaneSurface = nil;
   self.sidebarAgentPane = nil;
-  [self.agentWalletPopover close];
-  self.agentWalletPopover = nil;
-  self.agentWalletButton.forcesHoverState = NO;
-  [self.taskStatusPopover close];
-  self.taskStatusPopover = nil;
-  self.taskStatusSidebarButton.forcesHoverState = NO;
   TLThemePreference themePreference = self.settings.theme;
   NSAppearance *requestedAppearance = nil;
   if (themePreference == TLThemePreferenceLight) {
@@ -5708,6 +4916,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.stopAgentButton) {
     [self styleButton:self.stopAgentButton background:self.palette.secondaryActionSurface foreground:self.palette.secondaryActionText];
   }
+  if (self.agentSettingsButton) {
+    [self styleButton:self.agentSettingsButton background:self.palette.secondaryActionSurface foreground:self.palette.secondaryActionText];
+  }
+  if (self.folderAccessButton) {
+    [self styleButton:self.folderAccessButton background:self.palette.secondaryActionSurface foreground:self.palette.secondaryActionText];
+  }
   if (self.deleteAgentButton) {
     [self styleButton:self.deleteAgentButton background:self.palette.secondaryActionSurface foreground:self.palette.secondaryActionText];
   }
@@ -5736,7 +4950,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.notchOverlayController updatePalette:self.palette];
   [self layoutTrafficLightButtons];
   [self updateMessageInputWidthForWindowWidth:NSWidth(self.window.frame)];
-  [self updateNotesMessageInputWidth];
   [self updateMessageScrollInsets];
   [self invalidateThemeAppearanceForViewTree:self.window.contentView];
 }
@@ -5755,11 +4968,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)applySidebarTilePalette {
-  for (NSView *view in self.sidebarTileGrid.arrangedSubviews) {
-    if ([view isKindOfClass:TLIconTileView.class]) {
-      ((TLIconTileView *)view).palette = self.palette;
-    }
-  }
+  [self rebuildSidebarAgents];
+  [self.agentCreationWindowController applyPalette:self.palette];
+  [self.agentFolderAccessWindowController applyPalette:self.palette];
+  [self.agentSettingsWindowController applyPalette:self.palette];
   [self styleSidebarActionButtons];
 }
 
@@ -5819,16 +5031,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)updateControlStates {
   [self.messageInput recalculateHeight];
-  [self updateNotesPromptControlState];
   [self updateMessageScrollInsets];
 
   if (self.widgetbookMode) {
     self.createChatButton.enabled = NO;
     self.sidebarToggleButton.enabled = NO;
-    self.agentWalletButton.enabled = NO;
-    self.taskStatusSidebarButton.enabled = NO;
-    self.notesShortcutButton.enabled = NO;
-    self.historyShortcutButton.enabled = NO;
     self.sidebarUserButton.enabled = NO;
     self.sendButton.enabled = NO;
     self.messageInput.attachmentsEditable = NO;
@@ -5851,21 +5058,19 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
-  self.agentWalletButton.enabled = YES;
-  self.taskStatusSidebarButton.enabled = YES;
-  self.notesShortcutButton.enabled = YES;
-  self.historyShortcutButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
-  self.sendButton.enabled = !self.isSending && chatActive && (prompt.length > 0 || self.messageInput.attachmentURLs.count > 0);
+  self.messageInput.showsStopButton = [self canStopResponse];
+  BOOL hasAttachments = self.messageInput.attachmentURLs.count > 0;
+  self.sendButton.enabled = !self.preparingAttachments && (self.messageInput.showsStopButton ||
+    (chatActive && (prompt.length > 0 || hasAttachments) && (!self.isSending || (!hasAttachments && [prompt hasPrefix:@"/"]))));
   self.messageInput.attachmentsEditable = !self.preparingAttachments && chatActive;
-  self.sendButton.toolTip = self.preparingAttachments ? @"Copying attachments…" : @"Send";
+  if (self.preparingAttachments) self.sendButton.toolTip = @"Copying attachments…";
   self.historyPanelController.enabled = YES;
   self.promptTextView.editable = chatActive && !self.preparingAttachments;
   self.promptTextView.selectable = YES;
 
   self.createChatButton.alphaValue = self.createChatButton.enabled ? 1.0 : self.palette.disabledOpacity;
   self.sidebarToggleButton.alphaValue = self.sidebarToggleButton.enabled ? 1.0 : self.palette.disabledOpacity;
-  self.agentWalletButton.alphaValue = self.agentWalletButton.enabled ? 1.0 : self.palette.disabledOpacity;
   self.sendButton.alphaValue = self.sendButton.enabled ? 1.0 : self.palette.disabledOpacity;
   [self styleSidebarActionButtons];
   [self.workspaceTabsController setControlsEnabled:YES disabledOpacity:self.palette.disabledOpacity];
@@ -5885,7 +5090,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteChatID:(NSInteger)chatID {
-  if (self.isSending || self.widgetbookMode || chatID <= 0) {
+  if (self.turnRunners[@(chatID)] || self.widgetbookMode || chatID <= 0) {
     return;
   }
 
@@ -5909,7 +5114,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)deleteChatWithID:(NSInteger)chatID {
-  if (self.isSending || self.widgetbookMode || chatID <= 0) {
+  if (self.turnRunners[@(chatID)] || self.widgetbookMode || chatID <= 0) {
     return;
   }
 
@@ -6013,7 +5218,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
 
     [strongSelf.chatIconRequests removeObject:requestKey];
-    if (error || icon.length == 0) {
+    if (error) {
+      [strongSelf presentErrorMessage:[NSString stringWithFormat:@"Could not generate the chat icon: %@", error.localizedDescription]];
+      return;
+    }
+    if (icon.length == 0) {
       return;
     }
 
@@ -6037,17 +5246,33 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return @"";
 }
 
+- (void)synchronizeChatTabTitles {
+  for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindChat]) {
+    TLChatSummary *summary = [self summaryForChatID:tab.tabID];
+    if (!summary.title.length || ([tab.title isEqual:summary.title] && [tab.toolTip isEqual:summary.title])) continue;
+    TLWorkspaceTab *updatedTab = [tab copy];
+    updatedTab.title = summary.title;
+    updatedTab.toolTip = summary.title;
+    [self.appStateManager upsertWorkspaceTab:updatedTab activate:NO];
+  }
+}
+
 - (void)applySavedChatSummary:(TLChatSummary *)savedSummary {
   if (!savedSummary) {
     return;
   }
 
+  if (!self.chats) self.chats = [NSMutableArray array];
+  BOOL found = NO;
   for (NSUInteger index = 0; index < self.chats.count; index += 1) {
     if (self.chats[index].chatID == savedSummary.chatID) {
-      self.chats[index] = savedSummary;
+      self.chats[index] = [savedSummary copy];
+      found = YES;
       break;
     }
   }
+
+  if (!found) [self.chats addObject:[savedSummary copy]];
 
   if (self.activeChat.chatID == savedSummary.chatID) {
     self.activeChat.title = savedSummary.title;
@@ -6055,6 +5280,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.activeChat.updatedAt = savedSummary.updatedAt;
   }
 
+  [self synchronizeChatTabTitles];
   [self reloadHistoryPanel];
   [self selectActiveChatInHistory];
   [self reloadWorkspaceTabs];

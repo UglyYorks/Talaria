@@ -4,6 +4,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *palette);
+
 typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
   TLBorderEdgeNone = 0,
   TLBorderEdgeTop = 1 << 0,
@@ -28,6 +30,7 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 @end
 
 @interface TLSlashCommandItemView : NSControl
+@property (nonatomic) BOOL selectionManagedExternally;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSString *command;
 @property (nonatomic, copy) NSString *commandDescription;
@@ -43,6 +46,7 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 @end
 
 @interface TLGlassMessageInput : TLMessageInput
+@property (nonatomic) BOOL usesChatBackdrop;
 @end
 
 @interface TLBrowserAddressInput : TLGlassMessageInput <NSTextViewDelegate>
@@ -65,8 +69,7 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 
 typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {
   TLSidebarShortcutKindWebsite = 0,
-  TLSidebarShortcutKindNotes,
-  TLSidebarShortcutKindHistory,
+  TLSidebarShortcutKindHistory = 2,
 };
 
 @interface TLSidebarShortcutButton : NSControl

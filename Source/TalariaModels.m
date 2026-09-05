@@ -8,6 +8,7 @@ NSString * const TLRoleAssistant = @"assistant";
 NSString * const TLAgentGuestKindLinux = @"linux";
 NSString * const TLAgentRuntimePython = @"python";
 NSString * const TLAgentStatusStopped = @"stopped";
+NSString * const TLAgentStatusInitializing = @"initializing";
 NSString * const TLAgentStatusStarting = @"starting";
 NSString * const TLAgentStatusRunning = @"running";
 NSString * const TLAgentStatusStopping = @"stopping";
@@ -62,6 +63,7 @@ NSString *TLAgentDisplayRuntime(NSString *runtime) {
 }
 
 NSString *TLAgentDisplayStatus(NSString *status) {
+  if ([status isEqualToString:TLAgentStatusInitializing]) return @"Initializing";
   if ([status isEqualToString:TLAgentStatusStopped]) {
     return @"Stopped";
   }
@@ -191,6 +193,9 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   self = [super init];
   if (self) {
     _name = @"Agent";
+    _avatar = @"🤖";
+    _soul = @"";
+    _folderPaths = @[];
     _guestKind = [TLAgentGuestKindLinux copy];
     _runtime = [TLAgentRuntimePython copy];
     _status = [TLAgentStatusStopped copy];
@@ -205,6 +210,9 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   TLAgentRecord *copy = [[[self class] allocWithZone:zone] init];
   copy.agentID = self.agentID;
   copy.name = self.name;
+  copy.avatar = self.avatar;
+  copy.soul = self.soul;
+  copy.folderPaths = self.folderPaths;
   copy.guestKind = self.guestKind;
   copy.runtime = self.runtime;
   copy.status = self.status;

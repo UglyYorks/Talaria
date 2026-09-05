@@ -55,9 +55,15 @@ static NSError *TLTestError(NSString *message) {
 @property NSError *streamError;
 @property BOOL deferred;
 @property NSArray<TLChatMessage *> *lastMessages;
+@property NSString *cancelledRequestID;
+@property NSUInteger cancelCount;
 @end
 
 @implementation TLTurnTestStream
+- (void)cancelChatWithRequestID:(NSString *)requestID {
+  self.cancelledRequestID = requestID;
+  self.cancelCount += 1;
+}
 - (instancetype)init {
   if ((self = [super init])) {
     _requests = [NSMutableArray array];
@@ -200,6 +206,42 @@ static void TestFailureWithoutOutput(void) {
            @"failed empty request leaves no synthetic or empty assistant response in history");
 }
 
+static void TestAnswerDeltasAreImmediatelyVisible(void) {
+  for (NSNumber *fails in @[@NO, @YES]) {
+    TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
+    TLTurnTestStream *stream = [[TLTurnTestStream alloc] init];
+    stream.deferred = YES;
+    TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+    NSMutableArray<TLChatMessage *> *messages = [NSMutableArray array];
+    NSMutableArray<NSString *> *visibleAnswers = [NSMutableArray array];
+    __block TLAssistantTurnResult *result = nil;
+    [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"hello"
+      updateHandler:^{ [visibleAnswers addObject:messages.lastObject.content ?: @""]; }
+      completionHandler:^(TLAssistantTurnResult *terminalResult) { result = terminalResult; } error:nil];
+    TLTurnTestRequest *request = stream.requests.lastObject;
+    NSMutableString *expected = [NSMutableString string];
+    // No blank line or closing fence: none of these chunks completes a Markdown block.
+    for (NSString *chunk in @[@"Hello", @" 🦊", @"\n```swift\n", @"print(\"hi\")"]) {
+      NSUInteger previousUpdates = visibleAnswers.count;
+      [expected appendString:chunk];
+      request.delta(request.requestID, TLAgentStreamDeltaKindContent, chunk);
+      TLAssert(runner.running && !result && store.saveCount == 1, @"answer appears before completion or assistant persistence");
+      TLAssert(visibleAnswers.count == previousUpdates + 1 && [visibleAnswers.lastObject isEqual:expected],
+               @"every delta immediately updates the visible answer, including unfinished Markdown");
+    }
+    NSUInteger previousUpdates = visibleAnswers.count;
+    request.delta(@"unrelated-request", TLAgentStreamDeltaKindContent, @"wrong answer");
+    request.delta(request.requestID, TLAgentStreamDeltaKindContent, @"");
+    TLAssert(visibleAnswers.count == previousUpdates, @"empty and mismatched deltas do not update the answer");
+    NSError *streamError = fails.boolValue ? TLTestError(@"Disconnected") : nil;
+    request.completion(streamError);
+    TLAssert(result.generationError == streamError && !runner.running, @"stream retains its completion outcome");
+    TLAssert([result.assistantMessage.content isEqual:expected] && [store.savedMessages.lastObject.content isEqual:expected] &&
+             [visibleAnswers.lastObject isEqual:expected], @"completion preserves the exact streamed answer without duplication on success or failure");
+    TLAssert([visibleAnswers[1] isEqual:@"Hello"], @"later deltas do not mutate earlier display snapshots");
+  }
+}
+
 static void TestValidationAndStaleCallbacks(void) {
   TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
   TLTurnTestStream *stream = [[TLTurnTestStream alloc] init];
@@ -233,6 +275,45 @@ static void TestValidationAndStaleCallbacks(void) {
   TLAssert([((TLChatMessage *)messages.lastObject).content isEqual:@"second reply"], @"new response remains independent of stale callbacks");
 }
 
+static void TestCancellation(void) {
+  for (NSNumber *partial in @[@NO, @YES]) {
+    TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
+    TLTurnTestStream *stream = [[TLTurnTestStream alloc] init];
+    stream.deferred = YES;
+    TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+    NSMutableArray *messages = [NSMutableArray array];
+    __block NSUInteger completions = 0;
+    __block TLAssistantTurnResult *result;
+    [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"hello"
+      updateHandler:nil completionHandler:^(TLAssistantTurnResult *value) { result = value; completions++; } error:nil];
+    TLTurnTestRequest *first = stream.requests.lastObject;
+    if (partial.boolValue) {
+      first.delta(first.requestID, TLAgentStreamDeltaKindContent, @"Partial **answer");
+      first.delta(first.requestID, TLAgentStreamDeltaKindThinking, @"Thinking");
+    }
+    [runner cancel];
+    [runner cancel];
+    TLAssert(!runner.running && completions == 1 && stream.cancelCount == 1 &&
+      [stream.cancelledRequestID isEqual:first.requestID], @"Stop cancels exactly the active request once");
+    TLAssert(result.generationStatus == TLAssistantTurnGenerationStatusCancelled && !result.generationError,
+      @"user cancellation is a normal terminal outcome without an error alert");
+    TLAssert(messages.count == (partial.boolValue ? 2 : 1), @"empty cancelled placeholders are removed");
+    if (partial.boolValue) TLAssert([result.assistantMessage.content isEqual:@"Partial **answer"] &&
+      [store.savedMessages.lastObject.thinking isEqual:@"Thinking"], @"Stop persists unfinished content and thinking");
+    [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"next"
+      updateHandler:nil completionHandler:^(TLAssistantTurnResult *value) { completions++; } error:nil];
+    first.delta(first.requestID, TLAgentStreamDeltaKindContent, @"late output");
+    first.completion(TLTestError(@"late error"));
+    TLAssert(runner.running && completions == 1 && ((TLChatMessage *)messages.lastObject).content.length == 0,
+      @"late cancelled callbacks cannot affect a new response");
+    TLTurnTestRequest *second = stream.requests.lastObject;
+    second.delta(second.requestID, TLAgentStreamDeltaKindContent, @"New answer");
+    second.completion(nil);
+    TLAssert(completions == 2 && [store.savedMessages.lastObject.content isEqual:@"New answer"],
+      @"a new response can finish normally after Stop");
+  }
+}
+
 static void TestAttachmentPrompt(void) {
   TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
   TLTurnTestStream *stream = [[TLTurnTestStream alloc] init];
@@ -247,16 +328,22 @@ static void TestAttachmentPrompt(void) {
   TLAssert([store.savedMessages.firstObject.content isEqual:prompt], @"attachment context does not replace the user's saved text");
   TLAssert(store.savedMessages.firstObject.attachments.count == 1 && store.savedMessages.lastObject.attachments.count == 0,
            @"metadata belongs only to the outgoing message");
+  [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:[NSMutableArray array]
+    nextPrompt:@"/help with this file" updateHandler:nil completionHandler:nil error:nil];
+  TLAssert(![stream.lastMessages.lastObject.content hasPrefix:@"/"] &&
+    [stream.lastMessages.lastObject.content containsString:@"/help with this file"], @"attached slash text is sent as a turn, not dispatched as a TUI command");
 }
 
 int main(void) {
   @autoreleasepool {
     TestAttachmentPrompt();
+    TestCancellation();
     TestSuccessfulTurn();
     TestUserSaveFailure();
     TestAssistantSaveFailure();
     TestPartialStreamFailures();
     TestFailureWithoutOutput();
+    TestAnswerDeltasAreImmediatelyVisible();
     TestValidationAndStaleCallbacks();
     if (failures == 0) fprintf(stdout, "AssistantTurnResultTests passed\n");
   }

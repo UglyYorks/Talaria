@@ -37,7 +37,11 @@ static void TestAttachmentMigrationCollision(void) {
   // Another worktree used version 5 for agent metadata, without adding message attachments.
   Check([fixture executeSQL:
     "ALTER TABLE messages DROP COLUMN attachments;"
-    "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT 'robot';"
+    "DROP INDEX agents_vm_directory;"
+    "ALTER TABLE agents DROP COLUMN avatar;"
+    "ALTER TABLE agents DROP COLUMN soul;"
+    "ALTER TABLE agents DROP COLUMN folder_paths;"
+    "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT '🤖';"
     "ALTER TABLE agents ADD COLUMN soul TEXT NOT NULL DEFAULT '';"
     "ALTER TABLE agents ADD COLUMN folder_paths TEXT NOT NULL DEFAULT '[]';"
     "INSERT INTO agents(name,guest_kind,runtime,status,vm_directory,soul) VALUES('Existing agent','linux','python','stopped','/tmp/test-agent','Keep this');"
@@ -79,6 +83,10 @@ static void TestProfileSchemaCompatibility(void) {
   database = nil;
   TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
   Check([fixture executeSQL:
+    "DROP INDEX agents_vm_directory;"
+    "ALTER TABLE agents DROP COLUMN avatar;"
+    "ALTER TABLE agents DROP COLUMN soul;"
+    "ALTER TABLE agents DROP COLUMN folder_paths;"
     "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT '🤖';"
     "ALTER TABLE agents ADD COLUMN soul TEXT NOT NULL DEFAULT '';"
     "ALTER TABLE agents ADD COLUMN folder_paths TEXT NOT NULL DEFAULT '[]';"
@@ -89,7 +97,7 @@ static void TestProfileSchemaCompatibility(void) {
   for (NSNumber *withoutAttachments in @[@NO, @YES]) {
     if (withoutAttachments.boolValue) {
       fixture = [TLSQLiteConnection openURL:URL error:&error];
-      Check([fixture executeSQL:"ALTER TABLE messages DROP COLUMN attachments" error:&error], @"prepares profile-only schema");
+      Check([fixture executeSQL:"ALTER TABLE messages DROP COLUMN attachments; PRAGMA user_version = 6" error:&error], @"prepares profile-only schema");
       fixture = nil;
     }
     database = [[TLDatabase alloc] initWithURL:URL error:&error];
@@ -102,7 +110,7 @@ static void TestProfileSchemaCompatibility(void) {
     database = nil;
     fixture = [TLSQLiteConnection openURL:URL error:&error];
     TLSQLiteStatement *version = [fixture prepareSQL:"PRAGMA user_version" error:&error];
-    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 6, @"does not downgrade profile schema version");
+    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 7, @"upgrades profile schema without downgrading its data");
     version = nil;
     TLSQLiteStatement *profile = [fixture prepareSQL:"SELECT soul FROM agents" error:&error];
     Check([profile step] == SQLITE_ROW && [[profile stringAtColumn:0] isEqual:@"Keep profile"], @"preserves agent profile data");
@@ -110,7 +118,7 @@ static void TestProfileSchemaCompatibility(void) {
     fixture = nil;
   }
   fixture = [TLSQLiteConnection openURL:URL error:&error];
-  Check([fixture executeSQL:"PRAGMA user_version = 7" error:&error], @"prepares unknown future schema");
+  Check([fixture executeSQL:"PRAGMA user_version = 8" error:&error], @"prepares unknown future schema");
   fixture = nil;
   error = nil;
   Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"still rejects unknown future schema versions");

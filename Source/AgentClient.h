@@ -1,5 +1,5 @@
 #import <Foundation/Foundation.h>
-#import "OpenRouterClient.h"
+#import "AgentModel.h"
 #import "TalariaModels.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -13,23 +13,27 @@ typedef NS_ENUM(NSInteger, TLAgentStreamDeltaKind) {
 
 typedef void (^TLAgentStreamDeltaHandler)(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text);
 typedef void (^TLAgentStreamCompletionHandler)(NSError *_Nullable error);
-typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLOpenRouterModel *> *_Nullable models, NSError *_Nullable error);
+typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLAgentModel *> *_Nullable models, NSError *_Nullable error);
 
 @protocol TLAgentStreaming <NSObject>
 
-- (void)streamChatWithAgent:(TLAgentRecord *)agent
-                  requestID:(NSString *)requestID
-                      token:(NSString *)token
-                      model:(NSString *)model
-                   messages:(NSArray<TLChatMessage *> *)messages
-                      delta:(TLAgentStreamDeltaHandler)delta
-                 completion:(TLAgentStreamCompletionHandler)completion;
+- (void)generateHermesTextWithAgent:(TLAgentRecord *)agent
+                          requestID:(NSString *)requestID
+                              token:(NSString *)token
+                              model:(NSString *)model
+                       instructions:(NSString *)instructions
+                              input:(NSString *)input
+                              delta:(TLAgentStreamDeltaHandler)delta
+                         completion:(TLAgentStreamCompletionHandler)completion;
 
 - (void)fetchModelCatalogueWithAgent:(TLAgentRecord *)agent
                                 token:(NSString *)token
                            completion:(TLAgentModelCatalogueHandler)completion;
 
-@optional
+- (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent
+                              token:(NSString *)token
+                              model:(NSString *)model
+                         completion:(void (^)(NSDictionary *_Nullable catalogue, NSError *_Nullable error))completion;
 - (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent
                            requestID:(NSString *)requestID
                            sessionID:(NSString *)sessionID
@@ -38,6 +42,8 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLOpenRouterModel *> *_Null
                               prompt:(NSString *)prompt
                                delta:(TLAgentStreamDeltaHandler)delta
                           completion:(TLAgentStreamCompletionHandler)completion;
+@optional
+- (void)cancelChatWithRequestID:(NSString *)requestID;
 - (void)installHermesWithAgent:(TLAgentRecord *)agent
                      requestID:(NSString *)requestID
                       progress:(TLAgentStreamDeltaHandler)progress

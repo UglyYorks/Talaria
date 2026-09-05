@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <math.h>
 #import <sqlite3.h>
+#import <sys/socket.h>
+#import <unistd.h>
 #import "AgentClient.h"
 #import "AgentOrchestrator.h"
 #import "AgentVMService.h"
@@ -10,15 +12,13 @@
 #import "BrowserPageContext.h"
 #import "ChatIconGenerator.h"
 #import "Database.h"
+#import "DatabaseMigrator.h"
 #import "NotchOverlayState.h"
-#import "OpenRouterClient.h"
+#import "AgentModel.h"
 #import "PromptBuilder.h"
 #import "PromptMessages.h"
 #import "StreamingBlockBuffer.h"
 #import "WorkspaceState.h"
-
-NSDictionary<NSString *, NSString *> *TLParseOpenRouterStreamDelta(NSString *data, NSError **error);
-NSArray<TLOpenRouterModel *> *TLParseOpenRouterModelsResponse(NSData *data, NSError **error);
 
 static NSUInteger TLFailureCount = 0;
 
@@ -55,6 +55,14 @@ static NSUInteger TLFailureCount = 0;
 @property (nonatomic, copy) NSString *contentDelta;
 @property (nonatomic, copy) NSString *thinkingDelta;
 @property (nonatomic, strong, nullable) NSError *streamError;
+@property (nonatomic, strong, nullable) NSError *installError;
+@property (nonatomic) NSUInteger installCount;
+@property (nonatomic) BOOL deferInstall;
+@property (nonatomic, copy) TLAgentStreamCompletionHandler pendingInstallCompletion;
+@property (nonatomic, copy) NSDictionary *commandCatalogue;
+@property (nonatomic) NSUInteger catalogueRequestCount;
+@property (nonatomic) BOOL deferCatalogue;
+@property (nonatomic, copy) void (^pendingCatalogue)(NSDictionary *, NSError *);
 @end
 
 @implementation TLFakeAgentClient
@@ -68,25 +76,30 @@ static NSUInteger TLFailureCount = 0;
   return self;
 }
 
-- (void)streamChatWithAgent:(TLAgentRecord *)agent
-                  requestID:(NSString *)requestID
-                      token:(NSString *)token
-                      model:(NSString *)model
-                   messages:(NSArray<TLChatMessage *> *)messages
-                      delta:(TLAgentStreamDeltaHandler)delta
-                 completion:(TLAgentStreamCompletionHandler)completion {
+- (void)generateHermesTextWithAgent:(TLAgentRecord *)agent
+                          requestID:(NSString *)requestID
+                              token:(NSString *)token
+                              model:(NSString *)model
+                       instructions:(NSString *)instructions
+                              input:(NSString *)input
+                              delta:(TLAgentStreamDeltaHandler)delta
+                         completion:(TLAgentStreamCompletionHandler)completion {
   self.capturedAgent = [agent copy];
   self.capturedToken = token;
   self.capturedModel = model;
-  self.capturedMessages = [messages copy];
-  if (self.streamError) {
-    completion(self.streamError);
-    return;
-  }
-
-  delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
+  self.capturedSessionID = nil;
+  self.capturedMessages = @[[TLChatMessage messageWithRole:TLRoleSystem content:instructions thinking:nil],
+                            [TLChatMessage messageWithRole:TLRoleUser content:input thinking:nil]];
+  if (self.streamError) { completion(self.streamError); return; }
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
   completion(nil);
+}
+
+- (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent token:(NSString *)token model:(NSString *)model
+                         completion:(void (^)(NSDictionary *, NSError *))completion {
+  self.catalogueRequestCount++;
+  if (self.deferCatalogue) { self.pendingCatalogue = completion; return; }
+  completion(self.commandCatalogue ?: @{@"pairs": @[]}, nil);
 }
 
 - (void)fetchModelCatalogueWithAgent:(TLAgentRecord *)agent
@@ -117,6 +130,15 @@ static NSUInteger TLFailureCount = 0;
   delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
   completion(nil);
+}
+
+- (void)installHermesWithAgent:(TLAgentRecord *)agent requestID:(NSString *)requestID
+                       progress:(TLAgentStreamDeltaHandler)progress completion:(TLAgentStreamCompletionHandler)completion {
+  self.installCount += 1;
+  self.capturedAgent = [agent copy];
+  progress(requestID, TLAgentStreamDeltaKindContent, @"Installing Hermes");
+  if (self.deferInstall) self.pendingInstallCompletion = completion;
+  else completion(self.installError);
 }
 
 - (void)runShellCommandWithAgent:(TLAgentRecord *)agent
@@ -333,37 +355,20 @@ static void TestStreamingBlockBuffer(void) {
   TLAssertEqualObjects([code appendText:@"```\n\n"], @"```objc\nint a = 1;\n\n```\n\n", @"commits fenced code after its closing blank line");
 }
 
-static void TestOpenRouterReasoningParsing(void) {
-  NSString *duplicatedFields = @"{\"choices\":[{\"delta\":{\"content\":\"answer\",\"reasoning\":\"thought\",\"reasoning_content\":\"thought\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"thought\"}]}}]}";
+static void TestHermesModelParsing(void) {
+  NSDictionary *catalogue = @{@"providers": @[
+    @{@"slug": @"openrouter", @"name": @"OpenRouter", @"models": @[@"openai/gpt-4", @"openai/gpt-4", @"", @42],
+      @"pricing": @{@"openai/gpt-4": @{@"input": @"$30", @"output": @"$60"}}},
+    @{@"slug": @"other", @"models": @[@"other-model"]}
+  ]};
+  NSData *data = [NSJSONSerialization dataWithJSONObject:catalogue options:0 error:nil];
   NSError *error = nil;
-  NSDictionary<NSString *, NSString *> *parts = TLParseOpenRouterStreamDelta(duplicatedFields, &error);
-  TLAssertTrue(error == nil, @"parses OpenRouter stream delta with reasoning fields");
-  TLAssertEqualObjects(parts[@"content"], @"answer", @"keeps streamed content");
-  TLAssertEqualObjects(parts[@"thinking"], @"thought", @"uses one reasoning source per stream delta");
-
-  NSString *legacyReasoning = @"{\"choices\":[{\"delta\":{\"reasoning_content\":\"legacy thought\"}}]}";
-  error = nil;
-  parts = TLParseOpenRouterStreamDelta(legacyReasoning, &error);
-  TLAssertTrue(error == nil, @"parses legacy reasoning_content stream delta");
-  TLAssertEqualObjects(parts[@"thinking"], @"legacy thought", @"keeps legacy reasoning_content as fallback");
-}
-
-static void TestOpenRouterModelParsing(void) {
-  NSString *json = @"{\"data\":["
-    "{\"id\":\"openai/gpt-4\",\"name\":\"GPT-4\",\"description\":\"Flagship model\",\"context_length\":8192,"
-    "\"architecture\":{\"output_modalities\":[\"text\"]},"
-    "\"pricing\":{\"prompt\":\"0.00003\",\"completion\":\"0.00006\"}},"
-    "{\"id\":\"image/model\",\"name\":\"Image Model\",\"architecture\":{\"output_modalities\":[\"image\"]}}"
-  "]}";
-  NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
-  NSError *error = nil;
-  NSArray<TLOpenRouterModel *> *models = TLParseOpenRouterModelsResponse(data, &error);
-  TLAssertTrue(error == nil, @"parses OpenRouter model catalogue");
-  TLAssertTrue(models.count == 1, @"keeps text output models only");
-  TLAssertEqualObjects(models[0].modelID, @"openai/gpt-4", @"keeps model id");
-  TLAssertEqualObjects([models[0] displayTitle], @"GPT-4", @"keeps model display name");
-  TLAssertTrue([[models[0] detailText] containsString:@"8,192 context"], @"formats model context");
-  TLAssertTrue([[models[0] detailText] containsString:@"$30/M input"], @"formats prompt pricing");
+  NSArray<TLAgentModel *> *models = TLParseHermesModelOptions(data, &error);
+  TLAssertTrue(error == nil && models.count == 1, @"parses Hermes provider rows and removes duplicates and malformed models");
+  TLAssertEqualObjects(models[0].modelID, @"openai/gpt-4", @"keeps the Hermes model identifier");
+  TLAssertTrue([[models[0] detailText] containsString:@"$30/M input"], @"uses Hermes pricing without multiplying it again");
+  data = [@"{\"data\":[]}" dataUsingEncoding:NSUTF8StringEncoding];
+  TLAssertTrue(TLParseHermesModelOptions(data, &error) == nil && error != nil, @"rejects the removed HTTP catalogue shape");
 }
 
 static void TestDatabasePersistence(void) {
@@ -478,8 +483,60 @@ static void TestDatabasePersistence(void) {
                @"deleted chats cannot be loaded");
 
   database = nil;
-  TLAssertTrue(TLReadSQLiteUserVersion(url) == 5, @"sets database schema user_version");
+  TLAssertTrue(TLReadSQLiteUserVersion(url) == 7, @"sets database schema user_version");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+}
+
+static void TestCompatibleVersion5Database(void) {
+  for (NSUInteger variant = 1; variant <= 3; variant++) {
+    NSURL *url = TLTemporaryDatabaseURL(@"TalariaVersion5Compatibility");
+    NSError *error = nil;
+    TLSQLiteConnection *connection = [TLSQLiteConnection openURL:url error:&error];
+    TLAssertTrue(TLDatabaseMigrate(connection, 4, &error), @"creates version-4 compatibility fixture");
+    const char *attachments = "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';";
+    const char *profile = "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT '🤖';"
+      "ALTER TABLE agents ADD COLUMN soul TEXT NOT NULL DEFAULT '';"
+      "ALTER TABLE agents ADD COLUMN folder_paths TEXT NOT NULL DEFAULT '[]';"
+      "CREATE UNIQUE INDEX agents_vm_directory ON agents(vm_directory);";
+    if (variant & 1) TLAssertTrue([connection executeSQL:attachments error:&error], @"adds attachment schema");
+    if (variant & 2) TLAssertTrue([connection executeSQL:profile error:&error], @"adds agent profile schema");
+    TLAssertTrue([connection executeSQL:"PRAGMA user_version = 5" error:&error], @"marks newer schema");
+    TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
+    TLAssertTrue(database != nil && error == nil, @"opens each known additive version-5 schema");
+    TLChatRecord *chat = [database createChatWithModel:@"test-model" error:&error];
+    TLStoredChatMessage *message = [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"kept" thinking:nil]
+      chatID:chat.chatID error:&error];
+    TLAssertTrue(message != nil, @"older message writes work with newer schema defaults");
+    if (variant & 1) {
+      [connection executeSQL:"UPDATE messages SET attachments = '[{\"name\":\"keep.txt\"}]'" error:&error];
+      [database saveChatTitle:@"Renamed" chatID:chat.chatID error:&error];
+      TLSQLiteStatement *check = [connection prepareSQL:"SELECT attachments FROM messages" error:&error];
+      TLAssertTrue([check step] == SQLITE_ROW, @"retains attachment row");
+      TLAssertEqualObjects([check stringAtColumn:0], @"[{\"name\":\"keep.txt\"}]", @"preserves newer attachment metadata");
+    }
+    TLAgentRecord *agent = [database createAgentWithName:@"Kept agent" guestKind:TLAgentGuestKindLinux
+      runtime:TLAgentRuntimePython vmDirectory:@"/tmp/compatibility-agent" error:&error];
+    TLAssertTrue(agent != nil, @"older agent writes work with newer schema defaults");
+    if (variant & 2) {
+      [connection executeSQL:"UPDATE agents SET avatar = 'Y', soul = 'keep', folder_paths = '[\"/tmp/keep\"]'" error:&error];
+      [database updateAgentWithID:agent.agentID status:TLAgentStatusStopped lastError:nil error:&error];
+      TLSQLiteStatement *check = [connection prepareSQL:"SELECT avatar, soul, folder_paths FROM agents" error:&error];
+      TLAssertTrue([check step] == SQLITE_ROW, @"retains agent profile row");
+      TLAssertEqualObjects([check stringAtColumn:0], @"Y", @"preserves newer avatar");
+      TLAssertEqualObjects([check stringAtColumn:1], @"keep", @"preserves newer agent instructions");
+      TLAssertEqualObjects([check stringAtColumn:2], @"[\"/tmp/keep\"]", @"preserves newer agent folders");
+    }
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 7, @"upgrades both version-5 variants without downgrading data");
+    [connection executeSQL:"PRAGMA user_version = 6" error:&error];
+    error = nil;
+    TLAssertTrue(!TLDatabaseMigrate(connection, 4, &error) && error != nil, @"rejects unknown future versions");
+    [connection executeSQL:"PRAGMA user_version = 5; ALTER TABLE messages ADD COLUMN unknown_required TEXT NOT NULL DEFAULT 'x'" error:nil];
+    error = nil;
+    TLAssertTrue(!TLDatabaseMigrate(connection, 4, &error) && error != nil, @"rejects unknown version-5 schema changes");
+    database = nil;
+    connection = nil;
+    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  }
 }
 
 static void TestMessageDeletion(void) {
@@ -554,6 +611,7 @@ static void TestChatIconGenerator(void) {
   TLAssertEqualObjects(icon, @"\U0001F52D", @"returns generated emoji");
   TLAssertEqualObjects(client.capturedToken, @"token", @"trims token for icon generation");
   TLAssertEqualObjects(client.capturedModel, @"small/model", @"uses supporting model for icon generation");
+  TLAssertTrue(client.capturedSessionID == nil, @"icon generation uses isolated Hermes text generation, not a conversation");
   TLAssertTrue(client.capturedMessages.count == 2, @"builds system and user icon prompts");
   TLAssertTrue([client.capturedMessages[0].content containsString:@"exactly one emoji"], @"requests one emoji");
   TLAssertTrue([client.capturedMessages[1].content containsString:@"Space photos"], @"includes chat title in icon prompt");
@@ -561,6 +619,79 @@ static void TestChatIconGenerator(void) {
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
   [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];
   [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
+}
+
+@interface TLDeferredReadyOrchestrator : TLAgentOrchestrator
+@property (copy) void (^ready)(TLAgentRecord *, NSError *);
+@end
+@implementation TLDeferredReadyOrchestrator
+- (void)withDefaultRunningAgent:(void (^)(TLAgentRecord *, NSError *))completion { self.ready = completion; }
+@end
+
+@interface TLDeferredSocketService : TLAgentVMService
+@property (copy) TLAgentVMConnectionCompletionHandler connected;
+@end
+@implementation TLDeferredSocketService
+- (void)connectToAgent:(TLAgentRecord *)agent port:(uint32_t)port timeout:(NSTimeInterval)timeout
+  completion:(TLAgentVMConnectionCompletionHandler)completion { self.connected = completion; }
+@end
+
+@interface TLTestSocketConnection : NSObject
+@property int fileDescriptor;
+@property BOOL closed;
+@end
+@implementation TLTestSocketConnection
+- (void)close {
+  if (!self.closed) { self.closed = YES; shutdown(self.fileDescriptor, SHUT_RDWR); close(self.fileDescriptor); }
+}
+@end
+
+static void TestCancellationDuringStartup(void) {
+  TLFakeAgentClient *fake = [[TLFakeAgentClient alloc] init];
+  TLDeferredReadyOrchestrator *orchestrator = [[TLDeferredReadyOrchestrator alloc]
+    initWithDatabase:(id)[[NSObject alloc] init] agentClient:fake vmService:[[TLDeferredSocketService alloc] init]];
+  __block NSUInteger completions = 0;
+  [orchestrator streamChatWithDefaultAgentRequestID:@"pending" sessionID:@"chat" token:@"token" model:@"model"
+    messages:@[] delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {
+      TLAssertTrue(NO, @"cancelled pending request never emits a delta");
+    } completion:^(NSError *error) {
+      completions++;
+      TLAssertTrue(error.code == NSURLErrorCancelled, @"startup cancellation reports cancellation");
+    }];
+  [orchestrator cancelChatWithRequestID:@"pending"];
+  [orchestrator cancelChatWithRequestID:@"pending"];
+  orchestrator.ready([[TLAgentRecord alloc] init], nil);
+  TLAssertTrue(completions == 1 && !fake.capturedAgent, @"cancelled VM startup never dispatches the chat later");
+
+  for (NSNumber *beforeConnection in @[@YES, @NO]) {
+    TLDeferredSocketService *vm = [[TLDeferredSocketService alloc] init];
+    TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:vm];
+    __block NSUInteger socketCompletions = 0;
+    [client streamHermesSessionWithAgent:[[TLAgentRecord alloc] init] requestID:@"socket" sessionID:@"chat"
+      token:@"token" model:@"model" prompt:@"Hello" delta:^(NSString *rid, TLAgentStreamDeltaKind kind, NSString *text) {}
+      completion:^(NSError *error) { socketCompletions++; TLAssertTrue(error.code == NSURLErrorCancelled,
+        @"socket cancellation reports cancellation"); }];
+    int descriptors[2];
+    TLAssertTrue(socketpair(AF_UNIX, SOCK_STREAM, 0, descriptors) == 0, @"create test transport");
+    TLTestSocketConnection *connection = [[TLTestSocketConnection alloc] init];
+    connection.fileDescriptor = descriptors[0];
+    if (beforeConnection.boolValue) [client cancelChatWithRequestID:@"socket"];
+    vm.connected((id)connection, nil);
+    char bytes[4096];
+    if (!beforeConnection.boolValue) {
+      TLAssertTrue(recv(descriptors[1], bytes, sizeof(bytes), MSG_DONTWAIT) > 0, @"connected transport sends the prompt");
+      [client cancelChatWithRequestID:@"socket"];
+    }
+    TLAssertTrue(connection.closed && recv(descriptors[1], bytes, sizeof(bytes), MSG_DONTWAIT) == 0,
+      @"Stop closes the request socket; pending cancellation never sends a prompt");
+    close(descriptors[1]);
+    [client cancelChatWithRequestID:@"socket"];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (!socketCompletions && deadline.timeIntervalSinceNow > 0) {
+      [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
+    }
+    TLAssertTrue(socketCompletions == 1, @"transport completes cancellation once");
+  }
 }
 
 static void TestAgentOrchestrator(void) {
@@ -580,7 +711,7 @@ static void TestAgentOrchestrator(void) {
   TLAssertTrue([NSFileManager.defaultManager fileExistsAtPath:agent.vmDirectory], @"orchestrator prepares VM storage");
   TLAssertTrue([orchestrator listAgents:&error].count == 1, @"orchestrator lists created agents");
   __block BOOL modelCatalogueCompleted = NO;
-  [orchestrator fetchModelCatalogueWithToken:@"token" completion:^(NSArray<TLOpenRouterModel *> *models, NSError *modelError) {
+  [orchestrator fetchModelCatalogueWithToken:@"token" completion:^(NSArray<TLAgentModel *> *models, NSError *modelError) {
     modelCatalogueCompleted = YES;
     TLAssertTrue(modelError == nil, @"auto-starts the default agent VM before model requests");
   }];
@@ -603,6 +734,218 @@ static void TestAgentOrchestrator(void) {
   TLAssertTrue([orchestrator deleteAgentWithID:agent.agentID error:&error], @"orchestrator deletes agents");
   TLAssertTrue(![NSFileManager.defaultManager fileExistsAtPath:agent.vmDirectory], @"orchestrator removes VM storage");
 
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
+}
+
+static void TestAgentProfileMigration(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"AgentProfileMigration");
+  NSError *error = nil;
+  TLSQLiteConnection *connection = [TLSQLiteConnection openURL:url error:&error];
+  TLAssertTrue(TLDatabaseMigrate(connection, 4, &error), @"creates complete v4 migration fixture");
+  TLAssertTrue([connection executeSQL:
+    "INSERT INTO agents VALUES (7, 'Existing agent', 'linux', 'python', 'stopped', '/tmp/existing-vm', NULL, 'created', 'updated')"
+    error:&error], @"seeds an existing agent before migration");
+  connection = nil;
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:&error];
+  TLAssertTrue(database != nil && error == nil, @"migrates existing agents without recreating VMs");
+  TLAgentRecord *agent = [database agentWithID:7 error:&error];
+  TLAssertEqualObjects(agent.vmDirectory, @"/tmp/existing-vm", @"migration preserves VM directory");
+  TLAssertEqualObjects(agent.name, @"Existing agent", @"migration preserves name");
+  TLAssertEqualObjects(agent.avatar, @"🤖", @"legacy agent receives emoji avatar");
+  TLAssertTrue(agent.soul.length == 0 && agent.folderPaths.count == 0, @"migration grants no new folder access");
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+}
+
+static void TestAgentProfilesAndSelection(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"AgentProfiles");
+  NSURL *agentsURL = TLTemporaryDirectoryURL(@"AgentProfileVMs");
+  NSURL *runtimeURL = TLTemporaryDirectoryURL(@"AgentProfileRuntime");
+  [NSFileManager.defaultManager createDirectoryAtURL:agentsURL withIntermediateDirectories:YES attributes:nil error:nil];
+  NSError *error = nil;
+  TLFakeTestCredentialStore *credentials = [[TLFakeTestCredentialStore alloc] init];
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:credentials error:&error];
+  TLFakeAgentClient *client = [[TLFakeAgentClient alloc] init];
+  TLFakeAgentVMService *vm = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:agentsURL runtimeBundleURL:runtimeURL];
+  TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:client vmService:vm];
+  TLAssertTrue([orchestrator createAgentWithName:@"  " avatar:@"🤖" soul:@"" folderPaths:@[] error:&error] == nil,
+               @"blank names do not provision agents");
+  TLAssertTrue([orchestrator listAgents:nil].count == 0, @"invalid profile has no persistent side effects");
+  error = nil;
+  TLAgentRecord *first = [orchestrator createAgentWithName:@"Atlas" avatar:@"🦊" soul:@"Be curious.\nTreat `$(text)` literally."
+    folderPaths:@[agentsURL.path, agentsURL.path] error:&error];
+  TLAssertTrue(first != nil && error == nil, @"creates a local profile");
+  TLAssertEqualObjects(first.folderPaths, @[agentsURL.path], @"folder access list removes duplicates");
+  TLAgentRecord *second = [orchestrator createAgentWithName:@"Atlas" avatar:@"🌙" soul:@"Be concise." folderPaths:@[] error:&error];
+  TLAssertTrue(second.agentID != first.agentID && ![second.vmDirectory isEqual:first.vmDirectory], @"same-name agents get independent VMs");
+  TLAssertTrue(database.currentAgentID == first.agentID, @"pending creation does not steal current agent");
+  TLAssertTrue([database createAgentWithName:@"Duplicate" avatar:@"🤖" soul:@"" folderPaths:@[] vmDirectory:first.vmDirectory error:&error] == nil,
+               @"enforces one agent per VM directory");
+  error = nil;
+  client.deferInstall = YES;
+  client.installError = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Offline"}];
+  __block BOOL completed = NO;
+  [orchestrator installHermesForAgentWithID:second.agentID progress:^(NSString *text) {} completion:^(TLAgentRecord *agent, NSError *failure) {
+    completed = YES;
+    TLAssertTrue(failure != nil && agent.agentID == second.agentID, @"failed setup retains its agent for retry");
+  }];
+  NSString *(^setupStatus)(void) = ^{
+    for (TLAgentRecord *listed in [orchestrator listAgents:nil]) if (listed.agentID == second.agentID) return listed.status;
+    return @"";
+  };
+  TLAssertEqualObjects(setupStatus(), TLAgentStatusInitializing, @"initializing is visible before VM startup finishes");
+  NSDate *installDeadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while (!client.pendingInstallCompletion && installDeadline.timeIntervalSinceNow > 0)
+    [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:installDeadline];
+  TLAssertTrue(client.pendingInstallCompletion != nil && !completed, @"installation continues asynchronously after VM startup");
+  TLAssertEqualObjects(setupStatus(), TLAgentStatusInitializing, @"running VM stays initializing until Hermes installation completes");
+  TLAssertTrue(![orchestrator deleteAgentWithID:second.agentID error:nil], @"initializing VM cannot be deleted during installation");
+  __block BOOL duplicateRejected = NO;
+  [orchestrator installHermesForAgentWithID:second.agentID progress:^(NSString *text) {} completion:^(TLAgentRecord *agent, NSError *failure) {
+    duplicateRejected = failure != nil;
+  }];
+  client.pendingInstallCompletion(client.installError);
+  client.pendingInstallCompletion = nil;
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while (!completed && deadline.timeIntervalSinceNow > 0) [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:deadline];
+  TLAssertTrue(completed && database.currentAgentID == first.agentID, @"failed setup leaves previous selection intact");
+  TLAssertEqualObjects([database agentWithID:second.agentID error:nil].status, TLAgentStatusError, @"persists setup failure");
+  TLAssertTrue(duplicateRejected && client.installCount == 1, @"duplicate setup is rejected without interrupting the original");
+  client.deferInstall = NO;
+  client.installError = nil;
+  completed = NO;
+  [orchestrator installHermesForAgentWithID:second.agentID progress:^(NSString *text) {} completion:^(TLAgentRecord *agent, NSError *failure) {
+    completed = YES;
+    TLAssertTrue(failure == nil, @"retry completes setup");
+  }];
+  deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while (!completed && deadline.timeIntervalSinceNow > 0) [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:deadline];
+  TLAssertTrue(completed && client.installCount == 2 && [orchestrator listAgents:nil].count == 2, @"retry reuses the same VM and record");
+  TLAssertEqualObjects(client.capturedAgent.soul, second.soul, @"installer receives this agent's soul");
+  TLAssertTrue(database.currentAgentID == second.agentID, @"successful setup selects new agent");
+  [database setCurrentAgentID:first.agentID error:&error];
+  [orchestrator fetchModelCatalogueWithToken:@"token" completion:^(NSArray *models, NSError *failure) {}];
+  TLAssertTrue(client.capturedAgent.agentID == first.agentID, @"requests follow explicit selection rather than newest agent");
+  TLDatabase *reopened = [[TLDatabase alloc] initWithURL:url credentialStore:credentials error:&error];
+  TLAgentRecord *loaded = [reopened agentWithID:first.agentID error:&error];
+  TLAssertEqualObjects(loaded.avatar, first.avatar, @"emoji survives reopening database");
+  TLAssertEqualObjects(loaded.soul, first.soul, @"multiline soul survives reopening database");
+  TLAssertEqualObjects(loaded.folderPaths, first.folderPaths, @"folder choices survive reopening database");
+  TLAssertEqualObjects(((TLAgentRecord *)[loaded copy]).folderPaths, first.folderPaths, @"copy retains profile metadata");
+  TLAssertTrue(reopened.currentAgentID == first.agentID, @"current agent survives reopening database");
+  TLAgentRecord *profileBefore = [database agentWithID:first.agentID error:nil];
+  TLAgentRecord *edited = [orchestrator updateAgentWithID:first.agentID name:@"  Nova  " avatar:@"🌟" soul:@"New soul\nBe precise." error:&error];
+  TLAssertEqualObjects(edited.name, @"Nova", @"profile edits trim the name");
+  TLAssertEqualObjects(edited.avatar, @"🌟", @"profile edits save the emoji");
+  TLAssertEqualObjects([reopened agentWithID:first.agentID error:nil].soul, @"New soul\nBe precise.", @"edited soul persists across database connections");
+  TLAssertEqualObjects(edited.vmDirectory, profileBefore.vmDirectory, @"editing settings keeps the existing VM");
+  TLAssertEqualObjects(edited.status, profileBefore.status, @"editing settings preserves running status");
+  TLAssertEqualObjects(edited.folderPaths, profileBefore.folderPaths, @"profile changes preserve folder permissions");
+  TLAssertTrue([orchestrator updateAgentWithID:first.agentID name:@"  " avatar:@"🦊" soul:@"discard" error:&error] == nil, @"blank names cannot overwrite an existing profile");
+  TLAssertEqualObjects([reopened agentWithID:first.agentID error:nil].name, @"Nova", @"invalid settings leave the saved profile intact");
+  [orchestrator updateAgentWithID:first.agentID name:@"Nova" avatar:@"🌟" soul:@"" error:&error];
+  TLAssertEqualObjects([reopened agentWithID:first.agentID error:nil].soul, @"", @"user can explicitly clear a soul");
+  TLAgentRecord *beforeFolders = [database agentWithID:first.agentID error:nil];
+  TLAgentRecord *savedFolders = [orchestrator updateAgentWithID:first.agentID folderPaths:@[agentsURL.path, agentsURL.path] error:&error];
+  TLAssertEqualObjects(savedFolders.folderPaths, @[agentsURL.path], @"folder updates normalize duplicates");
+  TLAssertEqualObjects(savedFolders.status, beforeFolders.status, @"folder updates preserve running state");
+  TLAssertEqualObjects(savedFolders.soul, beforeFolders.soul, @"folder updates preserve the agent profile");
+  TLAssertEqualObjects(savedFolders.vmDirectory, beforeFolders.vmDirectory, @"folder updates preserve the same VM");
+  TLAssertTrue([orchestrator updateAgentWithID:first.agentID folderPaths:@[@"/missing-talaria-folder-123456"] error:&error] == nil,
+    @"invalid folder updates fail without persisting");
+  TLAssertEqualObjects([reopened agentWithID:first.agentID error:nil].folderPaths, @[agentsURL.path], @"failed update leaves saved access intact across connections");
+  savedFolders = [orchestrator updateAgentWithID:first.agentID folderPaths:@[] error:&error];
+  TLAssertTrue(savedFolders != nil && [reopened agentWithID:first.agentID error:nil].folderPaths.count == 0, @"removing all folders persists an empty permission list");
+  TLAssertEqualObjects([reopened agentWithID:second.agentID error:nil].folderPaths, second.folderPaths, @"editing one agent leaves other agents unchanged");
+  TLAssertTrue(reopened.currentAgentID == first.agentID, @"folder edits preserve the current agent");
+  [reopened deleteAgentWithID:first.agentID error:&error];
+  TLAssertTrue(reopened.currentAgentID == second.agentID, @"deleting current agent selects a remaining agent");
+  [reopened deleteAgentWithID:second.agentID error:&error];
+  TLAssertTrue(reopened.currentAgentID == 0, @"empty agent list has no current agent");
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
+}
+
+static void TestAgentReadinessStatus(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"AgentReadiness");
+  NSURL *agentsURL = TLTemporaryDirectoryURL(@"AgentReadinessVMs");
+  NSURL *runtimeURL = TLTemporaryDirectoryURL(@"AgentReadinessRuntime");
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:nil];
+  TLFakeAgentVMService *vm = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:agentsURL runtimeBundleURL:runtimeURL];
+  TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:[[TLFakeAgentClient alloc] init] vmService:vm];
+  TLAgentRecord *agent = [orchestrator createAgentWithName:@"Uninstalled" error:nil];
+  agent.status = TLAgentStatusRunning; // A persisted running flag is not live VM state.
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM is stopped; setup is required", @"stale persisted status does not imply readiness");
+  vm.runningAgentID = agent.agentID;
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM is running, but setup is required", @"booting a VM does not imply Hermes is installed");
+  NSString *launcher = [agent.vmDirectory stringByAppendingPathComponent:@"workspace/.hermes/hermes-agent/venv/bin/hermes"];
+  [NSFileManager.defaultManager createDirectoryAtPath:launcher.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+  [@"#!/usr/bin/python3" writeToFile:launcher atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  TLAssertTrue([orchestrator hasHermesInstallationForAgent:agent], @"detects persisted Hermes launcher");
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"Running", @"installed Hermes in a running VM uses the concise status");
+  agent.status = TLAgentStatusError;
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM running · Error", @"failure remains visible while VM is running");
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
+}
+
+static void TestHermesCommandCache(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"TalariaCommandCacheTests");
+  NSURL *agentsURL = TLTemporaryDirectoryURL(@"TalariaCommandCacheVMs");
+  NSURL *runtimeURL = TLTemporaryDirectoryURL(@"TalariaCommandCacheRuntime");
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:nil];
+  TLFakeAgentClient *client = [[TLFakeAgentClient alloc] init];
+  TLFakeAgentVMService *vm = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:agentsURL runtimeBundleURL:runtimeURL];
+  TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:client vmService:vm];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"missing cache needs live discovery");
+  TLAssertTrue([database listAgents:nil].count == 0 && vm.startCount == 0, @"cache lookup never creates or boots a VM");
+  TLAgentRecord *agent = [orchestrator createAgentWithName:@"Cache test" error:nil];
+  NSDictionary *original = @{@"pairs": @[@[@"/custom", @"Discovered custom command"]], @"canon": @{@"/alias": @"/custom"}};
+  client.commandCatalogue = original;
+  [orchestrator fetchHermesCommandsWithToken:@"token" model:@"model" completion:^(NSDictionary *catalogue, NSError *error) {
+    TLAssertTrue(error == nil, @"live TUI discovery succeeds");
+  }];
+  orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:client vmService:vm];
+  NSUInteger boots = vm.startCount, requests = client.catalogueRequestCount;
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, original, @"discovered commands and aliases survive app restart");
+  TLAssertTrue(vm.startCount == boots && client.catalogueRequestCount == requests, @"cached suggestions do not wait for Hermes");
+
+  TLAgentRecord *other = [orchestrator createAgentWithName:@"Other cache" error:nil];
+  [database setCurrentAgentID:other.agentID error:nil];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"selected agent does not inherit another agent catalogue");
+  [database setCurrentAgentID:agent.agentID error:nil];
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, original, @"cache follows selected agent instead of newest agent");
+  [orchestrator deleteAgentWithID:other.agentID error:nil];
+
+  client.deferCatalogue = YES;
+  __block NSError *refreshError = nil;
+  [orchestrator fetchHermesCommandsWithToken:@"token" model:@"model" completion:^(NSDictionary *catalogue, NSError *error) { refreshError = error; }];
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, original, @"old suggestions remain available while refresh is pending");
+  NSDictionary *updated = @{@"pairs": @[@[@"/new-skill", @"Newly installed skill"]]};
+  client.pendingCatalogue(updated, nil);
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, updated, @"live discovery replaces removed commands and adds new skills");
+
+  [orchestrator fetchHermesCommandsWithToken:@"token" model:@"model" completion:^(NSDictionary *catalogue, NSError *error) { refreshError = error; }];
+  client.pendingCatalogue(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Gateway unavailable"}]);
+  TLAssertTrue(refreshError != nil, @"refresh failure reaches the picker for a visible retry");
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, updated, @"failed refresh preserves last successful catalogue");
+  [orchestrator fetchHermesCommandsWithToken:@"token" model:@"model" completion:^(NSDictionary *catalogue, NSError *error) { refreshError = error; }];
+  client.pendingCatalogue(@{@"unexpected": @[]}, nil);
+  client.pendingCatalogue = nil;
+  TLAssertTrue(refreshError != nil, @"invalid catalogue is rejected");
+  TLAssertEqualObjects(orchestrator.cachedHermesCommands, updated, @"invalid response cannot destroy cache");
+
+  NSString *cachePath = [agent.vmDirectory stringByAppendingPathComponent:@"hermes-commands-cache.json"];
+  [@"broken JSON" writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"corrupt cache falls back to live TUI discovery");
+  [@"{\"version\":2,\"catalogue\":{\"pairs\":[]}}" writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"unsupported cache version is ignored");
+  [orchestrator deleteAgentWithID:agent.agentID error:nil];
+  [orchestrator createAgentWithName:@"Replacement" error:nil];
+  TLAssertTrue(orchestrator.cachedHermesCommands == nil, @"replacement agent cannot inherit old custom commands");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
   [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];
   [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
@@ -725,6 +1068,13 @@ static void TestAssistantTurnRunner(void) {
                @"visible assistant message retains persisted identity for deletion");
   TLStoredChatMessage *copiedMessage = [loadedChat.messages[0] copy];
   TLAssertTrue(copiedMessage.messageID == loadedChat.messages[0].messageID, @"loaded message copies preserve identity");
+
+  runner.referenceContext = @"Unrelated page context";
+  [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
+                nextPrompt:@"/model provider/model with arguments" updateHandler:nil completionHandler:nil error:&error];
+  TLAssertEqualObjects(client.capturedMessages[0].content, @"/model provider/model with arguments",
+                       @"Hermes receives raw slash commands without injected reference context");
+  runner.referenceContext = nil;
 
   NSMutableArray<TLChatMessage *> *validationMessages = [NSMutableArray array];
   NSError *validationError = nil;
@@ -938,12 +1288,17 @@ int main(int argc, const char *argv[]) {
     TestPromptBuilder();
     TestPromptMessages();
     TestStreamingBlockBuffer();
-    TestOpenRouterReasoningParsing();
-    TestOpenRouterModelParsing();
+    TestHermesModelParsing();
     TestDatabasePersistence();
+    TestCompatibleVersion5Database();
     TestMessageDeletion();
     TestChatIconGenerator();
+    TestCancellationDuringStartup();
     TestAgentOrchestrator();
+    TestAgentProfilesAndSelection();
+    TestAgentProfileMigration();
+    TestHermesCommandCache();
+    TestAgentReadinessStatus();
     TestAssistantTurnRunner();
     TestBrowserConversation();
     TestNotchOverlayState();
