@@ -902,6 +902,39 @@ static void TestTabRemovalUsesClipMaskAndClosesLayoutGap(TLThemePalette *palette
   [window close];
 }
 
+static void TestClosedSidebarDragBoundary(TLThemePalette *palette) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 200)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  NSStackView *stack = [[NSStackView alloc] initWithFrame:NSMakeRect(120, 0, 480, palette.tabHeight)];
+  [window.contentView addSubview:stack];
+  TLTabContextMenuHarness *harness = [[TLTabContextMenuHarness alloc] init];
+  harness.contentDragBounds = [window.contentView convertRect:window.contentView.bounds toView:nil];
+  TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc]
+    initWithTabStack:stack target:nil delegate:(id)harness palette:palette];
+  TLChromeTabView *first = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, 160, palette.tabHeight)];
+  TLChromeTabView *second = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(160, 0, 160, palette.tabHeight)];
+  [stack addSubview:first];
+  [stack addSubview:second];
+  [controller setValue:[NSMutableArray arrayWithObjects:first, second, nil] forKey:@"tabViews"];
+  for (NSNumber *sidebarOpen in @[@YES, @NO, @YES, @NO]) {
+    harness.connectsContentEdge = sidebarOpen.boolValue;
+    CGFloat firstLimit = [controller chromeTabView:first constrainedHorizontalTranslationForEvent:nil
+      proposedTranslation:-CGFLOAT_MAX];
+    CGFloat secondLimit = [controller chromeTabView:second constrainedHorizontalTranslationForEvent:nil
+      proposedTranslation:-CGFLOAT_MAX];
+    AssertClose(firstLimit, sidebarOpen.boolValue ? -120 : 0,
+                @"closed sidebar prevents first tab entering the window-control area");
+    AssertClose(secondLimit, sidebarOpen.boolValue ? -280 : -160,
+                @"later tabs can reach the first slot but cannot pass the sidebar button");
+    AssertClose([controller chromeTabView:second constrainedHorizontalTranslationForEvent:nil proposedTranslation:-50],
+                -50, @"dragging within the available strip remains unrestricted");
+    AssertClose([controller chromeTabView:second constrainedHorizontalTranslationForEvent:nil proposedTranslation:CGFLOAT_MAX],
+                160, @"sidebar visibility does not change the trailing drag boundary");
+  }
+  [window close];
+}
+
 static void TestDraggedTabOpensInsertionGap(TLThemePalette *palette) {
   NSStackView *stack = [[NSStackView alloc] initWithFrame:NSMakeRect(0, 0, 400.0, palette.tabHeight)];
   TLTabContextMenuHarness *harness = [[TLTabContextMenuHarness alloc] init];
@@ -1619,6 +1652,7 @@ int main(void) {
       TestNewTabButtonMovesWithInsertion(tab.palette);
       TestClosePreservesWidthsUntilPointerLeaves(tab.palette);
       TestManyTabsFitWithoutExpandingWindow(tab.palette);
+      TestClosedSidebarDragBoundary(tab.palette);
       TestDraggedTabOpensInsertionGap(tab.palette);
       TestDropSettlesFromVisiblePosition(tab.palette);
       TestInactiveFirstTabPadding(tab.palette);

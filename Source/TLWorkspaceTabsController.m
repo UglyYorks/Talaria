@@ -1057,7 +1057,14 @@ constrainedHorizontalTranslationForEvent:(NSEvent *)event
     NSRect lastTabFrame = [lastTabView.superview convertRect:lastTabView.frame toView:nil];
     maximumTabMaxX = MIN(NSMaxX(contentBounds), MAX(maximumTabMaxX, NSMaxX(lastTabFrame)));
   }
-  CGFloat minimumTranslation = NSMinX(contentBounds) - NSMinX(tabFrame);
+  CGFloat minimumTabMinX = NSMinX(contentBounds);
+  if (![self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
+    // With the sidebar closed, the tab strip begins after the window controls.
+    NSPoint stripLeading = NSMakePoint(NSMinX(self.tabStack.bounds) + self.tabStack.edgeInsets.left,
+                                      NSMinY(self.tabStack.bounds));
+    minimumTabMinX = MAX(minimumTabMinX, [self.tabStack convertPoint:stripLeading toView:nil].x);
+  }
+  CGFloat minimumTranslation = minimumTabMinX - NSMinX(tabFrame);
   CGFloat maximumTranslation = maximumTabMaxX - NSMaxX(tabFrame);
   if (minimumTranslation > maximumTranslation) {
     return 0.0;
