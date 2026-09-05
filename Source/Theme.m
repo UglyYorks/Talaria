@@ -193,6 +193,8 @@ CGColorRef TLCGColor(NSColor *color) {
   self.sidebarActionStackLeadingInset = self.sidebarActionStackHorizontalInset + self.space3;
   self.sidebarActionStackTrailingInset = self.sidebarActionStackHorizontalInset;
   self.sidebarActionItemHorizontalInset = self.space5 * 0.5;
+  self.sidebarUserButtonHorizontalInset = self.sidebarActionItemHorizontalInset + self.space2;
+  self.sidebarUserButtonHeight = self.fieldHeight - self.space2;
   self.sidebarActionItemContentGap = self.space5 * 0.5;
   self.sidebarInboxOuterHorizontalInset = self.space3;
   self.sidebarInboxItemHorizontalInset = self.space5;
@@ -210,26 +212,6 @@ CGColorRef TLCGColor(NSColor *color) {
   self.taskStatusIndicatorDotSize = self.space2 * 0.5;
   self.taskStatusIndicatorInactiveOpacity = 0.28;
   self.taskStatusIndicatorBlinkDuration = 1.2;
-  self.agentWalletIntroPopoverWidth = 320.0;
-  self.agentWalletDetailsPopoverWidth = 330.0;
-  self.agentWalletCardWidth = 160.0;
-  self.agentWalletCardHeight = 102.0;
-  self.agentWalletDetailsCardWidth = 151.0;
-  self.agentWalletDetailsCardHeight = 96.0;
-  self.agentWalletCardShadowOpacity = 0.85;
-  self.agentWalletCardShadowRadius = 6.0;
-  self.agentWalletCardShadowOffsetY = -2.0;
-  self.agentWalletOverviewContentGap = self.space10;
-  self.agentWalletOverviewActionGap = self.space3;
-  self.agentWalletOverviewActionRowGap = self.space8;
-  self.agentWalletIntroButtonHeight = 30.0;
-  self.agentWalletTopUpButtonHeight = 24.0;
-  self.agentWalletSeeAllButtonWidth = 56.0;
-  self.agentWalletSeeAllButtonHeight = 22.0;
-  self.agentWalletTransactionIconSize = 20.0;
-  self.agentWalletTransactionIconTextGap = self.space5;
-  self.agentWalletTransactionSeparatorOpacity = 0.36;
-  self.agentWalletIssuerGap = 15.0;
   self.tabEmojiVerticalOffset = self.space2;
   self.tabIconLeadingInset = self.space5 + self.space5;
   self.tabIconTextSpacing = self.space4;
@@ -295,17 +277,6 @@ CGColorRef TLCGColor(NSColor *color) {
   self.onboardingDemoOpenAppButtonFont = [NSFont fontWithName:@"MyriadPro-Semibold" size:22.0]
       ?: [NSFont fontWithName:@"Myriad Pro Semibold" size:22.0]
       ?: [NSFont systemFontOfSize:22.0 weight:NSFontWeightSemibold];
-  self.agentWalletIntroTitleFont = [NSFont systemFontOfSize:16.5 weight:NSFontWeightBold];
-  self.agentWalletIntroSubtitleFont = [NSFont systemFontOfSize:14.5 weight:NSFontWeightRegular];
-  self.agentWalletIntroButtonFont = [NSFont systemFontOfSize:12.0 weight:NSFontWeightSemibold];
-  self.agentWalletBalanceTitleFont = [NSFont systemFontOfSize:17.0 weight:NSFontWeightSemibold];
-  self.agentWalletBalanceCaptionFont = [NSFont systemFontOfSize:11.0 weight:NSFontWeightBold];
-  self.agentWalletBalanceAmountFont = [NSFont systemFontOfSize:19.0 weight:NSFontWeightSemibold];
-  self.agentWalletSectionTitleFont = [NSFont systemFontOfSize:14.0 weight:NSFontWeightSemibold];
-  self.agentWalletTransactionDateFont = [NSFont systemFontOfSize:11.0 weight:NSFontWeightBold];
-  self.agentWalletTransactionTitleFont = [NSFont systemFontOfSize:13.0 weight:NSFontWeightRegular];
-  self.agentWalletTransactionDetailFont = [NSFont systemFontOfSize:12.0 weight:NSFontWeightRegular];
-  self.agentWalletTransactionAmountFont = [NSFont systemFontOfSize:12.0 weight:NSFontWeightBold];
   self.markdownHeading1Font = [NSFont systemFontOfSize:18.0 weight:NSFontWeightBold];
   self.markdownHeading2Font = [NSFont systemFontOfSize:16.0 weight:NSFontWeightBold];
   self.markdownHeading3Font = [NSFont systemFontOfSize:14.2 weight:NSFontWeightSemibold];

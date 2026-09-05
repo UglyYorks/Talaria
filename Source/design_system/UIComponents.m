@@ -1,5 +1,6 @@
 #import "UIComponents.h"
 #import <QuartzCore/QuartzCore.h>
+#import <CoreText/CoreText.h>
 #import <math.h>
 
 static const NSTimeInterval TLUrgentNotificationPulseDuration = 1.8;
@@ -2125,8 +2126,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 - (NSColor *)shortcutIconColor {
   switch (self.shortcutKind) {
-    case TLSidebarShortcutKindNotes:
-      return self.palette.sidebarNotesShortcutIcon;
     case TLSidebarShortcutKindHistory:
       return self.palette.sidebarHistoryShortcutIcon;
     case TLSidebarShortcutKindWebsite:
@@ -2894,10 +2893,43 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 @end
 
+static void TLDrawAvatarInitial(NSString *initial, NSRect rect, TLThemePalette *palette) {
+  [palette.userMessageSurface setFill];
+  [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(rect, palette.borderWidth * 0.5,
+                                                   palette.borderWidth * 0.5)] fill];
+  NSAttributedString *text = [[NSAttributedString alloc] initWithString:initial
+    attributes:@{NSFontAttributeName: palette.roleFont,
+                 NSForegroundColorAttributeName: palette.userMessageText}];
+  CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)text);
+  // Center the visible glyph, excluding the font's ascender/descender padding.
+  CGRect glyphBounds = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
+  CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+  CGContextSaveGState(context);
+  CGContextSetTextMatrix(context, CGAffineTransformIdentity);
+  CGContextSetTextPosition(context, NSMidX(rect) - CGRectGetMidX(glyphBounds),
+                          NSMidY(rect) - CGRectGetMidY(glyphBounds));
+  CTLineDraw(line, context);
+  CGContextRestoreGState(context);
+  CFRelease(line);
+}
+
+NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *palette) {
+  NSString *name = [displayName stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  NSString *initial = name.length > 0
+    ? [[name substringWithRange:[name rangeOfComposedCharacterSequenceAtIndex:0]] uppercaseString]
+    : @"?";
+  NSSize size = NSMakeSize(palette.sidebarActionIconSize, palette.sidebarActionIconSize);
+  NSImage *image = [NSImage imageWithSize:size flipped:NO drawingHandler:^BOOL(NSRect rect) {
+    TLDrawAvatarInitial(initial, rect, palette);
+    return YES;
+  }];
+  image.template = NO;
+  return image;
+}
+
 @interface TLAvatarInitialView : NSView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSString *initial;
-@property (nonatomic, strong) NSTextField *initialLabel;
 @end
 
 @implementation TLAvatarInitialView
@@ -2910,17 +2942,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.wantsLayer = YES;
 
-    _initialLabel = [NSTextField labelWithString:@""];
-    _initialLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _initialLabel.alignment = NSTextAlignmentCenter;
-    [self addSubview:_initialLabel];
-
-    [NSLayoutConstraint activateConstraints:@[
-      [_initialLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-      [_initialLabel.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-      [_initialLabel.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-    ]];
-
     [self applyCurrentState];
   }
   return self;
@@ -2930,17 +2951,11 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   [super drawRect:dirtyRect];
 
   TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
-  NSRect circleRect = NSInsetRect(self.bounds, palette.borderWidth * 0.5, palette.borderWidth * 0.5);
-  NSBezierPath *circlePath = [NSBezierPath bezierPathWithOvalInRect:circleRect];
-  [palette.userMessageSurface setFill];
-  [circlePath fill];
+  TLDrawAvatarInitial(self.initial, self.bounds, palette);
 }
 
 - (void)applyCurrentState {
   TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
-  self.initialLabel.stringValue = self.initial;
-  self.initialLabel.font = palette.roleFont;
-  self.initialLabel.textColor = palette.userMessageText;
   self.layer.backgroundColor = TLCGColor(palette.transparentSurface);
   [self setNeedsDisplay:YES];
 }
@@ -2984,6 +2999,8 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     _displayName = @"";
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.wantsLayer = YES;
+    [self setContentHuggingPriority:NSLayoutPriorityDefaultHigh
+                    forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     _avatarView = [[TLAvatarInitialView alloc] init];
     [self addSubview:_avatarView];
@@ -3002,7 +3019,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     [self addSubview:_chevronView];
 
     _avatarLeadingConstraint = [_avatarView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
-                                                                         constant:_palette.sidebarActionItemHorizontalInset];
+                                                                         constant:_palette.sidebarUserButtonHorizontalInset];
     _avatarWidthConstraint = [_avatarView.widthAnchor constraintEqualToConstant:_palette.sidebarActionIconSize];
     _avatarHeightConstraint = [_avatarView.heightAnchor constraintEqualToConstant:_palette.sidebarActionIconSize];
     _titleLeadingConstraint = [_titleLabel.leadingAnchor constraintEqualToAnchor:_avatarView.trailingAnchor
@@ -3012,7 +3029,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     _chevronLeadingConstraint = [_chevronView.leadingAnchor constraintEqualToAnchor:_titleLabel.trailingAnchor
                                                                            constant:_palette.space3];
     _chevronTrailingConstraint = [_chevronView.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor
-                                                                                       constant:-_palette.sidebarActionItemHorizontalInset];
+                                                                                       constant:-_palette.sidebarUserButtonHorizontalInset];
     _chevronWidthConstraint = [_chevronView.widthAnchor constraintEqualToConstant:_palette.space6];
     _chevronHeightConstraint = [_chevronView.heightAnchor constraintEqualToConstant:_palette.space6];
 
@@ -3037,7 +3054,11 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 
 - (NSSize)intrinsicContentSize {
-  return NSMakeSize(NSViewNoIntrinsicMetric, self.palette.fieldHeight);
+  TLThemePalette *palette = self.palette;
+  CGFloat width = palette.sidebarUserButtonHorizontalInset * 2.0 +
+    palette.sidebarActionIconSize + palette.sidebarActionItemContentGap +
+    ceil(self.titleLabel.intrinsicContentSize.width) + palette.space3 + palette.space6;
+  return NSMakeSize(width, palette.sidebarUserButtonHeight);
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
@@ -3148,13 +3169,13 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   self.chevronView.image = [self systemImageNamed:@"chevron.down"];
   self.chevronView.contentTintColor = foreground;
 
-  self.avatarLeadingConstraint.constant = palette.sidebarActionItemHorizontalInset;
+  self.avatarLeadingConstraint.constant = palette.sidebarUserButtonHorizontalInset;
   self.avatarWidthConstraint.constant = palette.sidebarActionIconSize;
   self.avatarHeightConstraint.constant = palette.sidebarActionIconSize;
   self.titleLeadingConstraint.constant = palette.sidebarActionItemContentGap;
   self.titleTrailingConstraint.constant = -palette.space3;
   self.chevronLeadingConstraint.constant = palette.space3;
-  self.chevronTrailingConstraint.constant = -palette.sidebarActionItemHorizontalInset;
+  self.chevronTrailingConstraint.constant = -palette.sidebarUserButtonHorizontalInset;
   self.chevronWidthConstraint.constant = palette.space6;
   self.chevronHeightConstraint.constant = palette.space6;
   self.alphaValue = self.enabled ? 1.0 : palette.disabledOpacity;
