@@ -110,7 +110,7 @@ static void TestProfileSchemaCompatibility(void) {
     database = nil;
     fixture = [TLSQLiteConnection openURL:URL error:&error];
     TLSQLiteStatement *version = [fixture prepareSQL:"PRAGMA user_version" error:&error];
-    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 7, @"upgrades profile schema without downgrading its data");
+    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 8, @"upgrades profile schema without downgrading its data");
     version = nil;
     TLSQLiteStatement *profile = [fixture prepareSQL:"SELECT soul FROM agents" error:&error];
     Check([profile step] == SQLITE_ROW && [[profile stringAtColumn:0] isEqual:@"Keep profile"], @"preserves agent profile data");
@@ -118,7 +118,7 @@ static void TestProfileSchemaCompatibility(void) {
     fixture = nil;
   }
   fixture = [TLSQLiteConnection openURL:URL error:&error];
-  Check([fixture executeSQL:"PRAGMA user_version = 8" error:&error], @"prepares unknown future schema");
+  Check([fixture executeSQL:"PRAGMA user_version = 9" error:&error], @"prepares unknown future schema");
   fixture = nil;
   error = nil;
   Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"still rejects unknown future schema versions");

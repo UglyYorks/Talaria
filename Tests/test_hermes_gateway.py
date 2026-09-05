@@ -8,7 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'AgentRuntime'))
 from hermes_gateway import HermesGateway, RPCError
@@ -27,20 +27,91 @@ class GatewayTests(unittest.TestCase):
         self.gateway.listeners = {}
         self.gateway.pending = {}
         self.gateway.mappings = {}
-        self.gateway.mapping_path = Path(self.temp.name) / 'sessions.json'
+        self.gateway.home = Path(self.temp.name)
+        self.gateway.mapping_path = self.gateway.home / 'sessions.json'
         self.gateway.call = Mock()
+
+    def test_history_expands_beyond_default_window_and_preserves_alias(self):
+        rows = [{"id": f"session-{i}", "title": "", "preview": f"Topic {i}", "started_at": 1700000000}
+                for i in range(250)]
+        self.gateway.mappings = {"talaria-chat": "session-0", "session-0": "session-0"}
+        self.gateway.call.side_effect = lambda method, params: {"sessions": rows[:params["limit"]]}
+        result = self.gateway.history_sessions()["sessions"]
+        self.assertEqual(len(result), 250)
+        self.assertEqual(result[0]["hermes_session_id"], "talaria-chat")
+        self.assertEqual(result[0]["title"], "Topic 0")
+        self.assertEqual(result[0]["created_at"], "2023-11-14 22:13:20")
+        self.assertEqual([c.args[1]["limit"] for c in self.gateway.call.call_args_list], [200, 400])
+
+    def test_history_invalid_or_unavailable_list_is_not_empty_success(self):
+        self.gateway.call.return_value = {}
+        with self.assertRaisesRegex(RuntimeError, "invalid session list"):
+            self.gateway.history_sessions()
+        self.gateway.call.side_effect = RPCError({"code": -32601, "message": "method unavailable"})
+        with self.assertRaisesRegex(RPCError, "method unavailable"):
+            self.gateway.history_sessions()
+
+    def test_history_resume_restores_original_alias_and_transcript(self):
+        self.gateway.mappings = {"talaria-chat": "saved"}
+        self.gateway.call.side_effect = [
+            {"session_id": "runtime", "resumed": "saved", "info": {"model": "original-model"}},
+            {"messages": [{"role": "user", "text": "Hello"}, {"role": "tool", "name": "terminal"},
+                          {"role": "assistant", "text": "World", "reasoning": "Thought"}]}]
+        result = self.gateway.history_session("saved")
+        self.assertEqual([m["content"] for m in result["messages"]], ["Hello", "World"])
+        self.assertEqual(result["messages"][1]["thinking"], "Thought")
+        self.assertEqual(result["model"], "original-model")
+        self.assertEqual(self.gateway.sessions, {"talaria-chat": {"id": "runtime", "model": "original-model"}})
+        self.gateway.call.assert_called_with("session.history", {"session_id": "runtime"})
+
+    def test_history_missing_session_never_creates_replacement(self):
+        self.gateway.call.side_effect = RPCError({"code": 4007, "message": "session not found"})
+        with self.assertRaisesRegex(RPCError, "session not found"):
+            self.gateway.history_session("missing")
+        self.gateway.call.assert_called_once_with("session.resume", {"session_id": "missing"})
+
+    def test_history_deletion_closes_idle_runtime_and_clears_aliases(self):
+        self.gateway.mappings = {"chat": "saved", "other": "elsewhere"}
+        self.gateway.sessions = {"chat": {"id": "runtime", "model": "model"}}
+        self.gateway.call.side_effect = [{}, {"deleted": "saved"}]
+        self.assertEqual(self.gateway.delete_history_session("saved"), {"deleted": "saved"})
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list], ["session.close", "session.delete"])
+        self.assertEqual(self.gateway.mappings, {"other": "elsewhere"})
+        self.assertEqual(self.gateway.sessions, {})
+
+    def test_history_deletion_refuses_streaming_or_pending_approval(self):
+        self.gateway.mappings = {"chat": "saved"}
+        self.gateway.sessions = {"chat": {"id": "runtime", "model": "model"}}
+        self.gateway.listeners = {"runtime": queue.Queue()}
+        with self.assertRaisesRegex(RuntimeError, "finish"):
+            self.gateway.delete_history_session("saved")
+        self.gateway.call.assert_not_called()
+
+    def test_worker_history_errors_do_not_return_a_success_event(self):
+        with patch.object(worker, "tui_gateway") as gateway:
+            gateway.return_value.history_sessions.side_effect = RuntimeError("Unavailable")
+            output = io.BytesIO()
+            worker.handle_request({"operation": "hermes_history", "action": "list", "request_id": "req"}, output)
+            events = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual([event["type"] for event in events], ["error"])
 
     def catalogue(self, names, aliases=None):
         return {'pairs': [[name, name + ' description'] for name in names], 'canon': aliases or {}}
 
     def test_resume_preserves_existing_http_session_identity(self):
-        self.gateway.call.return_value = {'session_id': 'runtime', 'resumed': 'talaria_1', 'session_key': 'talaria_1'}
+        self.gateway.call.side_effect = [
+            {'session_id': 'runtime', 'resumed': 'talaria_1', 'session_key': 'talaria_1'},
+            {'value': 'model'}, {'output': 'Model: model (openrouter)'}]
         self.assertEqual(self.gateway.session('talaria_1', 'model'), 'runtime')
-        self.gateway.call.assert_called_once_with('session.resume', {'session_id': 'talaria_1'})
+        self.gateway.call.assert_has_calls([
+            call('session.resume', {'session_id': 'talaria_1'}),
+            call('config.set', {'session_id': 'runtime', 'key': 'model', 'value': 'model --session'})])
         self.assertEqual(json.loads(self.gateway.mapping_path.read_text()), {'talaria_1': 'talaria_1'})
 
     def test_warm_session_skips_rpc_and_mapping_writes(self):
-        self.gateway.call.return_value = {'session_id': 'runtime', 'stored_session_id': 'saved'}
+        self.gateway.call.side_effect = [
+            {'session_id': 'runtime', 'stored_session_id': 'saved'},
+            {'value': 'model'}, {'output': 'Model: model (openrouter)'}]
         self.gateway.session('chat', 'model')
         self.gateway.call.reset_mock()
         with patch.object(Path, 'write_text') as write:
@@ -49,9 +120,26 @@ class GatewayTests(unittest.TestCase):
             write.assert_not_called()
         self.gateway.call.assert_not_called()
 
+    def test_composer_switch_is_local_and_retried_after_failure(self):
+        self.gateway.sessions['a'] = {'id': 'a', 'model': 'old'}
+        self.gateway.sessions['b'] = {'id': 'b', 'model': 'other'}
+        self.gateway.call.return_value = {'confirm_required': True, 'confirm_message': 'Confirm switch'}
+        with self.assertRaisesRegex(RuntimeError, 'Confirm switch'):
+            self.gateway.session('a', 'new')
+        self.assertEqual(self.gateway.sessions['a']['model'], 'old')
+        self.gateway.call.side_effect = [{'value': 'new'}, {'output': 'Model: new (openrouter)'}]
+        self.assertEqual(self.gateway.session('a', 'new'), 'a')
+        self.gateway.call.assert_any_call('config.set', {'session_id': 'a', 'key': 'model',
+                                                          'value': 'new --session'})
+        self.assertEqual(self.gateway.sessions['b']['model'], 'other')
+        self.gateway.call.reset_mock()
+        self.gateway.session('a', 'new')
+        self.gateway.call.assert_not_called()
+
     def test_create_only_on_missing_session(self):
         self.gateway.call.side_effect = [RPCError({'code': 4007, 'message': 'session not found'}),
-                                        {'session_id': 'runtime', 'stored_session_id': 'saved'}]
+                                        {'session_id': 'runtime', 'stored_session_id': 'saved'},
+                                        {'value': 'model'}, {'output': 'Model: model (openrouter)'}]
         self.assertEqual(self.gateway.session('talaria_1', 'model'), 'runtime')
         self.assertEqual(self.gateway.mappings['talaria_1'], 'saved')
         self.gateway.call.reset_mock(side_effect=True)
@@ -59,6 +147,30 @@ class GatewayTests(unittest.TestCase):
         with self.assertRaisesRegex(RPCError, 'database unavailable'):
             self.gateway.session('talaria_2', 'model')
         self.assertEqual(self.gateway.call.call_count, 1)
+
+    def test_switch_does_not_cache_an_acknowledged_but_inactive_model(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'old'}
+        self.gateway.call.side_effect = [{'value': 'new'}, {'output': 'Model: old (openrouter)'}]
+        with self.assertRaisesRegex(RuntimeError, 'has not activated'):
+            self.gateway.select_model('chat', 'new')
+        self.assertEqual(self.gateway.sessions['chat']['model'], 'old')
+
+    def test_switch_button_always_contacts_hermes_without_a_prompt(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'new'}
+        self.gateway.call.side_effect = [{'value': 'new'}, {'output': 'Model: new (openrouter)'}]
+        self.gateway.select_model('chat', 'new')
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list], ['config.set', 'session.status'])
+        audit = json.loads((self.gateway.home / 'talaria-model-switches.jsonl').read_text())
+        self.assertEqual(audit['model'], 'new')
+        self.assertTrue(audit['verified'])
+
+    def test_switch_button_refuses_a_concurrent_turn(self):
+        lock = threading.Lock()
+        lock.acquire()
+        self.gateway.session_locks['chat'] = lock
+        with self.assertRaisesRegex(RuntimeError, 'current response'):
+            self.gateway.select_model('chat', 'new')
+        self.gateway.call.assert_not_called()
 
     def test_builtin_falls_back_only_on_dispatcher_miss(self):
         self.gateway.call.side_effect = [self.catalogue(['/status']),

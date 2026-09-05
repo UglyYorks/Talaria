@@ -37,6 +37,8 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                                       avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error;
 - (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error;
 
+- (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID token:(NSString *)token
+        completion:(TLAgentStreamCompletionHandler)completion;
 - (void)cancelChatWithRequestID:(NSString *)requestID;
 
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
@@ -69,6 +71,10 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                           completion:(void (^)(NSDictionary *_Nullable catalogue, NSError *_Nullable error))completion;
 - (BOOL)isDefaultAgentRunning;
 - (void)connectToDefaultAgentTerminal:(TLAgentVMConnectionCompletionHandler)completion;
+
+- (void)hermesHistoryWithAction:(NSString *)action sessionID:(NSString *)sessionID
+                         token:(NSString *)token model:(NSString *)model
+                    completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 
 - (void)fetchModelCatalogueWithToken:(NSString *)token
                            completion:(TLAgentModelCatalogueHandler)completion;

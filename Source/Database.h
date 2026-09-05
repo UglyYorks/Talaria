@@ -14,8 +14,15 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (nullable TLAppSettings *)appSettings:(NSError **)error;
 - (nullable TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error;
+- (nullable TLChatRecord *)cacheHermesSession:(NSDictionary *)session
+                                   messages:(nullable NSArray<NSDictionary *> *)messages
+                                      error:(NSError **)error;
+
 - (nullable NSArray<TLChatSummary *> *)listChats:(NSError **)error;
 - (nullable TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error;
+// Saves only model choices/defaults; credentials and appearance are untouched.
+- (BOOL)saveModelsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error;
+- (nullable TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error;
 - (nullable TLChatRecord *)chatWithID:(NSInteger)chatID error:(NSError **)error;
 - (nullable TLChatSummary *)saveChatTitle:(NSString *)title chatID:(NSInteger)chatID error:(NSError **)error;
 - (nullable TLChatSummary *)saveChatIcon:(NSString *)icon chatID:(NSInteger)chatID error:(NSError **)error;

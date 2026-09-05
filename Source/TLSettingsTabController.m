@@ -1,6 +1,7 @@
 #import "TLSettingsTabController.h"
 #import "AgentOrchestrator.h"
-#import "ModelPickerView.h"
+#import "UIComponents.h"
+#import "design_system/TLThemedButton.h"
 
 @interface TLSettingsTabController ()
 @property (nonatomic, strong) TLDatabase *database;
@@ -9,13 +10,8 @@
 @property (nonatomic, strong) NSSecureTextField *tokenField;
 @property (nonatomic, strong) NSButton *rememberButton;
 @property (nonatomic, strong) NSPopUpButton *themePopup;
-@property (nonatomic, strong) NSTextField *catalogueStatusLabel;
-@property (nonatomic, strong) TLModelPickerView *mainModelPicker;
-@property (nonatomic, strong) TLModelPickerView *supportingModelPicker;
 @property (nonatomic, strong) NSButton *saveButton;
-@property (nonatomic, strong) NSButton *reloadButton;
 @property (nonatomic, copy) NSArray<NSButton *> *secondaryButtons;
-@property (nonatomic) NSUInteger catalogueRequest;
 @end
 
 @implementation TLSettingsTabController
@@ -29,25 +25,20 @@
     _agentOrchestrator = orchestrator;
     _draftSettings = [settings copy];
     [self buildSettingsTabContent];
-    if (_tokenField.stringValue.length > 0) [self loadCatalogue:nil];
   }
   return self;
 }
 
 - (void)applyPalette:(TLThemePalette *)palette {
   [super applyPalette:palette];
-  [self.mainModelPicker updatePalette:palette];
-  [self.supportingModelPicker updatePalette:palette];
   for (NSButton *button in self.secondaryButtons) {
     [self styleButton:button background:palette.secondaryActionSurface foreground:palette.secondaryActionText];
   }
   [self styleButton:self.saveButton background:palette.primaryActionSurface foreground:palette.primaryActionText];
-  self.reloadButton.alphaValue = self.reloadButton.enabled ? 1.0 : palette.disabledOpacity;
 }
 
 - (void)close {
   [super close];
-  self.catalogueRequest += 1;
   self.closeHandler = nil;
   self.onboardingHandler = nil;
   self.settingsSavedHandler = nil;
@@ -62,42 +53,15 @@
   if (self.onboardingHandler) self.onboardingHandler();
 }
 
-- (void)loadCatalogue:(id)sender {
-  if (self.isClosed) return;
-  NSUInteger request = ++self.catalogueRequest;
-  self.catalogueStatusLabel.stringValue = @"Loading Hermes model catalogue";
-  self.reloadButton.enabled = NO;
-  self.reloadButton.alphaValue = self.palette.disabledOpacity;
-  [self.mainModelPicker setStatusText:@"Loading catalogue"];
-  [self.supportingModelPicker setStatusText:@"Loading catalogue"];
-  __weak typeof(self) weakSelf = self;
-  [self.agentOrchestrator fetchModelCatalogueWithToken:self.tokenField.stringValue
-    completion:^(NSArray<TLAgentModel *> *models, NSError *error) {
-      TLSettingsTabController *controller = weakSelf;
-      if (!controller || controller.isClosed || controller.catalogueRequest != request) return;
-      controller.reloadButton.enabled = YES;
-      controller.reloadButton.alphaValue = 1.0;
-      if (error) {
-        controller.catalogueStatusLabel.stringValue = error.localizedDescription ?: @"Could not load Hermes model catalogue.";
-        [controller.mainModelPicker setStatusText:@"Catalogue unavailable"];
-        [controller.supportingModelPicker setStatusText:@"Catalogue unavailable"];
-        return;
-      }
-      [controller.mainModelPicker setModels:models];
-      [controller.supportingModelPicker setModels:models];
-      NSString *status = [NSString stringWithFormat:@"%lu models loaded from Hermes", (unsigned long)models.count];
-      controller.catalogueStatusLabel.stringValue = status;
-      [controller.mainModelPicker setStatusText:status];
-      [controller.supportingModelPicker setStatusText:status];
-    }];
-}
-
 - (void)save:(id)sender {
   if (self.isClosed) return;
   self.draftSettings.openRouterToken = self.tokenField.stringValue;
   self.draftSettings.rememberOpenRouterToken = self.rememberButton.state == NSControlStateValueOn;
-  self.draftSettings.selectedModel = self.mainModelPicker.selectedModelID;
-  self.draftSettings.supportingModel = self.supportingModelPicker.selectedModelID;
+  TLAppSettings *latest = [self.database appSettings:nil];
+  if (latest) {
+    self.draftSettings.selectedModel = latest.selectedModel;
+    self.draftSettings.supportingModel = latest.supportingModel;
+  }
   self.draftSettings.theme = self.themePopup.indexOfSelectedItem;
   NSError *error = nil;
   TLAppSettings *saved = [self.database saveAppSettings:self.draftSettings error:&error];
@@ -121,25 +85,15 @@
                                                 font:palette.bodyFont colorToken:@"textMuted"];
   NSTextField *providerSectionLabel = [self labelWithString:@"AI provider" font:palette.labelFont colorToken:@"appText"];
   NSTextField *appearanceSectionLabel = [self labelWithString:@"Appearance" font:palette.labelFont colorToken:@"appText"];
-  NSTextField *catalogueStatusLabel = [self labelWithString:@"Hermes model catalogue" font:palette.smallFont colorToken:@"textMuted"];
   NSSecureTextField *tokenField = [[NSSecureTextField alloc] init];
   NSButton *rememberButton = [NSButton checkboxWithTitle:@"Remember token" target:nil action:nil];
   NSPopUpButton *themePopup = [[NSPopUpButton alloc] init];
   NSButton *closeButton = [self buttonWithTitle:@"Close" action:@selector(requestClose:)];
   NSButton *saveButton = [self buttonWithTitle:@"Save" action:@selector(save:)];
-  NSButton *reloadButton = [self buttonWithTitle:@"Refresh catalogue" action:@selector(loadCatalogue:)];
   NSButton *onboardingButton = [self buttonWithTitle:@"Set up a fresh Hermes VM" action:@selector(requestOnboarding:)];
-  TLModelPickerView *mainModelPicker = [[TLModelPickerView alloc] initWithTitle:@"Main model"
-                                                                        palette:palette
-                                                                selectedModelID:draftSettings.selectedModel];
-  TLModelPickerView *supportingModelPicker = [[TLModelPickerView alloc] initWithTitle:@"Supporting small model"
-                                                                              palette:palette
-                                                                      selectedModelID:draftSettings.supportingModel];
-
   tokenField.translatesAutoresizingMaskIntoConstraints = NO;
   rememberButton.translatesAutoresizingMaskIntoConstraints = NO;
   themePopup.translatesAutoresizingMaskIntoConstraints = NO;
-  catalogueStatusLabel.translatesAutoresizingMaskIntoConstraints = NO;
   tokenField.stringValue = draftSettings.openRouterToken;
   tokenField.placeholderString = @"sk-or-v1-...";
   tokenField.font = palette.bodyFont;
@@ -160,16 +114,12 @@
     subtitleLabel,
     providerSectionLabel,
     appearanceSectionLabel,
-    catalogueStatusLabel,
     tokenLabel,
     tokenField,
     rememberButton,
     themeLabel,
     themePopup,
-    reloadButton,
     onboardingButton,
-    mainModelPicker,
-    supportingModelPicker,
     closeButton,
     saveButton,
   ]) {
@@ -214,63 +164,37 @@
     [themePopup.topAnchor constraintEqualToAnchor:themeLabel.bottomAnchor constant:palette.space4],
     [themePopup.heightAnchor constraintEqualToConstant:palette.fieldHeight],
 
-    [reloadButton.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
-    [reloadButton.topAnchor constraintEqualToAnchor:rememberButton.bottomAnchor constant:palette.space8],
-    [reloadButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth * 2.0],
-    [reloadButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
-
     [onboardingButton.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [onboardingButton.centerYAnchor constraintEqualToAnchor:reloadButton.centerYAnchor],
+    [onboardingButton.topAnchor constraintEqualToAnchor:rememberButton.bottomAnchor constant:palette.space8],
     [onboardingButton.widthAnchor constraintGreaterThanOrEqualToConstant:palette.controlMinWidth * 2.0],
     [onboardingButton.heightAnchor constraintEqualToConstant:palette.settingsActionHeight],
 
-    [catalogueStatusLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:onboardingButton.trailingAnchor constant:palette.space5],
-    [catalogueStatusLabel.trailingAnchor constraintEqualToAnchor:reloadButton.leadingAnchor constant:-palette.space5],
-    [catalogueStatusLabel.centerYAnchor constraintEqualToAnchor:reloadButton.centerYAnchor],
-
-    [mainModelPicker.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
-    [mainModelPicker.topAnchor constraintEqualToAnchor:reloadButton.bottomAnchor constant:palette.space6],
-    [mainModelPicker.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-palette.space12],
-    [supportingModelPicker.leadingAnchor constraintEqualToAnchor:mainModelPicker.trailingAnchor constant:palette.space6],
-    [supportingModelPicker.trailingAnchor constraintEqualToAnchor:closeButton.trailingAnchor],
-    [supportingModelPicker.topAnchor constraintEqualToAnchor:mainModelPicker.topAnchor],
-    [supportingModelPicker.bottomAnchor constraintEqualToAnchor:mainModelPicker.bottomAnchor],
-    [supportingModelPicker.widthAnchor constraintEqualToAnchor:mainModelPicker.widthAnchor],
   ]];
 
   self.view = content;
   self.tokenField = tokenField;
   self.rememberButton = rememberButton;
   self.themePopup = themePopup;
-  self.catalogueStatusLabel = catalogueStatusLabel;
-  self.mainModelPicker = mainModelPicker;
-  self.supportingModelPicker = supportingModelPicker;
   self.saveButton = saveButton;
-  self.reloadButton = reloadButton;
-  self.secondaryButtons = @[closeButton, reloadButton, onboardingButton];
+  self.secondaryButtons = @[closeButton, onboardingButton];
   [self applyPalette:palette];
   return content;
 }
 
 
 - (NSButton *)buttonWithTitle:(NSString *)title action:(SEL)action {
-  NSButton *button = [NSButton buttonWithTitle:title target:self action:action];
+  TLThemedButton *button = [[TLThemedButton alloc] init];
+  button.title = title;
+  button.target = self;
+  button.action = action;
+  button.palette = self.palette;
   button.translatesAutoresizingMaskIntoConstraints = NO;
-  button.bordered = NO;
-  button.wantsLayer = YES;
-  button.font = self.palette.labelFont;
-  button.cell.lineBreakMode = NSLineBreakByTruncatingTail;
   return button;
 }
 
 - (void)styleButton:(NSButton *)button background:(NSColor *)background foreground:(NSColor *)foreground {
-  button.font = self.palette.labelFont;
-  button.contentTintColor = foreground;
-  button.attributedTitle = [[NSAttributedString alloc] initWithString:button.title attributes:@{
-    NSForegroundColorAttributeName: foreground,
-    NSFontAttributeName: self.palette.labelFont,
-  }];
-  button.layer.backgroundColor = TLCGColor(background);
-  button.layer.cornerRadius = self.palette.radiusMedium;
+  TLThemedButton *themed = (TLThemedButton *)button;
+  themed.palette = self.palette;
+  themed.primary = button == self.saveButton;
 }
 @end

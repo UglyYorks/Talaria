@@ -323,6 +323,17 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   completion([NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
 }
 
+- (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID token:(NSString *)token
+        completion:(TLAgentStreamCompletionHandler)completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent) { completion(error ?: TLAgentOrchestratorError(@"Could not open the agent VM.")); return; }
+    if (![self.agentClient respondsToSelector:@selector(selectHermesModelWithAgent:sessionID:token:model:completion:)]) {
+      completion(TLAgentOrchestratorError(@"Update the agent runtime to switch models.")); return;
+    }
+    [self.agentClient selectHermesModelWithAgent:agent sessionID:sessionID token:token model:model completion:completion];
+  }];
+}
+
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
                                   sessionID:(NSString *)sessionID
                                       token:(NSString *)token
@@ -539,6 +550,19 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     }
     [self.vmService connectToAgent:agent port:7048 timeout:30 completion:completion];
   });
+}
+
+- (void)hermesHistoryWithAction:(NSString *)action sessionID:(NSString *)sessionID
+                         token:(NSString *)token model:(NSString *)model
+                    completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(hermesHistoryWithAgent:action:sessionID:token:model:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"This runtime does not support Hermes history. Update the agent runtime."));
+      return;
+    }
+    [self.agentClient hermesHistoryWithAgent:agent action:action sessionID:sessionID token:token model:model completion:completion];
+  }];
 }
 
 - (void)fetchModelCatalogueWithToken:(NSString *)token completion:(TLAgentModelCatalogueHandler)completion {

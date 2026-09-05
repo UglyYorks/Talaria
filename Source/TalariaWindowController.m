@@ -13,6 +13,7 @@
 #import "TLHistoryPanelController.h"
 #import "TLBrowserTabController.h"
 #import "TLSettingsTabController.h"
+#import "TLModelSelectionWindowController.h"
 #import "TLMainWindow.h"
 #import "TLOnboardingDemoWindowController.h"
 #import "TLHermesOnboardingWindowController.h"
@@ -200,6 +201,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic) NSUInteger streamingRenderGeneration;
 
 @property (nonatomic, strong) TLHistoryPanelController *historyPanelController;
+@property (nonatomic, copy) NSArray<TLChatSummary *> *hermesHistoryChats;
+@property (nonatomic, copy) NSDictionary<NSNumber *, NSDictionary *> *hermesHistorySessions;
+@property (nonatomic) NSInteger historyAgentID;
+@property (nonatomic) NSUInteger historyRequestGeneration;
+@property (nonatomic) BOOL historyWasVisible;
 @property (nonatomic, strong) TLTokenView *agentsView;
 @property (nonatomic, strong) TLSettingsTabController *settingsTabController;
 @property (nonatomic, strong) NSTableView *agentsTableView;
@@ -252,6 +258,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSImage *mainWindowSnapshotBeforeOnboarding;
 @property (nonatomic, strong) NSWindow *mainWindowRevealOverlayWindow;
 @property (nonatomic, strong) TLGlassButton *sendButton;
+@property (nonatomic, strong) TLModelSelectionWindowController *modelSelectionController;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLChatRecord *> *modelDraftChats;
 
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)fileURLs;
 - (void)handleLinkURL:(NSURL *)URL modifierFlags:(NSEventModifierFlags)modifierFlags;
@@ -303,6 +311,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
   if (_activeChat) {
+    if (_activeChat.chatID <= 0) {
+      if (!self.modelDraftChats) self.modelDraftChats = [NSMutableDictionary dictionary];
+      self.modelDraftChats[@(_activeChat.chatID)] = _activeChat;
+    }
     self.attachmentDrafts[@(_activeChat.chatID)] = self.messageInput.attachmentURLs ?: @[];
     self.attachmentPromptDrafts[@(_activeChat.chatID)] = [self.promptTextView.string copy] ?: @"";
   }
@@ -1547,6 +1559,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   ((TLGlassMessageInput *)self.messageInput).usesChatBackdrop = YES;
   self.messageInput.palette = self.palette;
   self.messageInput.attachmentsEnabled = YES;
+  self.messageInput.showsSettingsButton = YES;
+  self.messageInput.settingsButton.target = self;
+  self.messageInput.settingsButton.action = @selector(showChatModelMenu:);
   __weak typeof(self) weakSelf = self;
   self.messageInput.attachmentsChangeHandler = ^{
     [weakSelf updateMessageScrollInsets];
@@ -1740,6 +1755,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   self.chats = [nextChats mutableCopy];
   [self reloadHistoryPanel];
+  if ([self isHistoryScreenActive]) [self refreshHermesHistory];
   [self selectActiveChatInHistory];
 
   for (TLChatSummary *summary in self.chats) {
@@ -1794,11 +1810,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  TLChatRecord *chat = [[TLChatRecord alloc] init];
-  chat.chatID = chatID;
-  chat.title = tab.title.length > 0 ? tab.title : @"New chat";
-  chat.model = self.settings.selectedModel.length > 0 ? self.settings.selectedModel : TLDefaultModelID;
-  chat.messages = @[];
+  TLChatRecord *chat = self.activeChat.chatID == chatID ? self.activeChat : self.modelDraftChats[@(chatID)];
+  if (!chat) {
+    chat = [[TLChatRecord alloc] init];
+    chat.chatID = chatID;
+    chat.title = tab.title.length > 0 ? tab.title : @"New chat";
+    chat.model = self.settings.selectedModel.length > 0 ? self.settings.selectedModel : TLDefaultModelID;
+    chat.supportingModel = self.settings.supportingModel;
+    chat.messages = @[];
+  }
 
   self.activeChat = chat;
   [self activateTabKind:TLWorkspaceTabKindChat tabID:chatID];
@@ -2086,6 +2106,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.nextDraftChatID -= 1;
   chat.title = @"New chat";
   chat.model = model.length > 0 ? model : TLDefaultModelID;
+  chat.supportingModel = self.settings.supportingModel;
   chat.messages = @[];
   self.activeChat = chat;
   [self addChatToSessionIfNeeded:chat.chatID activate:YES];
@@ -2140,7 +2161,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   NSInteger draftChatID = self.activeChat.chatID;
   NSError *error = nil;
-  TLChatRecord *persistedChat = [self.database createChatWithModel:model error:&error];
+  TLChatRecord *persistedChat = [self.database createChatWithModel:model supportingModel:self.activeChat.supportingModel error:&error];
   if (!persistedChat) {
     [self presentErrorMessage:error.localizedDescription ?: @"Could not create chat."];
     return NO;
@@ -2149,6 +2170,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   persistedChat.messages = @[];
   NSArray *draftURLs = self.messageInput.attachmentURLs;
   self.activeChat = persistedChat;
+  [self.modelDraftChats removeObjectForKey:@(draftChatID)];
   self.messageInput.attachmentURLs = draftURLs;
   [self.attachmentDrafts removeObjectForKey:@(draftChatID)];
   [self.attachmentPromptDrafts removeObjectForKey:@(draftChatID)];
@@ -2194,6 +2216,64 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.promptTextView.string.length == 0 && self.messageInput.attachmentURLs.count == 0;
 }
 
+- (void)showChatModelMenu:(id)sender {
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Chat models"];
+  NSString *large = self.activeChat.model ?: self.settings.selectedModel;
+  NSString *small = self.activeChat.supportingModel ?: self.settings.supportingModel;
+  for (NSNumber *smallChoice in @[@NO, @YES]) {
+    BOOL isSmall = smallChoice.boolValue;
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"%@: %@",
+      isSmall ? @"Small model" : @"Large model", isSmall ? small : large]
+      action:@selector(chooseChatModel:) keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = smallChoice;
+    [menu addItem:item];
+  }
+  NSView *button = self.messageInput.settingsButton;
+  [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(button.bounds)) inView:button];
+}
+
+- (void)chooseChatModel:(NSMenuItem *)sender {
+  if (self.window.attachedSheet) return;
+  BOOL small = [sender.representedObject boolValue];
+  TLChatRecord *chat = self.activeChat;
+  NSString *largeModel = chat.model ?: self.settings.selectedModel;
+  NSString *smallModel = chat.supportingModel ?: self.settings.supportingModel;
+  TLModelSelectionWindowController *controller = [[TLModelSelectionWindowController alloc]
+    initWithSmallModel:small selectedModel:small ? smallModel : largeModel token:self.settings.openRouterToken
+    orchestrator:self.agentOrchestrator palette:self.palette];
+  self.modelSelectionController = controller;
+  __weak typeof(self) weakSelf = self;
+  controller.selectionHandler = ^(NSString *model, void (^completion)(NSError *)) {
+    typeof(self) owner = weakSelf;
+    if (!owner) return;
+    NSString *largeChoice = small ? largeModel : model;
+    NSString *smallChoice = small ? model : smallModel;
+    void (^saveSelection)(NSError *) = ^(NSError *switchError) {
+      if (switchError) { completion(switchError); return; }
+      NSError *error = nil;
+      if (![owner.database saveModelsForChatID:chat.chatID model:largeChoice supportingModel:smallChoice error:&error]) {
+        completion(error); return;
+      }
+      chat.model = largeChoice;
+      chat.supportingModel = smallChoice;
+      owner.settings.selectedModel = largeChoice;
+      owner.settings.supportingModel = smallChoice;
+      for (TLChatSummary *summary in owner.chats) {
+        if (summary.chatID == chat.chatID) { summary.model = largeChoice; summary.supportingModel = smallChoice; }
+      }
+      [owner updateControlStates];
+      completion(nil);
+    };
+    // Small models use isolated supporting sessions. Draft chats have no Hermes
+    // conversation yet; their selection is verified when the first turn starts.
+    if (small || !chat.hermesSessionID.length) { saveSelection(nil); return; }
+    [owner.agentOrchestrator selectModel:model sessionID:chat.hermesSessionID token:owner.settings.openRouterToken
+      completion:saveSelection];
+  };
+  [controller presentForWindow:self.window];
+}
+
 - (void)activateComposerButton:(id)sender {
   if ([self canStopResponse]) {
     [self.turnRunners[@(self.activeChat.chatID)] cancel];
@@ -2212,7 +2292,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)sendMessage:(id)sender allowAutomaticRouting:(BOOL)allowAutomaticRouting {
   NSString *token = [self.settings.openRouterToken stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  NSString *model = [self.settings.selectedModel stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  NSString *model = [(self.activeChat.model ?: self.settings.selectedModel) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSString *nextPrompt = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
 
   NSArray<NSURL *> *sourceURLs = self.messageInput.attachmentURLs;
@@ -3352,6 +3432,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.agents = [loadedAgents mutableCopy];
+  if (self.historyAgentID != self.database.currentAgentID) {
+    self.historyRequestGeneration += 1;
+    self.historyPanelController.loading = NO;
+    self.hermesHistoryChats = @[];
+    self.hermesHistorySessions = @{};
+    [self reloadHistoryPanel];
+    if ([self isHistoryScreenActive]) [self refreshHermesHistory];
+  }
+
   if (self.hermesCommandsAgentID != self.database.currentAgentID) {
     [self prepareHermesCommands];
     [self updateSlashCommandList];
@@ -4870,7 +4959,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)updateWorkspaceMode {
   self.chatWorkspace.hidden = ![self isChatWorkspaceActive];
-  self.historyPanelController.panelView.hidden = ![self isHistoryScreenActive];
+  BOOL historyVisible = [self isHistoryScreenActive];
+  self.historyPanelController.panelView.hidden = !historyVisible;
+  BOOL refreshHistory = historyVisible && (!self.historyWasVisible || self.historyAgentID != self.database.currentAgentID);
+  self.historyWasVisible = historyVisible;
+  if (refreshHistory) [self refreshHermesHistory];
   TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
   [self contentViewForTab:self.settingsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindSettings);
   [self contentViewForTab:self.agentsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindAgents);
@@ -5066,6 +5159,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.agentCreationWindowController applyPalette:self.palette];
   [self.agentFolderAccessWindowController applyPalette:self.palette];
   [self.agentSettingsWindowController applyPalette:self.palette];
+  [self.modelSelectionController applyPalette:self.palette];
   [self styleSidebarActionButtons];
 }
 
@@ -5180,7 +5274,39 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  [self loadChatWithID:chatID];
+  if (self.historyPanelController.loading) return;
+  if (self.turnRunners[@(chatID)] || [self.preparingAttachmentChats containsObject:@(chatID)]) {
+    [self loadChatWithID:chatID];
+    return;
+  }
+  NSDictionary *session = self.hermesHistorySessions[@(chatID)];
+  if (!session) return;
+  NSInteger agentID = self.database.currentAgentID;
+  NSUInteger generation = ++self.historyRequestGeneration;
+  self.historyPanelController.loading = YES;
+  self.historyPanelController.statusMessage = @"Opening Hermes session…";
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesHistoryWithAction:@"open" sessionID:session[@"id"]
+                                          token:self.settings.openRouterToken model:self.settings.selectedModel
+                                     completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.historyRequestGeneration) return;
+    owner.historyPanelController.loading = NO;
+    owner.historyPanelController.statusMessage = @"";
+    if (agentID != owner.database.currentAgentID) { [owner refreshHermesHistory]; return; }
+    NSArray *messages = [result[@"messages"] isKindOfClass:NSArray.class] ? result[@"messages"] : nil;
+    if (error || !messages) {
+      owner.historyPanelController.statusMessage = error.localizedDescription ?: @"Hermes returned an invalid transcript.";
+      return;
+    }
+    if (owner.turnRunners[@(chatID)] || [owner.preparingAttachmentChats containsObject:@(chatID)]) return;
+    NSMutableDictionary *metadata = [session mutableCopy];
+    if ([result[@"model"] isKindOfClass:NSString.class]) metadata[@"model"] = result[@"model"];
+    TLChatRecord *chat = [owner.database cacheHermesSession:metadata messages:messages error:&error];
+    if (!chat) { owner.historyPanelController.statusMessage = error.localizedDescription; return; }
+    owner.chats = [[owner.database listChats:nil] mutableCopy];
+    if ([owner isHistoryScreenActive]) [owner loadChatWithID:chat.chatID];
+  }];
 }
 
 - (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteChatID:(NSInteger)chatID {
@@ -5203,7 +5329,33 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return;
     }
 
-    [weakSelf deleteChatWithID:chatID];
+    [weakSelf deleteHermesHistoryChatWithID:chatID];
+  }];
+}
+
+- (void)deleteHermesHistoryChatWithID:(NSInteger)chatID {
+  if (self.turnRunners[@(chatID)] || [self.preparingAttachmentChats containsObject:@(chatID)] || self.historyPanelController.loading) return;
+  NSDictionary *session = self.hermesHistorySessions[@(chatID)];
+  if (!session || self.historyAgentID != self.database.currentAgentID) return;
+  NSInteger agentID = self.database.currentAgentID;
+  NSUInteger generation = ++self.historyRequestGeneration;
+  self.historyPanelController.loading = YES;
+  self.historyPanelController.statusMessage = @"Deleting Hermes session…";
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesHistoryWithAction:@"delete" sessionID:session[@"id"]
+                                          token:self.settings.openRouterToken model:self.settings.selectedModel
+                                     completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.historyRequestGeneration) return;
+    owner.historyPanelController.loading = NO;
+    owner.historyPanelController.statusMessage = @"";
+    if (agentID != owner.database.currentAgentID) { [owner refreshHermesHistory]; return; }
+    if (error || ![result[@"deleted"] isEqual:session[@"id"]]) {
+      owner.historyPanelController.statusMessage = error.localizedDescription ?: @"Hermes did not confirm deletion.";
+      return;
+    }
+    [owner deleteChatWithID:chatID];
+    [owner refreshHermesHistory];
   }];
 }
 
@@ -5267,8 +5419,65 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self updateControlStates];
 }
 
+- (void)historyPanelControllerDidRequestRefresh:(TLHistoryPanelController *)controller {
+  [self refreshHermesHistory];
+}
+
+- (void)refreshHermesHistory {
+  if (self.widgetbookMode) { [self reloadHistoryPanel]; return; }
+  NSInteger agentID = self.database.currentAgentID;
+  if (self.historyPanelController.loading && self.historyAgentID == agentID) return;
+  NSUInteger generation = ++self.historyRequestGeneration;
+  self.historyAgentID = agentID;
+  self.hermesHistoryChats = @[];
+  self.hermesHistorySessions = @{};
+  self.historyPanelController.searchPreviews = @{};
+  self.historyPanelController.statusMessage = @"";
+  [self reloadHistoryPanel];
+  if (agentID <= 0) {
+    self.historyPanelController.loading = NO;
+    self.historyPanelController.statusMessage = @"Select an agent to view its Hermes history.";
+    return;
+  }
+  self.historyPanelController.loading = YES;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesHistoryWithAction:@"list" sessionID:@""
+                                          token:self.settings.openRouterToken model:self.settings.selectedModel
+                                     completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.historyRequestGeneration) return;
+    owner.historyPanelController.loading = NO;
+    if (agentID != owner.database.currentAgentID) { [owner refreshHermesHistory]; return; }
+    NSArray *sessions = [result[@"sessions"] isKindOfClass:NSArray.class] ? result[@"sessions"] : nil;
+    if (error || !sessions) {
+      owner.historyPanelController.statusMessage = error.localizedDescription ?: @"Hermes returned an invalid session list.";
+      return;
+    }
+    NSMutableArray *chats = [NSMutableArray array];
+    NSMutableDictionary *metadata = [NSMutableDictionary dictionary];
+    NSMutableDictionary *previews = [NSMutableDictionary dictionary];
+    for (id session in sessions) {
+      if (![session isKindOfClass:NSDictionary.class] || ![session[@"id"] isKindOfClass:NSString.class]) {
+        owner.historyPanelController.statusMessage = @"Hermes returned an invalid session.";
+        return;
+      }
+      TLChatRecord *chat = [owner.database cacheHermesSession:session messages:nil error:&error];
+      if (!chat) { owner.historyPanelController.statusMessage = error.localizedDescription; return; }
+      [chats addObject:chat];
+      metadata[@(chat.chatID)] = session;
+      previews[@(chat.chatID)] = [session[@"preview"] isKindOfClass:NSString.class] ? session[@"preview"] : @"";
+    }
+    owner.hermesHistoryChats = chats;
+    owner.hermesHistorySessions = metadata;
+    owner.historyPanelController.searchPreviews = previews;
+    owner.chats = [[owner.database listChats:nil] mutableCopy];
+    [owner reloadHistoryPanel];
+    [owner reloadWorkspaceTabs];
+  }];
+}
+
 - (void)reloadHistoryPanel {
-  self.historyPanelController.chats = self.chats ?: @[];
+  self.historyPanelController.chats = self.widgetbookMode ? (self.chats ?: @[]) : (self.hermesHistoryChats ?: @[]);
   [self.historyPanelController reloadData];
 }
 
@@ -5293,7 +5502,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   NSString *token = [self.settings.openRouterToken stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  NSString *model = [self.settings.supportingModel stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  NSString *model = [(summary.supportingModel ?: self.settings.supportingModel) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   if (token.length == 0 || model.length == 0) {
     return;
   }

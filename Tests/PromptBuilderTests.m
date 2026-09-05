@@ -371,6 +371,34 @@ static void TestHermesModelParsing(void) {
   TLAssertTrue(TLParseHermesModelOptions(data, &error) == nil && error != nil, @"rejects the removed HTTP catalogue shape");
 }
 
+static void TestHermesHistoryCache(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"HermesHistoryCache");
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:nil];
+  NSDictionary *session = @{@"hermes_session_id": @"external-hermes-session", @"title": @"Hermes title",
+                            @"model": @"original/model", @"created_at": @"2026-09-01 01:02:03", @"updated_at": @"2026-09-05 04:05:06"};
+  TLChatRecord *chat = [database cacheHermesSession:session messages:nil error:nil];
+  TLChatRecord *again = [database cacheHermesSession:session messages:nil error:nil];
+  TLAssertTrue(chat.chatID > 0 && again.chatID == chat.chatID, @"Hermes refresh preserves tab identity");
+  TLAssertTrue([database listChats:nil].count == 1, @"Hermes refresh does not duplicate chats");
+  TLChatMessage *user = [TLChatMessage messageWithRole:TLRoleUser content:@"Hello" thinking:nil];
+  user.attachments = @[@{@"name": @"test.txt", @"guestPath": @"/workspace/test.txt", @"directory": @NO}];
+  [database saveMessage:user chatID:chat.chatID error:nil];
+  NSArray *messages = @[@{@"role": @"user", @"content": @"Hello"}, @{@"role": @"assistant", @"content": @"From Hermes", @"thinking": @"Reasoning"}];
+  chat = [database cacheHermesSession:session messages:messages error:nil];
+  TLAssertTrue(chat.messages.count == 2, @"Hermes transcript replaces cache");
+  TLAssertEqualObjects(chat.messages.firstObject.attachments, user.attachments, @"matching attachments survive transcript refresh");
+  TLAssertEqualObjects(chat.messages.lastObject.thinking, @"Reasoning", @"Hermes reasoning survives refresh");
+  TLAssertEqualObjects(chat.updatedAt, session[@"updated_at"], @"history refresh does not change remote timestamps");
+  TLAssertEqualObjects(chat.title, @"Hermes title", @"remote title survives message import");
+  NSError *error = nil;
+  TLAssertTrue([database cacheHermesSession:session messages:@[@{@"role": @"invalid", @"content": @"bad"}] error:&error] == nil && error != nil,
+               @"malformed transcript fails atomically");
+  TLAssertTrue([database chatWithID:chat.chatID error:nil].messages.count == 2, @"failed import preserves cached transcript");
+  chat = [database cacheHermesSession:session messages:@[] error:nil];
+  TLAssertTrue(chat.messages.count == 0, @"an empty Hermes transcript clears stale cached messages");
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+}
+
 static void TestDatabasePersistence(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaTests");
   NSError *error = nil;
@@ -429,6 +457,19 @@ static void TestDatabasePersistence(void) {
   TLAssertEqualObjects(chat.icon, @"", @"new chats start without a generated icon");
   TLAssertTrue([chat.hermesSessionID hasPrefix:@"talaria_"], @"gives each chat a Hermes session id");
 
+  TLChatRecord *otherModelChat = [database createChatWithModel:@"other/large" supportingModel:@"other/small" error:&error];
+  TLAssertTrue([database saveModelsForChatID:chat.chatID model:@"chosen/large" supportingModel:@"chosen/small" error:&error], @"saves per-chat models");
+  TLChatRecord *modelChat = [database chatWithID:chat.chatID error:&error];
+  TLAssertEqualObjects(modelChat.model, @"chosen/large", @"large model survives reload");
+  TLAssertEqualObjects(modelChat.supportingModel, @"chosen/small", @"small model survives reload");
+  TLAssertEqualObjects(modelChat.hermesSessionID, chat.hermesSessionID, @"switch keeps Hermes session identity");
+  TLAssertEqualObjects([database chatWithID:otherModelChat.chatID error:&error].supportingModel, @"other/small", @"other chat keeps its small model");
+  TLAssertTrue([database saveModelsForChatID:0 model:@"draft/large" supportingModel:@"draft/small" error:&error], @"draft model selection saves defaults without creating a chat");
+  TLAssertEqualObjects([database appSettings:&error].selectedModel, @"draft/large", @"new-chat defaults remember last choice");
+  [database deleteChatWithID:otherModelChat.chatID error:&error];
+  // Restore original fixture expectations for the remaining conversation tests.
+  [database saveModelsForChatID:chat.chatID model:@"openai/gpt-4" supportingModel:@"chosen/small" error:&error];
+
   TLChatSummary *titleSummary = [database saveChatTitle:@"  AWS Oregon Outage  " chatID:chat.chatID error:&error];
   TLAssertTrue(titleSummary != nil && error == nil, @"saves a chat title");
   TLAssertEqualObjects(titleSummary.title, @"AWS Oregon Outage", @"trims and persists a chat title");
@@ -483,7 +524,7 @@ static void TestDatabasePersistence(void) {
                @"deleted chats cannot be loaded");
 
   database = nil;
-  TLAssertTrue(TLReadSQLiteUserVersion(url) == 7, @"sets database schema user_version");
+  TLAssertTrue(TLReadSQLiteUserVersion(url) == 8, @"sets database schema user_version");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
 
@@ -526,7 +567,7 @@ static void TestCompatibleVersion5Database(void) {
       TLAssertEqualObjects([check stringAtColumn:1], @"keep", @"preserves newer agent instructions");
       TLAssertEqualObjects([check stringAtColumn:2], @"[\"/tmp/keep\"]", @"preserves newer agent folders");
     }
-    TLAssertTrue(TLReadSQLiteUserVersion(url) == 7, @"upgrades both version-5 variants without downgrading data");
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 8, @"upgrades both version-5 variants without downgrading data");
     [connection executeSQL:"PRAGMA user_version = 6" error:&error];
     error = nil;
     TLAssertTrue(!TLDatabaseMigrate(connection, 4, &error) && error != nil, @"rejects unknown future versions");
@@ -1290,6 +1331,7 @@ int main(int argc, const char *argv[]) {
     TestStreamingBlockBuffer();
     TestHermesModelParsing();
     TestDatabasePersistence();
+    TestHermesHistoryCache();
     TestCompatibleVersion5Database();
     TestMessageDeletion();
     TestChatIconGenerator();

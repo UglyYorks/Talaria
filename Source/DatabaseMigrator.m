@@ -30,6 +30,7 @@ static BOOL TLDatabaseHasCompatibleVersion5Schema(TLSQLiteConnection *connection
     @"settings": @[@"key", @"value"],
   };
   NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *knownAdditions = @{
+    @"chats": @{@"supporting_model": @"'openrouter/auto'"},
     @"messages": @{@"attachments": @"'[]'"},
     @"agents": @{@"avatar": @"'🤖'", @"soul": @"''", @"folder_paths": @"'[]'"},
   };
@@ -226,6 +227,26 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     } error:error];
     if (!migrated) return NO;
     version = 7;
+  }
+  if (version < 8 && targetVersion >= 8) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(chats)" error:transactionError];
+      if (!columns) return NO;
+      BOOL exists = NO;
+      int result;
+      while ((result = [columns step]) == SQLITE_ROW) {
+        if ([[columns stringAtColumn:1] isEqualToString:@"supporting_model"]) exists = YES;
+      }
+      if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
+      columns = nil;
+      if (exists) return TLDatabaseSetSchemaVersion(connection, 8, transactionError);
+      return [connection executeSQL:
+        "ALTER TABLE chats ADD COLUMN supporting_model TEXT NOT NULL DEFAULT 'openrouter/auto';"
+        "UPDATE chats SET supporting_model = COALESCE((SELECT NULLIF(value, '') FROM settings WHERE key = 'supportingModel'), 'openrouter/auto');"
+        error:transactionError] && TLDatabaseSetSchemaVersion(connection, 8, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 8;
   }
   return version == targetVersion;
 }

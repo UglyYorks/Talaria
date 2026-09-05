@@ -253,6 +253,31 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   return self;
 }
 
+- (void)hermesHistoryWithAgent:(TLAgentRecord *)agent action:(NSString *)action sessionID:(NSString *)sessionID
+                        token:(NSString *)token model:(NSString *)model
+                   completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
+  NSString *requestID = NSUUID.UUID.UUIDString;
+  NSMutableString *response = [NSMutableString string];
+  [self startWorkerWithAgent:agent
+                    payload:@{@"operation": @"hermes_history", @"request_id": requestID,
+                              @"action": action, @"session_id": sessionID ?: @"",
+                              @"token": token ?: @"", @"model": model ?: @""}
+                  operation:@"hermes_history"
+                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
+    if ([deltaID isEqualToString:requestID]) [response appendString:text];
+  } streamCompletion:^(NSError *error) {
+    if (error) { completion(nil, error); return; }
+    NSError *parseError = nil;
+    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
+                                               options:0 error:&parseError];
+    if (![result isKindOfClass:NSDictionary.class]) {
+      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned invalid history data."));
+      return;
+    }
+    completion(result, nil);
+  } modelCompletion:nil];
+}
+
 - (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent
                               token:(NSString *)token
                               model:(NSString *)model
@@ -297,6 +322,16 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   };
   [self startWorkerWithAgent:agent payload:payload operation:@"hermes_session_chat"
                        delta:delta streamCompletion:completion modelCompletion:nil];
+}
+
+- (void)selectHermesModelWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
+                           token:(NSString *)token model:(NSString *)model
+                      completion:(TLAgentStreamCompletionHandler)completion {
+  NSDictionary *payload = @{@"operation": @"hermes_select_model", @"request_id": NSUUID.UUID.UUIDString,
+    @"session_id": sessionID, @"token": token, @"model": model};
+  [self startWorkerWithAgent:agent payload:payload operation:@"hermes_select_model"
+    delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {}
+    streamCompletion:completion modelCompletion:nil];
 }
 
 - (void)installHermesWithAgent:(TLAgentRecord *)agent

@@ -4,6 +4,7 @@ Protocol reference: NousResearch/hermes-agent, tui_gateway/entry.py and
 tui_gateway/methods_tools.py (commands.catalog, command.dispatch, slash.exec).
 """
 import json
+from datetime import datetime, timezone
 import queue
 import subprocess
 import threading
@@ -92,6 +93,102 @@ class HermesGateway:
             raise RuntimeError("This Hermes version does not provide a command catalogue. Update Hermes and retry.")
         return result
 
+    def history_sessions(self):
+        # session.list has a limit but no offset. Expand the window until complete;
+        # never silently restrict search to its default 200 rows.
+        limit = 200
+        while True:
+            result = self.call("session.list", {"limit": limit})
+            rows = result.get("sessions")
+            if not isinstance(rows, list) or any(not isinstance(row, dict) or not row.get("id") for row in rows):
+                raise RuntimeError("Hermes returned an invalid session list.")
+            if len(rows) < limit:
+                break
+            if limit >= 102400:
+                raise RuntimeError("Hermes history is too large to load completely.")
+            limit *= 2
+        with self.lock:
+            aliases = {}
+            for chat, stored in self.mappings.items():
+                if stored not in aliases or chat != stored:
+                    aliases[stored] = chat
+        sessions = []
+        seen = set()
+        for row in rows:
+            stored = row["id"]
+            if stored in seen:
+                continue
+            seen.add(stored)
+            sessions.append({**row, "hermes_session_id": aliases.get(stored, stored),
+                             "title": row.get("title") or row.get("preview") or "Untitled session",
+                             "created_at": self.history_date(row.get("started_at")),
+                             "updated_at": self.history_date(row.get("last_active") or row.get("started_at"))})
+        return {"sessions": sessions}
+
+    @staticmethod
+    def history_date(value):
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        return value if isinstance(value, str) else ""
+
+    def history_session(self, stored):
+        if not stored:
+            raise RuntimeError("A Hermes session ID is required.")
+        with self.lock:
+            live = next((state for chat, state in self.sessions.items()
+                         if self.mappings.get(chat, chat) == stored), None)
+        if live:
+            sid = live["id"]
+            model = live["model"]
+        else:
+            # Explicit resume: a missing history row must never create a new session.
+            result = self.call("session.resume", {"session_id": stored})
+            model = (result.get("info") or {}).get("model") or ""
+            with self.lock:
+                chat_id = next((chat for chat, target in self.mappings.items() if target == stored), stored)
+            sid = self._remember(chat_id, result, model)
+        result = self.call("session.history", {"session_id": sid})
+        messages = result.get("messages")
+        if not isinstance(messages, list):
+            raise RuntimeError("Hermes returned an invalid transcript.")
+        transcript = []
+        for message in messages:
+            if not isinstance(message, dict):
+                raise RuntimeError("Hermes returned an invalid transcript message.")
+            if message.get("role") not in {"user", "assistant", "system"}:
+                continue
+            text = message.get("text", "")
+            if not isinstance(text, str):
+                raise RuntimeError("Hermes returned an invalid transcript message.")
+            transcript.append({"role": message["role"], "content": text,
+                               "thinking": message.get("reasoning") or message.get("reasoning_content") or "",
+                               "created_at": self.history_date(message.get("timestamp"))})
+        return {"messages": transcript, "model": model}
+
+    def delete_history_session(self, stored):
+        if not stored:
+            raise RuntimeError("A Hermes session ID is required.")
+        with self.lock:
+            aliases = [chat for chat in self.sessions if self.mappings.get(chat, chat) == stored]
+            if any(self.sessions[chat]["id"] in self.listeners for chat in aliases):
+                raise RuntimeError("Wait for this Hermes session to finish before deleting it.")
+            runtime_ids = {self.sessions[chat]["id"] for chat in aliases}
+        for sid in runtime_ids:
+            self.call("session.close", {"session_id": sid})
+        with self.lock:
+            for chat in aliases:
+                self.sessions.pop(chat, None)
+                self.waiting.pop(chat, None)
+        result = self.call("session.delete", {"session_id": stored})
+        if not result.get("deleted"):
+            raise RuntimeError("Hermes did not confirm session deletion.")
+        with self.lock:
+            self.mappings = {chat: target for chat, target in self.mappings.items() if target != stored}
+            temporary = self.mapping_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(self.mappings))
+            temporary.replace(self.mapping_path)
+        return {"deleted": stored}
+
     def model_options(self):
         result = self.call("model.options", {"explicit_only": True})
         if not isinstance(result.get("providers"), list):
@@ -137,23 +234,48 @@ class HermesGateway:
             temporary.replace(self.mapping_path)
         return sid
 
-    def session(self, chat_id, model):
-        if chat_id in self.sessions:
-            state = self.sessions[chat_id]
-            if state["model"] != model:
-                result = self.call("config.set", {"session_id": state["id"], "key": "model",
-                                                 "value": f"{model} --provider openrouter"})
-                if result.get("confirm_required"):
-                    raise RuntimeError(result.get("confirm_message") or "Hermes requires confirmation of this model change.")
-                state["model"] = model
-            return state["id"]
+    def _apply_session_model(self, sid, model):
+        # A bare model waits for Hermes' lazy agent build. Supplying --provider
+        # skips that wait and can race a resumed agent loading its old model.
+        result = self.call("config.set", {"session_id": sid, "key": "model",
+                                          "value": f"{model} --session"})
+        if result.get("confirm_required"):
+            raise RuntimeError(result.get("confirm_message") or "Hermes requires confirmation of this model change.")
+        if result.get("value") != model:
+            raise RuntimeError(f"Hermes did not accept the requested model {model}.")
+        status = self.call("session.status", {"session_id": sid})
+        if f"Model: {model} (openrouter)" not in status.get("output", "").splitlines():
+            raise RuntimeError(f"Hermes has not activated {model}. Wait for the current response to finish and retry.")
+        # This audit contains model identifiers only, never prompts or credentials.
+        with (self.home / "talaria-model-switches.jsonl").open("a") as log:
+            log.write(json.dumps({"session_id": sid, "model": model, "verified": True, "time": time.time()}) + "\n")
+
+    def session(self, chat_id, model, force_model=False):
+        if chat_id not in self.sessions:
+            try:
+                result = self.call("session.resume", {"session_id": self.mappings.get(chat_id, chat_id)})
+            except RPCError as exc:
+                if exc.code != 4007:
+                    raise
+                result = self.call("session.create", {"model": model, "provider": "openrouter", "source": "talaria"})
+            # Both create and resume are lazy. Pin and verify after loading before
+            # remembering a selection, including the very first turn.
+            self._remember(chat_id, result, "")
+        state = self.sessions[chat_id]
+        if force_model or state["model"] != model:
+            self._apply_session_model(state["id"], model)
+            state["model"] = model
+        return state["id"]
+
+    def select_model(self, chat_id, model):
+        with self.lock:
+            session_lock = self.session_locks.setdefault(chat_id, threading.Lock())
+        if not session_lock.acquire(blocking=False):
+            raise RuntimeError("Wait for the current response to finish before switching models.")
         try:
-            result = self.call("session.resume", {"session_id": self.mappings.get(chat_id, chat_id)})
-        except RPCError as exc:
-            if exc.code != 4007:  # Never replace history after a transport/auth/database failure.
-                raise
-            result = self.call("session.create", {"model": model, "provider": "openrouter", "source": "talaria"})
-        return self._remember(chat_id, result, model)
+            return self.session(chat_id, model, force_model=True)
+        finally:
+            session_lock.release()
 
     def command(self, chat_id, sid, text, model, depth=0):
         if depth >= 8:

@@ -6,9 +6,10 @@
 #import <WebKit/WebKit.h>
 #import "TLBrowserTabController.h"
 #import "TLSettingsTabController.h"
+#import "TLModelSelectionWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AssistantTurnRunner.h"
-#import "ModelPickerView.h"
+#import "design_system/ModelPickerView.h"
 #import "UIComponents.h"
 #import "TalariaWindowController.h"
 #import "TLAgentCreationWindowController.h"
@@ -18,6 +19,7 @@
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLButton.h"
 #import "design_system/TLThemedButton.h"
+#import "TLHistoryPanelController.h"
 #import "design_system/TLWorkspaceOutlineView.h"
 #import "design_system/TLChromeTabView.h"
 
@@ -396,7 +398,7 @@ static BOOL PixelMatches(NSBitmapImageRep *bitmap, NSInteger x, NSInteger y, CGF
 
 static NSBitmapImageRep *RenderThemedButton(TLThemedButton *button) {
   NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
-    pixelsWide:220 pixelsHigh:44 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+    pixelsWide:ceil(NSWidth(button.bounds)) pixelsHigh:ceil(NSHeight(button.bounds)) bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
     colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
   [NSGraphicsContext saveGraphicsState];
   NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap];
@@ -1034,6 +1036,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error;
 @end
 @implementation TLFeatureSettingsStoreMock
+- (TLAppSettings *)appSettings:(NSError **)error { return self.savedSettings; }
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error {
   self.savedSettings = [settings copy];
   return self.savedSettings;
@@ -1078,49 +1081,122 @@ static void TestSettingsThemeAndLateCatalogue(void) {
     palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
   NSWindow *window = HostController(controller);
   NSSecureTextField *token = [controller valueForKey:@"tokenField"];
-  TLModelPickerView *picker = [controller valueForKey:@"mainModelPicker"];
-  NSSearchField *search = [picker valueForKey:@"searchField"];
   NSPopUpButton *theme = [controller valueForKey:@"themePopup"];
-  NSMutableArray<TLAgentModel *> *models = [NSMutableArray array];
-  for (NSUInteger index = 0; index < 40; index += 1) {
-    TLAgentModel *model = [[TLAgentModel alloc] init];
-    model.modelID = [NSString stringWithFormat:@"test/model-%lu", (unsigned long)index];
-    model.name = model.modelID;
-    [models addObject:model];
-  }
-  [picker setModels:models];
-  [window.contentView layoutSubtreeIfNeeded];
-  NSTableView *modelTable = [picker valueForKey:@"tableView"];
-  NSScrollView *modelScroll = modelTable.enclosingScrollView;
-  [modelScroll.contentView scrollToPoint:NSMakePoint(0, 200)];
-  NSPoint modelScrollOrigin = modelScroll.contentView.bounds.origin;
   token.stringValue = @"test-only-unsaved-token";
-  search.stringValue = @"draft model search";
   [theme selectItemAtIndex:TLThemePreferenceDark];
-  [window makeFirstResponder:search];
+  [window makeFirstResponder:token];
   NSResponder *responder = window.firstResponder;
   NSView *view = controller.view;
   TLThemePalette *dark = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
   [controller applyPalette:dark];
   Check(controller.view == view && [controller valueForKey:@"tokenField"] == token, @"settings theme keeps existing controls");
-  Check([token.stringValue isEqualToString:@"test-only-unsaved-token"] && [search.stringValue isEqualToString:@"draft model search"], @"settings drafts survive theme change");
+  Check([token.stringValue isEqualToString:@"test-only-unsaved-token"], @"settings drafts survive theme change");
   Check(window.firstResponder == responder && theme.indexOfSelectedItem == TLThemePreferenceDark, @"settings focus and theme draft survive palette application");
-  Check(NSEqualPoints(modelScroll.contentView.bounds.origin, modelScrollOrigin), @"model catalogue scroll position survives palette application");
-  Check([token.textColor isEqual:dark.controlText] && [picker.fillColor isEqual:dark.controlSurface], @"settings controls and model pickers update theme");
+  Check([token.textColor isEqual:dark.controlText], @"settings controls update theme");
+  Check(catalogue.pendingCatalogue == nil, @"settings does not fetch or offer model selection");
+  store.savedSettings = [TLAppSettings defaultSettings];
+  store.savedSettings.selectedModel = @"new/large";
+  store.savedSettings.supportingModel = @"new/small";
   __block TLAppSettings *saved = nil;
   controller.settingsSavedHandler = ^(TLAppSettings *settings) { saved = settings; };
   NSButton *save = [controller valueForKey:@"saveButton"];
   [NSApp sendAction:save.action to:save.target from:save];
-  Check([saved.openRouterToken isEqualToString:token.stringValue] && saved.theme == TLThemePreferenceDark, @"settings owner saves current control drafts");
-  NSButton *reload = [controller valueForKey:@"reloadButton"];
-  [NSApp sendAction:reload.action to:reload.target from:reload];
-  Check(catalogue.pendingCatalogue != nil && !reload.enabled, @"settings owns catalogue loading state");
-  NSTextField *status = [controller valueForKey:@"catalogueStatusLabel"];
-  NSString *pendingStatus = status.stringValue;
+  Check([saved.openRouterToken isEqualToString:token.stringValue] && saved.theme == TLThemePreferenceDark, @"settings saves current control drafts");
+  Check([saved.selectedModel isEqual:@"new/large"] && [saved.supportingModel isEqual:@"new/small"], @"stale settings draft cannot overwrite composer choices");
   [controller close];
-  catalogue.pendingCatalogue(@[], nil);
-  Check([status.stringValue isEqualToString:pendingStatus] && !reload.enabled, @"late catalogue callback cannot mutate closed settings");
   [window close];
+}
+
+static void TestComposerModelButtonLayout(void) {
+  TLMessageInput *input = [[TLMessageInput alloc] init];
+  Check(input.settingsButton == nil, @"non-chat inputs do not add model controls");
+  input.attachmentsEnabled = YES;
+  input.showsSettingsButton = YES;
+  NSView *host = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 200)];
+  [host addSubview:input];
+  NSLayoutConstraint *width = [input.widthAnchor constraintEqualToConstant:500];
+  [NSLayoutConstraint activateConstraints:@[width, [input.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+    [input.bottomAnchor constraintEqualToAnchor:host.bottomAnchor]]];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    for (NSNumber *size in @[@200, @500]) {
+      width.constant = size.doubleValue;
+      [host layoutSubtreeIfNeeded];
+      NSRect gear = input.settingsButton.frame, send = input.sendButton.frame;
+      Check(NSMaxX(gear) <= NSMinX(send) && NSMidY(gear) == NSMidY(send), @"model settings sits immediately left of Send at narrow and wide widths");
+      Check(NSWidth(input.textView.enclosingScrollView.frame) > 0, @"composer keeps editable text space at minimum window width");
+    }
+    width.constant = 500;
+    input.textView.string = @"Ask anything…";
+    [host layoutSubtreeIfNeeded];
+    NSBitmapImageRep *bitmap = [input bitmapImageRepForCachingDisplayInRect:input.bounds];
+    [input cacheDisplayInRect:input.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"build/model-composer-%@.png", theme] atomically:YES];
+  }
+}
+
+static void TestComposerModelDialog(void) {
+  TLFeatureCatalogueMock *catalogue = [[TLFeatureCatalogueMock alloc] init];
+  TLThemePalette *light = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
+  TLModelSelectionWindowController *controller = [[TLModelSelectionWindowController alloc]
+    initWithSmallModel:NO selectedModel:@"test/large" token:@"test" orchestrator:(id)catalogue palette:light];
+  TLModelPickerView *picker = [controller valueForKey:@"picker"];
+  NSSearchField *search = [picker valueForKey:@"searchField"];
+  NSTableView *table = [picker valueForKey:@"tableView"];
+  TLThemedButton *reload = [controller valueForKey:@"reloadButton"];
+  TLThemedButton *apply = [controller valueForKey:@"switchButton"];
+  TLThemedButton *cancel = [controller valueForKey:@"cancelButton"];
+  __block NSString *selected = nil;
+  __block void (^modelCompletion)(NSError *);
+  controller.selectionHandler = ^(NSString *model, void (^completion)(NSError *)) { selected = model; modelCompletion = completion; };
+  [NSApp sendAction:reload.action to:reload.target from:reload];
+  Check(!apply.enabled && !search.enabled, @"cannot switch while catalogue is loading");
+  catalogue.pendingCatalogue(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Offline — try again"}]);
+  Check(reload.enabled && !apply.enabled, @"catalogue failure offers retry without enabling stale choices");
+  [NSApp sendAction:reload.action to:reload.target from:reload];
+  TLAgentModel *large = [[TLAgentModel alloc] init]; large.modelID = @"test/large"; large.name = @"Large model";
+  TLAgentModel *small = [[TLAgentModel alloc] init]; small.modelID = @"test/small"; small.name = @"Small model";
+  catalogue.pendingCatalogue(@[large, small], nil);
+  Check(apply.enabled && search.enabled, @"loaded catalogue enables current model");
+  search.stringValue = @"small";
+  [NSNotificationCenter.defaultCenter postNotificationName:NSControlTextDidChangeNotification object:search];
+  Check(table.numberOfRows == 1, @"model search filters available choices");
+  [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  Check([picker.selectedModelID isEqual:@"test/small"] && selected == nil, @"picking a row is a draft until confirmed");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [controller applyPalette:palette];
+    Check([search.stringValue isEqual:@"small"] && [picker.selectedModelID isEqual:@"test/small"], @"theme switch preserves model draft and search");
+    [controller.window.contentView layoutSubtreeIfNeeded];
+    NSView *view = controller.window.contentView;
+    NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+    [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+    NSString *path = [NSString stringWithFormat:@"build/model-dialog-%@.png", theme];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+    for (TLThemedButton *button in @[apply, cancel, reload]) {
+      NSBitmapImageRep *render = RenderThemedButton(button);
+      CGFloat surface[3], alpha;
+      RGBComponents(palette.tabBackground, surface, &alpha);
+      CompositeColor(button.primary ? palette.primaryActionSurface : palette.secondaryActionSurface, 1, surface);
+      Check(PixelMatches(render, 10, NSHeight(button.bounds) / 2, surface), @"model dialog buttons render paired theme surfaces");
+    }
+  }
+  [NSApp sendAction:apply.action to:apply.target from:apply];
+  Check(modelCompletion && !apply.enabled && !cancel.enabled && ![[controller valueForKey:@"dismissed"] boolValue], @"switch waits for Hermes acknowledgement");
+  modelCompletion([NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Hermes kept the old model"}]);
+  Check(apply.enabled && cancel.enabled && ![[controller valueForKey:@"dismissed"] boolValue], @"failed Hermes switch stays open and permits retry");
+  [NSApp sendAction:apply.action to:apply.target from:apply];
+  modelCompletion(nil);
+  Check([selected isEqual:@"test/small"] && [[controller valueForKey:@"dismissed"] boolValue], @"only a confirmed switch closes the dialog");
+  // A dismissed modal must ignore a catalogue request that completes later.
+  [controller setValue:@NO forKey:@"dismissed"];
+  [NSApp sendAction:reload.action to:reload.target from:reload];
+  NSString *status = [[picker valueForKey:@"statusLabel"] stringValue];
+  [NSApp sendAction:cancel.action to:cancel.target from:cancel];
+  catalogue.pendingCatalogue(@[], nil);
+  Check([[[picker valueForKey:@"statusLabel"] stringValue] isEqual:status], @"cancelled dialog ignores late catalogues");
+  [controller.window close];
 }
 
 static void TestBrowserOwnsCallbacksAndSession(void) {
@@ -1777,9 +1853,90 @@ static void TestRunningAgentRepairAction(void) {
   Check(!start.enabled && !stop.enabled, @"setup disables duplicate install and stop actions");
 }
 
+@interface TLHistorySelectionProbe : NSObject <TLHistoryPanelControllerDelegate>
+@property NSInteger selected;
+@property NSInteger deleted;
+@end
+@implementation TLHistorySelectionProbe
+- (void)historyPanelController:(TLHistoryPanelController *)controller didSelectChatID:(NSInteger)chatID { self.selected = chatID; }
+- (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteChatID:(NSInteger)chatID { self.deleted = chatID; }
+@end
+
+static void TestHermesHistorySearchAndLayout(void) {
+  TLHistorySelectionProbe *probe = [[TLHistorySelectionProbe alloc] init];
+  TLHistoryPanelController *controller = [[TLHistoryPanelController alloc] initWithPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  controller.delegate = probe;
+  TLChatSummary *first = [[TLChatSummary alloc] init];
+  first.chatID = 10; first.title = @"Café research"; first.hermesSessionID = @"session-a"; first.updatedAt = @"2026-09-05 08:00:00";
+  TLChatSummary *second = [[TLChatSummary alloc] init];
+  second.chatID = 20; second.title = @"Browser project"; second.hermesSessionID = @"session-b"; second.updatedAt = first.updatedAt;
+  controller.chats = @[first, second];
+  controller.searchPreviews = @{@20: @"Investigate browser automation"};
+  NSSearchField *search = [controller valueForKey:@"searchField"];
+  NSTableView *table = [controller valueForKey:@"tableView"];
+  NSTextField *status = [controller valueForKey:@"statusLabel"];
+  [controller reloadData];
+  Check(table.numberOfRows == 2, @"history lists all received Hermes sessions");
+  search.stringValue = @"CAFE";
+  [NSNotificationCenter.defaultCenter postNotificationName:NSControlTextDidChangeNotification object:search];
+  Check(table.numberOfRows == 1, @"history search ignores case and accents");
+  search.stringValue = @"automation";
+  [controller reloadData];
+  [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  Check(probe.selected == 20, @"filtered selection opens its actual session");
+  [table setValue:@0 forKey:@"contextMenuRow"];
+  NSMenuItem *deleteItem = table.menu.itemArray.firstObject;
+  [NSApp sendAction:deleteItem.action to:deleteItem.target from:deleteItem];
+  Check(probe.deleted == 20, @"filtered deletion targets its actual session");
+  search.stringValue = @"missing";
+  [controller reloadData];
+  Check(table.numberOfRows == 0 && [status.stringValue isEqualToString:@"No matching sessions"], @"search has an empty result state");
+  controller.loading = YES;
+  Check(!table.enabled && [status.stringValue containsString:@"Loading"], @"loading disables row actions");
+  controller.loading = NO;
+  controller.statusMessage = @"Hermes unavailable";
+  Check([status.stringValue isEqualToString:@"Hermes unavailable"], @"history exposes gateway errors");
+  controller.statusMessage = @"";
+  search.stringValue = @"";
+  [controller reloadData];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1200, 600)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  NSView *panel = controller.panelView;
+  [window.contentView addSubview:panel];
+  [NSLayoutConstraint activateConstraints:@[
+    [panel.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [panel.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [panel.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [panel.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+  ]];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@1200, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 600)];
+      [window.contentView layoutSubtreeIfNeeded];
+      Check(fabs(NSWidth(window.contentView.bounds) - width.doubleValue) < 1, @"history never constrains the window maximum width");
+      NSView *column = panel.subviews.firstObject;
+      Check(fabs(NSMidX(column.frame) - NSMidX(panel.bounds)) < 1, @"history column is horizontally centered");
+      Check(NSWidth(column.frame) <= palette.messageInputMaxWidth + 1 && NSWidth(column.frame) <= width.doubleValue + 1,
+            @"history column matches chat width and fits narrow windows");
+      Check(NSWidth(search.frame) > 0 && NSMaxX([search convertRect:search.bounds toView:panel]) <= width.doubleValue,
+            @"history search fits inside narrow windows");
+      NSBitmapImageRep *image = [panel bitmapImageRepForCachingDisplayInRect:panel.bounds];
+      [panel cacheDisplayInRect:panel.bounds toBitmapImageRep:image];
+      [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithFormat:@"build/history-%@-%@.png", theme, width] atomically:YES];
+    }
+  }
+  [window close];
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestHermesHistorySearchAndLayout();
     TestNativeEmojiInput();
     TestFolderAccessTable();
     TestAgentCreationForm();
@@ -1793,6 +1950,8 @@ int main(void) {
     TestDebugResetLayout();
     TestTerminalRequiresRunningVM();
     TestSettingsThemeAndLateCatalogue();
+    TestComposerModelButtonLayout();
+    TestComposerModelDialog();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();
     TestStreamingChatTitlesPersist();
