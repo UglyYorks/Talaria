@@ -193,6 +193,8 @@ CGColorRef TLCGColor(NSColor *color) {
   self.sidebarActionStackLeadingInset = self.sidebarActionStackHorizontalInset + self.space3;
   self.sidebarActionStackTrailingInset = self.sidebarActionStackHorizontalInset;
   self.sidebarActionItemHorizontalInset = self.space5 * 0.5;
+  self.sidebarUserButtonHorizontalInset = self.sidebarActionItemHorizontalInset + self.space2;
+  self.sidebarUserButtonHeight = self.fieldHeight - self.space2;
   self.sidebarActionItemContentGap = self.space5 * 0.5;
   self.sidebarInboxOuterHorizontalInset = self.space3;
   self.sidebarInboxItemHorizontalInset = self.space5;

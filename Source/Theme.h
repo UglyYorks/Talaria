@@ -165,6 +165,8 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat sidebarActionStackLeadingInset;
 @property (nonatomic) CGFloat sidebarActionStackTrailingInset;
 @property (nonatomic) CGFloat sidebarActionItemHorizontalInset;
+@property (nonatomic) CGFloat sidebarUserButtonHorizontalInset;
+@property (nonatomic) CGFloat sidebarUserButtonHeight;
 @property (nonatomic) CGFloat sidebarActionItemContentGap;
 @property (nonatomic) CGFloat sidebarInboxOuterHorizontalInset;
 @property (nonatomic) CGFloat sidebarInboxItemHorizontalInset;

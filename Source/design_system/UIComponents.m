@@ -3024,7 +3024,7 @@ NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *pale
     [self addSubview:_chevronView];
 
     _avatarLeadingConstraint = [_avatarView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
-                                                                         constant:_palette.sidebarActionItemHorizontalInset];
+                                                                         constant:_palette.sidebarUserButtonHorizontalInset];
     _avatarWidthConstraint = [_avatarView.widthAnchor constraintEqualToConstant:_palette.sidebarActionIconSize];
     _avatarHeightConstraint = [_avatarView.heightAnchor constraintEqualToConstant:_palette.sidebarActionIconSize];
     _titleLeadingConstraint = [_titleLabel.leadingAnchor constraintEqualToAnchor:_avatarView.trailingAnchor
@@ -3034,7 +3034,7 @@ NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *pale
     _chevronLeadingConstraint = [_chevronView.leadingAnchor constraintEqualToAnchor:_titleLabel.trailingAnchor
                                                                            constant:_palette.space3];
     _chevronTrailingConstraint = [_chevronView.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor
-                                                                                       constant:-_palette.sidebarActionItemHorizontalInset];
+                                                                                       constant:-_palette.sidebarUserButtonHorizontalInset];
     _chevronWidthConstraint = [_chevronView.widthAnchor constraintEqualToConstant:_palette.space6];
     _chevronHeightConstraint = [_chevronView.heightAnchor constraintEqualToConstant:_palette.space6];
 
@@ -3060,10 +3060,10 @@ NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *pale
 
 - (NSSize)intrinsicContentSize {
   TLThemePalette *palette = self.palette;
-  CGFloat width = palette.sidebarActionItemHorizontalInset * 2.0 +
+  CGFloat width = palette.sidebarUserButtonHorizontalInset * 2.0 +
     palette.sidebarActionIconSize + palette.sidebarActionItemContentGap +
     ceil(self.titleLabel.intrinsicContentSize.width) + palette.space3 + palette.space6;
-  return NSMakeSize(width, palette.fieldHeight);
+  return NSMakeSize(width, palette.sidebarUserButtonHeight);
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
@@ -3174,13 +3174,13 @@ NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *pale
   self.chevronView.image = [self systemImageNamed:@"chevron.down"];
   self.chevronView.contentTintColor = foreground;
 
-  self.avatarLeadingConstraint.constant = palette.sidebarActionItemHorizontalInset;
+  self.avatarLeadingConstraint.constant = palette.sidebarUserButtonHorizontalInset;
   self.avatarWidthConstraint.constant = palette.sidebarActionIconSize;
   self.avatarHeightConstraint.constant = palette.sidebarActionIconSize;
   self.titleLeadingConstraint.constant = palette.sidebarActionItemContentGap;
   self.titleTrailingConstraint.constant = -palette.space3;
   self.chevronLeadingConstraint.constant = palette.space3;
-  self.chevronTrailingConstraint.constant = -palette.sidebarActionItemHorizontalInset;
+  self.chevronTrailingConstraint.constant = -palette.sidebarUserButtonHorizontalInset;
   self.chevronWidthConstraint.constant = palette.space6;
   self.chevronHeightConstraint.constant = palette.space6;
   self.alphaValue = self.enabled ? 1.0 : palette.disabledOpacity;

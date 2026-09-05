@@ -3958,7 +3958,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (CGFloat)sidebarActionStackHeight {
-  return self.sidebarActionStack.arrangedSubviews.count * self.palette.fieldHeight;
+  return self.sidebarUserButton.intrinsicContentSize.height;
 }
 
 - (CGFloat)currentSidebarContentWidth {
