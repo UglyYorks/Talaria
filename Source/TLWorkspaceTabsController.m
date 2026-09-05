@@ -27,7 +27,6 @@
 @property (nonatomic) BOOL selectionAnimationScheduled;
 @property (nonatomic) NSUInteger pendingSelectionStartIndex;
 @property (nonatomic) NSUInteger pendingSelectionTargetIndex;
-@property (nonatomic) BOOL suppressesTransitionSeparators;
 @property (nonatomic) NSUInteger selectionTransitionGeneration;
 @property (nonatomic) NSUInteger removalSelectionTrackingGeneration;
 @property (nonatomic, strong, nullable) NSTimer *removalSelectionTrackingTimer;
@@ -61,6 +60,9 @@
     _removingTabViews = [NSMutableArray array];
     _removalTransitions = [NSMutableArray array];
     _selectionView = [[TLChromeTabSelectionView alloc] init];
+    // Inactive tabs (including their separators) sit at 0, selected content at 1,
+    // and dragged content at 2. The slab covers separators as it passes them.
+    _selectionView.layer.zPosition = 0.5;
     _selectionView.hidden = YES;
     [_tabStack addSubview:_selectionView positioned:NSWindowBelow relativeTo:nil];
     _tabStack.spacing = -TLChromeTabInterTabOverlapForWidth(palette.tabMaxWidth, palette);
@@ -207,7 +209,6 @@
     }
     self.pendingSelectionTargetIndex = activeTabIndex;
     self.hasPendingSelectionAnimation = YES;
-    self.suppressesTransitionSeparators = YES;
     [self schedulePendingSelectionAnimation];
   } else if (!self.hasPendingSelectionAnimation) {
     [self updateSelectionIndicatorAnimated:NO];
@@ -438,17 +439,11 @@
     BOOL hovered = tabView.enabled && tabView.isHovered;
     TLChromeTabView *previousTabView = index > 0 ? self.tabViews[index - 1] : nil;
     BOOL previousHovered = previousTabView.enabled && previousTabView.isHovered;
-    BOOL transitionBoundary = self.suppressesTransitionSeparators &&
-      self.pendingSelectionStartIndex != NSNotFound &&
-      self.pendingSelectionTargetIndex != NSNotFound &&
-      index > MIN(self.pendingSelectionStartIndex, self.pendingSelectionTargetIndex) &&
-      index <= MAX(self.pendingSelectionStartIndex, self.pendingSelectionTargetIndex);
     tabView.showsLeadingSeparator = !tabView.active &&
       !hovered &&
       index > 0 &&
       !previousTabView.active &&
-      !previousHovered &&
-      !transitionBoundary;
+      !previousHovered;
     tabView.showsTrailingSeparator = !tabView.active &&
       !hovered &&
       !self.newTabButtonHovered &&
@@ -614,7 +609,6 @@
     if (generation != self.selectionTransitionGeneration) {
       return;
     }
-    self.suppressesTransitionSeparators = NO;
     self.pendingSelectionStartIndex = NSNotFound;
     self.pendingSelectionTargetIndex = NSNotFound;
     [self updateSeparatorVisibilityWithoutAnimation];
@@ -693,7 +687,6 @@
     self.draggedStartIndex = currentIndex;
     self.draggedCurrentIndex = currentIndex;
     self.hasPendingSelectionAnimation = NO;
-    self.suppressesTransitionSeparators = NO;
     self.pendingSelectionStartIndex = NSNotFound;
     self.pendingSelectionTargetIndex = NSNotFound;
     self.selectionTransitionGeneration += 1;

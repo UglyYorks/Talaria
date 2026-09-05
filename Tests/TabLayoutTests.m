@@ -850,16 +850,20 @@ static void TestLongSelectionJumpStartsNearDestination(TLThemePalette *palette) 
   [controller setValue:@0 forKey:@"pendingSelectionStartIndex"];
   [controller setValue:@4 forKey:@"pendingSelectionTargetIndex"];
   [controller setValue:@YES forKey:@"hasPendingSelectionAnimation"];
-  [controller setValue:@YES forKey:@"suppressesTransitionSeparators"];
   [controller updateSeparatorVisibility];
-  if (tabs[2].showsLeadingSeparator) {
-    NSLog(@"FAIL separator remains visible inside the selection transition path");
+  if (!tabs[2].showsLeadingSeparator || !tabs[3].showsLeadingSeparator) {
+    NSLog(@"FAIL separators disappear inside the selection transition path");
     exit(1);
   }
 
   [controller performPendingSelectionAnimation];
   TLChromeTabSelectionView *selectionView = [controller valueForKey:@"selectionView"];
   CAShapeLayer *backgroundLayer = [selectionView valueForKey:@"backgroundLayer"];
+  if (selectionView.layer.zPosition <= tabs[2].layer.zPosition ||
+      selectionView.layer.zPosition >= tabs.lastObject.layer.zPosition) {
+    NSLog(@"FAIL selection background must cover inactive separators beneath selected content");
+    exit(1);
+  }
   CABasicAnimation *slide = (CABasicAnimation *)[backgroundLayer animationForKey:@"tab-selection-slide"];
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
     CGRect startBounds = CGPathGetBoundingBox((__bridge CGPathRef)slide.fromValue);
