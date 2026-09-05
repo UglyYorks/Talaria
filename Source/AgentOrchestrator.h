@@ -18,6 +18,10 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                      agentClient:(id<TLAgentStreaming>)agentClient
                        vmService:(TLAgentVMService *)vmService NS_DESIGNATED_INITIALIZER;
 
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent;
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent;
+- (NSString *)displayStatusForAgent:(TLAgentRecord *)agent;
+
 - (nullable NSArray<TLAgentRecord *> *)listAgents:(NSError **)error;
 - (nullable TLAgentRecord *)createAgentWithName:(NSString *)name error:(NSError **)error;
 - (nullable TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar

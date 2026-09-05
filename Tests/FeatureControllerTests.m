@@ -973,6 +973,47 @@ static void TestSuggestionTypingAndVirtualization(void) {
   [window close];
 }
 
+@interface TalariaWindowController (AgentRepairTests)
+- (TLAgentRecord *)selectedAgent;
+- (void)updateAgentControlStates;
+- (void)startSelectedAgent:(id)sender;
+- (void)initializeAgentWithID:(NSInteger)agentID;
+@end
+@interface TLRepairController : TalariaWindowController
+@property(nonatomic, strong) TLAgentRecord *testAgent;
+@property(nonatomic) NSInteger repairAgentID;
+@end
+@implementation TLRepairController
+- (TLAgentRecord *)selectedAgent { return self.testAgent; }
+- (void)initializeAgentWithID:(NSInteger)agentID { self.repairAgentID = agentID; }
+@end
+@interface TLRepairOrchestrator : NSObject
+@end
+@implementation TLRepairOrchestrator
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent { return YES; }
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent { return NO; }
+@end
+static void TestRunningAgentRepairAction(void) {
+  TLRepairController *controller = [[TLRepairController alloc] initWithWindow:nil];
+  controller.testAgent = [[TLAgentRecord alloc] init];
+  controller.testAgent.agentID = 42;
+  controller.testAgent.status = TLAgentStatusRunning;
+  [controller setValue:[[TLRepairOrchestrator alloc] init] forKey:@"agentOrchestrator"];
+  [controller setValue:[[TLWorkspaceTab alloc] init] forKey:@"agentsTab"];
+  NSButton *start = [[NSButton alloc] init];
+  NSButton *stop = [[NSButton alloc] init];
+  [controller setValue:start forKey:@"startAgentButton"];
+  [controller setValue:stop forKey:@"stopAgentButton"];
+  [controller updateAgentControlStates];
+  Check(start.enabled && [start.title isEqualToString:@"Install Hermes"], @"missing Hermes can be installed while the VM is running");
+  Check(stop.enabled, @"running VM can still be stopped before setup");
+  [controller startSelectedAgent:nil];
+  Check(controller.repairAgentID == 42, @"repair targets the selected existing agent");
+  controller.testAgent.status = TLAgentStatusInitializing;
+  [controller updateAgentControlStates];
+  Check(!start.enabled && !stop.enabled, @"setup disables duplicate install and stop actions");
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -983,6 +1024,7 @@ int main(void) {
     TestAgentSettingsForm();
     TestRealSidebarAgents();
     TestSuggestionTypingAndVirtualization();
+    TestRunningAgentRepairAction();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();

@@ -793,6 +793,30 @@ static void TestAgentProfilesAndSelection(void) {
   [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
 }
 
+static void TestAgentReadinessStatus(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"AgentReadiness");
+  NSURL *agentsURL = TLTemporaryDirectoryURL(@"AgentReadinessVMs");
+  NSURL *runtimeURL = TLTemporaryDirectoryURL(@"AgentReadinessRuntime");
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:nil];
+  TLFakeAgentVMService *vm = [[TLFakeAgentVMService alloc] initWithAgentsDirectoryURL:agentsURL runtimeBundleURL:runtimeURL];
+  TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:[[TLFakeAgentClient alloc] init] vmService:vm];
+  TLAgentRecord *agent = [orchestrator createAgentWithName:@"Uninstalled" error:nil];
+  agent.status = TLAgentStatusRunning; // A persisted running flag is not live VM state.
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM stopped · Setup required", @"stale persisted status does not imply readiness");
+  vm.runningAgentID = agent.agentID;
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM running · Setup required", @"booting a VM does not imply Hermes is installed");
+  NSString *launcher = [agent.vmDirectory stringByAppendingPathComponent:@"workspace/.hermes/hermes-agent/venv/bin/hermes"];
+  [NSFileManager.defaultManager createDirectoryAtPath:launcher.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+  [@"#!/usr/bin/python3" writeToFile:launcher atomically:YES encoding:NSUTF8StringEncoding error:nil];
+  TLAssertTrue([orchestrator hasHermesInstallationForAgent:agent], @"detects persisted Hermes launcher");
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM running · Hermes installed", @"installation and VM state are shown separately");
+  agent.status = TLAgentStatusError;
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM running · Error", @"failure remains visible while VM is running");
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:agentsURL error:nil];
+  [NSFileManager.defaultManager removeItemAtURL:runtimeURL error:nil];
+}
+
 static void TestHermesCommandCache(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaCommandCacheTests");
   NSURL *agentsURL = TLTemporaryDirectoryURL(@"TalariaCommandCacheVMs");
@@ -1198,6 +1222,7 @@ int main(int argc, const char *argv[]) {
     TestAgentProfilesAndSelection();
     TestAgentProfileMigration();
     TestHermesCommandCache();
+    TestAgentReadinessStatus();
     TestAssistantTurnRunner();
     TestBrowserConversation();
     TestNotchOverlayState();

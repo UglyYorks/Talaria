@@ -89,6 +89,32 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   return self.vmService.virtualizationSupported;
 }
 
+// Hermes is installed in the persistent workspace shared with the VM. Inspect
+// directory entries rather than following Linux symlinks on the macOS host.
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent {
+  NSString *workspace = [agent.vmDirectory stringByAppendingPathComponent:@"workspace"];
+  for (NSString *relative in @[@".hermes/hermes-agent/venv/bin/hermes", @".local/bin/hermes"]) {
+    NSString *path = [workspace stringByAppendingPathComponent:relative];
+    NSString *type = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileType];
+    if ([type isEqualToString:NSFileTypeRegular] || [type isEqualToString:NSFileTypeSymbolicLink]) return YES;
+  }
+  return NO;
+}
+
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent {
+  return agent && [self.vmService isAgentRunning:agent];
+}
+
+- (NSString *)displayStatusForAgent:(TLAgentRecord *)agent {
+  if ([self isInitializingAgentWithID:agent.agentID]) return @"Installing Hermes…";
+  if ([agent.status isEqualToString:TLAgentStatusStarting]) return @"Starting VM…";
+  if ([agent.status isEqualToString:TLAgentStatusStopping]) return @"Stopping VM…";
+  NSString *vm = [self isVMRunningForAgent:agent] ? @"VM running" : @"VM stopped";
+  if ([agent.status isEqualToString:TLAgentStatusError]) return [vm stringByAppendingString:@" · Error"];
+  return [vm stringByAppendingString:[self hasHermesInstallationForAgent:agent]
+    ? @" · Hermes installed" : @" · Setup required"];
+}
+
 - (NSArray<TLAgentRecord *> *)listAgents:(NSError **)error {
   NSArray<TLAgentRecord *> *agents = [self.database listAgents:error];
   for (TLAgentRecord *agent in agents) {

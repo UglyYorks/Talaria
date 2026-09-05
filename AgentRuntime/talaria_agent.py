@@ -238,7 +238,7 @@ def tui_gateway(token="", model=""):
         if _tui_gateway is None or _tui_gateway.process.poll() is not None:
             executable = hermes_executable()
             if not executable:
-                raise RuntimeError("Hermes Agent is not installed. Start onboarding from Settings.")
+                raise RuntimeError("Hermes Agent is not installed. Open Agents, select this agent, and click Install Hermes.")
             HERMES_HOME.mkdir(parents=True, exist_ok=True)
             python = Path(executable).resolve().parent / "python"
             _tui_gateway = HermesGateway(python, hermes_environment(token, model), HERMES_HOME)

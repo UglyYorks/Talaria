@@ -2952,7 +2952,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       column.minWidth = palette.controlMinWidth * 1.8;
       column.width = palette.controlMinWidth * 2.5;
     } else if ([column.identifier isEqualToString:@"status"]) {
-      column.minWidth = palette.controlMinWidth * 1.6;
+      column.minWidth = ceil([@"VM running · Hermes installed" sizeWithAttributes:@{NSFontAttributeName: palette.bodyFont}].width) + palette.space8 + palette.space4 * 3;
       column.width = column.minWidth;
       column.resizingMask = NSTableColumnUserResizingMask;
     }
@@ -3094,8 +3094,17 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)initializeAgentWithID:(NSInteger)agentID {
   __weak typeof(self) weakSelf = self;
-  [self.agentOrchestrator installHermesForAgentWithID:agentID progress:^(NSString *text) {}
-    completion:^(TLAgentRecord *agent, NSError *error) { [weakSelf refreshAgents]; }];
+  [self.agentOrchestrator installHermesForAgentWithID:agentID progress:^(NSString *text) {
+    NSString *line = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (line.length) weakSelf.agentsStatusLabel.stringValue = [@"Installing Hermes: " stringByAppendingString:line];
+  } completion:^(TLAgentRecord *agent, NSError *error) {
+    [weakSelf refreshAgents];
+    if (error) [weakSelf presentErrorMessage:error.localizedDescription];
+    else {
+      [weakSelf prepareHermesCommands];
+      [weakSelf updateSlashCommandList];
+    }
+  }];
   [self refreshAgents];
 }
 
@@ -3105,7 +3114,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  if ([agent.status isEqualToString:TLAgentStatusError]) {
+  if ([agent.status isEqualToString:TLAgentStatusError] || ![self.agentOrchestrator hasHermesInstallationForAgent:agent]) {
     [self initializeAgentWithID:agent.agentID];
     return;
   }
@@ -3222,7 +3231,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     TLAgentStatusCellView *cell = [tableView makeViewWithIdentifier:identifier owner:self];
     if (!cell) cell = [[TLAgentStatusCellView alloc] initWithPalette:self.palette];
     cell.identifier = identifier;
-    [cell configureWithStatus:TLAgentDisplayStatus(agent.status) running:[agent.status isEqualToString:TLAgentStatusRunning] initializing:[agent.status isEqualToString:TLAgentStatusInitializing] palette:self.palette];
+    [cell configureWithStatus:[self.agentOrchestrator displayStatusForAgent:agent] running:([self.agentOrchestrator isVMRunningForAgent:agent] && [self.agentOrchestrator hasHermesInstallationForAgent:agent] && ![agent.status isEqualToString:TLAgentStatusError]) initializing:[agent.status isEqualToString:TLAgentStatusInitializing] palette:self.palette];
     cell.textField.toolTip = agent.lastError.length > 0 ? agent.lastError : cell.textField.stringValue;
     return cell;
   }
@@ -3259,14 +3268,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   TLAgentRecord *agent = [self selectedAgent];
   BOOL hasAgent = agent != nil;
   BOOL starting = [agent.status isEqualToString:TLAgentStatusStarting];
-  BOOL running = [agent.status isEqualToString:TLAgentStatusRunning];
+  BOOL running = [self.agentOrchestrator isVMRunningForAgent:agent];
+  BOOL needsSetup = hasAgent && ![self.agentOrchestrator hasHermesInstallationForAgent:agent];
+  BOOL failed = [agent.status isEqualToString:TLAgentStatusError];
   BOOL stopping = [agent.status isEqualToString:TLAgentStatusStopping];
   BOOL busy = starting || stopping || [agent.status isEqualToString:TLAgentStatusInitializing];
-  self.startAgentButton.title = [agent.status isEqualToString:TLAgentStatusError] ? @"Retry setup" : @"Start";
+  self.startAgentButton.title = failed ? @"Retry setup" : (needsSetup ? @"Install Hermes" : @"Start VM");
 
   self.createAgentButton.enabled = controlsAllowed;
-  self.startAgentButton.enabled = controlsAllowed && hasAgent && !running && !busy;
-  self.stopAgentButton.enabled = controlsAllowed && hasAgent && running;
+  self.startAgentButton.enabled = controlsAllowed && hasAgent && (!running || needsSetup || failed) && !busy;
+  self.stopAgentButton.enabled = controlsAllowed && hasAgent && running && !busy;
   self.deleteAgentButton.enabled = controlsAllowed && hasAgent && !running && !busy;
   self.agentSettingsButton.enabled = controlsAllowed && hasAgent && !busy;
   self.folderAccessButton.enabled = controlsAllowed && hasAgent;
