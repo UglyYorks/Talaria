@@ -93,6 +93,8 @@
   if (self) {
     _imageView = [[NSImageView alloc] init];
     _imageView.imageScaling = NSImageScaleProportionallyDown;
+    _imageView.wantsLayer = YES;
+    _imageView.layer.masksToBounds = YES;
     _label = [NSTextField labelWithString:@""];
     _label.lineBreakMode = NSLineBreakByTruncatingMiddle;
     _label.usesSingleLineMode = YES;
@@ -106,8 +108,11 @@
   }
   return self;
 }
+- (CGFloat)imageLeadingInset {
+  return self.image && !self.image.template ? self.palette.space4 : self.palette.space6;
+}
 - (NSSize)intrinsicContentSize {
-  CGFloat width = self.palette.space6 + self.image.size.width + self.palette.space4 +
+  CGFloat width = self.imageLeadingInset + self.image.size.width + self.palette.space4 +
     self.label.intrinsicContentSize.width + self.palette.space4 + self.palette.space12 + self.palette.space2;
   return NSMakeSize(ceil(width), self.palette.fieldHeight);
 }
@@ -150,8 +155,13 @@
   self.layer.cornerRadius = height / 2;
   self.closeButton.frame = NSMakeRect(NSWidth(self.bounds) - inset - diameter, inset, diameter, diameter);
   self.closeButton.layer.cornerRadius = diameter / 2;
-  self.imageView.frame = NSMakeRect(self.palette.space6, (height - self.palette.space11) / 2,
-    self.image.size.width, self.palette.space11);
+  BOOL hasPreview = self.image && !self.image.template;
+  CGFloat imageHeight = hasPreview ? self.image.size.height : self.palette.space11;
+  // Fit the clipping view to the thumbnail itself so landscape PDFs and images
+  // also get rounded corners, without letterboxed space above or below them.
+  self.imageView.frame = NSMakeRect(self.imageLeadingInset, (height - imageHeight) / 2,
+    self.image.size.width, imageHeight);
+  self.imageView.layer.cornerRadius = hasPreview ? self.palette.radiusMedium / 2 : self.palette.space0;
   CGFloat labelX = NSMaxX(self.imageView.frame) + self.palette.space4;
   CGFloat labelHeight = self.label.intrinsicContentSize.height;
   self.label.frame = [self.label frameForAlignmentRect:NSMakeRect(labelX, (height - labelHeight) / 2,
@@ -164,7 +174,7 @@
   if (![type conformsToType:UTTypeImage] && ![type conformsToType:UTTypePDF]) return;
   self.previewURL = URL;
   self.previewSecurityScope = [URL startAccessingSecurityScopedResource];
-  CGFloat size = self.palette.space11;
+  CGFloat size = self.palette.space11 - self.palette.borderWidth * 2;
   CGFloat scale = self.window.backingScaleFactor ?: NSScreen.mainScreen.backingScaleFactor ?: 1.0;
   QLThumbnailGenerationRequest *request = [[QLThumbnailGenerationRequest alloc] initWithFileAtURL:URL
     size:CGSizeMake(size, size) scale:scale representationTypes:QLThumbnailGenerationRequestRepresentationTypeThumbnail];
