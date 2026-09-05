@@ -860,6 +860,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   CGFloat insetY = self.palette.space5;
   CGFloat height = MAX(0.0, rect.size.height - insetY * 2.0);
   CGFloat leadingCenterX = [self inactiveLeadingSeparatorCenterXInRect:rect];
+  CGFloat trailingCenterX = NSMaxX(rect) - (leadingCenterX - NSMinX(rect));
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   self.inactiveHoverBackgroundLayer.frame = pillRect;
@@ -869,7 +870,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
                                                 NSMinY(rect) + insetY,
                                                 width,
                                                 height);
-  self.trailingSeparatorLayer.frame = NSMakeRect(NSMaxX(rect) - width,
+  self.trailingSeparatorLayer.frame = NSMakeRect(trailingCenterX - width * 0.5,
                                                  NSMinY(rect) + insetY,
                                                  width,
                                                  height);

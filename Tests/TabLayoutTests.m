@@ -681,6 +681,17 @@ static void TestInactiveSeparatorCentering(TLThemePalette *palette) {
   AssertClose(actualWorldCenterX, expectedWorldCenterX,
               @"inactive separator is centered between neighboring tab handles");
 
+  for (NSNumber *tabWidth in @[@(width), @40.0]) {
+    right.frame = NSMakeRect(0, 0, tabWidth.doubleValue, palette.tabHeight);
+    [right layoutSubtreeIfNeeded];
+    CALayer *trailingSeparator = [right valueForKey:@"trailingSeparatorLayer"];
+    NSRect hoverRect = [right inactiveHoverPillRectInRect:right.bounds];
+    CGFloat leadingGap = NSMinX(hoverRect) - [right inactiveLeadingSeparatorCenterXInRect:right.bounds];
+    AssertClose(NSMidX(trailingSeparator.frame) - NSMaxX(hoverRect), leadingGap,
+                @"last separator uses the same spacing from the tab body as internal separators");
+  }
+  right.frame = NSMakeRect(0, 0, width, palette.tabHeight);
+
   if (palette.dark) {
     TLChromeTabView *left = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, width, palette.tabHeight)];
     left.palette = palette;
