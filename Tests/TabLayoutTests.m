@@ -14,6 +14,7 @@
 - (void)updateSelectionIndicatorAnimated:(BOOL)animated;
 - (void)performPendingSelectionAnimation;
 - (void)updateSeparatorVisibility;
+- (void)updateDragEdgeGeometryForDraggedTabView:(TLChromeTabView *)tabView targetIndex:(NSUInteger)targetIndex;
 - (void)chromeTabView:(TLChromeTabView *)tabView didDragWithEvent:(NSEvent *)event;
 - (CGFloat)chromeTabView:(TLChromeTabView *)tabView constrainedHorizontalTranslationForEvent:(NSEvent *)event proposedTranslation:(CGFloat)translationX;
 - (void)chromeTabViewDidEndDragging:(TLChromeTabView *)tabView;
@@ -46,6 +47,7 @@
 - (instancetype)init {
   self = [super init];
   if (self) {
+    _connectsContentEdge = YES;
     _openedTabIDs = [NSMutableArray array];
     _closedTabIDs = [NSMutableArray array];
   }
@@ -1382,6 +1384,48 @@ static void TestSelectionEdgeFollowsVisibleBackground(TLThemePalette *palette) {
   }
 }
 
+static void TestClosedSidebarPreservesLeadingFlare(TLThemePalette *palette) {
+  NSStackView *stack = [[NSStackView alloc] initWithFrame:NSMakeRect(0, 0, 400, palette.tabHeight)];
+  TLTabContextMenuHarness *harness = [[TLTabContextMenuHarness alloc] init];
+  TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc]
+    initWithTabStack:stack target:nil delegate:(id)harness palette:palette];
+  TLChromeTabView *first = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, 160, palette.tabHeight)];
+  first.palette = palette;
+  [controller setValue:[NSMutableArray arrayWithObject:first] forKey:@"tabViews"];
+  TLChromeTabSelectionView *selection = controller.selectionView;
+  selection.hidden = NO;
+  for (NSNumber *sidebarOpen in @[@YES, @NO, @YES, @NO]) {
+    harness.connectsContentEdge = sidebarOpen.boolValue;
+    for (NSNumber *active in @[@YES, @NO]) {
+      first.active = active.boolValue;
+      for (NSNumber *offset in @[@0, @2, @20, @0]) {
+        NSRect frame = NSOffsetRect(first.frame, offset.doubleValue, 0);
+        [selection setSelectionFrame:frame leadingFlareOutset:-1 animated:NO fromFrame:frame duration:0];
+        [controller updateEdgeAttachmentState];
+        AssertClose(first.leadingFlareOutset, sidebarOpen.boolValue ? 0 : palette.tabFlareRadius,
+                    @"first tab keeps its leading flare and padding with sidebar closed");
+        AssertClose(selection.leadingFlareOutset, sidebarOpen.boolValue
+                    ? MIN(palette.tabActiveFlareRadius, offset.doubleValue) : palette.tabActiveFlareRadius,
+                    @"selection keeps its full leading flare with sidebar closed");
+        AssertClose(harness.contentCornerRadius, sidebarOpen.boolValue
+                    ? MIN(palette.space5, offset.doubleValue) : palette.space5,
+                    @"closed sidebar retains the rounded content corner");
+      }
+    }
+  }
+  for (NSNumber *slot in @[@0, @1]) {
+    [controller updateDragEdgeGeometryForDraggedTabView:first targetIndex:slot.unsignedIntegerValue];
+    AssertClose(first.leadingFlareOutset, palette.tabActiveFlareRadius,
+                @"dragging with sidebar closed preserves the leading flare");
+    AssertClose(harness.contentCornerRadius, palette.space5,
+                @"dragging with sidebar closed preserves the content corner");
+  }
+  selection.hidden = YES;
+  [controller updateEdgeAttachmentState];
+  AssertClose(first.leadingFlareOutset, palette.tabFlareRadius,
+              @"first tab keeps its flare without a visible selection");
+}
+
 static void TestSelectionSlabSlidesBetweenTabs(TLThemePalette *palette) {
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, palette.tabMaxWidth * 2.0, palette.tabHeight)
     styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
@@ -1584,6 +1628,7 @@ int main(void) {
       TestInactiveDecorationFades(tab.palette);
       TestSelectionSlabSlidesBetweenTabs(tab.palette);
       TestSelectionEdgeFollowsVisibleBackground(tab.palette);
+      TestClosedSidebarPreservesLeadingFlare(tab.palette);
       TestClosingFirstTabAnimatesSelectedNeighborCorners(tab.palette);
       TestLongSelectionJumpStartsNearDestination(tab.palette);
 

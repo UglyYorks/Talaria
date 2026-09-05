@@ -889,7 +889,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 
   CGFloat contentRadius = self.palette.space5;
   TLChromeTabView *firstTabView = self.tabViews.firstObject;
-  firstTabView.leadingFlareOutset = self.palette.space0;
+  BOOL keepsLeadingFlare = self.delegate &&
+    ![self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self];
+  firstTabView.leadingFlareOutset = keepsLeadingFlare ? self.palette.tabFlareRadius : self.palette.space0;
   if (!self.selectionView.hidden && self.tabViews.count > 0 && !self.draggedTab) {
     [self updateSelectionEdgeGeometry];
     return;
@@ -909,6 +911,12 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     transition.tabView.layer.zPosition = transition.selectedSuccessor && transition.selectedSuccessor == active ? -2.0 : 0.0;
   }
   if (self.draggedTab || self.selectionView.hidden || self.tabViews.count == 0) return;
+  if (self.delegate && ![self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
+    self.tabViews.firstObject.leadingFlareOutset = self.palette.tabFlareRadius;
+    self.selectionView.leadingFlareOutset = self.palette.tabActiveFlareRadius;
+    [self.delegate workspaceTabsController:self firstTabEdgeCornerRadiusDidChange:self.palette.space5];
+    return;
+  }
   // The logical selection changes before the slab arrives. Derive attachment
   // from the visible slab instead, so entering and leaving the edge are symmetric.
   // Use the strip's fixed edge, not a tab whose position may itself be animating.
@@ -1117,6 +1125,11 @@ constrainedHorizontalTranslationForEvent:(NSEvent *)event
 
 - (void)updateDragEdgeGeometryForDraggedTabView:(TLChromeTabView *)draggedTabView targetIndex:(NSUInteger)targetIndex {
   [self resetTabLeadingFlares];
+  if (self.delegate && ![self.delegate workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:self]) {
+    draggedTabView.leadingFlareOutset = self.palette.tabActiveFlareRadius;
+    [self.delegate workspaceTabsController:self firstTabEdgeCornerRadiusDidChange:self.palette.space5];
+    return;
+  }
 
   CGFloat contentRadius = self.palette.space5;
   TLChromeTabView *firstTabView = self.tabViews.firstObject;
