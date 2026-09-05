@@ -7,9 +7,80 @@
 #import "UIComponents.h"
 #import "TalariaWindowController.h"
 #import "TLWorkspaceTabsController.h"
+#import "design_system/TLButton.h"
 
 static void Check(BOOL condition, NSString *message) {
   if (!condition) { NSLog(@"FAIL: %@", message); exit(1); }
+}
+
+@interface TLButtonPointerWindow : NSWindow
+@property (nonatomic) NSPoint testPointer;
+@property (nonatomic) BOOL testVisible;
+@end
+@implementation TLButtonPointerWindow
+- (NSPoint)mouseLocationOutsideOfEventStream { return self.testPointer; }
+- (BOOL)isVisible { return self.testVisible; }
+@end
+
+static void TestCompactButtonHitAreaAndMovingHover(void) {
+  TLButtonPointerWindow *window = [[TLButtonPointerWindow alloc] initWithContentRect:NSMakeRect(0, 0, 200, 100)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  window.testVisible = YES;
+  TLButton *button = [[TLButton alloc] init];
+  button.translatesAutoresizingMaskIntoConstraints = YES;
+  button.style = TLButtonStyleCompactMinimal;
+  NSImage *icon = [NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:@"New chat"];
+  button.image = icon;
+  button.frame = NSMakeRect(20, 20, button.intrinsicContentSize.width, button.intrinsicContentSize.height);
+  [window.contentView addSubview:button];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSButton *clickTarget = [button valueForKey:@"button"];
+  CALayer *surface = [button valueForKey:@"hoverBackgroundLayer"];
+  Check(NSWidth(surface.frame) == button.palette.compactButtonSurfaceSize &&
+        NSHeight(surface.frame) == NSWidth(surface.frame), @"compact surface is a smaller square");
+  Check(surface.cornerRadius == button.palette.compactButtonCornerRadius, @"compact surface has rounded corners");
+  Check(NSContainsRect(clickTarget.frame, button.bounds) && NSWidth(surface.frame) < NSWidth(button.bounds),
+        [NSString stringWithFormat:@"click target remains larger than the visible background: target %@ bounds %@ surface %@",
+          NSStringFromRect(clickTarget.frame), NSStringFromRect(button.bounds), NSStringFromRect(surface.frame)]);
+  Check(clickTarget.image == icon && clickTarget.imageScaling == NSImageScaleNone, @"plus icon is not resized");
+
+  __block BOOL hovered = NO;
+  button.hoverChanged = ^(BOOL value) { hovered = value; };
+  NSPoint outerHitPoint = NSMakePoint(1, NSMidY(button.bounds));
+  Check(!NSPointInRect(outerHitPoint, surface.frame), @"test pointer is outside the visible square");
+  window.testPointer = [button convertPoint:outerHitPoint toView:nil];
+  [button updateTrackingAreas];
+  Check(hovered && CGColorGetAlpha(surface.backgroundColor) > 0, @"invisible margin still activates hover");
+  Check([button hitTest:[button convertPoint:outerHitPoint toView:button.superview]] == clickTarget,
+        @"invisible margin still receives clicks");
+
+  [button setFrameOrigin:NSMakePoint(100, 20)];
+  Check(!hovered && CGColorGetAlpha(surface.backgroundColor) == 0,
+    [NSString stringWithFormat:@"moving away during tab closure clears cached hover: frame %@ pointer %@ local %@ hover %d alpha %g",
+      NSStringFromRect(button.frame), NSStringFromPoint(window.testPointer),
+      NSStringFromPoint([button convertPoint:window.testPointer fromView:nil]), hovered, CGColorGetAlpha(surface.backgroundColor)]);
+  NSEvent *staleEntry = [NSEvent enterExitEventWithType:NSEventTypeMouseEntered
+    location:window.testPointer modifierFlags:0 timestamp:0 windowNumber:window.windowNumber
+    context:nil eventNumber:0 trackingNumber:0 userData:NULL];
+  [button mouseEntered:staleEntry];
+  Check(!hovered, @"stale entry event cannot restore hover at an old position");
+  button.frame = NSMakeRect(20, 20, NSWidth(button.frame), NSHeight(button.frame));
+  Check(hovered, @"frame replacement also refreshes hover as the button moves under the pointer");
+  [button mouseExited:staleEntry];
+  Check(hovered, @"stale exit event cannot clear hover at the current position");
+  window.testPointer = [button convertPoint:outerHitPoint toView:nil];
+  [button updateTrackingAreas];
+  Check(hovered, @"rebuilt tracking area recovers hover at the new position");
+  window.testPointer = NSMakePoint(190, 90);
+  [button updateTrackingAreas];
+  Check(!hovered, @"rebuilt tracking area clears hover without an exit event");
+  window.testPointer = [button convertPoint:outerHitPoint toView:nil];
+  [button updateTrackingAreas];
+  window.testVisible = NO;
+  [button updateTrackingAreas];
+  Check(!hovered, @"hidden window cannot retain button hover");
+  [window close];
 }
 
 @interface TalariaWindowController (FeatureControllerTests)
@@ -277,6 +348,7 @@ int main(void) {
     TestSettingsThemeAndLateCatalogue();
     TestBrowserOwnsCallbacksAndSession();
     TestDragCommitRendersBeforeDeferredReload();
+    TestCompactButtonHitAreaAndMovingHover();
     NSLog(@"FeatureControllerTests passed");
   }
   return 0;

@@ -4039,7 +4039,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (TLButton *)makeCreateChatButton {
   TLButton *button = [[TLButton alloc] init];
   button.palette = self.palette;
-  button.style = TLButtonStyleMinimal;
+  button.style = TLButtonStyleCompactMinimal;
   button.size = TLButtonSizeMedium;
   button.target = self;
   button.action = @selector(startNewChatFromButton:);

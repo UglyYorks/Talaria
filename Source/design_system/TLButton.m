@@ -1,9 +1,11 @@
 #import "TLButton.h"
+#import <QuartzCore/QuartzCore.h>
 
 @interface TLButton ()
 @property (nonatomic, strong) NSButton *button;
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
 @property (nonatomic, getter=isHovered) BOOL hovered;
+@property (nonatomic, strong) CALayer *hoverBackgroundLayer;
 @end
 
 @implementation TLButton
@@ -24,6 +26,8 @@
 }
 
 - (void)buildInterface {
+  self.hoverBackgroundLayer = [CALayer layer];
+  [self.layer addSublayer:self.hoverBackgroundLayer];
   self.button = [[NSButton alloc] init];
   self.button.translatesAutoresizingMaskIntoConstraints = NO;
   self.button.bordered = NO;
@@ -52,6 +56,17 @@
   return NSMakeSize(length, length);
 }
 
+- (void)setFrameOrigin:(NSPoint)origin {
+  [super setFrameOrigin:origin];
+  [self updateHoverStateFromCurrentMouseLocation];
+}
+
+- (void)setFrameSize:(NSSize)size {
+  [super setFrameSize:size];
+  [self updateHoverStateFromCurrentMouseLocation];
+  [self applyCurrentState];
+}
+
 - (CGFloat)buttonLength {
   switch (self.size) {
     case TLButtonSizeMedium:
@@ -71,14 +86,16 @@
                                                      owner:self
                                                   userInfo:nil];
   [self addTrackingArea:self.trackingArea];
+  // Moving tabs can relocate the button without a mouse-exit event.
+  [self updateHoverStateFromCurrentMouseLocation];
 }
 
 - (void)mouseEntered:(NSEvent *)event {
-  self.hovered = YES;
+  [self updateHoverStateFromCurrentMouseLocation];
 }
 
 - (void)mouseExited:(NSEvent *)event {
-  self.hovered = NO;
+  [self updateHoverStateFromCurrentMouseLocation];
 }
 
 - (void)viewDidMoveToWindow {
@@ -102,9 +119,9 @@
 
 - (void)updateHoverStateFromCurrentMouseLocation {
   BOOL hovered = NO;
-  if (self.window && ![self isHiddenOrHasHiddenAncestor] && !NSIsEmptyRect(self.bounds)) {
+  if (self.window.isVisible && ![self isHiddenOrHasHiddenAncestor] && !NSIsEmptyRect(self.visibleRect)) {
     NSPoint point = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
-    hovered = NSPointInRect(point, self.bounds);
+    hovered = NSPointInRect(point, NSIntersectionRect(self.bounds, self.visibleRect));
   }
 
   if (self.hovered != hovered) {
@@ -117,12 +134,22 @@
   self.button.image = self.image;
   self.button.contentTintColor = self.contentTintColor ?: self.palette.labelText;
 
-  BOOL showHoverBackground = self.enabled && self.hovered && self.style == TLButtonStyleMinimal;
-  self.layer.backgroundColor = showHoverBackground
+  BOOL showHoverBackground = self.enabled && self.hovered;
+  NSRect surface = self.bounds;
+  BOOL compact = self.style == TLButtonStyleCompactMinimal;
+  if (compact) {
+    CGFloat length = MIN(self.palette.compactButtonSurfaceSize, MIN(NSWidth(surface), NSHeight(surface)));
+    surface = NSMakeRect(NSMidX(surface) - length * 0.5, NSMidY(surface) - length * 0.5, length, length);
+  }
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.hoverBackgroundLayer.frame = surface;
+  self.hoverBackgroundLayer.backgroundColor = showHoverBackground
     ? TLCGColor(self.palette.secondaryActionSurface)
     : TLCGColor(self.palette.transparentSurface);
-  self.layer.cornerRadius = MIN(NSWidth(self.bounds), NSHeight(self.bounds)) * 0.5;
-  self.layer.masksToBounds = YES;
+  self.hoverBackgroundLayer.cornerRadius = compact ? self.palette.compactButtonCornerRadius
+    : MIN(NSWidth(surface), NSHeight(surface)) * 0.5;
+  [CATransaction commit];
 }
 
 - (void)setImage:(NSImage *)image {
