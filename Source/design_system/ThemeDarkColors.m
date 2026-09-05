@@ -63,7 +63,7 @@ void TLApplyDarkThemeColors(TLThemePalette *palette) {
   palette.markdownLinkText = palette.blue300;
   palette.composerBorder = TLColorWithAlpha(palette.gray400, 0.22);
   palette.composerSurface = palette.gray800;
-  palette.suggestionBackdropTint = TLColorWithAlpha(palette.black, 0.45);
+  palette.suggestionBackdropTint = TLColorWithAlpha(palette.tabBackground, 0.70);
   palette.slashCommandItemSurface = palette.transparentSurface;
   palette.slashCommandItemText = palette.appText;
   palette.slashCommandItemHighlightedSurface = palette.chromeHoverSurface;

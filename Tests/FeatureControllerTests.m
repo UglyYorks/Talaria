@@ -955,10 +955,10 @@ static void TestSuggestionTypingAndVirtualization(void) {
     TLThemePalette *theme = [TLThemePalette paletteForPreference:preference.integerValue];
     backdrop.palette = theme;
     NSColor *tint = [theme.suggestionBackdropTint colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
-    CGFloat expected = preference.integerValue == TLThemePreferenceDark ? 0 : 1;
-    Check(fabs(tint.redComponent - expected) < 0.01 && fabs(tint.greenComponent - expected) < 0.01 &&
-          fabs(tint.blueComponent - expected) < 0.01 && tint.alphaComponent > 0 && tint.alphaComponent < 1,
-          @"backdrop tint is translucent black in dark mode and white in light mode");
+    NSColor *expected = [theme.tabBackground colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    Check(fabs(tint.redComponent - expected.redComponent) < 0.01 && fabs(tint.greenComponent - expected.greenComponent) < 0.01 &&
+          fabs(tint.blueComponent - expected.blueComponent) < 0.01 && tint.alphaComponent > 0 && tint.alphaComponent < 1,
+          @"backdrop tint matches the chat background with reduced opacity in both themes");
   }
   [controller setValue:nil forKey:@"hermesCommandsError"];
   for (NSUInteger count = 1; count <= 9; count++) {
