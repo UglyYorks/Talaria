@@ -802,9 +802,9 @@ static void TestAgentReadinessStatus(void) {
   TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:[[TLFakeAgentClient alloc] init] vmService:vm];
   TLAgentRecord *agent = [orchestrator createAgentWithName:@"Uninstalled" error:nil];
   agent.status = TLAgentStatusRunning; // A persisted running flag is not live VM state.
-  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM stopped · Setup required", @"stale persisted status does not imply readiness");
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM is stopped; setup is required", @"stale persisted status does not imply readiness");
   vm.runningAgentID = agent.agentID;
-  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM running · Setup required", @"booting a VM does not imply Hermes is installed");
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM is running, but setup is required", @"booting a VM does not imply Hermes is installed");
   NSString *launcher = [agent.vmDirectory stringByAppendingPathComponent:@"workspace/.hermes/hermes-agent/venv/bin/hermes"];
   [NSFileManager.defaultManager createDirectoryAtPath:launcher.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
   [@"#!/usr/bin/python3" writeToFile:launcher atomically:YES encoding:NSUTF8StringEncoding error:nil];

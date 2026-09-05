@@ -14,6 +14,7 @@ void TLApplyDarkThemeColors(TLThemePalette *palette) {
   palette.topbarBorder = TLColorWithAlpha(palette.gray400, 0.22);
   palette.brandMark = palette.gray300;
   palette.agentRunningIndicator = palette.green500;
+  palette.agentSetupRequiredIndicator = TLColorFromHex(0xfacc15);
   palette.statusItemIcon = palette.white;
   palette.textMuted = palette.gray400;
   palette.labelText = palette.gray300;

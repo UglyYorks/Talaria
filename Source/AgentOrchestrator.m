@@ -111,8 +111,10 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   if ([agent.status isEqualToString:TLAgentStatusStopping]) return @"Stopping VM…";
   NSString *vm = [self isVMRunningForAgent:agent] ? @"VM running" : @"VM stopped";
   if ([agent.status isEqualToString:TLAgentStatusError]) return [vm stringByAppendingString:@" · Error"];
-  return [vm stringByAppendingString:[self hasHermesInstallationForAgent:agent]
-    ? @" · Hermes installed" : @" · Setup required"];
+  if (![self hasHermesInstallationForAgent:agent]) {
+    return [self isVMRunningForAgent:agent] ? @"VM is running, but setup is required" : @"VM is stopped; setup is required";
+  }
+  return [vm stringByAppendingString:@" · Hermes installed"];
 }
 
 - (NSArray<TLAgentRecord *> *)listAgents:(NSError **)error {

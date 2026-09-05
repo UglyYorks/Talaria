@@ -54,6 +54,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic, strong) NSColor *statusItemIcon;
 @property (nonatomic, strong) NSColor *textMuted;
 @property (nonatomic, strong) NSColor *agentRunningIndicator;
+@property (nonatomic, strong) NSColor *agentSetupRequiredIndicator;
 @property (nonatomic, strong) NSColor *labelText;
 @property (nonatomic, strong) NSColor *controlSurface;
 @property (nonatomic, strong) NSColor *controlText;

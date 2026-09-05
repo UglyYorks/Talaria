@@ -10,7 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface TLAgentStatusCellView : NSTableCellView
 - (instancetype)initWithPalette:(TLThemePalette *)palette;
-- (void)configureWithStatus:(NSString *)status running:(BOOL)running initializing:(BOOL)initializing palette:(TLThemePalette *)palette;
+- (void)configureWithStatus:(NSString *)status running:(BOOL)running initializing:(BOOL)initializing setupRequired:(BOOL)setupRequired palette:(TLThemePalette *)palette;
 @end
 
 NS_ASSUME_NONNULL_END

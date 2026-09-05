@@ -3231,7 +3231,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     TLAgentStatusCellView *cell = [tableView makeViewWithIdentifier:identifier owner:self];
     if (!cell) cell = [[TLAgentStatusCellView alloc] initWithPalette:self.palette];
     cell.identifier = identifier;
-    [cell configureWithStatus:[self.agentOrchestrator displayStatusForAgent:agent] running:([self.agentOrchestrator isVMRunningForAgent:agent] && [self.agentOrchestrator hasHermesInstallationForAgent:agent] && ![agent.status isEqualToString:TLAgentStatusError]) initializing:[agent.status isEqualToString:TLAgentStatusInitializing] palette:self.palette];
+    [cell configureWithStatus:[self.agentOrchestrator displayStatusForAgent:agent] running:([self.agentOrchestrator isVMRunningForAgent:agent] && [self.agentOrchestrator hasHermesInstallationForAgent:agent] && ![agent.status isEqualToString:TLAgentStatusError]) initializing:[agent.status isEqualToString:TLAgentStatusInitializing] setupRequired:![self.agentOrchestrator hasHermesInstallationForAgent:agent] palette:self.palette];
     cell.textField.toolTip = agent.lastError.length > 0 ? agent.lastError : cell.textField.stringValue;
     return cell;
   }
