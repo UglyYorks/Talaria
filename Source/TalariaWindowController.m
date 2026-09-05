@@ -1,3 +1,4 @@
+#import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AppStateManager.h"
@@ -204,15 +205,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) TLButton *createChatButton;
 @property (nonatomic, strong) TLButton *sidebarToggleButton;
 @property (nonatomic, strong) TLGlassPaneView *slashCommandListView;
-@property (nonatomic, strong) NSStackView *slashCommandListStack;
-@property (nonatomic, strong) NSScrollView *slashCommandScrollView;
+@property (nonatomic, strong) TLInputSuggestionListView *slashCommandScrollView;
+@property (nonatomic, strong) NSTimer *slashCommandUpdateTimer;
+@property (nonatomic) BOOL renderingSlashCommands;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *hermesCommands;
 @property (nonatomic, strong) NSDate *hermesCommandsFetchedAt;
 @property (nonatomic) BOOL loadingHermesCommands;
 @property (nonatomic, copy) NSString *hermesCommandsRequestID;
 @property (nonatomic, copy) NSString *hermesCommandsError;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *visibleSlashCommands;
-@property (nonatomic, copy) NSArray<TLSlashCommandItemView *> *slashCommandRows;
 @property (nonatomic) NSInteger selectedSlashCommandIndex;
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListHeightConstraint;
@@ -240,7 +241,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)handleEffectiveAppearanceChanged;
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)slashCommandsMatchingPrompt:(NSString *)prompt;
 - (NSView *)buildSlashCommandListView;
-- (NSView *)slashCommandRowWithCommand:(NSDictionary<NSString *, NSString *> *)command;
 - (CGFloat)slashCommandListWidthForCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands;
 - (void)applySlashCommandListPalette;
 - (void)setSelectedSlashCommandIndexAndUpdateRows:(NSInteger)selectedIndex;
@@ -252,7 +252,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (NSImage *)snapshotOfMainWindow;
 - (void)finishMainWindowRevealWithFinalFrame:(NSRect)finalFrame;
 - (void)hideSlashCommandList;
-- (void)runSlashCommandFromItem:(id)sender;
 - (void)showOnboardingDemoWindow:(id)sender;
 - (void)showScreensaver;
 - (void)hideScreensaver;
@@ -1988,6 +1987,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)sendMessage:(id)sender {
+  [self flushSlashCommandUpdate];
   if ([self performSelectedSlashCommand]) {
     return;
   }
@@ -2171,45 +2171,19 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.slashCommandListWidthConstraint = [self.slashCommandListView.widthAnchor constraintEqualToConstant:self.palette.space0];
   self.slashCommandListHeightConstraint = [self.slashCommandListView.heightAnchor constraintEqualToConstant:self.palette.space0];
 
-  self.slashCommandListStack = [[NSStackView alloc] init];
-  self.slashCommandListStack.translatesAutoresizingMaskIntoConstraints = NO;
-  self.slashCommandListStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  self.slashCommandListStack.alignment = NSLayoutAttributeLeading;
-  self.slashCommandListStack.distribution = NSStackViewDistributionFill;
-  self.slashCommandListStack.spacing = self.palette.space3;
-  self.slashCommandScrollView = [[NSScrollView alloc] init];
-  self.slashCommandScrollView.translatesAutoresizingMaskIntoConstraints = NO;
-  self.slashCommandScrollView.drawsBackground = NO;
-  self.slashCommandScrollView.hasVerticalScroller = YES;
-  self.slashCommandScrollView.autohidesScrollers = YES;
-  self.slashCommandScrollView.documentView = self.slashCommandListStack;
+  self.slashCommandScrollView = [[TLInputSuggestionListView alloc] init];
+  __weak typeof(self) weakSelf = self;
+  self.slashCommandScrollView.activationHandler = ^(NSUInteger index) { [weakSelf performInputSuggestionAtIndex:index]; };
   [self.slashCommandListView addSubview:self.slashCommandScrollView];
   [NSLayoutConstraint activateConstraints:@[
     [self.slashCommandScrollView.leadingAnchor constraintEqualToAnchor:self.slashCommandListView.leadingAnchor constant:self.palette.space3],
     [self.slashCommandScrollView.trailingAnchor constraintEqualToAnchor:self.slashCommandListView.trailingAnchor constant:-self.palette.space3],
     [self.slashCommandScrollView.topAnchor constraintEqualToAnchor:self.slashCommandListView.topAnchor constant:self.palette.space2],
     [self.slashCommandScrollView.bottomAnchor constraintEqualToAnchor:self.slashCommandListView.bottomAnchor constant:-self.palette.space2],
-    [self.slashCommandListStack.widthAnchor constraintEqualToAnchor:self.slashCommandScrollView.contentView.widthAnchor],
-    [self.slashCommandListStack.leadingAnchor constraintEqualToAnchor:self.slashCommandScrollView.contentView.leadingAnchor],
-    [self.slashCommandListStack.topAnchor constraintEqualToAnchor:self.slashCommandScrollView.contentView.topAnchor],
   ]];
 
   [self applySlashCommandListPalette];
   return self.slashCommandListView;
-}
-
-- (NSView *)slashCommandRowWithCommand:(NSDictionary<NSString *, NSString *> *)command {
-  TLSlashCommandItemView *row = [[TLSlashCommandItemView alloc] init];
-  row.palette = self.palette;
-  row.command = command[@"command"] ?: @"";
-  row.commandDescription = command[@"description"] ?: @"";
-  row.systemIconName = command[@"icon"] ?: @"text.bubble";
-  row.enabled = ![command[@"kind"] isEqualToString:@"status"] &&
-    (![command[@"kind"] isEqualToString:@"web"] || command[@"URL"].length > 0);
-  row.target = self;
-  row.action = @selector(runSlashCommandFromItem:);
-  row.toolTip = command[@"title"];
-  return row;
 }
 
 - (void)applySlashCommandListPalette {
@@ -2217,32 +2191,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
   self.slashCommandListView.palette = self.palette;
-  self.slashCommandListStack.spacing = self.palette.space2;
+  self.slashCommandScrollView.palette = self.palette;
   self.slashCommandListBottomConstraint.constant = -self.palette.space5;
-  for (TLSlashCommandItemView *row in self.slashCommandRows) {
-    row.palette = self.palette;
-  }
 }
 
 - (CGFloat)slashCommandListWidthForCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {
-  CGFloat maximumCommandWidth = self.palette.space0;
-  NSDictionary<NSAttributedStringKey, id> *attributes = @{NSFontAttributeName: self.palette.bodyFont};
-  for (NSDictionary<NSString *, NSString *> *command in commands) {
-    NSString *commandText = command[@"command"] ?: @"";
-    NSRect labelBounds = [commandText boundingRectWithSize:NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX)
-                                                   options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                                attributes:attributes];
-    CGFloat rowWidth = (self.palette.space3 * 2.0) +
-      (self.palette.space8 * 2.0) +
-      self.palette.sidebarActionIconSize + self.palette.space4 +
-      ceil(NSWidth(labelBounds));
-    NSString *description = command[@"description"] ?: @"";
-    if (description.length > 0) {
-      rowWidth += self.palette.space6 + ceil([description sizeWithAttributes:attributes].width);
-    }
-    maximumCommandWidth = MAX(maximumCommandWidth, rowWidth);
-  }
-
   CGFloat availableInputWidth = NSWidth(self.messageInput.bounds);
   if (availableInputWidth <= self.palette.space0) {
     availableInputWidth = self.messageInputWidthConstraint.constant;
@@ -2251,7 +2204,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     availableInputWidth = self.palette.messageInputMaxWidth;
   }
 
-  return MIN(availableInputWidth, ceil(maximumCommandWidth));
+  return availableInputWidth;
 }
 
 - (void)showSlashCommandListWithCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {
@@ -2260,44 +2213,21 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   CGFloat spacing = commands.count > 1 ? self.palette.space2 * (commands.count - 1) : self.palette.space0;
   CGFloat height = (rowHeight * commands.count) + (padding * 2.0) + spacing;
 
-  for (NSView *view in self.slashCommandListStack.arrangedSubviews.copy) {
-    [self.slashCommandListStack removeArrangedSubview:view];
-    [view removeFromSuperview];
-  }
-  NSMutableArray<TLSlashCommandItemView *> *rows = [NSMutableArray arrayWithCapacity:commands.count];
-  for (NSDictionary<NSString *, NSString *> *command in commands) {
-    TLSlashCommandItemView *row = (TLSlashCommandItemView *)[self slashCommandRowWithCommand:command];
-    row.tag = rows.count;
-    [self.slashCommandListStack addArrangedSubview:row];
-    [row.heightAnchor constraintEqualToConstant:rowHeight].active = YES;
-    [row.widthAnchor constraintEqualToAnchor:self.slashCommandListStack.widthAnchor].active = YES;
-    [rows addObject:row];
-  }
+  BOOL changed = ![self.visibleSlashCommands isEqualToArray:commands];
   self.visibleSlashCommands = [commands copy];
-  self.slashCommandRows = [rows copy];
-  self.selectedSlashCommandIndex = -1;
+  self.slashCommandScrollView.suggestions = commands;
+  if (changed) self.selectedSlashCommandIndex = -1;
   [self applySlashCommandListPalette];
   self.slashCommandListWidthConstraint.constant = [self slashCommandListWidthForCommands:commands];
   CGFloat availableHeight = MAX(rowHeight + padding * 2, NSHeight(self.rootView.bounds) * 0.4);
   self.slashCommandListHeightConstraint.constant = MIN(height, MIN(availableHeight, rowHeight * 8 + padding * 9));
   self.slashCommandListView.hidden = NO;
-  [self.slashCommandListView layoutSubtreeIfNeeded];
-  if (self.slashCommandRows.count) [self.slashCommandListStack scrollRectToVisible:self.slashCommandRows.firstObject.frame];
   [self updateMessageScrollInsets];
 }
 
 - (void)setSelectedSlashCommandIndexAndUpdateRows:(NSInteger)selectedIndex {
-  NSInteger boundedIndex = selectedIndex;
-  if (boundedIndex < 0 || boundedIndex >= (NSInteger)self.slashCommandRows.count) {
-    boundedIndex = -1;
-  }
-  self.selectedSlashCommandIndex = boundedIndex;
-  [self.slashCommandRows enumerateObjectsUsingBlock:^(TLSlashCommandItemView *row,
-                                                       NSUInteger index,
-                                                       BOOL *stop) {
-    row.selected = (NSInteger)index == boundedIndex;
-  }];
-  if (boundedIndex >= 0) [self.slashCommandListStack scrollRectToVisible:self.slashCommandRows[(NSUInteger)boundedIndex].frame];
+  self.slashCommandScrollView.selectedIndex = selectedIndex;
+  self.selectedSlashCommandIndex = self.slashCommandScrollView.selectedIndex;
 }
 
 - (BOOL)moveSlashCommandSelectionByOffset:(NSInteger)offset {
@@ -2310,7 +2240,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   for (NSInteger attempt = 0; attempt < commandCount; attempt++) {
     nextIndex = nextIndex < 0 ? (offset < 0 ? commandCount - 1 : 0)
       : (nextIndex + offset + commandCount) % commandCount;
-    if (self.slashCommandRows[(NSUInteger)nextIndex].enabled) {
+    if ([self.slashCommandScrollView isSuggestionEnabledAtIndex:(NSUInteger)nextIndex]) {
       break;
     }
   }
@@ -2327,7 +2257,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (BOOL)performInputSuggestionAtIndex:(NSUInteger)index {
-  if (self.isSending || index >= self.visibleSlashCommands.count || !self.slashCommandRows[index].enabled) {
+  if (self.isSending || index >= self.visibleSlashCommands.count || ![self.slashCommandScrollView isSuggestionEnabledAtIndex:index]) {
     return NO;
   }
   NSDictionary<NSString *, NSString *> *suggestion = self.visibleSlashCommands[index];
@@ -2482,6 +2412,26 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)updateSlashCommandList {
+  if (self.renderingSlashCommands) return;
+  [self.slashCommandUpdateTimer invalidate];
+  __weak typeof(self) weakSelf = self;
+  // Return the keystroke to AppKit before filtering, fetching, or rendering suggestions.
+  self.slashCommandUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:NO block:^(NSTimer *timer) {
+    [weakSelf flushSlashCommandUpdate];
+  }];
+}
+
+- (void)flushSlashCommandUpdate {
+  if (!self.slashCommandUpdateTimer) return;
+  [self.slashCommandUpdateTimer invalidate];
+  self.slashCommandUpdateTimer = nil;
+  self.renderingSlashCommands = YES;
+  [self renderSlashCommandList];
+  [self updateControlStates];
+  self.renderingSlashCommands = NO;
+}
+
+- (void)renderSlashCommandList {
   if (self.isSending || ![self isChatWorkspaceActive] || !self.messageInput.window || NSIsEmptyRect(self.messageInput.bounds)) {
     [self hideSlashCommandList];
     return;
@@ -2506,33 +2456,23 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self showSlashCommandListWithCommands:commands];
   NSString *trimmedPrompt = [self.promptTextView.string
       stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (trimmedPrompt.length > 1) {
+  if (trimmedPrompt.length > 1 && self.selectedSlashCommandIndex < 0) {
     [self moveSlashCommandSelectionByOffset:1];
   }
 }
 
 - (void)hideSlashCommandList {
+  [self.slashCommandUpdateTimer invalidate];
+  self.slashCommandUpdateTimer = nil;
   if (!self.slashCommandListView.hidden || self.slashCommandListHeightConstraint.constant > self.palette.space0) {
-    for (NSView *view in self.slashCommandListStack.arrangedSubviews.copy) {
-      [self.slashCommandListStack removeArrangedSubview:view];
-      [view removeFromSuperview];
-    }
     self.slashCommandListView.hidden = YES;
     self.visibleSlashCommands = @[];
-    self.slashCommandRows = @[];
+    self.slashCommandScrollView.suggestions = @[];
     self.selectedSlashCommandIndex = -1;
     self.slashCommandListWidthConstraint.constant = self.palette.space0;
     self.slashCommandListHeightConstraint.constant = self.palette.space0;
     [self updateMessageScrollInsets];
   }
-}
-
-- (void)runSlashCommandFromItem:(id)sender {
-  if (![sender isKindOfClass:TLSlashCommandItemView.class]) {
-    return;
-  }
-  TLSlashCommandItemView *item = (TLSlashCommandItemView *)sender;
-  [self performInputSuggestionAtIndex:(NSUInteger)item.tag];
 }
 
 - (void)showOnboardingDemoWindow:(id)sender {
@@ -3386,7 +3326,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
   if (commandSelector == @selector(cancelOperation:)) {
-    if (!self.slashCommandListView.hidden) { [self hideSlashCommandList]; return YES; }
+    if (self.slashCommandUpdateTimer || !self.slashCommandListView.hidden) { [self hideSlashCommandList]; return YES; }
+  }
+  if (commandSelector == @selector(insertTab:) || commandSelector == @selector(moveUp:) ||
+      commandSelector == @selector(moveDown:) || commandSelector == @selector(insertNewline:)) {
+    [self flushSlashCommandUpdate];
   }
   if (commandSelector == @selector(insertTab:) && !self.slashCommandListView.hidden) {
     if (self.selectedSlashCommandIndex < 0) [self moveSlashCommandSelectionByOffset:1];
@@ -3419,11 +3363,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)textDidChange:(NSNotification *)notification {
-
-  [self.messageInput recalculateHeight];
-  [self updateMessageScrollInsets];
+  // TextKit has already applied the edit. Do not force the workspace to lay out
+  // before AppKit can paint it; suggestions and composer chrome follow next frame.
   [self updateSlashCommandList];
-  [self updateControlStates];
 }
 
 - (void)pinMessageRowToStackWidth:(NSView *)row {
