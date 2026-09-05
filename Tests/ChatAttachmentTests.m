@@ -56,6 +56,60 @@ static void TestAttachmentMigrationCollision(void) {
   [NSFileManager.defaultManager removeItemAtURL:base error:nil];
 }
 
+static void TestProfileSchemaCompatibility(void) {
+  NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+  NSURL *URL = [base URLByAppendingPathComponent:@"profiles.sqlite"];
+  NSError *error = nil;
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:URL error:&error];
+  TLChatRecord *chat = [database createChatWithModel:@"test" error:&error];
+  [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Keep this conversation" thinking:nil]
+                chatID:chat.chatID error:&error];
+  database = nil;
+  TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
+  Check([fixture executeSQL:
+    "ALTER TABLE agents ADD COLUMN avatar TEXT NOT NULL DEFAULT '🤖';"
+    "ALTER TABLE agents ADD COLUMN soul TEXT NOT NULL DEFAULT '';"
+    "ALTER TABLE agents ADD COLUMN folder_paths TEXT NOT NULL DEFAULT '[]';"
+    "CREATE UNIQUE INDEX agents_vm_directory ON agents(vm_directory);"
+    "INSERT INTO agents(name,guest_kind,runtime,status,vm_directory,soul) VALUES('Existing agent','linux','python','stopped','/tmp/test-agent','Keep profile');"
+    "PRAGMA user_version = 6;" error:&error], @"creates the version-6 agent profile fixture");
+  fixture = nil;
+  for (NSNumber *withoutAttachments in @[@NO, @YES]) {
+    if (withoutAttachments.boolValue) {
+      fixture = [TLSQLiteConnection openURL:URL error:&error];
+      Check([fixture executeSQL:"ALTER TABLE messages DROP COLUMN attachments" error:&error], @"prepares profile-only schema");
+      fixture = nil;
+    }
+    database = [[TLDatabase alloc] initWithURL:URL error:&error];
+    Check(database != nil, [NSString stringWithFormat:@"opens known version-6 schema: %@", error]);
+    TLChatRecord *loaded = [database chatWithID:chat.chatID error:&error];
+    Check([loaded.messages.firstObject.content isEqual:@"Keep this conversation"], @"preserves existing version-6 chat history");
+    TLChatMessage *message = [TLChatMessage messageWithRole:TLRoleUser content:@"File" thinking:nil];
+    message.attachments = @[@{@"name":@"report.txt", @"guestPath":@"/workspace/attachments/report.txt", @"directory":@NO}];
+    Check([database saveMessage:message chatID:chat.chatID error:&error].attachments.count == 1, @"saves attachments alongside agent profiles");
+    database = nil;
+    fixture = [TLSQLiteConnection openURL:URL error:&error];
+    TLSQLiteStatement *version = [fixture prepareSQL:"PRAGMA user_version" error:&error];
+    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 6, @"does not downgrade profile schema version");
+    version = nil;
+    TLSQLiteStatement *profile = [fixture prepareSQL:"SELECT soul FROM agents" error:&error];
+    Check([profile step] == SQLITE_ROW && [[profile stringAtColumn:0] isEqual:@"Keep profile"], @"preserves agent profile data");
+    profile = nil;
+    fixture = nil;
+  }
+  fixture = [TLSQLiteConnection openURL:URL error:&error];
+  Check([fixture executeSQL:"PRAGMA user_version = 7" error:&error], @"prepares unknown future schema");
+  fixture = nil;
+  error = nil;
+  Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"still rejects unknown future schema versions");
+  fixture = [TLSQLiteConnection openURL:URL error:nil];
+  Check([fixture executeSQL:"PRAGMA user_version = 6; ALTER TABLE agents ADD COLUMN unsupported TEXT" error:nil], @"prepares unrecognized version-6 shape");
+  fixture = nil;
+  error = nil;
+  Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"rejects unrecognized version-6 columns");
+  [NSFileManager.defaultManager removeItemAtURL:base error:nil];
+}
+
 static void TestStorageAndPersistence(void) {
   NSFileManager *manager = NSFileManager.defaultManager;
   NSURL *base = [[[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString] URLByResolvingSymlinksInPath];
@@ -211,6 +265,6 @@ static void TestSystemAttachmentThumbnails(void) {
 }
 
 int main(void) {
-  @autoreleasepool { TestAttachmentMigrationCollision(); TestStorageAndPersistence(); TestComposer(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
+  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestStorageAndPersistence(); TestComposer(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
   return 0;
 }

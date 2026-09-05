@@ -37,10 +37,56 @@ static BOOL TLEnsureMessageAttachments(TLSQLiteConnection *connection, NSError *
     "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'" error:error];
 }
 
+// The agent-profile worktree's version 6 only adds these defaulted TEXT
+// columns and a unique VM-directory index. Our explicit-column inserts and
+// updates preserve them. Accept this known shape without downgrading its version.
+static BOOL TLDatabaseHasCompatibleProfileSchema(TLSQLiteConnection *connection) {
+  NSDictionary<NSString *, NSArray<NSString *> *> *requiredColumns = @{
+    @"chats": @[@"id", @"title", @"model", @"created_at", @"updated_at", @"icon", @"hermes_session_id"],
+    @"messages": @[@"id", @"chat_id", @"role", @"content", @"thinking", @"created_at"],
+    @"agents": @[@"id", @"name", @"guest_kind", @"runtime", @"status", @"vm_directory", @"last_error", @"created_at", @"updated_at"],
+    @"settings": @[@"key", @"value"],
+  };
+  NSDictionary *profileDefaults = @{@"avatar": @"'🤖'", @"soul": @"''", @"folder_paths": @"'[]'"};
+  NSDictionary *knownAdditions = @{@"messages": @{@"attachments": @"'[]'"}, @"agents": profileDefaults};
+  NSMutableSet *missingProfileColumns = [NSMutableSet setWithArray:profileDefaults.allKeys];
+  for (NSString *table in requiredColumns) {
+    NSString *sql = [NSString stringWithFormat:@"PRAGMA table_info(%@)", table];
+    TLSQLiteStatement *columns = [connection prepareSQL:sql.UTF8String error:nil];
+    if (!columns) return NO;
+    NSMutableSet *missing = [NSMutableSet setWithArray:requiredColumns[table]];
+    int result;
+    while ((result = [columns step]) == SQLITE_ROW) {
+      NSString *name = [columns stringAtColumn:1];
+      if ([missing containsObject:name]) {
+        [missing removeObject:name];
+        continue;
+      }
+      NSString *expectedDefault = knownAdditions[table][name];
+      if (!expectedDefault || ![[[columns stringAtColumn:2] uppercaseString] isEqualToString:@"TEXT"] ||
+          sqlite3_column_int(columns.handle, 3) != 1 ||
+          ![[columns stringAtColumn:4] isEqualToString:expectedDefault]) return NO;
+      if ([table isEqualToString:@"agents"]) [missingProfileColumns removeObject:name];
+    }
+    if (result != SQLITE_DONE || missing.count) return NO;
+  }
+  return missingProfileColumns.count == 0;
+}
+
 BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, NSError **error) {
   NSInteger version = TLDatabaseSchemaVersion(connection, error);
   if (version < 0) {
     return NO;
+  }
+
+  if (version == 6 && targetVersion == 5) {
+    return [connection performTransaction:^BOOL(NSError **transactionError) {
+      if (TLDatabaseSchemaVersion(connection, transactionError) != 6 || !TLDatabaseHasCompatibleProfileSchema(connection)) {
+        [connection setError:transactionError message:@"Unrecognized version-6 database schema."];
+        return NO;
+      }
+      return TLEnsureMessageAttachments(connection, transactionError);
+    } error:error];
   }
 
   if (version > targetVersion) {
