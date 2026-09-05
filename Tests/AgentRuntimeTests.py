@@ -28,6 +28,35 @@ def test_gateway():
     return gateway
 
 
+class HermesWarmupTests(unittest.TestCase):
+    def test_warm_catalogue_and_chat_reuse_one_process(self):
+        gateway = Mock()
+        gateway.process.poll.return_value = None
+        gateway.catalog.return_value = {"pairs": []}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(runtime, "HERMES_HOME", Path(directory)), \
+             patch.object(runtime, "hermes_executable", return_value="/hermes/venv/bin/hermes"), \
+             patch.object(runtime, "_tui_gateway", None), patch.object(runtime, "_tui_token", ""), \
+             patch.object(runtime, "HermesGateway", return_value=gateway) as create:
+            runtime.fetch_hermes_commands({"request_id": "warm", "token": "test", "model": "model"}, io.BytesIO())
+            for _ in range(3):
+                self.assertIs(runtime.tui_gateway("test", "model"), gateway)
+            create.assert_called_once()
+            gateway.catalog.assert_called_once()
+            gateway.process.terminate.assert_not_called()
+
+    def test_dead_gateway_is_recreated_on_next_request(self):
+        dead, replacement = Mock(), Mock()
+        dead.process.poll.return_value = 1
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(runtime, "HERMES_HOME", Path(directory)), \
+             patch.object(runtime, "hermes_executable", return_value="/hermes/venv/bin/hermes"), \
+             patch.object(runtime, "_tui_gateway", dead), patch.object(runtime, "_tui_token", "test"), \
+             patch.object(runtime, "HermesGateway", return_value=replacement) as create:
+            self.assertIs(runtime.tui_gateway("test", "model"), replacement)
+            create.assert_called_once()
+
+
 class HermesStreamingTests(unittest.TestCase):
     def test_answer_deltas_are_flushed_before_reading_the_next_event(self):
         class FlushedOutput(io.BytesIO):

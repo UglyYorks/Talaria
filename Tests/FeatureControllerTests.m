@@ -238,6 +238,8 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (NSString *)displayTitleForWorkspaceTab:(TLWorkspaceTab *)tab;
 - (void)startNewChatWithModel:(NSString *)model focus:(BOOL)focus;
 - (void)renderMessages;
+- (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom;
+- (void)scheduleStreamingMessageRender;
 - (void)resetMessageRowCache;
 - (void)workspaceTabsController:(nullable TLWorkspaceTabsController *)controller
                        moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index;
@@ -268,11 +270,21 @@ static id EvaluateChatScript(WKWebView *web, NSString *script) {
   return value;
 }
 
+@interface TLStreamingRenderRecorder : TalariaWindowController
+@property NSUInteger renderCount;
+@end
+@implementation TLStreamingRenderRecorder
+- (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
+  self.renderCount++;
+  [super renderMessagesScrollingToBottom:scrollToBottom];
+}
+@end
+
 static void TestStreamingKeepsMessageViewsAttached(void) {
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 600)
     styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
-  TalariaWindowController *controller = [[TalariaWindowController alloc] initWithWindow:window];
+  TLStreamingRenderRecorder *controller = [[TLStreamingRenderRecorder alloc] initWithWindow:window];
   [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
   [controller resetMessageRowCache];
   TLMessageStackRecorder *stack = [[TLMessageStackRecorder alloc] initWithFrame:window.contentView.bounds];
@@ -316,6 +328,28 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
           @"already visible answer text remains present throughout the stream");
   }
   Check([EvaluateChatScript(web, @"document.body.innerText") containsString:@"Done."], @"final streamed text is rendered");
+  EvaluateChatScript(web, @"window.domRenderCount = 0; const render = window.talariaRender; window.talariaRender = source => { window.domRenderCount++; render(source); }; true;");
+  [controller renderMessages];
+  [controller renderMessages];
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+  Check([EvaluateChatScript(web, @"window.domRenderCount") integerValue] == 0,
+        @"unchanged messages do not reparse Markdown or replace the DOM");
+  NSUInteger renderCount = controller.renderCount;
+  for (NSUInteger i = 0; i < 100; i++) {
+    assistant.content = [assistant.content stringByAppendingString:@" x"];
+    [controller scheduleStreamingMessageRender];
+  }
+  Check(controller.renderCount == renderCount, @"a burst of tokens defers native layout");
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
+  Check(controller.renderCount == renderCount + 1, @"a burst of tokens performs one native transcript update");
+  Check([[markdown valueForKey:@"text"] isEqual:assistant.content] &&
+        [EvaluateChatScript(web, @"window.domRenderCount") integerValue] == 1,
+        @"batched rendering preserves the entire response in the same document");
+  [controller scheduleStreamingMessageRender];
+  [controller renderMessagesScrollingToBottom:NO];
+  renderCount = controller.renderCount;
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+  Check(controller.renderCount == renderCount, @"immediate navigation or completion invalidates an older pending render");
   TLStoredChatMessage *saved = [TLStoredChatMessage messageWithRole:assistant.role content:assistant.content thinking:assistant.thinking];
   saved.messageID = 7;
   messages[1] = saved;
@@ -326,7 +360,11 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   [controller renderMessages];
   Check(stack.arrangedSubviews.count == 1 && stack.arrangedSubviews.firstObject == rows.firstObject &&
         ![markdownViews objectForKey:saved], @"deleting an answer removes only its own row and renderer");
+  [controller scheduleStreamingMessageRender];
   [controller resetMessageRowCache];
+  renderCount = controller.renderCount;
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+  Check(controller.renderCount == renderCount, @"closing a transcript cancels its pending render");
   Check(stack.arrangedSubviews.count == 0 && [[controller valueForKey:@"messageMarkdownViews"] count] == 0,
         @"theme and conversation resets discard the old renderers");
   [window close];
@@ -1724,6 +1762,76 @@ static void TestSuggestionTypingAndVirtualization(void) {
 - (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent { return YES; }
 - (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent { return NO; }
 @end
+@interface TalariaWindowController (WarmupTests)
+- (NSView *)buildSettingsTabContent;
+- (void)prepareHermesCommands;
+- (void)refreshAgents;
+- (void)selectAgentWithID:(NSInteger)agentID;
+- (void)closeSettingsTab:(id)sender;
+- (void)applyTheme;
+@end
+@interface TLWarmupController : TLRepairController
+@property NSUInteger warmupCount;
+@end
+@implementation TLWarmupController
+- (void)prepareHermesCommands { self.warmupCount++; }
+- (void)refreshAgents {}
+- (void)selectAgentWithID:(NSInteger)agentID {}
+- (void)closeSettingsTab:(id)sender {}
+- (void)applyTheme {}
+- (void)updateAgentControlStates {}
+@end
+@interface TLWarmupStore : TLFeatureSettingsStoreMock
+@property NSInteger currentAgentID;
+@end
+@implementation TLWarmupStore
+@end
+@interface TLWarmupOrchestrator : TLFeatureCatalogueMock
+@property TLAgentRecord *agent;
+@property NSError *startError;
+@end
+@implementation TLWarmupOrchestrator
+- (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent { return YES; }
+- (void)startAgentWithID:(NSInteger)agentID completion:(TLAgentOperationCompletionHandler)completion {
+  completion(self.agent, self.startError);
+}
+@end
+static void TestWarmupAfterSettingsAndManualStart(void) {
+  TLWarmupController *controller = [[TLWarmupController alloc] initWithWindow:nil];
+  TLWarmupStore *store = [[TLWarmupStore alloc] init];
+  TLWarmupOrchestrator *orchestrator = [[TLWarmupOrchestrator alloc] init];
+  TLAppSettings *settings = [TLAppSettings defaultSettings];
+  settings.openRouterToken = @"old-token";
+  [controller setValue:settings forKey:@"settings"];
+  [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceLight] forKey:@"palette"];
+  [controller setValue:store forKey:@"database"];
+  [controller setValue:orchestrator forKey:@"agentOrchestrator"];
+  [controller buildSettingsTabContent];
+  TLSettingsTabController *tab = [controller valueForKey:@"settingsTabController"];
+  TLAppSettings *saved = [settings copy];
+  saved.theme = TLThemePreferenceDark;
+  tab.settingsSavedHandler(saved);
+  Check(controller.warmupCount == 0, @"theme-only settings do not warm or restart inference");
+  saved = [saved copy];
+  saved.openRouterToken = @"new-token";
+  tab.settingsSavedHandler(saved);
+  Check(controller.warmupCount == 1, @"changed credentials prepare Hermes before the next send");
+  saved = [saved copy];
+  saved.selectedModel = @"other-model";
+  tab.settingsSavedHandler(saved);
+  Check(controller.warmupCount == 2, @"changed model settings refresh the prepared gateway");
+  controller.testAgent = [[TLAgentRecord alloc] init];
+  controller.testAgent.agentID = 42;
+  controller.testAgent.status = TLAgentStatusStopped;
+  orchestrator.agent = controller.testAgent;
+  store.currentAgentID = 42;
+  [controller startSelectedAgent:nil];
+  Check(controller.warmupCount == 3, @"manual restart of the current VM also prepares Hermes");
+  store.currentAgentID = 43;
+  [controller startSelectedAgent:nil];
+  Check(controller.warmupCount == 3, @"starting another VM does not wake the current agent");
+}
+
 static void TestRunningAgentRepairAction(void) {
   TLRepairController *controller = [[TLRepairController alloc] initWithWindow:nil];
   controller.testAgent = [[TLAgentRecord alloc] init];
@@ -1837,6 +1945,7 @@ int main(void) {
     TestRealSidebarAgents();
     TestSuggestionTypingAndVirtualization();
     TestRunningAgentRepairAction();
+    TestWarmupAfterSettingsAndManualStart();
     TestThemedButtonRenderedColors();
     TestDebugResetLayout();
     TestTerminalRequiresRunningVM();

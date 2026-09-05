@@ -206,6 +206,25 @@ static void TestFailureWithoutOutput(void) {
            @"failed empty request leaves no synthetic or empty assistant response in history");
 }
 
+static void TestThinkingDeltasAreImmediatelyVisible(void) {
+  TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
+  TLTurnTestStream *stream = [[TLTurnTestStream alloc] init];
+  stream.deferred = YES;
+  TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+  NSMutableArray<TLChatMessage *> *messages = [NSMutableArray array];
+  __block NSString *visibleThinking = nil;
+  [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"hello"
+    updateHandler:^{ visibleThinking = messages.lastObject.thinking; } completionHandler:nil error:nil];
+  TLTurnTestRequest *request = stream.requests.lastObject;
+  request.delta(request.requestID, TLAgentStreamDeltaKindThinking, @"Let me check");
+  TLAssert([visibleThinking isEqual:@"Let me check"] && runner.running && store.saveCount == 1,
+           @"thinking appears without waiting for a paragraph or completion");
+  request.delta(request.requestID, TLAgentStreamDeltaKindThinking, @" this 🦊");
+  TLAssert([visibleThinking isEqual:@"Let me check this 🦊"], @"thinking preserves every partial delta");
+  [runner cancel];
+  TLAssert([store.savedMessages.lastObject.thinking isEqual:visibleThinking], @"cancellation preserves partial thinking");
+}
+
 static void TestAnswerDeltasAreImmediatelyVisible(void) {
   for (NSNumber *fails in @[@NO, @YES]) {
     TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
@@ -344,6 +363,7 @@ int main(void) {
     TestPartialStreamFailures();
     TestFailureWithoutOutput();
     TestAnswerDeltasAreImmediatelyVisible();
+    TestThinkingDeltasAreImmediatelyVisible();
     TestValidationAndStaleCallbacks();
     if (failures == 0) fprintf(stdout, "AssistantTurnResultTests passed\n");
   }

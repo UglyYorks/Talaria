@@ -108,6 +108,18 @@ class GatewayTests(unittest.TestCase):
             call('config.set', {'session_id': 'runtime', 'key': 'model', 'value': 'model --session'})])
         self.assertEqual(json.loads(self.gateway.mapping_path.read_text()), {'talaria_1': 'talaria_1'})
 
+    def test_warm_session_skips_rpc_and_mapping_writes(self):
+        self.gateway.call.side_effect = [
+            {'session_id': 'runtime', 'stored_session_id': 'saved'},
+            {'value': 'model'}, {'output': 'Model: model (openrouter)'}]
+        self.gateway.session('chat', 'model')
+        self.gateway.call.reset_mock()
+        with patch.object(Path, 'write_text') as write:
+            for _ in range(3):
+                self.assertEqual(self.gateway.session('chat', 'model'), 'runtime')
+            write.assert_not_called()
+        self.gateway.call.assert_not_called()
+
     def test_composer_switch_is_local_and_retried_after_failure(self):
         self.gateway.sessions['a'] = {'id': 'a', 'model': 'old'}
         self.gateway.sessions['b'] = {'id': 'b', 'model': 'other'}
