@@ -72,6 +72,10 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 - (BOOL)isDefaultAgentRunning;
 - (void)connectToDefaultAgentTerminal:(TLAgentVMConnectionCompletionHandler)completion;
 
+- (void)hermesHistoryWithAction:(NSString *)action sessionID:(NSString *)sessionID
+                         token:(NSString *)token model:(NSString *)model
+                    completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
+
 - (void)fetchModelCatalogueWithToken:(NSString *)token
                            completion:(TLAgentModelCatalogueHandler)completion;
 

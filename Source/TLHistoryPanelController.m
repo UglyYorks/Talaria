@@ -1,5 +1,6 @@
 #import "TLHistoryPanelController.h"
 #import "design_system/UIComponents.h"
+#import "design_system/TLThemedButton.h"
 
 @interface TLHistoryTableView : NSTableView
 
@@ -35,7 +36,7 @@
 
 @end
 
-@interface TLHistoryPanelController () <NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation>
+@interface TLHistoryPanelController () <NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation, NSSearchFieldDelegate>
 
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong) TLTokenView *panelView;
@@ -43,6 +44,10 @@
 @property (nonatomic, strong) NSTextField *titleLabel;
 @property (nonatomic, strong) TLHistoryTableView *tableView;
 @property (nonatomic) BOOL selectingProgrammatically;
+@property (nonatomic, copy) NSArray<TLChatSummary *> *filteredChats;
+@property (nonatomic, strong) NSSearchField *searchField;
+@property (nonatomic, strong) NSTextField *statusLabel;
+@property (nonatomic, strong) TLThemedButton *refreshButton;
 
 @end
 
@@ -53,6 +58,9 @@
   if (self) {
     _palette = palette;
     _chats = @[];
+    _filteredChats = @[];
+    _statusMessage = @"";
+    _searchPreviews = @{};
     _enabled = YES;
     [self buildView];
     [self applyPalette:palette];
@@ -62,11 +70,56 @@
 
 - (void)setEnabled:(BOOL)enabled {
   _enabled = enabled;
-  self.tableView.enabled = enabled;
+  self.tableView.enabled = enabled && !self.loading;
+}
+
+- (void)setLoading:(BOOL)loading {
+  _loading = loading;
+  self.tableView.enabled = self.enabled && !loading;
+  self.refreshButton.enabled = !loading;
+  [self updateStatus];
+}
+
+- (void)setStatusMessage:(NSString *)statusMessage {
+  _statusMessage = [statusMessage copy];
+  [self updateStatus];
+}
+
+- (void)updateStatus {
+  NSString *query = [self.searchField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  self.statusLabel.stringValue = self.statusMessage.length ? self.statusMessage :
+    (self.loading ? @"Loading Hermes sessions…" :
+     (self.filteredChats.count ? @"" : (query.length ? @"No matching sessions" : @"No Hermes sessions yet")));
+  self.statusLabel.hidden = self.statusLabel.stringValue.length == 0;
 }
 
 - (void)reloadData {
+  NSString *query = [self.searchField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  NSMutableArray *matches = [NSMutableArray array];
+  for (TLChatSummary *chat in self.chats) {
+    NSString *text = [NSString stringWithFormat:@"%@ %@ %@", chat.title, chat.hermesSessionID,
+                      self.searchPreviews[@(chat.chatID)] ?: @""];
+    if (!query.length || [text rangeOfString:query options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location != NSNotFound) {
+      [matches addObject:chat];
+    }
+  }
+  self.selectingProgrammatically = YES;
+  self.filteredChats = matches;
+  self.tableView.contextMenuRow = -1;
+  [self.tableView deselectAll:nil];
   [self.tableView reloadData];
+  self.selectingProgrammatically = NO;
+  [self updateStatus];
+}
+
+- (void)controlTextDidChange:(NSNotification *)notification {
+  if (notification.object == self.searchField) [self reloadData];
+}
+
+- (void)refreshHistory:(id)sender {
+  if ([self.delegate respondsToSelector:@selector(historyPanelControllerDidRequestRefresh:)]) {
+    [self.delegate historyPanelControllerDidRequestRefresh:self];
+  }
 }
 
 - (void)deselectAll {
@@ -77,8 +130,8 @@
 
 - (void)selectChatWithID:(NSInteger)chatID {
   NSInteger row = NSNotFound;
-  for (NSUInteger index = 0; index < self.chats.count; index += 1) {
-    if (self.chats[index].chatID == chatID) {
+  for (NSUInteger index = 0; index < self.filteredChats.count; index += 1) {
+    if (self.filteredChats[index].chatID == chatID) {
       row = (NSInteger)index;
       break;
     }
@@ -106,6 +159,12 @@
   self.titleLabel.font = palette.labelFont;
   self.tableView.rowHeight = palette.historyRowHeight;
   self.tableView.backgroundColor = palette.transparentSurface;
+  self.searchField.font = palette.bodyFont;
+  self.searchField.textColor = palette.controlText;
+  self.searchField.backgroundColor = palette.controlSurface;
+  self.statusLabel.textColor = palette.textMuted;
+  self.statusLabel.font = palette.roleFont;
+  self.refreshButton.palette = palette;
   [self.panelView setNeedsDisplay:YES];
   [self.headerView setNeedsDisplay:YES];
   [self.tableView reloadData];
@@ -123,11 +182,16 @@
   [self.panelView addSubview:stack];
 
   [NSLayoutConstraint activateConstraints:@[
-    [stack.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor],
-    [stack.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor],
+    [stack.centerXAnchor constraintEqualToAnchor:self.panelView.centerXAnchor],
+    [stack.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth],
+    [stack.widthAnchor constraintLessThanOrEqualToAnchor:self.panelView.widthAnchor],
     [stack.topAnchor constraintEqualToAnchor:self.panelView.topAnchor],
     [stack.bottomAnchor constraintEqualToAnchor:self.panelView.bottomAnchor],
   ]];
+
+  NSLayoutConstraint *preferredWidth = [stack.widthAnchor constraintEqualToAnchor:self.panelView.widthAnchor];
+  preferredWidth.priority = NSLayoutPriorityWindowSizeStayPut - 1.0;
+  preferredWidth.active = YES;
 
   self.headerView = [[TLTokenView alloc] init];
   self.headerView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -135,10 +199,17 @@
 
   self.titleLabel = [self labelWithString:@"History" font:self.palette.labelFont color:self.palette.labelText];
   [self.headerView addSubview:self.titleLabel];
+  self.refreshButton = [TLThemedButton buttonWithTitle:@"Refresh" target:self action:@selector(refreshHistory:)];
+  self.refreshButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.headerView addSubview:self.refreshButton];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.refreshButton.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-self.palette.space6],
+    [self.refreshButton.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
+  ]];
   [NSLayoutConstraint activateConstraints:@[
     [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:self.palette.space12],
     [self.titleLabel.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
-    [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.headerView.trailingAnchor constant:-self.palette.space12],
+    [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.refreshButton.leadingAnchor constant:-self.palette.space3],
   ]];
 
   self.tableView = [[TLHistoryTableView alloc] init];
@@ -165,12 +236,33 @@
   scrollView.hasVerticalScroller = YES;
   scrollView.drawsBackground = NO;
 
+  NSView *searchContainer = [[NSView alloc] init];
+  searchContainer.translatesAutoresizingMaskIntoConstraints = NO;
+  self.searchField = [[NSSearchField alloc] init];
+  self.searchField.translatesAutoresizingMaskIntoConstraints = NO;
+  self.searchField.placeholderString = @"Search sessions";
+  self.searchField.delegate = self;
+  self.searchField.sendsSearchStringImmediately = YES;
+  [self.searchField setAccessibilityLabel:@"Search Hermes sessions"];
+  [searchContainer addSubview:self.searchField];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.searchField.leadingAnchor constraintEqualToAnchor:searchContainer.leadingAnchor constant:self.palette.space6],
+    [self.searchField.trailingAnchor constraintEqualToAnchor:searchContainer.trailingAnchor constant:-self.palette.space6],
+    [self.searchField.topAnchor constraintEqualToAnchor:searchContainer.topAnchor constant:self.palette.space6],
+    [self.searchField.bottomAnchor constraintEqualToAnchor:searchContainer.bottomAnchor constant:-self.palette.space6],
+  ]];
+  self.statusLabel = [self labelWithString:@"" font:self.palette.roleFont color:self.palette.textMuted];
+  self.statusLabel.alignment = NSTextAlignmentCenter;
+  self.statusLabel.lineBreakMode = NSLineBreakByWordWrapping;
+  self.statusLabel.maximumNumberOfLines = 0;
   [stack addArrangedSubview:self.headerView];
+  [stack addArrangedSubview:searchContainer];
+  [stack addArrangedSubview:self.statusLabel];
   [stack addArrangedSubview:scrollView];
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
-  return self.chats.count;
+  return self.filteredChats.count;
 }
 
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
@@ -210,7 +302,7 @@
     dateLabel = [cell viewWithTag:102];
   }
 
-  TLChatSummary *chat = self.chats[row];
+  TLChatSummary *chat = self.filteredChats[row];
   iconLabel.stringValue = chat.icon.length > 0 ? chat.icon : TLDefaultChatIcon();
   iconLabel.textColor = self.palette.appText;
   iconLabel.font = self.palette.bodyFont;
@@ -241,10 +333,10 @@
     return;
   }
   NSInteger row = self.tableView.selectedRow;
-  if (row >= (NSInteger)self.chats.count) {
+  if (row >= (NSInteger)self.filteredChats.count) {
     return;
   }
-  [self.delegate historyPanelController:self didSelectChatID:self.chats[row].chatID];
+  [self.delegate historyPanelController:self didSelectChatID:self.filteredChats[row].chatID];
 }
 
 - (void)deleteContextMenuChat:(id)sender {
@@ -253,7 +345,7 @@
     return;
   }
 
-  [self.delegate historyPanelController:self didRequestDeleteChatID:self.chats[row].chatID];
+  [self.delegate historyPanelController:self didRequestDeleteChatID:self.filteredChats[row].chatID];
   self.tableView.contextMenuRow = -1;
 }
 
@@ -266,7 +358,7 @@
 }
 
 - (BOOL)canDeleteContextMenuRow:(NSInteger)row {
-  return self.enabled && row >= 0 && row < (NSInteger)self.chats.count;
+  return self.enabled && !self.loading && row >= 0 && row < (NSInteger)self.filteredChats.count;
 }
 
 - (NSTextField *)labelWithString:(NSString *)string font:(NSFont *)font color:(NSColor *)color {

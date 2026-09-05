@@ -371,6 +371,34 @@ static void TestHermesModelParsing(void) {
   TLAssertTrue(TLParseHermesModelOptions(data, &error) == nil && error != nil, @"rejects the removed HTTP catalogue shape");
 }
 
+static void TestHermesHistoryCache(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"HermesHistoryCache");
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[[TLFakeTestCredentialStore alloc] init] error:nil];
+  NSDictionary *session = @{@"hermes_session_id": @"external-hermes-session", @"title": @"Hermes title",
+                            @"model": @"original/model", @"created_at": @"2026-09-01 01:02:03", @"updated_at": @"2026-09-05 04:05:06"};
+  TLChatRecord *chat = [database cacheHermesSession:session messages:nil error:nil];
+  TLChatRecord *again = [database cacheHermesSession:session messages:nil error:nil];
+  TLAssertTrue(chat.chatID > 0 && again.chatID == chat.chatID, @"Hermes refresh preserves tab identity");
+  TLAssertTrue([database listChats:nil].count == 1, @"Hermes refresh does not duplicate chats");
+  TLChatMessage *user = [TLChatMessage messageWithRole:TLRoleUser content:@"Hello" thinking:nil];
+  user.attachments = @[@{@"name": @"test.txt", @"guestPath": @"/workspace/test.txt", @"directory": @NO}];
+  [database saveMessage:user chatID:chat.chatID error:nil];
+  NSArray *messages = @[@{@"role": @"user", @"content": @"Hello"}, @{@"role": @"assistant", @"content": @"From Hermes", @"thinking": @"Reasoning"}];
+  chat = [database cacheHermesSession:session messages:messages error:nil];
+  TLAssertTrue(chat.messages.count == 2, @"Hermes transcript replaces cache");
+  TLAssertEqualObjects(chat.messages.firstObject.attachments, user.attachments, @"matching attachments survive transcript refresh");
+  TLAssertEqualObjects(chat.messages.lastObject.thinking, @"Reasoning", @"Hermes reasoning survives refresh");
+  TLAssertEqualObjects(chat.updatedAt, session[@"updated_at"], @"history refresh does not change remote timestamps");
+  TLAssertEqualObjects(chat.title, @"Hermes title", @"remote title survives message import");
+  NSError *error = nil;
+  TLAssertTrue([database cacheHermesSession:session messages:@[@{@"role": @"invalid", @"content": @"bad"}] error:&error] == nil && error != nil,
+               @"malformed transcript fails atomically");
+  TLAssertTrue([database chatWithID:chat.chatID error:nil].messages.count == 2, @"failed import preserves cached transcript");
+  chat = [database cacheHermesSession:session messages:@[] error:nil];
+  TLAssertTrue(chat.messages.count == 0, @"an empty Hermes transcript clears stale cached messages");
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+}
+
 static void TestDatabasePersistence(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaTests");
   NSError *error = nil;
@@ -1303,6 +1331,7 @@ int main(int argc, const char *argv[]) {
     TestStreamingBlockBuffer();
     TestHermesModelParsing();
     TestDatabasePersistence();
+    TestHermesHistoryCache();
     TestCompatibleVersion5Database();
     TestMessageDeletion();
     TestChatIconGenerator();

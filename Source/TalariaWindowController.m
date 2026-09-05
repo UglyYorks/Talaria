@@ -199,6 +199,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic) BOOL effectiveAppearanceObserverInstalled;
 
 @property (nonatomic, strong) TLHistoryPanelController *historyPanelController;
+@property (nonatomic, copy) NSArray<TLChatSummary *> *hermesHistoryChats;
+@property (nonatomic, copy) NSDictionary<NSNumber *, NSDictionary *> *hermesHistorySessions;
+@property (nonatomic) NSInteger historyAgentID;
+@property (nonatomic) NSUInteger historyRequestGeneration;
+@property (nonatomic) BOOL historyWasVisible;
 @property (nonatomic, strong) TLTokenView *agentsView;
 @property (nonatomic, strong) TLSettingsTabController *settingsTabController;
 @property (nonatomic, strong) NSTableView *agentsTableView;
@@ -1748,6 +1753,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   self.chats = [nextChats mutableCopy];
   [self reloadHistoryPanel];
+  if ([self isHistoryScreenActive]) [self refreshHermesHistory];
   [self selectActiveChatInHistory];
 
   for (TLChatSummary *summary in self.chats) {
@@ -3424,6 +3430,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.agents = [loadedAgents mutableCopy];
+  if (self.historyAgentID != self.database.currentAgentID) {
+    self.historyRequestGeneration += 1;
+    self.historyPanelController.loading = NO;
+    self.hermesHistoryChats = @[];
+    self.hermesHistorySessions = @{};
+    [self reloadHistoryPanel];
+    if ([self isHistoryScreenActive]) [self refreshHermesHistory];
+  }
+
   if (self.hermesCommandsAgentID != self.database.currentAgentID) {
     [self prepareHermesCommands];
     [self updateSlashCommandList];
@@ -4918,7 +4933,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 - (void)updateWorkspaceMode {
   self.chatWorkspace.hidden = ![self isChatWorkspaceActive];
-  self.historyPanelController.panelView.hidden = ![self isHistoryScreenActive];
+  BOOL historyVisible = [self isHistoryScreenActive];
+  self.historyPanelController.panelView.hidden = !historyVisible;
+  BOOL refreshHistory = historyVisible && (!self.historyWasVisible || self.historyAgentID != self.database.currentAgentID);
+  self.historyWasVisible = historyVisible;
+  if (refreshHistory) [self refreshHermesHistory];
   TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
   [self contentViewForTab:self.settingsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindSettings);
   [self contentViewForTab:self.agentsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindAgents);
@@ -5229,7 +5248,39 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  [self loadChatWithID:chatID];
+  if (self.historyPanelController.loading) return;
+  if (self.turnRunners[@(chatID)] || [self.preparingAttachmentChats containsObject:@(chatID)]) {
+    [self loadChatWithID:chatID];
+    return;
+  }
+  NSDictionary *session = self.hermesHistorySessions[@(chatID)];
+  if (!session) return;
+  NSInteger agentID = self.database.currentAgentID;
+  NSUInteger generation = ++self.historyRequestGeneration;
+  self.historyPanelController.loading = YES;
+  self.historyPanelController.statusMessage = @"Opening Hermes session…";
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesHistoryWithAction:@"open" sessionID:session[@"id"]
+                                          token:self.settings.openRouterToken model:self.settings.selectedModel
+                                     completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.historyRequestGeneration) return;
+    owner.historyPanelController.loading = NO;
+    owner.historyPanelController.statusMessage = @"";
+    if (agentID != owner.database.currentAgentID) { [owner refreshHermesHistory]; return; }
+    NSArray *messages = [result[@"messages"] isKindOfClass:NSArray.class] ? result[@"messages"] : nil;
+    if (error || !messages) {
+      owner.historyPanelController.statusMessage = error.localizedDescription ?: @"Hermes returned an invalid transcript.";
+      return;
+    }
+    if (owner.turnRunners[@(chatID)] || [owner.preparingAttachmentChats containsObject:@(chatID)]) return;
+    NSMutableDictionary *metadata = [session mutableCopy];
+    if ([result[@"model"] isKindOfClass:NSString.class]) metadata[@"model"] = result[@"model"];
+    TLChatRecord *chat = [owner.database cacheHermesSession:metadata messages:messages error:&error];
+    if (!chat) { owner.historyPanelController.statusMessage = error.localizedDescription; return; }
+    owner.chats = [[owner.database listChats:nil] mutableCopy];
+    if ([owner isHistoryScreenActive]) [owner loadChatWithID:chat.chatID];
+  }];
 }
 
 - (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteChatID:(NSInteger)chatID {
@@ -5252,7 +5303,33 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return;
     }
 
-    [weakSelf deleteChatWithID:chatID];
+    [weakSelf deleteHermesHistoryChatWithID:chatID];
+  }];
+}
+
+- (void)deleteHermesHistoryChatWithID:(NSInteger)chatID {
+  if (self.turnRunners[@(chatID)] || [self.preparingAttachmentChats containsObject:@(chatID)] || self.historyPanelController.loading) return;
+  NSDictionary *session = self.hermesHistorySessions[@(chatID)];
+  if (!session || self.historyAgentID != self.database.currentAgentID) return;
+  NSInteger agentID = self.database.currentAgentID;
+  NSUInteger generation = ++self.historyRequestGeneration;
+  self.historyPanelController.loading = YES;
+  self.historyPanelController.statusMessage = @"Deleting Hermes session…";
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesHistoryWithAction:@"delete" sessionID:session[@"id"]
+                                          token:self.settings.openRouterToken model:self.settings.selectedModel
+                                     completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.historyRequestGeneration) return;
+    owner.historyPanelController.loading = NO;
+    owner.historyPanelController.statusMessage = @"";
+    if (agentID != owner.database.currentAgentID) { [owner refreshHermesHistory]; return; }
+    if (error || ![result[@"deleted"] isEqual:session[@"id"]]) {
+      owner.historyPanelController.statusMessage = error.localizedDescription ?: @"Hermes did not confirm deletion.";
+      return;
+    }
+    [owner deleteChatWithID:chatID];
+    [owner refreshHermesHistory];
   }];
 }
 
@@ -5316,8 +5393,65 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self updateControlStates];
 }
 
+- (void)historyPanelControllerDidRequestRefresh:(TLHistoryPanelController *)controller {
+  [self refreshHermesHistory];
+}
+
+- (void)refreshHermesHistory {
+  if (self.widgetbookMode) { [self reloadHistoryPanel]; return; }
+  NSInteger agentID = self.database.currentAgentID;
+  if (self.historyPanelController.loading && self.historyAgentID == agentID) return;
+  NSUInteger generation = ++self.historyRequestGeneration;
+  self.historyAgentID = agentID;
+  self.hermesHistoryChats = @[];
+  self.hermesHistorySessions = @{};
+  self.historyPanelController.searchPreviews = @{};
+  self.historyPanelController.statusMessage = @"";
+  [self reloadHistoryPanel];
+  if (agentID <= 0) {
+    self.historyPanelController.loading = NO;
+    self.historyPanelController.statusMessage = @"Select an agent to view its Hermes history.";
+    return;
+  }
+  self.historyPanelController.loading = YES;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesHistoryWithAction:@"list" sessionID:@""
+                                          token:self.settings.openRouterToken model:self.settings.selectedModel
+                                     completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.historyRequestGeneration) return;
+    owner.historyPanelController.loading = NO;
+    if (agentID != owner.database.currentAgentID) { [owner refreshHermesHistory]; return; }
+    NSArray *sessions = [result[@"sessions"] isKindOfClass:NSArray.class] ? result[@"sessions"] : nil;
+    if (error || !sessions) {
+      owner.historyPanelController.statusMessage = error.localizedDescription ?: @"Hermes returned an invalid session list.";
+      return;
+    }
+    NSMutableArray *chats = [NSMutableArray array];
+    NSMutableDictionary *metadata = [NSMutableDictionary dictionary];
+    NSMutableDictionary *previews = [NSMutableDictionary dictionary];
+    for (id session in sessions) {
+      if (![session isKindOfClass:NSDictionary.class] || ![session[@"id"] isKindOfClass:NSString.class]) {
+        owner.historyPanelController.statusMessage = @"Hermes returned an invalid session.";
+        return;
+      }
+      TLChatRecord *chat = [owner.database cacheHermesSession:session messages:nil error:&error];
+      if (!chat) { owner.historyPanelController.statusMessage = error.localizedDescription; return; }
+      [chats addObject:chat];
+      metadata[@(chat.chatID)] = session;
+      previews[@(chat.chatID)] = [session[@"preview"] isKindOfClass:NSString.class] ? session[@"preview"] : @"";
+    }
+    owner.hermesHistoryChats = chats;
+    owner.hermesHistorySessions = metadata;
+    owner.historyPanelController.searchPreviews = previews;
+    owner.chats = [[owner.database listChats:nil] mutableCopy];
+    [owner reloadHistoryPanel];
+    [owner reloadWorkspaceTabs];
+  }];
+}
+
 - (void)reloadHistoryPanel {
-  self.historyPanelController.chats = self.chats ?: @[];
+  self.historyPanelController.chats = self.widgetbookMode ? (self.chats ?: @[]) : (self.hermesHistoryChats ?: @[]);
   [self.historyPanelController reloadData];
 }
 

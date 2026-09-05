@@ -4,6 +4,7 @@ Protocol reference: NousResearch/hermes-agent, tui_gateway/entry.py and
 tui_gateway/methods_tools.py (commands.catalog, command.dispatch, slash.exec).
 """
 import json
+from datetime import datetime, timezone
 import queue
 import subprocess
 import threading
@@ -91,6 +92,102 @@ class HermesGateway:
         if not isinstance(result.get("pairs"), list):
             raise RuntimeError("This Hermes version does not provide a command catalogue. Update Hermes and retry.")
         return result
+
+    def history_sessions(self):
+        # session.list has a limit but no offset. Expand the window until complete;
+        # never silently restrict search to its default 200 rows.
+        limit = 200
+        while True:
+            result = self.call("session.list", {"limit": limit})
+            rows = result.get("sessions")
+            if not isinstance(rows, list) or any(not isinstance(row, dict) or not row.get("id") for row in rows):
+                raise RuntimeError("Hermes returned an invalid session list.")
+            if len(rows) < limit:
+                break
+            if limit >= 102400:
+                raise RuntimeError("Hermes history is too large to load completely.")
+            limit *= 2
+        with self.lock:
+            aliases = {}
+            for chat, stored in self.mappings.items():
+                if stored not in aliases or chat != stored:
+                    aliases[stored] = chat
+        sessions = []
+        seen = set()
+        for row in rows:
+            stored = row["id"]
+            if stored in seen:
+                continue
+            seen.add(stored)
+            sessions.append({**row, "hermes_session_id": aliases.get(stored, stored),
+                             "title": row.get("title") or row.get("preview") or "Untitled session",
+                             "created_at": self.history_date(row.get("started_at")),
+                             "updated_at": self.history_date(row.get("last_active") or row.get("started_at"))})
+        return {"sessions": sessions}
+
+    @staticmethod
+    def history_date(value):
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        return value if isinstance(value, str) else ""
+
+    def history_session(self, stored):
+        if not stored:
+            raise RuntimeError("A Hermes session ID is required.")
+        with self.lock:
+            live = next((state for chat, state in self.sessions.items()
+                         if self.mappings.get(chat, chat) == stored), None)
+        if live:
+            sid = live["id"]
+            model = live["model"]
+        else:
+            # Explicit resume: a missing history row must never create a new session.
+            result = self.call("session.resume", {"session_id": stored})
+            model = (result.get("info") or {}).get("model") or ""
+            with self.lock:
+                chat_id = next((chat for chat, target in self.mappings.items() if target == stored), stored)
+            sid = self._remember(chat_id, result, model)
+        result = self.call("session.history", {"session_id": sid})
+        messages = result.get("messages")
+        if not isinstance(messages, list):
+            raise RuntimeError("Hermes returned an invalid transcript.")
+        transcript = []
+        for message in messages:
+            if not isinstance(message, dict):
+                raise RuntimeError("Hermes returned an invalid transcript message.")
+            if message.get("role") not in {"user", "assistant", "system"}:
+                continue
+            text = message.get("text", "")
+            if not isinstance(text, str):
+                raise RuntimeError("Hermes returned an invalid transcript message.")
+            transcript.append({"role": message["role"], "content": text,
+                               "thinking": message.get("reasoning") or message.get("reasoning_content") or "",
+                               "created_at": self.history_date(message.get("timestamp"))})
+        return {"messages": transcript, "model": model}
+
+    def delete_history_session(self, stored):
+        if not stored:
+            raise RuntimeError("A Hermes session ID is required.")
+        with self.lock:
+            aliases = [chat for chat in self.sessions if self.mappings.get(chat, chat) == stored]
+            if any(self.sessions[chat]["id"] in self.listeners for chat in aliases):
+                raise RuntimeError("Wait for this Hermes session to finish before deleting it.")
+            runtime_ids = {self.sessions[chat]["id"] for chat in aliases}
+        for sid in runtime_ids:
+            self.call("session.close", {"session_id": sid})
+        with self.lock:
+            for chat in aliases:
+                self.sessions.pop(chat, None)
+                self.waiting.pop(chat, None)
+        result = self.call("session.delete", {"session_id": stored})
+        if not result.get("deleted"):
+            raise RuntimeError("Hermes did not confirm session deletion.")
+        with self.lock:
+            self.mappings = {chat: target for chat, target in self.mappings.items() if target != stored}
+            temporary = self.mapping_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(self.mappings))
+            temporary.replace(self.mapping_path)
+        return {"deleted": stored}
 
     def model_options(self):
         result = self.call("model.options", {"explicit_only": True})
