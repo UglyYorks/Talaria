@@ -667,6 +667,17 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [self updateHorizontalContentInset];
   [self updateTitleFadeMask];
   [self updateInactiveDecorationGeometry];
+  [self updateHoverStateFromCurrentMouseLocation];
+}
+
+- (void)setFrameOrigin:(NSPoint)origin {
+  [super setFrameOrigin:origin];
+  [self updateHoverStateFromCurrentMouseLocation];
+}
+
+- (void)setFrameSize:(NSSize)size {
+  [super setFrameSize:size];
+  [self updateHoverStateFromCurrentMouseLocation];
 }
 
 - (void)applyCurrentState {
@@ -759,28 +770,33 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
     [self removeTrackingArea:self.trackingArea];
   }
 
-  self.trackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
-                                                   options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+  // On unclipped views visibleRect may extend beyond the tab into its parent.
+  // Never use that larger region as the tab's hover target.
+  self.trackingArea = [[NSTrackingArea alloc] initWithRect:NSIntersectionRect(self.bounds, self.visibleRect)
+                                                   options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways
                                                      owner:self
                                                   userInfo:nil];
   [self addTrackingArea:self.trackingArea];
+  [self updateHoverStateFromCurrentMouseLocation];
 }
 
 - (void)mouseEntered:(NSEvent *)event {
-  if (self.hovered) {
-    return;
-  }
-  self.hovered = YES;
-  [self applyCurrentState];
-  [self updateInactiveDecorationVisibilityAnimated:self.animatesDecorationChanges];
-  [self.dragDelegate chromeTabViewHoverStateDidChange:self];
+  [self updateHoverStateFromCurrentMouseLocation];
 }
 
 - (void)mouseExited:(NSEvent *)event {
-  if (!self.hovered) {
-    return;
+  [self updateHoverStateFromCurrentMouseLocation];
+}
+
+- (void)updateHoverStateFromCurrentMouseLocation {
+  BOOL hovered = NO;
+  if (self.enabled && self.window.isVisible && !self.isHiddenOrHasHiddenAncestor) {
+    NSPoint point = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
+    point.x -= self.dragTranslationX + self.reorderTranslationX;
+    hovered = NSPointInRect(point, NSIntersectionRect(self.bounds, self.visibleRect));
   }
-  self.hovered = NO;
+  if (self.hovered == hovered) return;
+  self.hovered = hovered;
   [self applyCurrentState];
   [self updateInactiveDecorationVisibilityAnimated:self.animatesDecorationChanges];
   [self.dragDelegate chromeTabViewHoverStateDidChange:self];
@@ -788,10 +804,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
-  if (!self.window && self.hovered) {
-    self.hovered = NO;
-    [self.dragDelegate chromeTabViewHoverStateDidChange:self];
-  }
+  [self updateHoverStateFromCurrentMouseLocation];
   [self applyCurrentState];
   [self updateInactiveDecorationVisibilityAnimated:NO];
 }

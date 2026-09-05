@@ -155,6 +155,10 @@ static void TestSharedFlareSpace(TLThemePalette *palette) {
 }
 
 static void TestHoveredTabSeparators(TLThemePalette *palette) {
+  TLTabPointerWindow *window = [[TLTabPointerWindow alloc] initWithContentRect:NSMakeRect(0, 0, 300, palette.tabHeight)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  window.testPointer = NSMakePoint(-20, -20);
   NSStackView *stack = [[NSStackView alloc] init];
   TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc] initWithTabStack:stack
                                                                                        target:nil
@@ -164,6 +168,8 @@ static void TestHoveredTabSeparators(TLThemePalette *palette) {
   TLChromeTabView *middle = [[TLChromeTabView alloc] init];
   TLChromeTabView *right = [[TLChromeTabView alloc] init];
   middle.dragDelegate = (id<TLChromeTabViewDelegate>)controller;
+  middle.frame = NSMakeRect(100, 0, 100, palette.tabHeight);
+  [window.contentView addSubview:middle];
   [controller setValue:[NSMutableArray arrayWithObjects:left, middle, right, nil] forKey:@"tabViews"];
   NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
                                       location:NSZeroPoint
@@ -175,12 +181,14 @@ static void TestHoveredTabSeparators(TLThemePalette *palette) {
                                          data1:0
                                          data2:0];
 
+  window.testPointer = NSMakePoint(150, palette.tabHeight * 0.5);
   [middle mouseEntered:event];
   if (middle.showsLeadingSeparator || right.showsLeadingSeparator) {
     NSLog(@"FAIL hovered tab keeps an adjacent separator visible");
     exit(1);
   }
 
+  window.testPointer = NSMakePoint(-20, -20);
   [middle mouseExited:event];
   if (!middle.showsLeadingSeparator || !right.showsLeadingSeparator) {
     NSLog(@"FAIL leaving a tab does not restore its adjacent separators");
@@ -197,6 +205,7 @@ static void TestHoveredTabSeparators(TLThemePalette *palette) {
     NSLog(@"FAIL leaving the new-tab button does not restore the final separator");
     exit(1);
   }
+  [window close];
 }
 
 static void TestTabContextMenu(TLThemePalette *palette) {
@@ -447,6 +456,8 @@ static void TestClosePreservesWidthsUntilPointerLeaves(TLThemePalette *palette) 
   [controller updateTabWidthsForAvailableWidth:400];
   NSArray<TLChromeTabView *> *views = [[controller valueForKey:@"tabViews"] copy];
   CGFloat width = NSWidth(views[1].frame);
+  window.testPointer = [views[1] convertPoint:NSMakePoint(width * 0.5, palette.tabHeight * 0.5) toView:nil];
+  [views[1] updateTrackingAreas];
   NSButton *close = [views[1] valueForKey:@"closeButton"];
   [views[1] layoutSubtreeIfNeeded];
   NSPoint closePoint = [close convertPoint:NSMakePoint(NSMidX(close.bounds), NSMidY(close.bounds)) toView:nil];
@@ -491,6 +502,26 @@ static void TestClosePreservesWidthsUntilPointerLeaves(TLThemePalette *palette) 
   AssertClose(((NSLayoutConstraint *)constraints.firstObject).constant,
               (400 + 2 * TLChromeTabInterTabOverlapForWidth(palette.tabMaxWidth, palette)) / 3,
               @"closing outside the strip immediately recalculates widths");
+  TLChromeTabView *beforeClosed = ((NSArray *)[controller valueForKey:@"tabViews"])[0];
+  window.testPointer = [beforeClosed convertPoint:NSMakePoint(30, palette.tabHeight * 0.5) toView:nil];
+  [beforeClosed updateTrackingAreas];
+  if (!beforeClosed.hovered) { NSLog(@"FAIL pointer inside tab should hover it"); exit(1); }
+  // Lose the exit event, then close a different, non-hovered tab.
+  window.testPointer = NSMakePoint(390, -20);
+  harness.tabs = @[models[0], models[3]];
+  [controller reloadTabs]; [timeline finishAllTransitions];
+  [beforeClosed updateTrackingAreas];
+  [beforeClosed mouseEntered:exitEvent];
+  NSButton *staleClose = [beforeClosed valueForKey:@"closeButton"];
+  CALayer *staleHover = [beforeClosed valueForKey:@"inactiveHoverBackgroundLayer"];
+  if (beforeClosed.hovered || !staleClose.hidden || staleHover.opacity != 0) {
+    NSLog(@"FAIL closing a non-hovered tab must not leave its predecessor hovered after stale entry events"); exit(1);
+  }
+  NSTrackingArea *tabTracking = [beforeClosed valueForKey:@"trackingArea"];
+  if (!NSContainsRect(beforeClosed.bounds, tabTracking.rect) ||
+      (tabTracking.options & NSTrackingInVisibleRect)) {
+    NSLog(@"FAIL tab tracking must not extend across the parent visible region"); exit(1);
+  }
   [window close];
 }
 
@@ -851,9 +882,10 @@ static void TestInactiveSeparatorCentering(TLThemePalette *palette) {
 }
 
 static void TestInactiveDecorationFades(TLThemePalette *palette) {
-  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, palette.tabMaxWidth, palette.tabHeight)
+  TLTabPointerWindow *window = [[TLTabPointerWindow alloc] initWithContentRect:NSMakeRect(0, 0, palette.tabMaxWidth, palette.tabHeight)
     styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
+  window.testPointer = NSMakePoint(-20, -20);
   TLChromeTabView *tab = [[TLChromeTabView alloc] initWithFrame:window.contentView.bounds];
   tab.palette = palette;
   tab.showsLeadingSeparator = YES;
@@ -880,6 +912,7 @@ static void TestInactiveDecorationFades(TLThemePalette *palette) {
                                        subtype:0
                                          data1:0
                                          data2:0];
+  window.testPointer = NSMakePoint(palette.tabMaxWidth * 0.5, palette.tabHeight * 0.5);
   [tab mouseEntered:event];
   AssertClose(hover.opacity, 1.0, @"hover background fade-in updates its final state");
   AssertClose(separator.opacity, 0.0, @"hover fades out the separator");
@@ -888,6 +921,7 @@ static void TestInactiveDecorationFades(TLThemePalette *palette) {
     AssertClose(palette.tabHoverFadeDuration, 0.10, @"tab hover duration is 100ms");
     AssertClose(fade.duration, palette.tabHoverFadeDuration, @"hover background fades in over the themed duration");
   }
+  window.testPointer = NSMakePoint(-20, -20);
   [tab mouseExited:event];
   AssertClose(hover.opacity, 0.0, @"hover background fade-out updates its final state");
   AssertClose(separator.opacity, 1.0, @"hover exit fades the separator back in");
