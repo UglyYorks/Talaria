@@ -2241,11 +2241,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     nextIndex = nextIndex < 0 ? (offset < 0 ? commandCount - 1 : 0)
       : (nextIndex + offset + commandCount) % commandCount;
     if ([self.slashCommandScrollView isSuggestionEnabledAtIndex:(NSUInteger)nextIndex]) {
-      break;
+      [self setSelectedSlashCommandIndexAndUpdateRows:nextIndex];
+      return YES;
     }
   }
-  [self setSelectedSlashCommandIndexAndUpdateRows:nextIndex];
-  return YES;
+  [self setSelectedSlashCommandIndexAndUpdateRows:-1];
+  return NO;
 }
 
 - (BOOL)performSelectedSlashCommand {
@@ -2261,12 +2262,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return NO;
   }
   NSDictionary<NSString *, NSString *> *suggestion = self.visibleSlashCommands[index];
-  if ([suggestion[@"kind"] isEqualToString:@"retry"]) {
-    self.hermesCommandsFetchedAt = nil;
-    [self refreshHermesCommandsIfNeeded];
-    [self updateSlashCommandList];
-    return YES;
-  }
   if (![[self slashCommandsMatchingPrompt:self.promptTextView.string ?: @""] containsObject:suggestion]) {
     return NO;
   }
@@ -2445,8 +2440,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     commands = @[@{@"kind": @"status", @"command": @"Loading Hermes commands…",
                   @"title": @"Starting Hermes for first discovery", @"description": @"", @"icon": @"terminal"}];
   } else if (slashInput && self.hermesCommandsError.length) {
-    commands = [commands arrayByAddingObject:@{@"kind": @"retry", @"command": @"Retry loading commands",
-                  @"title": self.hermesCommandsError, @"description": self.hermesCommandsError, @"icon": @"terminal"}];
+    commands = [commands arrayByAddingObject:@{@"kind": @"status", @"command": self.hermesCommandsError,
+                  @"title": self.hermesCommandsError}];
   }
   if (commands.count == 0) {
     [self hideSlashCommandList];

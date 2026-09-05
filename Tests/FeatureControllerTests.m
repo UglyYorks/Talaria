@@ -914,25 +914,37 @@ static void TestSuggestionTypingAndVirtualization(void) {
   pane.hidden = NO;
   ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListWidthConstraint"]).constant = 200;
   ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListHeightConstraint"]).constant = 100;
-  list.suggestions = @[@{@"kind": @"status", @"command": @"Loading"}, @{@"kind": @"retry", @"command": @"Retry"}];
-  Check(![list isSuggestionEnabledAtIndex:0] && [list isSuggestionEnabledAtIndex:1], @"status is inert and retry remains actionable");
+  list.suggestions = @[@{@"kind": @"status", @"command": @"Loading"}, @{@"kind": @"hermes", @"command": @"/help"}];
+  Check(![list isSuggestionEnabledAtIndex:0] && [list isSuggestionEnabledAtIndex:1], @"status is inert and commands remain actionable");
   __block NSUInteger activated = NSNotFound;
   list.activationHandler = ^(NSUInteger index) { activated = index; };
   [window.contentView layoutSubtreeIfNeeded];
   TLSlashCommandItemView *retry = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
   [retry sendAction:retry.action to:retry.target];
   Check(activated == 1, @"reused mouse targets activate the current row");
-  list.suggestions = @[@{@"kind": @"retry", @"command": @"Retry loading commands", @"description": @"Hermes is not installed"}];
+  list.suggestions = @[@{@"kind": @"status", @"command": @"Hermes is not installed"}];
   ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListHeightConstraint"]).constant = palette.slashCommandRowHeight + palette.space2 * 2;
   [window.contentView layoutSubtreeIfNeeded];
-  TLSlashCommandItemView *single = [table viewAtColumn:0 row:0 makeIfNecessary:YES];
+  NSTableCellView *single = [table viewAtColumn:0 row:0 makeIfNecessary:YES];
   [single layoutSubtreeIfNeeded];
-  NSTextField *label = [single valueForKey:@"commandLabel"];
+  NSTextField *label = single.textField;
+  Check([single isKindOfClass:NSTableCellView.class] && !label.selectable && !label.editable, @"errors use plain non-selectable text, not command controls");
+  list.selectedIndex = 0;
+  Check(list.selectedIndex == -1, @"status text cannot be selected by keyboard");
   NSRect labelRect = [label convertRect:label.bounds toView:list.contentView];
   Check(NSMinY(labelRect) >= NSMinY(list.contentView.bounds) && NSMaxY(labelRect) <= NSMaxY(list.contentView.bounds),
         [NSString stringWithFormat:@"single row fits: label %@ clip %@ cell %@ table %@ row %@", NSStringFromRect(labelRect), NSStringFromRect(list.contentView.bounds), NSStringFromRect(single.frame), NSStringFromRect(table.frame), NSStringFromRect([table rectOfRow:0])]);
   list.palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
-  Check(single.palette == list.palette, @"theme changes update visible reused rows");
+  Check([label.textColor isEqual:list.palette.textMuted], @"theme changes update status text");
+  [controller setValue:@[] forKey:@"hermesCommands"];
+  [controller setValue:@"Hermes is not installed" forKey:@"hermesCommandsError"];
+  input.textView.string = @"/";
+  [controller textDidChange:nil];
+  DrainSuggestionTimer();
+  Check(list.suggestions.count == 1 && [list.suggestions[0][@"kind"] isEqualToString:@"status"], @"discovery failures render as status text");
+  Check(![controller textView:input.textView doCommandBySelector:@selector(moveDown:)] &&
+        [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == -1,
+        @"arrow keys cannot select the error message");
   [window close];
 }
 

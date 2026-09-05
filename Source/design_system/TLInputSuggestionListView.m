@@ -45,8 +45,14 @@
   self.table.rowHeight = palette.slashCommandRowHeight;
   self.table.intercellSpacing = NSMakeSize(palette.space0, palette.space2);
   [self.table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger index) {
-    TLSlashCommandItemView *view = [self.table viewAtColumn:0 row:index makeIfNecessary:NO];
-    view.palette = palette;
+    NSView *view = [self.table viewAtColumn:0 row:index makeIfNecessary:NO];
+    if ([view isKindOfClass:TLSlashCommandItemView.class]) {
+      ((TLSlashCommandItemView *)view).palette = palette;
+    } else if ([view isKindOfClass:NSTableCellView.class]) {
+      NSTextField *label = ((NSTableCellView *)view).textField;
+      label.font = palette.bodyFont;
+      label.textColor = palette.textMuted;
+    }
   }];
 }
 
@@ -67,7 +73,7 @@
 
 - (void)setSelectedIndex:(NSInteger)index {
   NSInteger previous = _selectedIndex;
-  _selectedIndex = index >= 0 && index < (NSInteger)self.suggestions.count ? index : -1;
+  _selectedIndex = index >= 0 && [self isSuggestionEnabledAtIndex:(NSUInteger)index] ? index : -1;
   if (previous >= 0 && previous < (NSInteger)self.suggestions.count) {
     TLSlashCommandItemView *old = [self.table viewAtColumn:0 row:previous makeIfNecessary:NO];
     old.selected = NO;
@@ -82,6 +88,31 @@
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.suggestions.count; }
 - (BOOL)tableView:(NSTableView *)tableView shouldSelectRow:(NSInteger)row { return NO; }
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)index {
+  NSDictionary *item = self.suggestions[index];
+  if ([item[@"kind"] isEqualToString:@"status"]) {
+    NSTableCellView *cell = [tableView makeViewWithIdentifier:@"status-text" owner:self];
+    if (!cell) {
+      cell = [[NSTableCellView alloc] init];
+      cell.identifier = @"status-text";
+      NSTextField *label = [NSTextField labelWithString:@""];
+      label.translatesAutoresizingMaskIntoConstraints = NO;
+      label.selectable = NO;
+      label.lineBreakMode = NSLineBreakByTruncatingTail;
+      label.usesSingleLineMode = YES;
+      cell.textField = label;
+      [cell addSubview:label];
+      [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:self.palette.space8],
+        [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-self.palette.space8],
+        [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+      ]];
+    }
+    cell.textField.stringValue = item[@"command"] ?: @"";
+    cell.textField.font = self.palette.bodyFont;
+    cell.textField.textColor = self.palette.textMuted;
+    cell.toolTip = item[@"title"] ?: cell.textField.stringValue;
+    return cell;
+  }
   TLSlashCommandItemView *view = [tableView makeViewWithIdentifier:@"suggestion" owner:self];
   if (!view) {
     view = [[TLSlashCommandItemView alloc] init];
@@ -89,7 +120,6 @@
     // NSTableView owns the root cell frame; only its children use Auto Layout.
     view.translatesAutoresizingMaskIntoConstraints = YES;
   }
-  NSDictionary *item = self.suggestions[index];
   view.palette = self.palette;
   view.command = item[@"command"] ?: @"";
   view.commandDescription = item[@"description"] ?: @"";
