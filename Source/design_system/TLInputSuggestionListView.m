@@ -23,6 +23,7 @@
     self.autohidesScrollers = YES;
     _table = [[TLInputSuggestionTableView alloc] initWithFrame:self.bounds];
     _table.headerView = nil;
+    _table.style = NSTableViewStylePlain;
     _table.autoresizingMask = NSViewWidthSizable;
     _table.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
     _table.selectionHighlightStyle = NSTableViewSelectionHighlightStyleNone;
@@ -85,6 +86,8 @@
   if (!view) {
     view = [[TLSlashCommandItemView alloc] init];
     view.identifier = @"suggestion";
+    // NSTableView owns the root cell frame; only its children use Auto Layout.
+    view.translatesAutoresizingMaskIntoConstraints = YES;
   }
   NSDictionary *item = self.suggestions[index];
   view.palette = self.palette;

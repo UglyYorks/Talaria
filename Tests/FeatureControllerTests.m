@@ -922,8 +922,17 @@ static void TestSuggestionTypingAndVirtualization(void) {
   TLSlashCommandItemView *retry = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
   [retry sendAction:retry.action to:retry.target];
   Check(activated == 1, @"reused mouse targets activate the current row");
+  list.suggestions = @[@{@"kind": @"retry", @"command": @"Retry loading commands", @"description": @"Hermes is not installed"}];
+  ((NSLayoutConstraint *)[controller valueForKey:@"slashCommandListHeightConstraint"]).constant = palette.slashCommandRowHeight + palette.space2 * 2;
+  [window.contentView layoutSubtreeIfNeeded];
+  TLSlashCommandItemView *single = [table viewAtColumn:0 row:0 makeIfNecessary:YES];
+  [single layoutSubtreeIfNeeded];
+  NSTextField *label = [single valueForKey:@"commandLabel"];
+  NSRect labelRect = [label convertRect:label.bounds toView:list.contentView];
+  Check(NSMinY(labelRect) >= NSMinY(list.contentView.bounds) && NSMaxY(labelRect) <= NSMaxY(list.contentView.bounds),
+        [NSString stringWithFormat:@"single row fits: label %@ clip %@ cell %@ table %@ row %@", NSStringFromRect(labelRect), NSStringFromRect(list.contentView.bounds), NSStringFromRect(single.frame), NSStringFromRect(table.frame), NSStringFromRect([table rectOfRow:0])]);
   list.palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
-  Check(retry.palette == list.palette, @"theme changes update visible reused rows");
+  Check(single.palette == list.palette, @"theme changes update visible reused rows");
   [window close];
 }
 
