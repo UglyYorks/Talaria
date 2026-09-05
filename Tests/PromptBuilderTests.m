@@ -809,7 +809,7 @@ static void TestAgentReadinessStatus(void) {
   [NSFileManager.defaultManager createDirectoryAtPath:launcher.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
   [@"#!/usr/bin/python3" writeToFile:launcher atomically:YES encoding:NSUTF8StringEncoding error:nil];
   TLAssertTrue([orchestrator hasHermesInstallationForAgent:agent], @"detects persisted Hermes launcher");
-  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM running · Hermes installed", @"installation and VM state are shown separately");
+  TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"Running", @"installed Hermes in a running VM uses the concise status");
   agent.status = TLAgentStatusError;
   TLAssertEqualObjects([orchestrator displayStatusForAgent:agent], @"VM running · Error", @"failure remains visible while VM is running");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
