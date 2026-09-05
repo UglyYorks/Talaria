@@ -168,7 +168,7 @@
   self.closeButton.palette = palette;
   self.closeButton.contentTintColor = palette.controlText;
   self.closeButton.layer.borderWidth = palette.space0;
-  self.closeButton.idleSurfaceColor = palette.sidebarSurface;
+  self.closeButton.idleSurfaceColor = palette.appContentBackground;
   self.closeButton.font = [NSFont systemFontOfSize:palette.space2 * 2];
   ((TLAttachmentCloseButtonCell *)self.closeButton.cell).strokeWidth = palette.borderWidth;
   self.closeButton.needsDisplay = YES;
