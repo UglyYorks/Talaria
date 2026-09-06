@@ -253,6 +253,7 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
 test: $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+	"$(BUILD_DIR)/QuickInputTests"
 	"$(BUILD_DIR)/SplitWorkspaceTests"
 	"$(BUILD_DIR)/ChatAttachmentTests"
 	python3 -B Tests/TerminalServiceTests.py
@@ -272,6 +273,10 @@ test: $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_
 	"$(BUILD_DIR)/MarkdownCodeTests"
 
 test: $(BUILD_DIR)/MarkdownMathTests $(BUILD_DIR)/MarkdownCodeTests
+
+test: $(BUILD_DIR)/QuickInputTests
+$(BUILD_DIR)/QuickInputTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/QuickInputTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 $(BUILD_DIR)/MarkdownCodeTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Tests/MarkdownCodeTests.m $(MARKDOWN_RESOURCES_STAMP)
 	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"

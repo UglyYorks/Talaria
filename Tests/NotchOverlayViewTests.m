@@ -128,6 +128,8 @@ static void TestOpeningDoesNotRestart(void) {
   NSTimeInterval startedAt = [[controller valueForKey:@"frameAnimationStartedAt"] doubleValue];
   [controller updateFrameAnimationAtTimestamp:startedAt + 0.06];
   NSRect intermediate = panel.frame;
+  Check(NSEqualRects(controller.presentationFrame, [[controller valueForKey:@"frameAnimationTarget"] rectValue]),
+    @"quick input anchors below the destination while the notch is opening");
   for (NSUInteger index = 0; index < 10; index++) {
     [controller showOverlayForNotchRect:notch screen:screen presentation:1 progress:0.01 virtualNotch:YES];
     Check(NSEqualRects(panel.frame, intermediate), @"tracking updates do not snap the opening frame");
@@ -137,6 +139,7 @@ static void TestOpeningDoesNotRestart(void) {
   Check(![[controller valueForKey:@"appearanceAnimationInFlight"] boolValue], @"opening finishes");
   NSRect target = [[controller valueForKey:@"frameAnimationTarget"] rectValue];
   Check(NSEqualRects(panel.frame, target), @"opening settles at its target");
+  Check(NSEqualRects(controller.presentationFrame, panel.frame), @"settled notch exposes its visible anchor bounds");
   [controller animateOverlayOutToFrame:NSMakeRect(NSMidX(notch), NSMaxY(notch) - 1, 1, 1)];
   startedAt = [[controller valueForKey:@"frameAnimationStartedAt"] doubleValue];
   [controller updateFrameAnimationAtTimestamp:startedAt + 0.05];
@@ -146,6 +149,9 @@ static void TestOpeningDoesNotRestart(void) {
   Check(panel.isVisible && NSEqualRects(panel.frame, target), @"reopening replaces the old closing animation");
   [controller stopTracking];
   Check([controller valueForKey:@"frameAnimationTimer"] == nil, @"stopping removes frame animation timer");
+  [controller updatePalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  Check(!panel.visible && [controller valueForKey:@"frameAnimationTimer"] == nil,
+    @"theme changes cannot reveal the notch while tracking is stopped");
 }
 
 int main(void) {
