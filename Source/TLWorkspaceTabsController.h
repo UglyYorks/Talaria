@@ -24,6 +24,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)workspaceTabsControllerShouldConnectFirstActiveTabToContentEdge:(TLWorkspaceTabsController *)controller;
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller firstTabEdgeCornerRadiusDidChange:(CGFloat)cornerRadius;
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index;
+@optional
+- (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller isTabSplitCompanion:(TLWorkspaceTab *)tab;
+- (void)workspaceTabsController:(TLWorkspaceTabsController *)controller willSelectTab:(TLWorkspaceTab *)tab;
+- (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller dragTab:(TLWorkspaceTab *)tab atWindowPoint:(NSPoint)point;
+- (void)workspaceTabsController:(TLWorkspaceTabsController *)controller endDraggingTab:(TLWorkspaceTab *)tab cancelled:(BOOL)cancelled;
+- (nullable NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller splitMenuForTab:(TLWorkspaceTab *)tab;
 
 @end
 

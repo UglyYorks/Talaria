@@ -252,7 +252,8 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	test -s "$(AGENT_LINUX_INITRD)"
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
-test: $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+test: $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+	"$(BUILD_DIR)/SplitWorkspaceTests"
 	"$(BUILD_DIR)/ChatAttachmentTests"
 	python3 -B Tests/TerminalServiceTests.py
 	"$(BUILD_DIR)/AppResetTests"
@@ -357,3 +358,7 @@ $(BUILD_DIR)/AppResetTests: Source/TLAppReset.m Source/TalariaModels.m Source/SQ
 $(BUILD_DIR)/TerminalClientProbe: Source/TLTerminalClient.m Tests/TerminalClientProbe.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
+
+# Split state, native pane geometry and real chat workspace integration.
+$(BUILD_DIR)/SplitWorkspaceTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/SplitWorkspaceTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"

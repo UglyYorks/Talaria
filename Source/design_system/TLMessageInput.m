@@ -358,6 +358,7 @@
   self.placeholderLabel = [NSTextField labelWithString:@"Give a task or enter a URL"];
   self.placeholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
   self.placeholderLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+  [self.placeholderLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
 
   self.sendButton = [[TLGlassButton alloc] initWithUsesGlassEffect:NO];
   self.sendButton.image = [NSImage imageWithSystemSymbolName:@"arrow.up"

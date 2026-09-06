@@ -161,7 +161,7 @@
     [browserBackdropView.bottomAnchor constraintEqualToAnchor:browserContentView.bottomAnchor],
     [browserBackdropView.heightAnchor constraintEqualToConstant:self.palette.browserBackdropHeight],
     [addressInput.centerXAnchor constraintEqualToAnchor:browserContentView.centerXAnchor],
-    [addressInput.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.messageInputMinWidth],
+    [addressInput.widthAnchor constraintGreaterThanOrEqualToConstant:0],
     [addressInput.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth],
     addressInputLeadingConstraint,
     addressInputTrailingConstraint,
