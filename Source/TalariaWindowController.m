@@ -8,6 +8,7 @@
 #import "ChatIconGenerator.h"
 #import "MarkdownRenderer.h"
 #import "NotchOverlayController.h"
+#import "TLQuickInputWindowController.h"
 #import "InputSuggestions.h"
 #import "Theme.h"
 #import "TLHistoryPanelController.h"
@@ -239,6 +240,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *messageStackMinimumBottomConstraint;
 @property (nonatomic, strong) NSTextView *promptTextView;
 @property (nonatomic, strong) TLNotchOverlayController *notchOverlayController;
+@property (nonatomic, strong) TLQuickInputWindowController *quickInputController;
 @property (nonatomic, strong) id messageScrollWheelMonitor;
 @property (nonatomic, strong) id messageContextMenuMonitor;
 
@@ -763,6 +765,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)showWindow:(id)sender {
+  [self.quickInputController dismiss];
   [NSApp unhide:nil];
   [super showWindow:sender];
   [self.window deminiaturize:sender];
@@ -2648,6 +2651,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     strongSelf.hermesCommandsFetchedAt = NSDate.date;
     strongSelf.hermesCommandsError = error.localizedDescription;
     if (catalogue) strongSelf.hermesCommands = [TLInputSuggestions hermesCommandsFromCatalogue:catalogue];
+    strongSelf.quickInputController.commands = strongSelf.hermesCommands ?: @[];
     [strongSelf updateSlashCommandList];
   }];
 }
@@ -5528,6 +5532,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }];
   }
   [self.notchOverlayController updatePalette:self.palette];
+  [self.quickInputController applyPalette:self.palette];
   [self layoutTrafficLightButtons];
   [self updateMessageInputWidthForWindowWidth:NSWidth(self.window.frame)];
   [self updateMessageScrollInsets];
@@ -5581,22 +5586,88 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openFromNotchOverlay:(id)sender {
-  [NSApp unhide:self];
-  [self showWindow:sender];
-  [NSApp activateIgnoringOtherApps:YES];
+  if (!self.quickInputController) {
+    self.quickInputController = [[TLQuickInputWindowController alloc] initWithPalette:self.palette];
+    self.quickInputController.model = self.settings.selectedModel;
+    self.quickInputController.supportingModel = self.settings.supportingModel;
+    __weak typeof(self) weakSelf = self;
+    self.quickInputController.submissionHandler = ^(NSString *text, NSArray<NSURL *> *files, BOOL allowAutomaticRouting) {
+      [weakSelf submitQuickInput:text files:files allowAutomaticRouting:allowAutomaticRouting];
+    };
+    self.quickInputController.settingsHandler = ^{ [weakSelf showQuickInputModelMenu]; };
+    self.quickInputController.visibilityChangeHandler = ^(BOOL visible) {
+      if (visible) [weakSelf.notchOverlayController stopTracking];
+      else [weakSelf.notchOverlayController startTracking];
+    };
+  }
+  self.quickInputController.commands = [self availableSlashCommands];
+  NSScreen *notchScreen = self.notchOverlayController.presentationScreen;
+  NSRect notchFrame = self.notchOverlayController.presentationFrame;
+  if (notchScreen && !NSIsEmptyRect(notchFrame)) {
+    [self.quickInputController presentBelowRect:notchFrame onScreen:notchScreen];
+    return;
+  }
+  NSPoint location = NSEvent.mouseLocation;
+  NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+  for (NSScreen *candidate in NSScreen.screens) {
+    if (NSPointInRect(location, candidate.frame)) { screen = candidate; break; }
+  }
+  [self.quickInputController presentOnScreen:screen];
 }
 
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)fileURLs {
-  [self openFromNotchOverlay:self.notchOverlayController];
   if (!fileURLs.count) return;
-  if (self.preparingAttachments) {
-    [self presentErrorMessage:@"Files are still being copied. Drop these attachments again when copying finishes."];
-    return;
+  [self openFromNotchOverlay:self.notchOverlayController];
+  [self.quickInputController.messageInput addAttachmentURLs:fileURLs];
+}
+
+- (void)submitQuickInput:(NSString *)text files:(NSArray<NSURL *> *)files allowAutomaticRouting:(BOOL)allowAutomaticRouting {
+  // Routing happens only after submission, without disturbing the current chat's draft.
+  NSURL *URL = allowAutomaticRouting && !files.count ? [self browserURLFromPromptString:text] : nil;
+  [self showWindow:self];
+  [NSApp activateIgnoringOtherApps:YES];
+  if (URL) {
+    [self openBrowserTabWithURL:URL];
+  } else {
+    [self startNewChatWithModel:self.quickInputController.model focus:NO];
+    self.activeChat.supportingModel = self.quickInputController.supportingModel;
+    self.promptTextView.string = text;
+    [self.messageInput setAttachmentURLs:files animated:NO];
+    [self updateControlStates];
+    [self.window makeFirstResponder:self.promptTextView];
+    [self sendMessage:self allowAutomaticRouting:NO];
   }
-  if (![self isChatWorkspaceActive]) [self startNewChatWithModel:self.settings.selectedModel focus:NO];
-  [self.messageInput addAttachmentURLs:fileURLs];
-  [self updateControlStates];
-  [self.window makeFirstResponder:self.promptTextView];
+}
+
+- (void)showQuickInputModelMenu {
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Chat models"];
+  for (NSNumber *smallChoice in @[@NO, @YES]) {
+    BOOL small = smallChoice.boolValue;
+    NSString *model = small ? self.quickInputController.supportingModel : self.quickInputController.model;
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"%@: %@", small ? @"Small model" : @"Large model", model]
+      action:@selector(chooseQuickInputModel:) keyEquivalent:@""];
+    item.target = self;
+    item.representedObject = smallChoice;
+    [menu addItem:item];
+  }
+  NSView *button = self.quickInputController.messageInput.settingsButton;
+  [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(button.bounds)) inView:button];
+}
+
+- (void)chooseQuickInputModel:(NSMenuItem *)sender {
+  TLQuickInputWindowController *quickInput = self.quickInputController;
+  if (quickInput.window.attachedSheet) return;
+  BOOL small = [sender.representedObject boolValue];
+  TLModelSelectionWindowController *controller = [[TLModelSelectionWindowController alloc]
+    initWithSmallModel:small selectedModel:small ? quickInput.supportingModel : quickInput.model
+    token:self.settings.openRouterToken orchestrator:self.agentOrchestrator palette:self.palette];
+  self.modelSelectionController = controller;
+  controller.selectionHandler = ^(NSString *model, void (^completion)(NSError *)) {
+    if (small) quickInput.supportingModel = model;
+    else quickInput.model = model;
+    completion(nil);
+  };
+  [controller presentForWindow:quickInput.window];
 }
 
 - (void)styleButton:(NSButton *)button background:(NSColor *)background foreground:(NSColor *)foreground {

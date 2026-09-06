@@ -511,7 +511,7 @@ static NSUInteger TLFileCountFromPasteboard(NSPasteboard *pasteboard) {
   self.overlayView.palette = palette;
   self.overlayWindow.backgroundColor = palette.notchOverlayWindowBackground;
   [self.overlayView setNeedsDisplay:YES];
-  [self updateForCurrentMouseLocation];
+  if (self.trackingTimer) [self updateForCurrentMouseLocation];
 }
 
 - (void)screenParametersDidChange:(NSNotification *)notification {
@@ -646,6 +646,15 @@ static NSUInteger TLFileCountFromPasteboard(NSPasteboard *pasteboard) {
   }
 
   return NSScreen.mainScreen;
+}
+
+- (NSRect)presentationFrame {
+  if (!self.overlayWindow.isVisible) return NSZeroRect;
+  return self.appearanceAnimationInFlight ? self.frameAnimationTarget : self.overlayWindow.frame;
+}
+
+- (NSScreen *)presentationScreen {
+  return self.overlayWindow.isVisible ? self.overlayWindow.screen : nil;
 }
 
 - (NSRect)notchRectForScreen:(NSScreen *)screen {

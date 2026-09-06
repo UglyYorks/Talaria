@@ -12,6 +12,7 @@
 #import "design_system/ModelPickerView.h"
 #import "UIComponents.h"
 #import "TalariaWindowController.h"
+#import "TLQuickInputWindowController.h"
 #import "TLAgentCreationWindowController.h"
 #import "TLAgentFolderAccessWindowController.h"
 #import "design_system/TLEmojiPicker.h"
@@ -623,9 +624,13 @@ static void TestAttachmentSendPreparation(void) {
   TLAttachmentPreparationRecorder *agent = [[TLAttachmentPreparationRecorder alloc] init];
   [controller setValue:agent forKey:@"agentOrchestrator"];
   NSArray *URLs = @[[NSURL fileURLWithPath:@"/tmp/report.pdf"]];
+  TLQuickInputWindowController *quickInput = [[TLQuickInputWindowController alloc] initWithPalette:input.palette];
+  [controller setValue:quickInput forKey:@"quickInputController"];
   [controller handleFileURLsDroppedOnNotch:URLs];
-  Check(input.attachmentURLs.count == 1 && input.textView.string.length == 0,
-        @"notch drops become attachment chips, not host-path prompt text");
+  Check(quickInput.messageInput.attachmentURLs.count == 1 && quickInput.messageInput.textView.string.length == 0 && input.attachmentURLs.count == 0,
+        @"notch drops stage attachment chips in quick input and leave the current chat alone");
+  // QuickInputTests covers the real submission handoff; exercise its send pipeline here.
+  [input setAttachmentURLs:quickInput.messageInput.attachmentURLs animated:NO];
   [controller updateControlStates];
   Check(input.sendButton.enabled, @"attachment-only messages can be sent");
   [controller textView:input.textView doCommandBySelector:@selector(insertNewline:)];
