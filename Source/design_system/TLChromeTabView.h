@@ -31,6 +31,8 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 - (void)chromeTabViewHoverStateDidChange:(TLChromeTabView *)tabView;
 - (void)chromeTabViewDidRequestCloseOtherTabs:(TLChromeTabView *)tabView;
 @optional
+- (void)chromeTabViewWillSelect:(TLChromeTabView *)tabView;
+- (nullable NSMenu *)splitMenuForChromeTabView:(TLChromeTabView *)tabView;
 - (BOOL)chromeTabViewShouldOpenContextMenu:(TLChromeTabView *)tabView;
 @end
 
@@ -42,6 +44,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @property (nonatomic, copy) NSString *icon;
 @property (nonatomic, copy) NSString *systemIconName;
 @property (nonatomic) BOOL active;
+@property (nonatomic) BOOL splitCompanion;
 @property (nonatomic) BOOL drawsActiveBackground;
 @property (nonatomic) BOOL animatesDecorationChanges;
 @property (nonatomic) BOOL closeable;
@@ -59,6 +62,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 - (void)applyCurrentState;
 - (void)setReorderTranslationX:(CGFloat)translationX animated:(BOOL)animated;
 - (void)finishPointerDrag;
+- (void)cancelPointerDrag;
 - (void)setReorderTranslationX:(CGFloat)translationX animated:(BOOL)animated duration:(NSTimeInterval)duration;
 - (void)prepareForInsertionAnimation;
 @property (nonatomic, readonly) CGFloat lifecycleVisibleWidth;

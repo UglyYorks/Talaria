@@ -1293,6 +1293,10 @@ class TLChromiumNavigationCommandTask : public CefTask {
 }
 
 - (NSString *)chromiumCachePath {
+  // Explicit isolation for desktop verification while another worktree owns
+  // the normal Chromium profile. Ordinary launches keep the existing profile.
+  NSString *profileOverride = NSProcessInfo.processInfo.environment[@"TL_CHROMIUM_PROFILE_DIR"];
+  if (profileOverride.isAbsolutePath) return profileOverride.stringByStandardizingPath;
   NSURL *supportURL = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                            inDomains:NSUserDomainMask].firstObject;
   NSURL *profileURL = [[supportURL URLByAppendingPathComponent:@"com.talaria.chat" isDirectory:YES]

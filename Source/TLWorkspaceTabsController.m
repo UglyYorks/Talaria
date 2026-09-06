@@ -48,6 +48,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 @property (nonatomic, strong) TLTransitionCoordinator *transitionCoordinator;
 @property (nonatomic, copy) NSArray<TLChromeTabView *> *insertingTabViews;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *draggedTab;
+@property (nonatomic) BOOL draggingOutsideStrip;
+@property (nonatomic) BOOL dragCancelled;
+@property (nonatomic, strong) id dragEscapeMonitor;
 @property (nonatomic) NSUInteger draggedStartIndex;
 @property (nonatomic) NSUInteger draggedCurrentIndex;
 @property (nonatomic) BOOL newTabButtonHovered;
@@ -512,6 +515,8 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     return candidateIndex != index && candidate.closeable;
   }] != NSNotFound;
   tabView.active = active;
+  tabView.splitCompanion = [self.delegate respondsToSelector:@selector(workspaceTabsController:isTabSplitCompanion:)] &&
+    [self.delegate workspaceTabsController:self isTabSplitCompanion:tab];
   tabView.drawsActiveBackground = NO;
   tabView.dragDelegate = self;
   tabView.representedObject = [tab copy];
@@ -641,6 +646,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 }
 
 - (void)dealloc {
+  if (_dragEscapeMonitor) [NSEvent removeMonitor:_dragEscapeMonitor];
   [_widthPreservationHost removeTrackingArea:_widthPreservationTrackingArea];
 }
 
@@ -956,6 +962,28 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     [self.transitionCoordinator finishAllTransitions];
     [self updateSeparatorVisibilityWithoutAnimation];
   }
+  if (!self.dragEscapeMonitor) {
+    __weak typeof(self) weakSelf = self;
+    __weak TLChromeTabView *weakTab = tabView;
+    self.dragEscapeMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *key) {
+      if (key.keyCode != 53) return key;
+      weakSelf.dragCancelled = YES;
+      [weakSelf chromeTabViewDidEndDragging:weakTab];
+      return nil;
+    }];
+  }
+  if ([self.delegate respondsToSelector:@selector(workspaceTabsController:dragTab:atWindowPoint:)]) {
+    self.draggingOutsideStrip = [self.delegate workspaceTabsController:self dragTab:self.draggedTab atWindowPoint:event.locationInWindow];
+    if (self.draggingOutsideStrip) {
+      self.draggedCurrentIndex = self.draggedStartIndex;
+      [self resetReorderGap];
+      [self resetDragEdgeGeometry];
+      [tabView setReorderTranslationX:-tabView.dragTranslationX animated:NO];
+      [self updateSelectionForLifecycle];
+      return;
+    }
+    [tabView setReorderTranslationX:0 animated:NO];
+  }
   [self promoteSelectionAndDraggedTabView:tabView];
 
   [self.tabStack layoutSubtreeIfNeeded];
@@ -980,6 +1008,11 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 
 - (void)chromeTabViewDidEndDragging:(TLChromeTabView *)tabView {
   TLWorkspaceTab *movedTab = self.draggedTab;
+  if (self.dragEscapeMonitor) { [NSEvent removeMonitor:self.dragEscapeMonitor]; self.dragEscapeMonitor = nil; }
+  BOOL external = self.draggingOutsideStrip || self.dragCancelled;
+  BOOL cancelled = self.dragCancelled;
+  self.draggingOutsideStrip = NO;
+  self.dragCancelled = NO;
   NSUInteger sourceIndex = self.draggedStartIndex;
   NSUInteger targetIndex = self.draggedCurrentIndex;
   NSMapTable<TLChromeTabView *, NSValue *> *visibleFrames = [NSMapTable strongToStrongObjectsMapTable];
@@ -989,7 +1022,8 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     [visibleFrames setObject:[NSValue valueWithRect:NSOffsetRect(view.frame, offset, 0)] forKey:view];
   }
   NSRect selectionStart = self.selectionView.selectionFrame;
-  [tabView finishPointerDrag];
+  if (cancelled) [tabView cancelPointerDrag];
+  else [tabView finishPointerDrag];
   [self resetReorderGap];
   [self resetDragEdgeGeometry];
   self.draggedTab = nil;
@@ -997,7 +1031,10 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   self.draggedCurrentIndex = NSNotFound;
   self.settlingDrop = YES;
 
-  if (movedTab && targetIndex != NSNotFound && sourceIndex != targetIndex) {
+  if (movedTab && [self.delegate respondsToSelector:@selector(workspaceTabsController:endDraggingTab:cancelled:)]) {
+    [self.delegate workspaceTabsController:self endDraggingTab:movedTab cancelled:cancelled || !external];
+  }
+  if (!external && movedTab && targetIndex != NSNotFound && sourceIndex != targetIndex) {
     [self.delegate workspaceTabsController:self moveTab:movedTab toIndex:targetIndex];
   }
 
@@ -1032,6 +1069,15 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     [owner updateSeparatorVisibilityWithoutAnimation];
     [owner refreshAnimationActivity];
   }];
+}
+
+- (void)chromeTabViewWillSelect:(TLChromeTabView *)tabView {
+  if ([self.delegate respondsToSelector:@selector(workspaceTabsController:willSelectTab:)])
+    [self.delegate workspaceTabsController:self willSelectTab:tabView.representedObject];
+}
+- (NSMenu *)splitMenuForChromeTabView:(TLChromeTabView *)tabView {
+  return [self.delegate respondsToSelector:@selector(workspaceTabsController:splitMenuForTab:)]
+    ? [self.delegate workspaceTabsController:self splitMenuForTab:tabView.representedObject] : nil;
 }
 
 - (BOOL)chromeTabViewShouldOpenContextMenu:(TLChromeTabView *)tabView {

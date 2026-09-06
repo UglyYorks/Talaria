@@ -451,6 +451,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
 @property (nonatomic) NSPoint mouseDownWindowPoint;
 @property (nonatomic) BOOL didDrag;
+@property (nonatomic) BOOL pointerDragCancelled;
 @property (nonatomic, readwrite, getter=isHovered) BOOL hovered;
 @property (nonatomic, readwrite) CGFloat dragTranslationX;
 @property (nonatomic, readwrite) CGFloat reorderTranslationX;
@@ -598,6 +599,10 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [self updateInactiveDecorationVisibilityAnimated:self.window != nil && self.animatesDecorationChanges];
 }
 
+- (void)setSplitCompanion:(BOOL)splitCompanion {
+  _splitCompanion = splitCompanion;
+  [self updateInactiveDecorationVisibilityAnimated:self.window != nil];
+}
 - (void)setCloseable:(BOOL)closeable {
   _closeable = closeable;
   [self applyCurrentState];
@@ -1010,7 +1015,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 }
 
 - (void)updateInactiveDecorationVisibilityAnimated:(BOOL)animated {
-  BOOL hoverVisible = !self.active && [self shouldDrawInactiveHoverPill];
+  BOOL hoverVisible = !self.active && (self.splitCompanion || [self shouldDrawInactiveHoverPill]);
   BOOL separatorsVisible = !self.active && !hoverVisible;
   [self setOpacity:hoverVisible ? 1.0 : 0.0
            forLayer:self.inactiveHoverBackgroundLayer
@@ -1067,7 +1072,11 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
     return;
   }
 
+  if ([self.dragDelegate respondsToSelector:@selector(chromeTabViewWillSelect:)]) {
+    [self.dragDelegate chromeTabViewWillSelect:self];
+  }
   self.mouseDownWindowPoint = event.locationInWindow;
+  self.pointerDragCancelled = NO;
   self.didDrag = NO;
   self.dragTranslationX = 0.0;
   self.layer.zPosition = 2.0;
@@ -1078,7 +1087,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 }
 
 - (void)mouseDragged:(NSEvent *)event {
-  if (!self.enabled) {
+  if (!self.enabled || self.pointerDragCancelled) {
     return;
   }
 
@@ -1103,6 +1112,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   }
 
   if (self.didDrag) {
+    [self.dragDelegate chromeTabView:self didDragWithEvent:event];
     if (self.dragDelegate) [self.dragDelegate chromeTabViewDidEndDragging:self];
     else [self finishPointerDrag];
     return;
@@ -1115,6 +1125,11 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.didDrag = NO;
   self.dragTranslationX = 0;
   self.layer.zPosition = self.active ? 1.0 : 0.0;
+}
+
+- (void)cancelPointerDrag {
+  self.pointerDragCancelled = YES;
+  [self finishPointerDrag];
 }
 
 - (void)setDragTranslationX:(CGFloat)dragTranslationX {
@@ -1243,6 +1258,13 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 - (NSMenu *)menuForEvent:(NSEvent *)event {
   if (![self canOpenTabContextMenu]) return nil;
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+  if ([self.dragDelegate respondsToSelector:@selector(splitMenuForChromeTabView:)]) {
+    NSMenu *splitMenu = [self.dragDelegate splitMenuForChromeTabView:self];
+    for (NSMenuItem *item in splitMenu.itemArray.copy) {
+      [splitMenu removeItem:item]; [menu addItem:item];
+    }
+    if (menu.numberOfItems) [menu addItem:NSMenuItem.separatorItem];
+  }
   menu.autoenablesItems = NO;
 
   NSMenuItem *closeItem = [[NSMenuItem alloc] initWithTitle:@"Close"

@@ -808,13 +808,16 @@ static void TestConcurrentChatStreams(void) {
     chat.chatID = chatID.integerValue; chat.hermesSessionID = chatID.stringValue; chat.messages = @[];
     controller.store.chats[chatID] = chat;
   }
+  [controller setValue:[NSView new] forKey:@"contentHost"];
   [controller loadChatWithID:17];
+  input = [controller valueForKey:@"messageInput"];
   input.textView.string = @"Question A";
   [controller sendMessage:nil allowAutomaticRouting:NO];
   TLConcurrentTestRequest *a = controller.stream.requests.lastObject;
   a.delta(a.requestID, TLAgentStreamDeltaKindContent, @"Answer A");
   NSMutableArray *messagesA = [controller valueForKey:@"messages"];
   [controller loadChatWithID:18];
+  input = [controller valueForKey:@"messageInput"];
   input.textView.string = @"Question B";
   [controller updateControlStates];
   Check(input.sendButton.enabled && !input.showsStopButton, @"chat B can send while A streams");
@@ -831,9 +834,11 @@ static void TestConcurrentChatStreams(void) {
   [controller sendMessage:nil allowAutomaticRouting:NO];
   Check(controller.stream.requests.count == 2, @"a second turn in the same busy chat is still blocked");
   [controller loadChatWithID:17];
+  input = [controller valueForKey:@"messageInput"];
   Check([controller valueForKey:@"messages"] == messagesA && input.showsStopButton,
     @"returning to a streaming chat restores its live buffer and Stop button");
   [controller loadChatWithID:18];
+  input = [controller valueForKey:@"messageInput"];
   Check([input.textView.string isEqual:@"do not duplicate B"], @"returning to a busy chat preserves its unsent draft");
   input.textView.string = @"";
   [controller updateControlStates];
@@ -856,9 +861,11 @@ static void TestConcurrentChatStreams(void) {
   b2.delta(b2.requestID, TLAgentStreamDeltaKindContent, @"Second B answer");
   b2.completion(nil);
   [controller loadChatWithID:17];
+  input = [controller valueForKey:@"messageInput"];
   Check([((TLChatMessage *)[[controller valueForKey:@"messages"] lastObject]).content isEqual:@"Answer A continues finished"],
     @"completed background output persists to its original conversation");
   [controller loadChatWithID:18];
+  input = [controller valueForKey:@"messageInput"];
   Check([((TLChatMessage *)[[controller valueForKey:@"messages"] lastObject]).content isEqual:@"Second B answer"] &&
     ![[controller valueForKey:@"hasSendingTurns"] boolValue], @"all chats finish independently without stale callbacks");
 }
@@ -917,8 +924,10 @@ static void TestStreamingChatTitlesPersist(void) {
   NSTextView *prompt = [controller valueForKey:@"promptTextView"];
   NSMutableArray<NSNumber *> *chatIDs = [NSMutableArray array];
   NSArray<NSString *> *titles = @[@"Write a long essay", @"Explain the stars"];
+  [controller setValue:[NSView new] forKey:@"contentHost"];
   for (NSString *title in titles) {
     [controller startNewChatWithModel:@"test-model" focus:NO];
+    prompt = [controller valueForKey:@"promptTextView"];
     prompt.string = title;
     [controller sendMessage:nil allowAutomaticRouting:NO];
     NSInteger chatID = [[controller valueForKeyPath:@"activeChat.chatID"] integerValue];

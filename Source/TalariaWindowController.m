@@ -27,6 +27,9 @@
 #import "design_system/TLTransitionCoordinator.h"
 #import "design_system/TLChromeTabView.h"
 #import "WorkspaceState.h"
+#import "TLChatPresentation.h"
+#import "TLWorkspaceSplitState.h"
+#import "design_system/TLSplitWorkspaceView.h"
 #import "WorkspaceTabRuntime.h"
 #import "Widgetbook.h"
 #import "design_system/TLButton.h"
@@ -120,6 +123,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @interface TalariaWindowController () <NSWindowDelegate, NSTextViewDelegate, NSTableViewDataSource, NSTableViewDelegate, TLHistoryPanelControllerDelegate, TLWorkspaceTabsControllerDelegate>
 
+@property (nonatomic, strong) TLChatPresentation *chatPresentation;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLChatPresentation *> *chatPresentations;
+@property (nonatomic, strong) TLWorkspaceSplitState *splitState;
+@property (nonatomic, strong) TLSplitWorkspaceView *splitWorkspace;
+@property (nonatomic, strong) TLWorkspaceTab *displayedWorkspaceTab;
+@property (nonatomic, strong) TLWorkspaceTab *tabBeforePointerSelection;
+@property (nonatomic, strong) TLWorkspaceTab *splitDropTarget;
+@property (nonatomic) TLSplitDropSide splitDropSide;
+@property (nonatomic, strong) id paneFocusMonitor;
+@property (nonatomic) BOOL updatingSplitLayout;
 @property (nonatomic, strong) TLDatabase *database;
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLAssistantTurnRunner *> *turnRunners;
@@ -303,34 +316,137 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
 @implementation TalariaWindowController
 
+- (TLChatPresentation *)currentChatPresentation {
+  if (!self.chatPresentation) self.chatPresentation = [TLChatPresentation new];
+  return self.chatPresentation;
+}
+
+- (NSMutableArray<TLChatMessage *> *)messages { return [self currentChatPresentation].messages; }
+- (void)setMessages:(NSMutableArray<TLChatMessage *> *)value { [self currentChatPresentation].messages = value; }
+- (NSMapTable<TLChatMessage *, NSView *> *)messageRowViews { return [self currentChatPresentation].messageRowViews; }
+- (void)setMessageRowViews:(NSMapTable<TLChatMessage *, NSView *> *)value { [self currentChatPresentation].messageRowViews = value; }
+- (NSMapTable<TLChatMessage *, NSString *> *)messageRowSignatures { return [self currentChatPresentation].messageRowSignatures; }
+- (void)setMessageRowSignatures:(NSMapTable<TLChatMessage *, NSString *> *)value { [self currentChatPresentation].messageRowSignatures = value; }
+- (NSMapTable<TLChatMessage *, NSView *> *)messageMarkdownViews { return [self currentChatPresentation].messageMarkdownViews; }
+- (void)setMessageMarkdownViews:(NSMapTable<TLChatMessage *, NSView *> *)value { [self currentChatPresentation].messageMarkdownViews = value; }
+- (NSArray<TLChatMessage *> *)renderedMessages { return [self currentChatPresentation].renderedMessages; }
+- (void)setRenderedMessages:(NSArray<TLChatMessage *> *)value { [self currentChatPresentation].renderedMessages = value; }
+- (BOOL)isLoading { return [self currentChatPresentation].isLoading; }
+- (void)setIsLoading:(BOOL)value { [self currentChatPresentation].isLoading = value; }
+- (NSString *)errorMessage { return [self currentChatPresentation].errorMessage; }
+- (void)setErrorMessage:(NSString *)value { [self currentChatPresentation].errorMessage = value; }
+- (TLTokenView *)messagesBackground { return [self currentChatPresentation].messagesBackground; }
+- (void)setMessagesBackground:(TLTokenView *)value { [self currentChatPresentation].messagesBackground = value; }
+- (TLMessageInput *)messageInput { return [self currentChatPresentation].messageInput; }
+- (void)setMessageInput:(TLMessageInput *)value { [self currentChatPresentation].messageInput = value; }
+- (NSView *)chatWorkspace { return [self currentChatPresentation].chatWorkspace; }
+- (void)setChatWorkspace:(NSView *)value { [self currentChatPresentation].chatWorkspace = value; }
+- (NSLayoutConstraint *)messageInputWidthConstraint { return [self currentChatPresentation].messageInputWidthConstraint; }
+- (void)setMessageInputWidthConstraint:(NSLayoutConstraint *)value { [self currentChatPresentation].messageInputWidthConstraint = value; }
+- (NSScrollView *)messageScrollView { return [self currentChatPresentation].messageScrollView; }
+- (void)setMessageScrollView:(NSScrollView *)value { [self currentChatPresentation].messageScrollView = value; }
+- (TLFlippedView *)messageDocumentView { return [self currentChatPresentation].messageDocumentView; }
+- (void)setMessageDocumentView:(TLFlippedView *)value { [self currentChatPresentation].messageDocumentView = value; }
+- (NSStackView *)messageStack { return [self currentChatPresentation].messageStack; }
+- (void)setMessageStack:(NSStackView *)value { [self currentChatPresentation].messageStack = value; }
+- (NSLayoutConstraint *)messageStackBottomConstraint { return [self currentChatPresentation].messageStackBottomConstraint; }
+- (void)setMessageStackBottomConstraint:(NSLayoutConstraint *)value { [self currentChatPresentation].messageStackBottomConstraint = value; }
+- (NSLayoutConstraint *)messageStackMinimumBottomConstraint { return [self currentChatPresentation].messageStackMinimumBottomConstraint; }
+- (void)setMessageStackMinimumBottomConstraint:(NSLayoutConstraint *)value { [self currentChatPresentation].messageStackMinimumBottomConstraint = value; }
+- (NSTextView *)promptTextView { return [self currentChatPresentation].promptTextView; }
+- (void)setPromptTextView:(NSTextView *)value { [self currentChatPresentation].promptTextView = value; }
+- (TLInputSuggestionPanelView *)slashCommandListView { return [self currentChatPresentation].slashCommandListView; }
+- (void)setSlashCommandListView:(TLInputSuggestionPanelView *)value { [self currentChatPresentation].slashCommandListView = value; }
+- (TLInputSuggestionListView *)slashCommandScrollView { return [self currentChatPresentation].slashCommandScrollView; }
+- (void)setSlashCommandScrollView:(TLInputSuggestionListView *)value { [self currentChatPresentation].slashCommandScrollView = value; }
+- (NSTimer *)slashCommandUpdateTimer { return [self currentChatPresentation].slashCommandUpdateTimer; }
+- (void)setSlashCommandUpdateTimer:(NSTimer *)value { [self currentChatPresentation].slashCommandUpdateTimer = value; }
+- (BOOL)renderingSlashCommands { return [self currentChatPresentation].renderingSlashCommands; }
+- (void)setRenderingSlashCommands:(BOOL)value { [self currentChatPresentation].renderingSlashCommands = value; }
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)visibleSlashCommands { return [self currentChatPresentation].visibleSlashCommands; }
+- (void)setVisibleSlashCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)value { [self currentChatPresentation].visibleSlashCommands = value; }
+- (NSInteger)selectedSlashCommandIndex { return [self currentChatPresentation].selectedSlashCommandIndex; }
+- (void)setSelectedSlashCommandIndex:(NSInteger)value { [self currentChatPresentation].selectedSlashCommandIndex = value; }
+- (NSLayoutConstraint *)slashCommandListWidthConstraint { return [self currentChatPresentation].slashCommandListWidthConstraint; }
+- (void)setSlashCommandListWidthConstraint:(NSLayoutConstraint *)value { [self currentChatPresentation].slashCommandListWidthConstraint = value; }
+- (NSLayoutConstraint *)slashCommandListHeightConstraint { return [self currentChatPresentation].slashCommandListHeightConstraint; }
+- (void)setSlashCommandListHeightConstraint:(NSLayoutConstraint *)value { [self currentChatPresentation].slashCommandListHeightConstraint = value; }
+- (NSLayoutConstraint *)slashCommandListBottomConstraint { return [self currentChatPresentation].slashCommandListBottomConstraint; }
+- (void)setSlashCommandListBottomConstraint:(NSLayoutConstraint *)value { [self currentChatPresentation].slashCommandListBottomConstraint = value; }
+- (BOOL)streamingRenderScheduled { return [self currentChatPresentation].streamingRenderScheduled; }
+- (void)setStreamingRenderScheduled:(BOOL)value { [self currentChatPresentation].streamingRenderScheduled = value; }
+- (NSUInteger)streamingRenderGeneration { return [self currentChatPresentation].streamingRenderGeneration; }
+- (void)setStreamingRenderGeneration:(NSUInteger)value { [self currentChatPresentation].streamingRenderGeneration = value; }
+- (TLGlassButton *)sendButton { return [self currentChatPresentation].sendButton; }
+- (void)setSendButton:(TLGlassButton *)value { [self currentChatPresentation].sendButton = value; }
+- (TLASCIIPlanetScreensaverView *)screensaverView { return [self currentChatPresentation].screensaverView; }
+- (void)setScreensaverView:(TLASCIIPlanetScreensaverView *)value { [self currentChatPresentation].screensaverView = value; }
+
+- (TLChatRecord *)activeChat { return [self currentChatPresentation].chat; }
 - (void)setActiveChat:(TLChatRecord *)chat {
+  TLChatRecord *previous = self.activeChat;
   if (!self.attachmentDrafts) self.attachmentDrafts = [NSMutableDictionary dictionary];
   if (!self.attachmentPromptDrafts) self.attachmentPromptDrafts = [NSMutableDictionary dictionary];
-  if (_activeChat && chat && _activeChat.chatID == chat.chatID) {
-    _activeChat = chat;
+  if (!self.chatPresentations) self.chatPresentations = [NSMutableDictionary dictionary];
+  if (previous && chat && previous.chatID == chat.chatID) {
+    self.chatPresentation.chat = chat;
     return;
   }
-  if (_activeChat) {
-    if (_activeChat.chatID <= 0) {
+  [self hideSlashCommandList];
+  if (previous) {
+    self.attachmentDrafts[@(previous.chatID)] = self.messageInput.attachmentURLs ?: @[];
+    self.attachmentPromptDrafts[@(previous.chatID)] = self.promptTextView.string ?: @"";
+    if (previous.chatID <= 0) {
       if (!self.modelDraftChats) self.modelDraftChats = [NSMutableDictionary dictionary];
-      self.modelDraftChats[@(_activeChat.chatID)] = _activeChat;
+      self.modelDraftChats[@(previous.chatID)] = previous;
     }
-    self.attachmentDrafts[@(_activeChat.chatID)] = self.messageInput.attachmentURLs ?: @[];
-    self.attachmentPromptDrafts[@(_activeChat.chatID)] = [self.promptTextView.string copy] ?: @"";
   }
-  _activeChat = chat;
+  if (chat) {
+    TLChatPresentation *next = self.chatPresentations[@(chat.chatID)];
+    if (!next) next = previous ? [TLChatPresentation new] : [self currentChatPresentation];
+    self.chatPresentation = next;
+    if (!next.chatWorkspace && self.contentHost) {
+      self.chatWorkspace = [self buildChatWorkspace];
+      self.messagesBackground.fillColor = self.palette.tabBackground;
+      [self addWorkspaceContentView:self.chatWorkspace];
+    }
+    self.chatPresentations[@(chat.chatID)] = next;
+  }
+  self.chatPresentation.chat = chat;
   self.promptTextView.string = chat ? self.attachmentPromptDrafts[@(chat.chatID)] ?: @"" : @"";
   [self.messageInput setAttachmentURLs:chat ? self.attachmentDrafts[@(chat.chatID)] ?: @[] : @[] animated:NO];
+}
+
+- (BOOL)activateCachedChatWithID:(NSInteger)chatID {
+  TLChatPresentation *presentation = self.chatPresentations[@(chatID)];
+  if (!presentation.chat) return NO;
+  self.activeChat = presentation.chat;
+  [self activateTabKind:TLWorkspaceTabKindChat tabID:chatID];
+  [self updateWorkspaceMode];
+  [self reloadWorkspaceTabs];
+  if (presentation.chatWorkspace) [self renderMessagesScrollingToBottom:NO];
+  [self updateControlStates];
+  return YES;
+}
+
+// Background updates never change keyboard focus or the selected workspace tab.
+- (void)withChatPresentation:(TLChatPresentation *)presentation perform:(void (^)(void))block {
+  if (!presentation) return;
+  TLChatPresentation *focused = self.chatPresentation;
+  self.chatPresentation = presentation;
+  @try { block(); } @finally { self.chatPresentation = focused; }
 }
 
 - (void)restoreAttachmentDraft:(NSArray<NSURL *> *)URLs prompt:(NSString *)prompt chatID:(NSInteger)chatID {
   self.attachmentDrafts[@(chatID)] = URLs;
   self.attachmentPromptDrafts[@(chatID)] = [prompt copy];
-  if (self.activeChat.chatID == chatID) {
+  TLChatPresentation *presentation = self.chatPresentations[@(chatID)];
+  [self withChatPresentation:presentation perform:^{
     self.messageInput.attachmentURLs = URLs;
     self.promptTextView.string = prompt;
     [self.messageInput recalculateHeight];
-  }
+    [self updateControlStates];
+  }];
 }
 
 
@@ -383,11 +499,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     _agents = [NSMutableArray array];
     _nextBrowserTabID = 1;
     _nextDraftChatID = -1;
-    _messages = [NSMutableArray array];
-    _messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
-    _messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
-    _messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
-    _errorMessage = @"";
+    self.messages = [NSMutableArray array];
+    self.messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
+    self.messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
+    self.messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
+    self.errorMessage = @"";
     _sidebarVisible = YES;
     _widgetbookMode = TLWidgetbookModeEnabled();
     if (_widgetbookMode) {
@@ -425,6 +541,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     TLWorkspaceTabRuntime *runtime = [self runtimeForTab:browserTab];
     [runtime.featureController close];
   }
+  if (self.paneFocusMonitor) [NSEvent removeMonitor:self.paneFocusMonitor];
   if (self.messageScrollWheelMonitor) {
     [NSEvent removeMonitor:self.messageScrollWheelMonitor];
   }
@@ -479,6 +596,19 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return;
     }
 
+    if ([signal.name isEqual:TLAppSignalWorkspaceTabRemoved]) {
+      TLWorkspaceSplitGroup *closingGroup = nil;
+      for (TLWorkspaceSplitGroup *candidate in strongSelf.splitState.groups) {
+        if (![strongSelf tabWithPresentationIdentity:candidate.leftIdentity] ||
+            ![strongSelf tabWithPresentationIdentity:candidate.rightIdentity]) { closingGroup = candidate; break; }
+      }
+      if (closingGroup && closingGroup == [strongSelf.splitState groupForTab:strongSelf.displayedWorkspaceTab]) {
+        TLWorkspaceTab *survivor = [strongSelf tabWithPresentationIdentity:closingGroup.leftIdentity] ?:
+          [strongSelf tabWithPresentationIdentity:closingGroup.rightIdentity];
+        if (survivor) [strongSelf activateTabKind:survivor.kind tabID:survivor.tabID];
+      }
+      [strongSelf.splitState reconcileTabs:snapshot.workspaceTabs];
+    }
     [strongSelf reloadWorkspaceTabs];
   };
 
@@ -820,21 +950,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self.contentHost.bottomAnchor constraintEqualToAnchor:self.contentShadowView.bottomAnchor],
   ]];
 
+  [self installSplitWorkspace];
   self.chatWorkspace = [self buildChatWorkspace];
   NSView *historyScreen = [self buildHistoryPanel];
-  [self.contentHost addSubview:self.chatWorkspace];
-  [self.contentHost addSubview:historyScreen];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [self.chatWorkspace.leadingAnchor constraintEqualToAnchor:self.contentHost.leadingAnchor],
-    [self.chatWorkspace.trailingAnchor constraintEqualToAnchor:self.contentHost.trailingAnchor],
-    [self.chatWorkspace.topAnchor constraintEqualToAnchor:self.contentHost.topAnchor],
-    [self.chatWorkspace.bottomAnchor constraintEqualToAnchor:self.contentHost.bottomAnchor],
-    [historyScreen.leadingAnchor constraintEqualToAnchor:self.contentHost.leadingAnchor],
-    [historyScreen.trailingAnchor constraintEqualToAnchor:self.contentHost.trailingAnchor],
-    [historyScreen.topAnchor constraintEqualToAnchor:self.contentHost.topAnchor],
-    [historyScreen.bottomAnchor constraintEqualToAnchor:self.contentHost.bottomAnchor],
-  ]];
+  [self addWorkspaceContentView:self.chatWorkspace];
+  [self addWorkspaceContentView:historyScreen];
 
   [self updateSidebarLayoutAnimated:NO];
   [self updateWorkspaceMode];
@@ -1220,8 +1340,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
                                                                                                                    constant:self.palette.space11];
   NSLayoutConstraint *messageInputTrailingConstraint = [self.messageInput.trailingAnchor constraintLessThanOrEqualToAnchor:chatWorkspace.trailingAnchor
                                                                                                                     constant:-self.palette.space11];
-  messageInputLeadingConstraint.priority = NSLayoutPriorityDefaultLow;
-  messageInputTrailingConstraint.priority = NSLayoutPriorityDefaultLow;
+  // At the 200px window minimum, allow the composer to clip within its pane
+  // rather than letting two preferred margins increase the window minimum.
+  messageInputLeadingConstraint.priority = NSLayoutPriorityFittingSizeCompression;
+  messageInputTrailingConstraint.priority = NSLayoutPriorityFittingSizeCompression;
   CGFloat initialAvailableInputWidth = self.palette.windowInitialWidth - (self.palette.space11 * 2.0);
   CGFloat initialInputWidth = MIN(self.palette.messageInputMaxWidth,
                                   MAX(self.palette.messageInputMinWidth, initialAvailableInputWidth));
@@ -1241,7 +1363,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.slashCommandListBottomConstraint,
     self.slashCommandListHeightConstraint,
     [self.messageStack.widthAnchor constraintEqualToAnchor:self.messageInput.widthAnchor],
-    [self.messageInput.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.messageInputMinWidth],
+    [self.messageInput.widthAnchor constraintGreaterThanOrEqualToConstant:0],
     [self.messageInput.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth],
     messageInputLeadingConstraint,
     messageInputTrailingConstraint,
@@ -1257,12 +1379,14 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
+  if (self.splitWorkspace.split) { [self updateSplitContentSizes]; return; }
   CGFloat previousWidth = self.messageInputWidthConstraint.constant;
   CGFloat nextWidth = [self messageInputWidthForWindowWidth:windowWidth
                                                sidebarWidth:[self currentSidebarWidth]
                                       contentLeadingPadding:[self contentLeadingPadding]];
   self.messageInputWidthConstraint.constant = nextWidth;
   [self applyBrowserAddressInputWidth:nextWidth];
+  [self updateSplitContentSizes];
   if (!self.slashCommandListView.hidden) {
     [self updateSlashCommandList];
   }
@@ -1563,10 +1687,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.messageInput.settingsButton.target = self;
   self.messageInput.settingsButton.action = @selector(showChatModelMenu:);
   __weak typeof(self) weakSelf = self;
+  __weak TLChatPresentation *origin = self.chatPresentation;
   self.messageInput.attachmentsChangeHandler = ^{
-    [weakSelf updateMessageScrollInsets];
-    [weakSelf updateSlashCommandList];
-    [weakSelf updateControlStates];
+    [weakSelf withChatPresentation:origin perform:^{
+      [weakSelf updateMessageScrollInsets];
+      [weakSelf updateSlashCommandList];
+      [weakSelf updateControlStates];
+    }];
   };
   self.promptTextView = self.messageInput.textView;
   self.promptTextView.delegate = self;
@@ -1772,6 +1899,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)loadChatWithID:(NSInteger)chatID {
+  if ([self activateCachedChatWithID:chatID]) return;
   if (chatID <= 0) {
     [self activateDraftChatWithID:chatID];
     return;
@@ -1805,6 +1933,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)activateDraftChatWithID:(NSInteger)chatID {
+  if ([self activateCachedChatWithID:chatID]) return;
   TLWorkspaceTab *tab = [self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID];
   if (!tab) {
     return;
@@ -2169,6 +2298,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   persistedChat.messages = @[];
   NSArray *draftURLs = self.messageInput.attachmentURLs;
+  // Keep the same presentation when the draft gains its database identity.
+  TLChatPresentation *presentation = [self currentChatPresentation];
+  self.chatPresentations[@(persistedChat.chatID)] = presentation;
+  [self.chatPresentations removeObjectForKey:@(draftChatID)];
+  presentation.chat = persistedChat;
   self.activeChat = persistedChat;
   [self.modelDraftChats removeObjectForKey:@(draftChatID)];
   self.messageInput.attachmentURLs = draftURLs;
@@ -2212,11 +2346,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (BOOL)canStopResponse {
-  return self.turnRunners[@(self.activeChat.chatID)].running && [self isChatWorkspaceActive] &&
+  return self.turnRunners[@(self.activeChat.chatID)].running && [self isChatPresentationVisible] &&
     self.promptTextView.string.length == 0 && self.messageInput.attachmentURLs.count == 0;
 }
 
 - (void)showChatModelMenu:(id)sender {
+  [self focusChatContainingView:sender];
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Chat models"];
   NSString *large = self.activeChat.model ?: self.settings.selectedModel;
   NSString *small = self.activeChat.supportingModel ?: self.settings.supportingModel;
@@ -2275,6 +2410,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)activateComposerButton:(id)sender {
+  [self focusChatContainingView:sender];
   if ([self canStopResponse]) {
     [self.turnRunners[@(self.activeChat.chatID)] cancel];
   } else {
@@ -2377,12 +2513,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
                     attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs {
   self.attachmentDrafts[@(chat.chatID)] = @[];
   self.attachmentPromptDrafts[@(chat.chatID)] = @"";
-  if (self.activeChat.chatID == chat.chatID) {
+  [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{
     self.promptTextView.string = @"";
     self.messageInput.attachmentURLs = @[];
     self.errorMessage = @"";
     [self.messageInput recalculateHeight];
-  }
+    [self updateControlStates];
+  }];
   TLAssistantTurnRunner *runner = [self newAssistantTurnRunner];
   if (!self.turnRunners) self.turnRunners = [NSMutableDictionary dictionary];
   if (!self.turnMessagesByChat) self.turnMessagesByChat = [NSMutableDictionary dictionary];
@@ -2402,10 +2539,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     if (!strongSelf) {
       return;
     }
-    if (strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive]) {
-      [strongSelf scheduleStreamingMessageRender];
-      [strongSelf updateControlStates];
-    }
+    TLChatPresentation *presentation = strongSelf.chatPresentations[@(chat.chatID)];
+    [strongSelf withChatPresentation:presentation perform:^{
+      if (![strongSelf.chatWorkspace isHiddenOrHasHiddenAncestor]) {
+        [strongSelf scheduleStreamingMessageRender];
+        [strongSelf updateControlStates];
+      }
+    }];
   } completionHandler:^(TLAssistantTurnResult *result) {
     TalariaWindowController *strongSelf = weakSelf;
     if (!strongSelf) {
@@ -2431,6 +2571,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       [strongSelf generateChatIconIfNeededForChatID:chat.chatID messages:turnMessages];
     }
     if (showingOrigin) [strongSelf renderMessages];
+    else [strongSelf withChatPresentation:strongSelf.chatPresentations[@(chat.chatID)] perform:^{
+      [strongSelf renderMessages];
+      [strongSelf updateControlStates];
+    }];
     [strongSelf updateControlStates];
     if (showingOrigin) [strongSelf.window makeFirstResponder:strongSelf.promptTextView];
 
@@ -2760,9 +2904,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.renderingSlashCommands) return;
   [self.slashCommandUpdateTimer invalidate];
   __weak typeof(self) weakSelf = self;
+  __weak TLChatPresentation *origin = self.chatPresentation;
   // Return the keystroke to AppKit before filtering, fetching, or rendering suggestions.
   self.slashCommandUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:NO block:^(NSTimer *timer) {
-    [weakSelf flushSlashCommandUpdate];
+    [weakSelf withChatPresentation:origin perform:^{ [weakSelf flushSlashCommandUpdate]; }];
   }];
 }
 
@@ -3194,7 +3339,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   runtime.contentView = nextContentView;
   [previousContentView removeFromSuperview];
   [self addWorkspaceContentView:nextContentView];
-  nextContentView.hidden = ![self isWorkspaceTabActive:self.debugTab];
+  [self updateWorkspaceMode];
 }
 
 - (NSView *)buildDebugTabContent {
@@ -3768,6 +3913,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
+  [self focusChatContainingView:textView];
   if (commandSelector == @selector(cancelOperation:)) {
     if (self.slashCommandUpdateTimer || !self.slashCommandListView.hidden) { [self hideSlashCommandList]; return YES; }
   }
@@ -3806,6 +3952,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)textDidChange:(NSNotification *)notification {
+  [self focusChatContainingView:notification.object];
   // TextKit has already applied the edit. Do not force the workspace to lay out
   // before AppKit can paint it; suggestions and composer chrome follow next frame.
   [self updateSlashCommandList];
@@ -3878,12 +4025,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.streamingRenderScheduled) return;
   self.streamingRenderScheduled = YES;
   NSUInteger generation = ++self.streamingRenderGeneration;
+  TLChatPresentation *presentation = self.chatPresentation;
   __weak typeof(self) weakSelf = self;
   // Batch native layout work too; WebKit separately coalesces DOM updates.
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
     TalariaWindowController *controller = weakSelf;
-    if (!controller || generation != controller.streamingRenderGeneration) return;
-    [controller renderMessages];
+    if (!controller || generation != presentation.streamingRenderGeneration) return;
+    [controller withChatPresentation:presentation perform:^{ [controller renderMessages]; }];
   });
 }
 
@@ -3959,17 +4107,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
   }
 
+  TLChatPresentation *presentation = self.chatPresentation;
   dispatch_async(dispatch_get_main_queue(), ^{
-    [self updateMessageScrollInsets];
-    [self.messageDocumentView layoutSubtreeIfNeeded];
-    if (scrollToBottom) {
-      NSRect bottom = NSMakeRect(0.0, MAX(0.0, self.messageDocumentView.bounds.size.height - 1.0), 1.0, 1.0);
-      [self.messageDocumentView scrollRectToVisible:bottom];
-    } else {
-      CGFloat maximumY = MAX(0.0, NSHeight(self.messageDocumentView.bounds) - NSHeight(self.messageScrollView.contentView.bounds));
-      [self.messageScrollView.contentView scrollToPoint:NSMakePoint(previousScrollOrigin.x, MIN(previousScrollOrigin.y, maximumY))];
-      [self.messageScrollView reflectScrolledClipView:self.messageScrollView.contentView];
-    }
+    [self withChatPresentation:presentation perform:^{
+      [self updateMessageScrollInsets];
+      [self.messageDocumentView layoutSubtreeIfNeeded];
+      if (scrollToBottom) {
+        NSRect bottom = NSMakeRect(0.0, MAX(0.0, self.messageDocumentView.bounds.size.height - 1.0), 1.0, 1.0);
+        [self.messageDocumentView scrollRectToVisible:bottom];
+      } else {
+        CGFloat maximumY = MAX(0.0, NSHeight(self.messageDocumentView.bounds) - NSHeight(self.messageScrollView.contentView.bounds));
+        [self.messageScrollView.contentView scrollToPoint:NSMakePoint(previousScrollOrigin.x, MIN(previousScrollOrigin.y, maximumY))];
+        [self.messageScrollView reflectScrolledClipView:self.messageScrollView.contentView];
+      }
+    }];
   });
 }
 
@@ -4297,14 +4448,14 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   renderer.linkHandler = ^(NSURL *URL, NSEventModifierFlags modifierFlags) {
     [weakSelf handleLinkURL:URL modifierFlags:modifierFlags];
   };
+  __weak TLChatPresentation *origin = self.chatPresentation;
   __block __weak NSView *weakView = nil;
   renderer.heightChangeHandler = ^{
     TalariaWindowController *controller = weakSelf;
-    if (!controller.isSending ||
-        ![weakView isDescendantOf:controller.messageStack]) return;
-    [controller.messageDocumentView layoutSubtreeIfNeeded];
-    NSRect bottom = NSMakeRect(0, MAX(0, NSHeight(controller.messageDocumentView.bounds) - 1), 1, 1);
-    [controller.messageDocumentView scrollRectToVisible:bottom];
+    if (!origin || !controller.turnRunners[@(origin.chat.chatID)] || ![weakView isDescendantOf:origin.messageStack]) return;
+    [origin.messageDocumentView layoutSubtreeIfNeeded];
+    NSRect bottom = NSMakeRect(0, MAX(0, NSHeight(origin.messageDocumentView.bounds) - 1), 1, 1);
+    [origin.messageDocumentView scrollRectToVisible:bottom];
   };
   NSView *view = [renderer viewForMarkdown:string ?: @"" textColor:textColor baseFont:baseFont];
   weakView = view;
@@ -4515,7 +4666,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.sidebarWidthConstraint.constant = targetSidebarContentWidth;
   self.contentLeadingConstraint.constant = targetContentLeadingOffset;
   self.tabStackLeadingConstraint.constant = targetTabLeading;
-  if (self.messageInputWidthConstraint) {
+  if (self.splitWorkspace.split) {
+    [self prepareSplitContentWidths:windowWidth - targetContentLeadingOffset - self.palette.space4];
+  } else if (self.messageInputWidthConstraint) {
     CGFloat targetInputWidth = [self messageInputWidthForWindowWidth:windowWidth
                                                          sidebarWidth:targetSidebarWidth
                                                 contentLeadingPadding:targetContentLeading];
@@ -4590,9 +4743,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     owner.sidebarWidthConstraint.constant = startWidth + (targetSidebarContentWidth - startWidth) * progress;
     owner.tabStackLeadingConstraint.constant = startTabLeading + (targetTabLeading - startTabLeading) * progress;
     owner.contentLeadingConstraint.constant = startContentLeading + (targetContentLeadingOffset - startContentLeading) * progress;
-    owner.messageInputWidthConstraint.constant = startInputWidth + (targetInputWidth - startInputWidth) * progress;
+    if (!owner.splitWorkspace.split) owner.messageInputWidthConstraint.constant = startInputWidth + (targetInputWidth - startInputWidth) * progress;
+    else [owner prepareSplitContentWidths:NSWidth(owner.window.contentView.bounds) - owner.contentLeadingConstraint.constant - owner.palette.space4];
     owner.sidebarView.alphaValue = startAlpha + ((hideAfterLayout ? 0 : 1) - startAlpha) * progress;
-    [owner applyBrowserAddressInputWidth:owner.messageInputWidthConstraint.constant];
+    if (!owner.splitWorkspace.split) [owner applyBrowserAddressInputWidth:owner.messageInputWidthConstraint.constant];
     [layoutView layoutSubtreeIfNeeded];
     [owner updateWorkspaceTabWidths];
     [layoutView layoutSubtreeIfNeeded];
@@ -4697,10 +4851,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)removeRuntimeForKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID {
+  if (kind == TLWorkspaceTabKindChat) {
+    [self.chatPresentations[@(tabID)].chatWorkspace removeFromSuperview];
+    [self.chatPresentations removeObjectForKey:@(tabID)];
+  }
   [self.workspaceTabRuntimes removeObjectForKey:TLWorkspaceTabRuntimeKey(kind, tabID)];
 }
 
 - (NSView *)contentViewForTab:(TLWorkspaceTab *)tab {
+  if (tab && tab.kind == TLWorkspaceTabKindChat) return self.chatPresentations[@(tab.tabID)].chatWorkspace;
   return [self runtimeForTab:tab].contentView;
 }
 
@@ -4773,23 +4932,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return snapshot.activeTabKind == TLWorkspaceTabKindChat && self.activeChat && snapshot.activeTabID == self.activeChat.chatID;
 }
 
-- (void)addWorkspaceContentView:(NSView *)contentView {
-  if (!contentView) {
-    return;
-  }
-  if (contentView.superview == self.contentHost) {
-    return;
-  }
-  [contentView removeFromSuperview];
-
-  contentView.translatesAutoresizingMaskIntoConstraints = NO;
-  [self.contentHost addSubview:contentView];
+- (void)mountWorkspaceView:(NSView *)view inHost:(NSView *)host {
+  if (!view || !host || view.superview == host) return;
+  [view removeFromSuperview];
+  view.translatesAutoresizingMaskIntoConstraints = NO;
+  [host addSubview:view];
   [NSLayoutConstraint activateConstraints:@[
-    [contentView.leadingAnchor constraintEqualToAnchor:self.contentHost.leadingAnchor],
-    [contentView.trailingAnchor constraintEqualToAnchor:self.contentHost.trailingAnchor],
-    [contentView.topAnchor constraintEqualToAnchor:self.contentHost.topAnchor],
-    [contentView.bottomAnchor constraintEqualToAnchor:self.contentHost.bottomAnchor],
+    [view.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+    [view.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+    [view.topAnchor constraintEqualToAnchor:host.topAnchor],
+    [view.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
   ]];
+}
+- (void)addWorkspaceContentView:(NSView *)contentView {
+  [self mountWorkspaceView:contentView inHost:self.splitWorkspace.leftHost ?: self.contentHost];
 }
 
 - (NSArray<TLWorkspaceTab *> *)workspaceTabs {
@@ -4870,6 +5026,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   return [self workspaceTabs];
 }
 
+- (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller isTabSplitCompanion:(TLWorkspaceTab *)tab {
+  TLWorkspaceSplitGroup *group = [self.splitState groupForTab:[self activeWorkspaceTab]];
+  return group && group == [self.splitState groupForTab:tab] && ![self isWorkspaceTabActive:tab];
+}
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller isTabActive:(TLWorkspaceTab *)tab {
   return [self isWorkspaceTabActive:tab];
 }
@@ -4957,25 +5117,245 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 }
 
+- (TLWorkspaceTab *)tabWithPresentationIdentity:(NSString *)identity {
+  if (!identity) return nil;
+  for (TLWorkspaceTab *tab in [self workspaceTabs]) if ([TLWorkspaceTabIdentity(tab) isEqual:identity]) return tab;
+  return nil;
+}
+
+- (void)installSplitWorkspace {
+  self.splitState = [TLWorkspaceSplitState new];
+  self.splitWorkspace = [TLSplitWorkspaceView new];
+  self.splitWorkspace.palette = self.palette;
+  [self mountWorkspaceView:self.splitWorkspace inHost:self.contentHost];
+  __weak typeof(self) weakSelf = self;
+  self.splitWorkspace.focusPane = ^(BOOL right) { [weakSelf focusSplitPane:right]; };
+  self.splitWorkspace.expandPane = ^(BOOL right) {
+    TalariaWindowController *owner = weakSelf;
+    [owner focusSplitPane:right];
+    [owner.splitState removeGroupForTab:[owner activeWorkspaceTab]];
+    [owner updateWorkspaceMode]; [owner reloadWorkspaceTabs];
+  };
+  self.splitWorkspace.swapPanes = ^{
+    TalariaWindowController *owner = weakSelf;
+    TLWorkspaceSplitGroup *group = [owner.splitState groupForTab:[owner activeWorkspaceTab]];
+    NSString *left = group.leftIdentity; group.leftIdentity = group.rightIdentity; group.rightIdentity = left;
+    group.fraction = 1 - group.fraction;
+    [owner updateWorkspaceMode];
+  };
+  self.splitWorkspace.fractionChanged = ^(CGFloat fraction) {
+    TalariaWindowController *owner = weakSelf;
+    [owner.splitState groupForTab:[owner activeWorkspaceTab]].fraction = fraction;
+  };
+  self.splitWorkspace.contentSizeChanged = ^{ [weakSelf updateSplitContentSizes]; };
+  self.paneFocusMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:
+    NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown | NSEventMaskScrollWheel
+    handler:^NSEvent *(NSEvent *event) {
+    TalariaWindowController *owner = weakSelf;
+    if (event.window != owner.window || !owner.splitWorkspace.split) return event;
+    NSPoint point = [owner.splitWorkspace convertPoint:event.locationInWindow fromView:nil];
+    // Scrolling does not steal typing focus. Native scroll views still receive it.
+    if (event.type != NSEventTypeScrollWheel) {
+      if (NSPointInRect(point, owner.splitWorkspace.leftHost.frame)) [owner focusSplitPane:NO];
+      else if (NSPointInRect(point, owner.splitWorkspace.rightHost.frame)) [owner focusSplitPane:YES];
+    }
+    return event;
+  }];
+}
+
+- (void)focusWorkspaceTab:(TLWorkspaceTab *)tab {
+  if (!tab || [self isWorkspaceTabActive:tab]) return;
+  if (tab.kind == TLWorkspaceTabKindChat) [self loadChatWithID:tab.tabID];
+  else {
+    [self hideSlashCommandList];
+    [self activateTabKind:tab.kind tabID:tab.tabID];
+    [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
+  }
+}
+- (void)focusChatContainingView:(id)view {
+  if (![view isKindOfClass:NSView.class]) return;
+  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+    if ([view isDescendantOf:presentation.chatWorkspace]) {
+      TLWorkspaceTab *tab = [self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:presentation.chat.chatID];
+      [self focusWorkspaceTab:tab];
+      return;
+    }
+  }
+}
+- (void)focusSplitPane:(BOOL)right {
+  TLWorkspaceSplitGroup *group = [self.splitState groupForTab:[self activeWorkspaceTab]];
+  [self focusWorkspaceTab:[self tabWithPresentationIdentity:right ? group.rightIdentity : group.leftIdentity]];
+}
+- (BOOL)isChatPresentationVisible {
+  TLWorkspaceTab *tab = [self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:self.activeChat.chatID];
+  if ([self isChatWorkspaceActive]) return YES;
+  if (!tab || !self.activeChat) return NO;
+  TLWorkspaceSplitGroup *group = [self.splitState groupForTab:[self activeWorkspaceTab]];
+  return group && group == [self.splitState groupForTab:tab];
+}
+- (void)prepareSplitContentWidths:(CGFloat)workspaceWidth {
+  CGFloat available = MAX(0, workspaceWidth - self.palette.space5);
+  CGFloat minimum = MIN(self.palette.windowMinimumWidth, available * 0.35);
+  CGFloat left = MAX(minimum, MIN(available - minimum, available * self.splitWorkspace.fraction));
+  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+    if (presentation.chatWorkspace.isHiddenOrHasHiddenAncestor) continue;
+    CGFloat paneWidth = presentation.chatWorkspace.superview == self.splitWorkspace.rightHost ? available - left : left;
+    presentation.messageInputWidthConstraint.constant = MAX(0, MIN(self.palette.messageInputMaxWidth, paneWidth - self.palette.space11 * 2));
+  }
+  for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
+    TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
+    if (runtime.contentView.isHiddenOrHasHiddenAncestor) continue;
+    CGFloat paneWidth = runtime.contentView.superview == self.splitWorkspace.rightHost ? available - left : left;
+    [(TLBrowserTabController *)runtime.featureController setAddressInputWidth:MAX(0, MIN(self.palette.messageInputMaxWidth, paneWidth - self.palette.space11 * 2))];
+  }
+}
+- (void)updateSplitContentSizes {
+  if (self.updatingSplitLayout || !self.splitWorkspace) return;
+  self.updatingSplitLayout = YES;
+  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+    if (presentation.chatWorkspace.isHiddenOrHasHiddenAncestor) continue;
+    [self withChatPresentation:presentation perform:^{
+      CGFloat available = NSWidth(self.chatWorkspace.superview.bounds) - self.palette.space11 * 2;
+      CGFloat width = MAX(0, MIN(self.palette.messageInputMaxWidth, available));
+      BOOL changed = fabs(self.messageInputWidthConstraint.constant - width) > 0.5;
+      self.messageInputWidthConstraint.constant = width;
+      if (changed) {
+        [self.messageInput recalculateHeight];
+        [self updateMessageScrollInsets];
+        [self resetMessageRowCache];
+        [self renderMessagesScrollingToBottom:NO];
+      }
+    }];
+  }
+  for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
+    TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
+    if (runtime.contentView.isHiddenOrHasHiddenAncestor) continue;
+    CGFloat width = MAX(0, MIN(self.palette.messageInputMaxWidth, NSWidth(runtime.contentView.superview.bounds) - self.palette.space11 * 2));
+    [(TLBrowserTabController *)runtime.featureController setAddressInputWidth:width];
+  }
+  self.updatingSplitLayout = NO;
+}
+
+- (TLWorkspaceTab *)splitCompanionForTab:(TLWorkspaceTab *)tab preferred:(TLWorkspaceTab *)preferred {
+  TLWorkspaceSplitGroup *group = [self.splitState groupForTab:tab];
+  NSString *identity = TLWorkspaceTabIdentity(tab);
+  if (group) return [self tabWithPresentationIdentity:[identity isEqual:group.leftIdentity] ? group.rightIdentity : group.leftIdentity];
+  TLWorkspaceTab *currentPreferred = preferred ? [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(preferred)] : nil;
+  if (currentPreferred && ![TLWorkspaceTabIdentity(currentPreferred) isEqual:identity]) return currentPreferred;
+  NSArray *tabs = [self workspaceTabs];
+  NSUInteger index = [tabs indexOfObjectPassingTest:^BOOL(TLWorkspaceTab *candidate, NSUInteger i, BOOL *stop) {
+    return [TLWorkspaceTabIdentity(candidate) isEqual:identity];
+  }];
+  if (tabs.count < 2 || index == NSNotFound) return nil;
+  return tabs[index > 0 ? index - 1 : 1];
+}
+- (void)splitTab:(TLWorkspaceTab *)tab besideTab:(TLWorkspaceTab *)other onLeft:(BOOL)left {
+  tab = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(tab)];
+  other = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(other)];
+  if (!tab || !other || [TLWorkspaceTabIdentity(tab) isEqual:TLWorkspaceTabIdentity(other)]) return;
+  // Materialize both chat presentations before exposing the pair.
+  if (other.kind == TLWorkspaceTabKindChat && !self.chatPresentations[@(other.tabID)]) [self loadChatWithID:other.tabID];
+  if (tab.kind == TLWorkspaceTabKindChat && !self.chatPresentations[@(tab.tabID)]) [self loadChatWithID:tab.tabID];
+  [self.splitState splitTab:tab besideTab:other onLeft:left];
+  [self focusWorkspaceTab:tab];
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
+}
+- (void)workspaceTabsController:(TLWorkspaceTabsController *)controller willSelectTab:(TLWorkspaceTab *)tab {
+  self.tabBeforePointerSelection = [self activeWorkspaceTab];
+}
+- (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller dragTab:(TLWorkspaceTab *)tab atWindowPoint:(NSPoint)point {
+  NSPoint topbarPoint = [self.topbar convertPoint:point fromView:nil];
+  BOOL outside = !NSPointInRect(topbarPoint, NSInsetRect(self.topbar.bounds, 0, -self.palette.space3));
+  if (!outside) {
+    [self.splitWorkspace clearDropPreview]; self.splitDropSide = TLSplitDropSideNone;
+    self.splitDropTarget = nil;
+    [self focusWorkspaceTab:tab];
+    return NO;
+  }
+  self.splitDropTarget = [self splitCompanionForTab:tab preferred:self.tabBeforePointerSelection];
+  NSPoint local = [self.splitWorkspace convertPoint:point fromView:nil];
+  self.splitDropSide = self.splitDropTarget ? [self.splitWorkspace dropSideAtPoint:local] : TLSplitDropSideNone;
+  if (self.splitDropTarget && NSPointInRect(local, self.splitWorkspace.bounds)) [self focusWorkspaceTab:self.splitDropTarget];
+  [self.splitWorkspace showDropSide:self.splitDropSide title:[self displayTitleForWorkspaceTab:tab] point:local];
+  return YES;
+}
+- (void)workspaceTabsController:(TLWorkspaceTabsController *)controller endDraggingTab:(TLWorkspaceTab *)tab cancelled:(BOOL)cancelled {
+  TLWorkspaceTab *other = self.splitDropTarget;
+  TLSplitDropSide side = self.splitDropSide;
+  [self.splitWorkspace clearDropPreview];
+  self.splitDropTarget = nil; self.splitDropSide = TLSplitDropSideNone;
+  if (!cancelled && side != TLSplitDropSideNone && other) [self splitTab:tab besideTab:other onLeft:side == TLSplitDropSideLeft];
+  else if (other) [self focusWorkspaceTab:self.tabBeforePointerSelection ?: tab];
+  self.tabBeforePointerSelection = nil;
+}
+- (NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller splitMenuForTab:(TLWorkspaceTab *)tab {
+  NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
+  if ([self.splitState groupForTab:tab]) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Separate Split View" action:@selector(separateSplitFromMenu:) keyEquivalent:@""];
+    item.target = self; item.representedObject = tab; [menu addItem:item];
+  }
+  TLWorkspaceTab *other = [self splitCompanionForTab:tab preferred:[self activeWorkspaceTab]];
+  for (NSNumber *left in @[@YES, @NO]) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:left.boolValue ? @"Open in Split View on Left" : @"Open in Split View on Right"
+      action:@selector(splitTabFromMenu:) keyEquivalent:@""];
+    item.target = self; item.enabled = other != nil;
+    item.representedObject = @{ @"tab":tab, @"left":left };
+    [menu addItem:item];
+  }
+  return menu;
+}
+- (void)splitTabFromMenu:(NSMenuItem *)sender {
+  TLWorkspaceTab *tab = sender.representedObject[@"tab"];
+  TLWorkspaceTab *other = [self splitCompanionForTab:tab preferred:[self activeWorkspaceTab]];
+  if (other) [self splitTab:tab besideTab:other onLeft:[sender.representedObject[@"left"] boolValue]];
+}
+- (void)separateSplitFromMenu:(NSMenuItem *)sender {
+  TLWorkspaceTab *tab = sender.representedObject;
+  [self.splitState removeGroupForTab:tab]; [self focusWorkspaceTab:tab];
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs];
+}
+
 - (void)updateWorkspaceMode {
-  self.chatWorkspace.hidden = ![self isChatWorkspaceActive];
-  BOOL historyVisible = [self isHistoryScreenActive];
-  self.historyPanelController.panelView.hidden = !historyVisible;
+  if (self.updatingSplitLayout) return;
+  self.updatingSplitLayout = YES;
+  self.displayedWorkspaceTab = [self activeWorkspaceTab];
+  [self.splitState reconcileTabs:[self workspaceTabs]];
+  TLWorkspaceTab *active = [self activeWorkspaceTab];
+  TLWorkspaceSplitGroup *group = [self.splitState groupForTab:active];
+  TLWorkspaceTab *left = group ? [self tabWithPresentationIdentity:group.leftIdentity] : active;
+  TLWorkspaceTab *right = group ? [self tabWithPresentationIdentity:group.rightIdentity] : nil;
+  self.splitWorkspace.split = group != nil;
+  if (group) self.splitWorkspace.fraction = group.fraction;
+  self.splitWorkspace.rightFocused = right && [TLWorkspaceTabIdentity(right) isEqual:TLWorkspaceTabIdentity(active)];
+  self.splitWorkspace.leftTitle = left ? [self displayTitleForWorkspaceTab:left] : @"";
+  self.splitWorkspace.rightTitle = right ? [self displayTitleForWorkspaceTab:right] : @"";
+  NSView *leftView = [self contentViewForTab:left];
+  NSView *rightView = [self contentViewForTab:right];
+  // Only visible content participates in pane layout. Hidden feature screens
+  // can carry their own minimum widths; retain them in their runtimes instead
+  // of letting those constraints enlarge a different tab's split.
+  NSMutableSet<NSView *> *contentViews = [NSMutableSet set];
+  for (TLWorkspaceTabRuntime *runtime in self.workspaceTabRuntimes.allValues)
+    if (runtime.contentView) [contentViews addObject:runtime.contentView];
+  for (TLChatPresentation *presentation in self.chatPresentations.allValues)
+    if (presentation.chatWorkspace) [contentViews addObject:presentation.chatWorkspace];
+  if (self.chatWorkspace) [contentViews addObject:self.chatWorkspace];
+  if (self.historyPanelController.panelView) [contentViews addObject:self.historyPanelController.panelView];
+  for (NSView *view in contentViews) {
+    BOOL visible = view == leftView || view == rightView;
+    view.hidden = !visible;
+    if (!visible) [view removeFromSuperview];
+  }
+  [self mountWorkspaceView:leftView inHost:self.splitWorkspace.leftHost];
+  [self mountWorkspaceView:rightView inHost:self.splitWorkspace.rightHost];
+  leftView.hidden = NO; rightView.hidden = NO;
+  BOOL historyVisible = left.kind == TLWorkspaceTabKindHistory || (right && right.kind == TLWorkspaceTabKindHistory);
   BOOL refreshHistory = historyVisible && (!self.historyWasVisible || self.historyAgentID != self.database.currentAgentID);
   self.historyWasVisible = historyVisible;
   if (refreshHistory) [self refreshHermesHistory];
-  TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
-  [self contentViewForTab:self.settingsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindSettings);
-  [self contentViewForTab:self.agentsTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindAgents);
-  [self contentViewForTab:self.debugTab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindDebug);
-
-  for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
-    [self contentViewForTab:tab].hidden = !(snapshot.activeTabKind == TLWorkspaceTabKindBrowser && snapshot.activeTabID == tab.tabID);
-  }
-
-  if ([self isHistoryScreenActive]) {
-    [self.historyPanelController deselectAll];
-  }
+  [self.splitWorkspace layoutSubtreeIfNeeded];
+  self.updatingSplitLayout = NO;
+  [self updateSplitContentSizes];
 }
 
 - (void)reloadWorkspaceTabs {
@@ -5066,6 +5446,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.contentShadowView.layer.shadowOpacity = 0.0;
   self.contentHost.fillColor = self.palette.tabBackground;
   self.workspaceOutline.palette = self.palette;
+  self.splitWorkspace.palette = self.palette;
   self.contentHost.layer.masksToBounds = YES;
   [self applyContentTopLeftCornerRadius:self.palette.space5];
   self.sidebarView.fillColor = self.palette.appBackground;
@@ -5134,6 +5515,18 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self resetMessageRowCache];
   [self renderMessages];
   [self updateControlStates];
+  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+    if (presentation == self.chatPresentation) continue;
+    [self withChatPresentation:presentation perform:^{
+      self.messagesBackground.fillColor = self.palette.tabBackground;
+      self.messageStack.spacing = self.palette.messageVerticalSpacing;
+      self.messageInput.palette = self.palette;
+      [self applySlashCommandListPalette];
+      [self.screensaverView updateBackgroundColor:self.palette.messagesSurface artColor:self.palette.textMuted];
+      [self resetMessageRowCache];
+      [self renderMessagesScrollingToBottom:NO];
+    }];
+  }
   [self.notchOverlayController updatePalette:self.palette];
   [self layoutTrafficLightButtons];
   [self updateMessageInputWidthForWindowWidth:NSWidth(self.window.frame)];
@@ -5240,7 +5633,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   NSString *prompt = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  BOOL chatActive = [self isChatWorkspaceActive];
+  BOOL chatActive = [self isChatPresentationVisible];
   if (!chatActive || prompt.length == 0 || self.isSending) {
     [self hideSlashCommandList];
   }
