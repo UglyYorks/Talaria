@@ -397,7 +397,8 @@ for line in sys.stdin:
     print(json.dumps({'jsonrpc': '2.0', 'method': 'event', 'params': {'session_id': 'live', 'type': 'message.delta', 'payload': {'text': 'event'}}}), flush=True)
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {'method': request['method']}}), flush=True)
 """)
-            gateway = HermesGateway(sys.executable, {**os.environ, 'PYTHONPATH': str(root)}, home)
+            gateway = HermesGateway(sys.executable, {**os.environ, 'PYTHONPATH': str(root)}, home,
+                                    entry_module='tui_gateway.entry')
             try:
                 events = queue.Queue()
                 gateway.listeners['live'] = events
@@ -564,6 +565,31 @@ class CredentialRPCTests(unittest.TestCase):
         with patch("talaria_gateway_entry.credentials", side_effect=RuntimeError("test-secret")):
             handlers["talaria.credentials.set"](1, {"value": "test-secret"})
         self.assertNotIn("test-secret", str(server._err.call_args))
+
+    def test_entry_registers_credentials_and_automations_and_stops_scheduler(self):
+        import types
+        from talaria_gateway_entry import main
+        for failure in (None, RuntimeError("gateway stopped")):
+            with self.subTest(failure=failure):
+                handlers = {}
+                server = Mock(_LONG_HANDLERS=frozenset())
+                server.method.side_effect = lambda name: lambda fn: handlers.update({name: fn})
+                entry = types.SimpleNamespace(server=server, main=Mock(side_effect=failure))
+                automations = Mock()
+                automations.preference.exists.return_value = False
+                with patch.dict(sys.modules, {"tui_gateway": types.SimpleNamespace(entry=entry)}), \
+                     patch.dict(os.environ, {"HERMES_HOME": "/tmp/talaria-entry-test"}), \
+                     patch("hermes_automations.Automations", return_value=automations):
+                    if failure:
+                        with self.assertRaisesRegex(RuntimeError, "gateway stopped"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(set(handlers), {"talaria.credentials.list", "talaria.credentials.set",
+                                                "talaria.credentials.remove", "talaria.automations"})
+                self.assertIn("talaria.automations", server._LONG_HANDLERS)
+                entry.main.assert_called_once_with()
+                automations.stop_event.set.assert_called_once_with()
 
     def test_worker_uses_gateway_and_returns_structured_response(self):
         gateway = Mock()

@@ -562,6 +562,21 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   });
 }
 
+- (void)hermesAutomationsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
+                                  token:(NSString *)token model:(NSString *)model
+                             completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
+  // Pin every operation to the agent displayed by the tab, even if the current
+  // agent changes while its VM is starting or a request is in flight.
+  [self startAgentWithID:agentID completion:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(hermesAutomationsWithAgent:parameters:token:model:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to manage Hermes automations."));
+      return;
+    }
+    [self.agentClient hermesAutomationsWithAgent:agent parameters:parameters token:token model:model completion:completion];
+  }];
+}
+
 - (void)hermesCredentialsWithAction:(NSString *)action key:(NSString *)key value:(NSString *)value
                               token:(NSString *)token
                          completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {

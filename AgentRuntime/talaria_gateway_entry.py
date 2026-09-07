@@ -1,4 +1,4 @@
-"""Register Talaria credential RPCs inside the installed Hermes TUI gateway.
+"""Register Talaria credential and automation RPCs in Hermes's TUI gateway.
 
 Hermes Client's Tools & Keys uses the installed OPTIONAL_ENV_VARS registry and
 Hermes's env store. Expose those same owners over stdio JSON-RPC, without a web
@@ -6,6 +6,7 @@ server, provider HTTP transport, shell commands, or a second credential store.
 """
 import contextlib
 import io
+import os
 import sys
 import threading
 
@@ -72,7 +73,16 @@ def register(server):
         server.method("talaria.credentials." + action)(handler)
 
 
-if __name__ == "__main__":
+def main():
     from tui_gateway import entry
+    from hermes_automations import register as register_automations
     register(entry.server)
-    entry.main()
+    automations = register_automations(entry.server, os.environ["HERMES_HOME"])
+    try:
+        entry.main()
+    finally:
+        automations.stop_event.set()
+
+
+if __name__ == "__main__":
+    main()

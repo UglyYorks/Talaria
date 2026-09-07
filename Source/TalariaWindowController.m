@@ -1,3 +1,4 @@
+#import "TLAutomationsTabController.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLInputSuggestionListView.h"
@@ -155,6 +156,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong, nullable) TLWorkspaceTab *settingsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *agentsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *debugTab;
+@property (nonatomic, strong, nullable) TLWorkspaceTab *automationsTab;
+@property (nonatomic, strong, nullable) TLAutomationsTabController *automationsController;
 @property (nonatomic, strong) TLChatRecord *activeChat;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<NSURL *> *> *attachmentDrafts;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *attachmentPromptDrafts;
@@ -208,6 +211,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackHeightConstraint;
+@property (nonatomic, strong) TLSidebarNavigationButton *sidebarAutomationsButton;
 @property (nonatomic, strong) TLSidebarUserButton *sidebarUserButton;
 @property (nonatomic, strong) TLSidebarResizeHandle *sidebarResizeHandle;
 @property (nonatomic) CGFloat sidebarPreferredWidth;
@@ -738,6 +742,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     case TLWorkspaceTabKindSettings: [self showSettings:self]; break;
     case TLWorkspaceTabKindAgents: [self showAgents:self]; break;
     case TLWorkspaceTabKindDebug: [self showDebug:self]; break;
+    case TLWorkspaceTabKindAutomations: [self showAutomations:self]; break;
   }
   if (tab && [self.appStateManager hasWorkspaceTabWithKind:tab.kind tabID:tab.tabID]) {
     [self workspaceTabsController:self.workspaceTabsController moveTab:tab
@@ -1278,8 +1283,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [actionStack setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                        forOrientation:NSLayoutConstraintOrientationVertical];
 
+  self.sidebarAutomationsButton = [[TLSidebarNavigationButton alloc] init];
+  self.sidebarAutomationsButton.palette = self.palette;
+  self.sidebarAutomationsButton.title = @"Automations";
+  self.sidebarAutomationsButton.systemIconName = @"clock.arrow.circlepath";
+  self.sidebarAutomationsButton.accessorySystemIconName = @"arrow.up.right.square";
+  self.sidebarAutomationsButton.target = self;
+  self.sidebarAutomationsButton.action = @selector(showAutomations:);
+  self.sidebarAutomationsButton.toolTip = @"Open Automations";
+  [self.sidebarAutomationsButton setAccessibilityLabel:@"Automations"];
+  [self.sidebarAutomationsButton setAccessibilityRole:NSAccessibilityButtonRole];
   self.sidebarUserButton = [self sidebarUserButtonWithDisplayName:@"Yaroslav"];
 
+  [actionStack addArrangedSubview:self.sidebarAutomationsButton];
+  [self.sidebarAutomationsButton.trailingAnchor constraintEqualToAnchor:actionStack.trailingAnchor].active = YES;
   [actionStack addArrangedSubview:self.sidebarUserButton];
   [self.sidebarUserButton.trailingAnchor constraintLessThanOrEqualToAnchor:actionStack.trailingAnchor].active = YES;
   return actionStack;
@@ -1805,6 +1822,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
           [self addWorkspaceContentView:runtime.contentView];
         }
         break;
+      case TLWorkspaceTabKindAutomations:
+        self.automationsTab = tab;
+        if (!runtime) {
+          runtime = [TLWorkspaceTabRuntime runtimeWithContentView:[self buildAutomationsContent]
+            openAction:@selector(showAutomations:) closeAction:@selector(closeAutomationsTab:)];
+          [self setRuntime:runtime forTab:tab];
+        }
+        if (runtime.contentView) [self addWorkspaceContentView:runtime.contentView];
+        break;
       case TLWorkspaceTabKindDebug:
         self.debugTab = tab;
         if (!runtime) {
@@ -1844,6 +1870,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self showSettings:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindAgents) {
     [self showAgents:self];
+  } else if (snapshot.activeTabKind == TLWorkspaceTabKindAutomations) {
+    [self showAutomations:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindDebug) {
     [self showDebug:self];
   }
@@ -3295,6 +3323,48 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self updateControlStates];
 }
 
+- (NSView *)buildAutomationsContent {
+  __weak typeof(self) weakSelf = self;
+  NSArray *agents = [self.agentOrchestrator listAgents:nil] ?: @[];
+  NSInteger agentID = self.database.currentAgentID;
+  if (!agentID) agentID = [(TLAgentRecord *)agents.lastObject agentID];
+  self.automationsController = [[TLAutomationsTabController alloc] initWithPalette:self.palette
+    agents:agents agentID:agentID request:^(NSInteger selectedAgentID, NSDictionary *parameters, TLAutomationReply reply) {
+      typeof(self) controller = weakSelf;
+      if (!controller) return;
+      [controller.agentOrchestrator hermesAutomationsWithParameters:parameters agentID:selectedAgentID
+        token:controller.settings.openRouterToken model:controller.settings.selectedModel completion:reply];
+    }];
+  return self.automationsController.view;
+}
+
+- (void)showAutomations:(id)sender {
+  if (self.widgetbookMode) return;
+  if (!self.automationsTab) {
+    NSView *content = [self buildAutomationsContent];
+    self.automationsTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindAutomations tabID:0
+      title:@"Automations" toolTip:@"Hermes scheduled jobs" URL:nil closeable:YES];
+    [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:content
+      openAction:@selector(showAutomations:) closeAction:@selector(closeAutomationsTab:)] forTab:self.automationsTab];
+    [self addWorkspaceContentView:content];
+    [self.appStateManager addWorkspaceTab:self.automationsTab activate:NO];
+  }
+  [self activateTabKind:TLWorkspaceTabKindAutomations tabID:self.automationsTab.tabID];
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
+  [self.automationsController refresh:nil];
+}
+
+- (void)closeAutomationsTab:(id)sender {
+  if (!self.automationsTab || [self closeWindowIfOnlyWorkspaceTab:self.automationsTab]) return;
+  [self rememberClosedWorkspaceTab:self.automationsTab];
+  [self.automationsController close];
+  [self.appStateManager removeWorkspaceTabWithKind:self.automationsTab.kind tabID:self.automationsTab.tabID];
+  [[self contentViewForTab:self.automationsTab] removeFromSuperview];
+  [self removeRuntimeForKind:self.automationsTab.kind tabID:self.automationsTab.tabID];
+  self.automationsTab = nil; self.automationsController = nil;
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
+}
+
 - (void)showDebug:(id)sender {
   if (self.widgetbookMode) {
     return;
@@ -4681,7 +4751,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (CGFloat)sidebarActionStackHeight {
-  return self.sidebarUserButton.intrinsicContentSize.height;
+  return self.sidebarAutomationsButton.intrinsicContentSize.height +
+    self.sidebarActionStack.spacing + self.sidebarUserButton.intrinsicContentSize.height;
 }
 
 - (CGFloat)currentSidebarContentWidth {
@@ -4917,6 +4988,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
   if (tab.kind == TLWorkspaceTabKindSettings) runtime.featureController = self.settingsTabController;
+  if (tab.kind == TLWorkspaceTabKindAutomations) runtime.featureController = self.automationsController;
   self.workspaceTabRuntimes[TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID)] = runtime;
 }
 
@@ -5074,6 +5146,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return @"gearshape";
     case TLWorkspaceTabKindAgents:
       return @"cpu";
+    case TLWorkspaceTabKindAutomations:
+      return @"clock.arrow.circlepath";
     case TLWorkspaceTabKindDebug:
       return @"terminal";
     case TLWorkspaceTabKindChat:
@@ -5185,6 +5259,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindAgents &&
         self.agentsTab &&
         self.appStateManager.snapshot.activeTabID == self.agentsTab.tabID;
+    case TLWorkspaceTabKindAutomations:
+      return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindAutomations &&
+        self.automationsTab && self.appStateManager.snapshot.activeTabID == self.automationsTab.tabID;
     case TLWorkspaceTabKindDebug:
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindDebug &&
         self.debugTab &&
@@ -5476,10 +5553,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)styleSidebarActionButtons {
   self.sidebarActionStack.spacing = self.palette.space0;
   [self updateSidebarContentInsets];
-  self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
 
+  self.sidebarAutomationsButton.palette = self.palette;
+  // This row opens a tab; the tab strip owns the persistent selection state.
+  self.sidebarAutomationsButton.selected = NO;
   self.sidebarUserButton.palette = self.palette;
   self.sidebarUserButton.displayName = @"Yaroslav";
+  self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
 }
 
 - (void)updateSidebarContentInsets {
@@ -5756,6 +5836,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.widgetbookMode) {
     self.createChatButton.enabled = NO;
     self.sidebarToggleButton.enabled = NO;
+    self.sidebarAutomationsButton.enabled = NO;
     self.sidebarUserButton.enabled = NO;
     self.sendButton.enabled = NO;
     self.messageInput.attachmentsEditable = NO;
@@ -5778,6 +5859,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
+  self.sidebarAutomationsButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
   self.messageInput.showsStopButton = [self canStopResponse];
   BOOL hasAttachments = self.messageInput.attachmentURLs.count > 0;
