@@ -211,6 +211,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackHeightConstraint;
+@property (nonatomic, strong) TLSidebarNavigationButton *sidebarAutomationsButton;
 @property (nonatomic, strong) TLSidebarUserButton *sidebarUserButton;
 @property (nonatomic, strong) TLSidebarResizeHandle *sidebarResizeHandle;
 @property (nonatomic) CGFloat sidebarPreferredWidth;
@@ -1282,8 +1283,20 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [actionStack setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                        forOrientation:NSLayoutConstraintOrientationVertical];
 
+  self.sidebarAutomationsButton = [[TLSidebarNavigationButton alloc] init];
+  self.sidebarAutomationsButton.palette = self.palette;
+  self.sidebarAutomationsButton.title = @"Automations";
+  self.sidebarAutomationsButton.systemIconName = @"clock.arrow.circlepath";
+  self.sidebarAutomationsButton.accessorySystemIconName = @"arrow.up.right.square";
+  self.sidebarAutomationsButton.target = self;
+  self.sidebarAutomationsButton.action = @selector(showAutomations:);
+  self.sidebarAutomationsButton.toolTip = @"Open Automations";
+  [self.sidebarAutomationsButton setAccessibilityLabel:@"Automations"];
+  [self.sidebarAutomationsButton setAccessibilityRole:NSAccessibilityButtonRole];
   self.sidebarUserButton = [self sidebarUserButtonWithDisplayName:@"Yaroslav"];
 
+  [actionStack addArrangedSubview:self.sidebarAutomationsButton];
+  [self.sidebarAutomationsButton.trailingAnchor constraintEqualToAnchor:actionStack.trailingAnchor].active = YES;
   [actionStack addArrangedSubview:self.sidebarUserButton];
   [self.sidebarUserButton.trailingAnchor constraintLessThanOrEqualToAnchor:actionStack.trailingAnchor].active = YES;
   return actionStack;
@@ -2015,12 +2028,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   historyItem.target = self;
   historyItem.image = [self symbolImageNamed:@"clock" accessibilityDescription:@"History"];
   [menu addItem:historyItem];
-
-  NSMenuItem *automationsItem = [[NSMenuItem alloc] initWithTitle:@"Automations"
-    action:@selector(showAutomations:) keyEquivalent:@""];
-  automationsItem.target = self;
-  automationsItem.image = [self symbolImageNamed:@"clock.arrow.circlepath" accessibilityDescription:@"Automations"];
-  [menu addItem:automationsItem];
 
   NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:@"Debug"
                                                      action:@selector(showDebug:)
@@ -4744,7 +4751,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (CGFloat)sidebarActionStackHeight {
-  return self.sidebarUserButton.intrinsicContentSize.height;
+  return self.sidebarAutomationsButton.intrinsicContentSize.height +
+    self.sidebarActionStack.spacing + self.sidebarUserButton.intrinsicContentSize.height;
 }
 
 - (CGFloat)currentSidebarContentWidth {
@@ -5545,10 +5553,13 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)styleSidebarActionButtons {
   self.sidebarActionStack.spacing = self.palette.space0;
   [self updateSidebarContentInsets];
-  self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
 
+  self.sidebarAutomationsButton.palette = self.palette;
+  // This row opens a tab; the tab strip owns the persistent selection state.
+  self.sidebarAutomationsButton.selected = NO;
   self.sidebarUserButton.palette = self.palette;
   self.sidebarUserButton.displayName = @"Yaroslav";
+  self.sidebarActionStackHeightConstraint.constant = [self sidebarActionStackHeight];
 }
 
 - (void)updateSidebarContentInsets {
@@ -5825,6 +5836,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (self.widgetbookMode) {
     self.createChatButton.enabled = NO;
     self.sidebarToggleButton.enabled = NO;
+    self.sidebarAutomationsButton.enabled = NO;
     self.sidebarUserButton.enabled = NO;
     self.sendButton.enabled = NO;
     self.messageInput.attachmentsEditable = NO;
@@ -5847,6 +5859,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
+  self.sidebarAutomationsButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
   self.messageInput.showsStopButton = [self canStopResponse];
   BOOL hasAttachments = self.messageInput.attachmentURLs.count > 0;
