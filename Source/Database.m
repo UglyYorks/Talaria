@@ -124,7 +124,8 @@ static NSString *TLTitleFromMessage(NSString *content) {
     settings.openRouterToken = token ?: @"";
     settings.selectedModel = values[@"selectedModel"] ?: TLDefaultModelID;
     settings.supportingModel = values[@"supportingModel"] ?: TLDefaultSupportingModelID;
-    settings.theme = TLThemePreferenceFromString(values[@"theme"] ?: @"system");
+    // Older versions stored a manual override. Talaria now always follows macOS.
+    settings.theme = TLThemePreferenceSystem;
     settings.onboardingCompleted = [values[@"onboardingCompleted"] isEqualToString:@"true"];
     return settings;
   }
@@ -134,7 +135,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
   @synchronized (self) {
     NSString *selectedModel = TLNonBlank(settings.selectedModel, TLDefaultModelID);
     NSString *supportingModel = TLNonBlank(settings.supportingModel, TLDefaultSupportingModelID);
-    NSString *theme = TLStringFromThemePreference(settings.theme);
+    NSString *theme = @"system";
     NSString *token = settings.rememberOpenRouterToken ? TLTrimmedString(settings.openRouterToken) : nil;
     NSError *credentialError = nil;
     NSString *previousToken = [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount error:&credentialError];

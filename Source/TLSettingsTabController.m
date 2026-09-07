@@ -16,7 +16,6 @@
 @property (nonatomic, strong) TLSettingsWorkspaceView *workspace;
 @property (nonatomic, strong) NSSecureTextField *tokenField;
 @property (nonatomic, strong) NSButton *rememberButton;
-@property (nonatomic, strong) NSPopUpButton *themePopup;
 @property (nonatomic, strong) TLThemedButton *saveButton;
 @property (nonatomic, strong) NSTextField *footerLabel;
 @property (nonatomic, strong) NSMutableArray<TLThemedButton *> *buttons;
@@ -60,10 +59,9 @@
   return self;
 }
 
-- (NSArray<NSString *> *)pageNames { return @[@"Model", @"Appearance", @"Browser", @"Tools & Keys"]; }
+- (NSArray<NSString *> *)pageNames { return @[@"Model", @"Browser", @"Tools & Keys"]; }
 - (NSArray<NSString *> *)pageDescriptions {
   return @[@"Choose the models and provider behind your conversations.",
-           @"Make Talaria feel at home on your Mac.",
            @"Manage the browser profile used by your Talaria tabs.",
            @"Connect your tools with credentials stored in Hermes."];
 }
@@ -154,7 +152,7 @@
   NSTextField *title = [self labelWithString:@"Settings" font:self.palette.titleFont colorToken:@"appText"];
   NSTextField *label = [self labelWithString:@"YOUR WORKSPACE" font:self.palette.smallFont colorToken:@"textMuted"];
   NSMutableArray *items = [NSMutableArray arrayWithObjects:title, label, nil];
-  NSArray *icons = @[@"cube", @"paintpalette", @"globe", @"key.horizontal"];
+  NSArray *icons = @[@"cube", @"globe", @"key.horizontal"];
   for (NSUInteger i = 0; i < self.pageNames.count; i++) {
     TLSidebarNavigationButton *button = [[TLSidebarNavigationButton alloc] init];
     button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -192,7 +190,6 @@
   [self.footerLabel setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
   [self.footerLabel setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
   self.pages[@"Model"] = [self buildModelPage];
-  self.pages[@"Appearance"] = [self buildAppearancePage];
   [self showPageAtIndex:0];
 }
 
@@ -225,24 +222,13 @@
   NSView *runtime = [self card:@"Hermes runtime" description:@"Set up a fresh Hermes VM for your agent." controls:@[setup]];
   return [self scrollPageWithStack:[self stack:@[provider, modelCards[0], modelCards[1], runtime] vertical:YES]];
 }
-- (NSView *)buildAppearancePage {
-  self.themePopup = [[NSPopUpButton alloc] init];
-  self.themePopup.translatesAutoresizingMaskIntoConstraints = NO;
-  [self.themePopup addItemsWithTitles:@[@"System", @"Light", @"Dark"]];
-  [self.themePopup selectItemAtIndex:self.draftSettings.theme];
-  self.themePopup.font = self.palette.bodyFont;
-  self.themePopup.accessibilityLabel = @"Theme";
-  return [self scrollPageWithStack:[self stack:@[[self card:@"Theme"
-    description:@"Follow your Mac’s appearance, or choose a light or dark workspace."
-    controls:@[self.themePopup]]] vertical:YES]];
-}
 - (void)selectPage:(id)sender {
   [self showPageAtIndex:sender == self.workspace.pageMenu ? self.workspace.pageMenu.indexOfSelectedItem : [sender tag]];
 }
 - (void)showPageAtIndex:(NSInteger)index {
   if (self.isClosed || index < 0 || index >= (NSInteger)self.pageNames.count) return;
   self.selectedPage = self.pageNames[index];
-  if (!self.pages[self.selectedPage]) self.pages[self.selectedPage] = index == 2 ? [self buildBrowserPage] : [self buildCredentialsPage];
+  if (!self.pages[self.selectedPage]) self.pages[self.selectedPage] = [self.selectedPage isEqual:@"Browser"] ? [self buildBrowserPage] : [self buildCredentialsPage];
   NSView *page = self.pages[self.selectedPage];
   if (!page.superview) [self pin:page in:self.workspace.pageHost inset:0];
   for (NSString *name in self.pages) self.pages[name].hidden = ![name isEqual:self.selectedPage];
@@ -250,10 +236,10 @@
   [self.workspace.pageMenu selectItemAtIndex:index];
   self.workspace.pageTitle.stringValue = self.selectedPage;
   self.workspace.pageDescription.stringValue = self.pageDescriptions[index];
-  self.workspace.footer.hidden = index >= 2;
+  self.workspace.footer.hidden = ![self.selectedPage isEqual:@"Model"];
   self.workspace.needsLayout = YES;
   self.footerLabel.stringValue = @"Changes apply when saved.";
-  if (index == 3 && !self.credentialBusy && (!self.credentials || self.credentialAgentID != self.database.currentAgentID)) [self reloadCredentials:nil];
+  if ([self.selectedPage isEqual:@"Tools & Keys"] && !self.credentialBusy && (!self.credentials || self.credentialAgentID != self.database.currentAgentID)) [self reloadCredentials:nil];
 }
 
 - (void)updateModelLabelsInView:(NSView *)view {
@@ -288,7 +274,7 @@
     if (!self.largeModelChanged) self.draftSettings.selectedModel = latest.selectedModel;
     if (!self.smallModelChanged) self.draftSettings.supportingModel = latest.supportingModel;
   }
-  self.draftSettings.theme = self.themePopup.indexOfSelectedItem;
+  self.draftSettings.theme = TLThemePreferenceSystem;
   NSError *error = nil;
   TLAppSettings *saved = [self.database saveAppSettings:self.draftSettings error:&error];
   if (!saved) { if (self.errorHandler) self.errorHandler(error.localizedDescription ?: @"Could not save settings."); return; }

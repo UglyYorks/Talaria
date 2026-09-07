@@ -1594,6 +1594,7 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   NSWindow *window = HostController(controller);
   TLSettingsWorkspaceView *shell = [controller valueForKey:@"workspace"];
   NSArray<TLSidebarNavigationButton *> *nav = [controller valueForKey:@"navigation"];
+  Check([[nav valueForKey:@"title"] isEqual:@[@"Model", @"Browser", @"Tools & Keys"]], @"settings navigation contains no app appearance page");
   Check(nav[0].isAccessibilityElement && [nav[0].accessibilityLabel isEqual:@"Model"], @"settings navigation is exposed to assistive technology");
   for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
     TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
@@ -1614,7 +1615,7 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
     }
   }
   [window setContentSize:NSMakeSize(1100, 780)]; SettingsTick(window);
-  [NSApp sendAction:nav[2].action to:nav[2].target from:nav[2]]; SettingsTick(window);
+  [NSApp sendAction:nav[1].action to:nav[1].target from:nav[1]]; SettingsTick(window);
   TLBrowserSettingsController *browser = [controller valueForKey:@"browserSettingsController"];
   NSDictionary *browserControls = [browser valueForKey:@"controls"];
   Check(browserControls.count == TLBrowserPreferences.catalogue.count && browserControls.count > 40, @"Browser has native controls instead of external settings links");
@@ -1681,7 +1682,7 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   [window setContentSize:NSMakeSize(1100,780)]; SettingsTick(window);
   Check(NSWidth([[browser valueForKey:@"rows"] frame]) > 700, @"browser settings use the available width for aligned columns");
   SettingsSnapshot(controller, window, @"settings-browser.png");
-  [NSApp sendAction:nav[3].action to:nav[3].target from:nav[3]];
+  [NSApp sendAction:nav[2].action to:nav[2].target from:nav[2]];
   Check([service.action isEqual:@"list"], @"tools loads credentials from the active Hermes agent");
   NSArray *entries = @[@{@"key": @"BRAVE_API_KEY", @"description": @"Web search with Brave Search.", @"category": @"tool", @"is_password": @YES, @"is_set": @YES, @"url": @"https://brave.com/search/api/"},
     @{@"key": @"FIRECRAWL_API_KEY", @"description": @"Read and extract content from websites.", @"category": @"tool", @"is_password": @YES, @"is_set": @NO},
@@ -1732,9 +1733,8 @@ static void TestSettingsThemeAndLateCatalogue(void) {
     palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
   NSWindow *window = HostController(controller);
   NSSecureTextField *token = [controller valueForKey:@"tokenField"];
-  NSPopUpButton *theme = [controller valueForKey:@"themePopup"];
   token.stringValue = @"test-only-unsaved-token";
-  [theme selectItemAtIndex:TLThemePreferenceDark];
+  [[controller valueForKey:@"draftSettings"] setTheme:TLThemePreferenceDark];
   [window makeFirstResponder:token];
   NSResponder *responder = window.firstResponder;
   NSView *view = controller.view;
@@ -1742,7 +1742,7 @@ static void TestSettingsThemeAndLateCatalogue(void) {
   [controller applyPalette:dark];
   Check(controller.view == view && [controller valueForKey:@"tokenField"] == token, @"settings theme keeps existing controls");
   Check([token.stringValue isEqualToString:@"test-only-unsaved-token"], @"settings drafts survive theme change");
-  Check(window.firstResponder == responder && theme.indexOfSelectedItem == TLThemePreferenceDark, @"settings focus and theme draft survive palette application");
+  Check(window.firstResponder == responder, @"settings focus survives system palette changes");
   Check([token.textColor isEqual:dark.controlText], @"settings controls update theme");
   Check(catalogue.pendingCatalogue == nil, @"settings only fetches the model catalogue when the picker opens");
   store.savedSettings = [TLAppSettings defaultSettings];
@@ -1752,7 +1752,7 @@ static void TestSettingsThemeAndLateCatalogue(void) {
   controller.settingsSavedHandler = ^(TLAppSettings *settings) { saved = settings; };
   NSButton *save = [controller valueForKey:@"saveButton"];
   [NSApp sendAction:save.action to:save.target from:save];
-  Check([saved.openRouterToken isEqualToString:token.stringValue] && saved.theme == TLThemePreferenceDark, @"settings saves current control drafts");
+  Check([saved.openRouterToken isEqualToString:token.stringValue] && saved.theme == TLThemePreferenceSystem, @"settings saves model drafts with the system color scheme");
   Check([saved.selectedModel isEqual:@"new/large"] && [saved.supportingModel isEqual:@"new/small"], @"stale settings draft cannot overwrite composer choices");
   [controller close];
   [window close];
@@ -2486,9 +2486,9 @@ static void TestWarmupAfterSettingsAndManualStart(void) {
   [controller buildSettingsTabContent];
   TLSettingsTabController *tab = [controller valueForKey:@"settingsTabController"];
   TLAppSettings *saved = [settings copy];
-  saved.theme = TLThemePreferenceDark;
+  saved.rememberOpenRouterToken = YES;
   tab.settingsSavedHandler(saved);
-  Check(controller.warmupCount == 0, @"theme-only settings do not warm or restart inference");
+  Check(controller.warmupCount == 0, @"credential-storage-only settings do not warm or restart inference");
   saved = [saved copy];
   saved.openRouterToken = @"new-token";
   tab.settingsSavedHandler(saved);

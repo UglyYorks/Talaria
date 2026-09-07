@@ -497,7 +497,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     _workspaceTabRuntimes = [NSMutableDictionary dictionary];
     _chatIconRequests = [NSMutableSet set];
     _settings = [TLAppSettings defaultSettings];
-    _palette = [TLThemePalette paletteForPreference:_settings.theme];
+    _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _sidebarPreferredWidth = _palette.sidebarWidth;
     _chats = [NSMutableArray array];
     _agents = [NSMutableArray array];
@@ -579,15 +579,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)handleEffectiveAppearanceChanged {
-  if (self.settings.theme != TLThemePreferenceSystem) {
-    return;
-  }
-
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (self.settings.theme != TLThemePreferenceSystem) {
-      return;
-    }
-
     [self applyTheme];
   });
 }
@@ -1730,7 +1722,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.settings = storedSettings;
-  self.palette = [TLThemePalette paletteForPreference:self.settings.theme];
+  self.palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
   self.chats = [loadedChats mutableCopy];
   self.agents = [loadedAgents mutableCopy];
   [self rebuildSidebarAgents];
@@ -3946,7 +3938,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     BOOL inferenceChanged = ![windowController.settings.openRouterToken isEqualToString:settings.openRouterToken] ||
       ![windowController.settings.selectedModel isEqualToString:settings.selectedModel];
     windowController.settings = settings;
-    windowController.palette = [TLThemePalette paletteForPreference:settings.theme];
     [windowController applyTheme];
     if (inferenceChanged) [windowController prepareHermesCommands];
   };
@@ -5499,17 +5490,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.sidebarAgentPaneSurface removeFromSuperview];
   self.sidebarAgentPaneSurface = nil;
   self.sidebarAgentPane = nil;
-  TLThemePreference themePreference = self.settings.theme;
-  NSAppearance *requestedAppearance = nil;
-  if (themePreference == TLThemePreferenceLight) {
-    requestedAppearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
-  } else if (themePreference == TLThemePreferenceDark) {
-    requestedAppearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-  }
-
-  self.window.appearance = requestedAppearance;
-  NSAppearance *effectiveAppearance = requestedAppearance ?: self.window.effectiveAppearance;
-  self.palette = [TLThemePalette paletteForPreference:themePreference effectiveAppearance:effectiveAppearance];
+  self.window.appearance = nil;
+  self.palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem effectiveAppearance:self.window.effectiveAppearance];
   [TLChromiumBrowserController.sharedController applyDarkAppearance:self.palette.dark];
   self.window.opaque = NO;
   self.window.backgroundColor = self.palette.appBackground;
