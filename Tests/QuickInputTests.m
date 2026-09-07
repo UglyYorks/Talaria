@@ -5,6 +5,8 @@
 #import "NotchOverlayController.h"
 #import "TLChatPresentation.h"
 #import "design_system/TLInputSuggestionListView.h"
+#import "design_system/TLScreenRegionSelectionView.h"
+#import "TLScreenCapture.h"
 
 static void Check(BOOL value, NSString *message) {
   if (!value) { NSLog(@"FAIL: %@", message); exit(1); }
@@ -29,6 +31,185 @@ static void Escape(TLQuickInputWindowController *controller) {
 - (void)openFromNotchOverlay:(id)sender;
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)files;
 @end
+
+@interface TLTestScreenCapture : TLScreenCapture
+@property (nonatomic) NSRect capturedRect;
+@property (nonatomic, copy) void (^pendingCompletion)(NSURL *, NSError *);
+@end
+@implementation TLTestScreenCapture
+- (void)captureRect:(NSRect)screenRect completion:(void (^)(NSURL *, NSError *))completion {
+  self.capturedRect = screenRect;
+  self.pendingCompletion = completion;
+}
+- (void)cancel {}
+@end
+
+// Keep real display geometry while exercising both camera configurations.
+@interface TLQuickInputTestScreen : NSObject
+@property (nonatomic, strong) NSScreen *screen;
+@property (nonatomic) NSEdgeInsets safeAreaInsets;
+@end
+@implementation TLQuickInputTestScreen
+- (id)forwardingTargetForSelector:(SEL)selector { return self.screen; }
+@end
+
+static NSEvent *SelectionEvent(TLScreenRegionSelectionView *view, NSEventType type, NSPoint point) {
+  return [NSEvent mouseEventWithType:type location:point modifierFlags:0 timestamp:0
+    windowNumber:view.window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+}
+
+static void InvalidateSnapshot(NSView *view) {
+  view.needsDisplay = YES;
+  for (NSView *child in view.subviews) InvalidateSnapshot(child);
+}
+
+static BOOL WindowReceivesMouseAtPoint(NSWindow *window, NSPoint point) {
+  // AppKit can report a window visible before its frame reaches the window server.
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while ([NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0] != window.windowNumber && deadline.timeIntervalSinceNow > 0) Drain();
+  return [NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0] == window.windowNumber;
+}
+
+static void TestNotchPresentationAndCapture(void) {
+  TLQuickInputWindowController *quick = [[TLQuickInputWindowController alloc]
+    initWithPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  TLTestScreenCapture *capture = [[TLTestScreenCapture alloc] init];
+  [quick setValue:capture forKey:@"screenCapture"];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [quick applyPalette:palette];
+    TLQuickInputTestScreen *screen = [[TLQuickInputTestScreen alloc] init];
+    screen.screen = NSScreen.mainScreen;
+    // Reuse the composer across displays to catch stale camera padding too.
+    for (NSNumber *cameraInset in @[@0, @32, @48, @0]) {
+      screen.safeAreaInsets = NSEdgeInsetsMake(cameraInset.doubleValue, 0, 0, 0);
+      [quick presentInNotchOnScreen:(NSScreen *)screen];
+      CGFloat top = NSHeight(quick.window.contentView.bounds) - NSMaxY(quick.messageInput.frame);
+      CGFloat bottom = NSMinY(quick.messageInput.frame);
+      if (cameraInset.doubleValue == 0) {
+        Check(fabs(top - bottom) < 1 && fabs(top - palette.space5) < 1,
+              @"screens without a physical notch use equal normal padding above and below the input");
+      } else {
+        Check(top >= cameraInset.doubleValue && top >= palette.notchOverlayMinimumHeight,
+              @"notched displays retain enough clearance for the physical camera area");
+      }
+      [quick dismiss];
+    }
+    [quick presentInNotchOnScreen:NSScreen.mainScreen];
+    SetText(quick, @"Describe the area I capture");
+    Check(fabs(NSMaxY(quick.window.frame) - NSMaxY(NSScreen.mainScreen.frame)) < 1,
+          @"expanded notch is pinned to the physical top of the display");
+    Check(NSWidth(quick.window.frame) > palette.notchOverlayMinimumWidth &&
+          NSHeight(quick.window.frame) > NSHeight(quick.messageInput.frame),
+          @"notch grows around the input");
+    Check(NSContainsRect(quick.window.contentView.bounds, quick.messageInput.frame) &&
+          NSHeight(quick.window.contentView.bounds) - NSMaxY(quick.messageInput.frame) >= NSScreen.mainScreen.safeAreaInsets.top,
+          @"composer is inside the notch and below the camera area");
+    Check(!quick.messageInput.showsBackground && quick.messageInput.backgroundView.hidden && quick.messageInput.layer.borderWidth == 0,
+          @"embedded input has no glass background or border");
+    Check(quick.messageInput.palette.dark && !quick.window.hasShadow, @"notch content stays readable on its black surface in both themes");
+    NSView *surface = quick.window.contentView;
+    // AppKit otherwise reuses clean layer-backed children from the previous snapshot.
+    InvalidateSnapshot(surface);
+    NSBitmapImageRep *bitmap = [surface bitmapImageRepForCachingDisplayInRect:surface.bounds];
+    [surface cacheDisplayInRect:surface.bounds toBitmapImageRep:bitmap];
+    NSColor *header = [[bitmap colorAtX:bitmap.pixelsWide / 2 y:5] colorUsingColorSpace:NSColorSpace.genericRGBColorSpace];
+    Check(header.alphaComponent > 0.99 && header.redComponent < 0.01 && header.greenComponent < 0.01 && header.blueComponent < 0.01,
+          @"expanded notch renders a solid black header");
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:
+      theme.integerValue == TLThemePreferenceLight ? @"/tmp/talaria-expanded-notch-light.png" : @"/tmp/talaria-expanded-notch-dark.png" atomically:YES];
+    NSWindow *selectionWindow = [quick valueForKey:@"selectionWindow"];
+    Check(selectionWindow.visible && NSEqualRects(selectionWindow.frame, NSScreen.mainScreen.frame) &&
+          selectionWindow.level < quick.window.level && !selectionWindow.canBecomeKeyWindow,
+          @"selection covers the whole screen around the notch while leaving its input above it and focused");
+    TLScreenRegionSelectionView *selection = [quick valueForKey:@"selectionView"];
+    for (NSNumber *side in @[@(-1), @1]) {
+      CGFloat x = side.intValue < 0 ? NSMinX(quick.window.frame) - palette.space5 : NSMaxX(quick.window.frame) + palette.space5;
+      NSPoint screenPoint = NSMakePoint(x, NSMidY(quick.window.frame));
+      Check(WindowReceivesMouseAtPoint(selectionWindow, screenPoint),
+            @"fully transparent capture window receives mouse-downs beside the notch");
+      Check(WindowReceivesMouseAtPoint(selectionWindow, NSMakePoint(x, NSMaxY(selectionWindow.frame) - 2)),
+            @"capture drags can also start along the top edge beside the notch");
+      NSPoint point = [selectionWindow convertPointFromScreen:screenPoint];
+      [selection mouseDown:SelectionEvent(selection, NSEventTypeLeftMouseDown, point)];
+      NSPoint end = NSMakePoint(point.x + side.intValue * 40, point.y - 30);
+      [selection mouseDragged:SelectionEvent(selection, NSEventTypeLeftMouseDragged, end)];
+      Check(NSWidth(selection.selectionRect) == 40 && NSHeight(selection.selectionRect) == 30,
+            @"capture drags can start on either side of the notch above its bottom edge");
+      [selection resetSelection];
+    }
+    Check(fabs(NSMinY(quick.messageInput.frame) - palette.space5) < 1,
+          @"notch ends below the composer without an extra instructional text row");
+    InvalidateSnapshot(selection);
+    NSBitmapImageRep *clear = [selection bitmapImageRepForCachingDisplayInRect:selection.bounds];
+    [selection cacheDisplayInRect:selection.bounds toBitmapImageRep:clear];
+    Check([clear colorAtX:10 y:10].alphaComponent == 0 &&
+          [clear colorAtX:clear.pixelsWide / 2 y:clear.pixelsHigh / 2].alphaComponent == 0,
+          @"idle capture surface renders fully transparent in both themes");
+    Escape(quick);
+    Check(!selectionWindow.visible, @"Escape removes the capture surface");
+  }
+  [quick presentInNotchOnScreen:NSScreen.mainScreen];
+  TLScreenRegionSelectionView *selection = [quick valueForKey:@"selectionView"];
+  // Drag in reverse to exercise normalization and the real event-to-attachment handoff.
+  [selection mouseDown:SelectionEvent(selection, NSEventTypeLeftMouseDown, NSMakePoint(240, 180))];
+  [selection mouseDragged:SelectionEvent(selection, NSEventTypeLeftMouseDragged, NSMakePoint(40, 30))];
+  Check(NSEqualRects(selection.selectionRect, NSMakeRect(40, 30, 200, 150)), @"reverse dragging defines the same rectangular capture");
+  NSBitmapImageRep *selectionBitmap = [selection bitmapImageRepForCachingDisplayInRect:selection.bounds];
+  [selection cacheDisplayInRect:selection.bounds toBitmapImageRep:selectionBitmap];
+  CGFloat scale = selectionBitmap.pixelsWide / NSWidth(selection.bounds);
+  Check([selectionBitmap colorAtX:10 y:10].alphaComponent == 0 &&
+        [selectionBitmap colorAtX:(NSInteger)(100 * scale) y:(NSInteger)((NSHeight(selection.bounds) - 80) * scale)].alphaComponent == 0,
+        @"dragging leaves the inside and outside of the selection transparent");
+  [[selectionBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@"/tmp/talaria-capture-selection.png" atomically:YES];
+  NSRect expected = [selection.window convertRectToScreen:selection.selectionRect];
+  [selection mouseUp:SelectionEvent(selection, NSEventTypeLeftMouseUp, NSMakePoint(40, 30))];
+  Check(!selection.window.visible && quick.window.alphaValue == 0 && !quick.messageInput.attachmentsEditable,
+        @"capture hides both the selection UI and notch and locks attachment edits");
+  for (NSUInteger attempt = 0; attempt < 10 && !capture.pendingCompletion; attempt++) Drain();
+  Check(NSEqualRects(capture.capturedRect, expected), @"capture receives only the dragged area in global screen coordinates");
+  __block NSUInteger submissions = 0;
+  __block NSArray<NSURL *> *submittedFiles;
+  quick.submissionHandler = ^(NSString *text, NSArray<NSURL *> *files, BOOL routing) { submissions++; submittedFiles = files; };
+  Submit(quick);
+  Check(submissions == 0, @"capture cannot submit an incomplete attachment");
+  NSURL *fixture = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"assets/Talaria-icon.png"]];
+  capture.pendingCompletion(fixture, nil);
+  capture.pendingCompletion = nil;
+  Drain();
+  Check([quick.messageInput.attachmentURLs isEqualToArray:@[fixture]] && quick.messageInput.attachmentsEditable &&
+        selection.window.visible && quick.window.alphaValue == 1 && quick.window.firstResponder == quick.messageInput.textView,
+        @"completed capture attaches its image and restores the composer and selection surface");
+  Check([quick.messageInput.textView.string isEqual:@"Describe the area I capture"], @"capture preserves the prompt draft");
+  Submit(quick);
+  Check(submissions == 1 && [submittedFiles isEqualToArray:@[fixture]] && !selection.window.visible,
+        @"captured image reaches the regular submission pipeline");
+  [quick presentInNotchOnScreen:NSScreen.mainScreen];
+  SetText(quick, @"Keep this cancelled draft");
+  [selection mouseDown:SelectionEvent(selection, NSEventTypeLeftMouseDown, NSMakePoint(10, 10))];
+  [selection mouseUp:SelectionEvent(selection, NSEventTypeLeftMouseUp, NSMakePoint(100, 100))];
+  for (NSUInteger attempt = 0; attempt < 10 && !capture.pendingCompletion; attempt++) Drain();
+  Check(capture.pendingCompletion != nil, @"second capture starts independently");
+  Escape(quick);
+  [quick presentInNotchOnScreen:NSScreen.mainScreen];
+  capture.pendingCompletion(fixture, nil);
+  capture.pendingCompletion = nil;
+  Check(quick.messageInput.attachmentURLs.count == 0 && [quick.messageInput.textView.string isEqual:@"Keep this cancelled draft"],
+        @"late completion from a cancelled capture never attaches to a reopened draft");
+  [selection mouseDown:SelectionEvent(selection, NSEventTypeLeftMouseDown, NSMakePoint(10, 10))];
+  [selection mouseUp:SelectionEvent(selection, NSEventTypeLeftMouseUp, NSMakePoint(11, 11))];
+  Check(!quick.window.visible && !selection.window.visible && !capture.pendingCompletion, @"a click or tiny drag dismisses without capturing");
+  [quick presentOnScreen:NSScreen.mainScreen];
+  Check(quick.messageInput.showsBackground && !quick.messageInput.backgroundView.hidden && !selection.window.visible,
+        @"ordinary quick input restores its optional glass background and removes capture mode");
+  [quick dismiss];
+  Check(NSEqualRects(TLScreenCaptureRect(NSMakeRect(40, 30, 200, 150), NSMakeRect(0, 0, 1440, 900)), NSMakeRect(40, 720, 200, 150)),
+        @"screen capture converts AppKit's bottom-up coordinates");
+  Check(NSEqualRects(TLScreenCaptureRect(NSMakeRect(-800, -200, 100, 80), NSMakeRect(0, 0, 1440, 900)), NSMakeRect(-800, 1020, 100, 80)),
+        @"screen capture handles displays to the left and below the primary display");
+  Check(NSEqualRects(TLScreenCaptureRect(NSMakeRect(50, 1000, 100, 80), NSMakeRect(0, 0, 1440, 900)), NSMakeRect(50, -180, 100, 80)),
+        @"screen capture handles displays above the primary display");
+}
 
 // Keep the real workspace and notch handoff, stopping only at network/VM boundaries.
 @interface TLQuickInputTestOwner : TalariaWindowController
@@ -182,6 +363,8 @@ static void TestWorkspaceHandoff(void) {
   Check([notch valueForKey:@"trackingTimer"] == nil && NSIsEmptyRect(notch.presentationFrame),
     @"opening quick input hides the notch and stops hover tracking");
   Check(!window.visible && quick.window.visible && state.snapshot.workspaceTabs.count == 1, @"notch opens only the popup and creates no tab");
+  Check(!quick.messageInput.showsBackground && fabs(NSMaxY(quick.window.frame) - NSMaxY(quick.window.screen.frame)) < 1,
+        @"clicking the notch opens the embedded composer at the screen's top edge");
   SetText(quick, @"New request"); Escape(quick);
   Check([notch valueForKey:@"trackingTimer"] != nil, @"Escape restores normal notch tracking");
   Check(!window.visible && state.snapshot.workspaceTabs.count == 1 && owner.sendCount == 0, @"Escape leaves the main window hidden and workspace untouched");
@@ -296,6 +479,7 @@ int main(void) {
     [NSApplication sharedApplication];
     Check(NSScreen.mainScreen != nil, @"native tests require access to the macOS window server");
     TestPanel();
+    TestNotchPresentationAndCapture();
     TestWorkspaceHandoff();
     TestFocusAndDraftRestoration();
     NSLog(@"QuickInputTests passed");

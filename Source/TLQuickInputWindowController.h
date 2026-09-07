@@ -14,6 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithPalette:(TLThemePalette *)palette;
 - (void)presentOnScreen:(NSScreen *)screen;
 - (void)presentBelowRect:(NSRect)anchorRect onScreen:(NSScreen *)screen;
+- (void)presentInNotchOnScreen:(NSScreen *)screen;
 - (void)dismiss;
 - (void)applyPalette:(TLThemePalette *)palette;
 @end

@@ -47,6 +47,8 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 
 @interface TLGlassMessageInput : TLMessageInput
 @property (nonatomic) BOOL usesChatBackdrop;
+// Defaults to YES. Disable when embedding the composer in an existing surface.
+@property (nonatomic) BOOL showsBackground;
 @end
 
 @interface TLBrowserAddressInput : TLGlassMessageInput <NSTextViewDelegate>
