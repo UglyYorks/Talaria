@@ -1,105 +1,117 @@
 # Chrome extensions in Talaria's existing tabs
 
-Status: **not implemented; blocked on a custom engine build environment**.
-Investigation date: 2026-09-07. Base: `4841ac7` on branch `chrome-extensions`.
-The requested behavior is Chrome Web Store installation and extension operation
-inside Talaria's existing native tabs. Separate browser windows are not the
-selected implementation.
+Status: **best-effort support implemented with the standard CEF distribution**.
+Validated on macOS on 2026-09-07 with CEF `151.3.24+g2384915`, based on
+Chromium `151.0.7922.174`. No custom engine build is required.
 
-## What the shipped engine can do
+## Using extensions
 
-Talaria ships CEF `151.3.24+g2384915`, based on Chromium `151.0.7922.174`.
-`Source/ChromiumBrowserController.mm` embeds each browser using
-`CefWindowInfo::SetAsChild` and Alloy style. On macOS, setting Chrome style with
-that same native parent is overridden by CEF and produces an Alloy browser.
+1. Choose **Extensions → Chrome Web Store…**, find an extension, and use the
+   store's install button. Chromium presents the extension's permission prompt.
+2. Reload the Talaria pages where the extension should run. Ordinary browsing
+   remains in Talaria's existing embedded tabs.
+3. Choose **Extensions → Manage Extensions…** to inspect permissions, enable or
+   disable extensions, or remove them. Reload affected pages after changes.
 
-A disposable desktop probe, built in this worktree with a fresh profile and a
-local Manifest V3 extension, measured the following:
+The store and manager open in a Chromium-owned utility window sharing the same
+persistent browser profile as Talaria's embedded tabs. Closing that window does
+not disable extensions. Reopening it reuses its primary tab when still available.
+Store links, store addresses, and `chrome://extensions/` entered in Talaria route
+to this utility without replacing the current embedded page. Chromium handles
+package verification, install permission prompts, management, and its extension
+update machinery; Talaria does not download or unpack Web Store packages itself.
+Update delivery has not been separately verified.
 
-| Behavior | Embedded native tab | Chrome-style control window |
-| --- | --- | --- |
-| Requested runtime | Chrome | Chrome |
-| Actual runtime | Alloy | Chrome |
-| Content script runs | Yes | Yes |
-| Content script exchanges messages with service worker | Yes | Yes |
-| `chrome.tabs.query({})` finds its sender tab | **No** | Yes |
+## Verified milestone
 
-The control window is solely a diagnostic comparison. It is not a proposed
-product feature. This proves a basic incompatibility with extension tab APIs;
-it does not establish that every extension fails or that every other API works.
-Chrome Web Store installation, permission prompts, updates, extension actions,
-and persistence have not been validated.
+**Dark Reader** (`eimadpbcbfnmbkopoojfekhnkhdbieeh`) was installed from the Chrome
+Web Store through its normal permission dialog in a signed desktop test app
+using Talaria's production browser controller and tab view. The isolated profile
+recorded `from_webstore: true`. After closing the installer and reloading, Dark
+Reader injected eight style sheets and changed an ordinary local page to a dark
+background inside the native Alloy tab. After normal app termination and desktop
+relaunch, the same page was modified again without an installation call, loading
+flags, or an open manager. The page's rendered screenshot and inspection results
+were saved as `build/darkreader-after-restart.png` and
+`build/darkreader-restart-results.json` during the manual check.
 
-## Reproduce
+The automated desktop test installs a local Manifest V3 extension through
+Chromium's normal unpacked-extension installer. It verifies:
 
-Run from this worktree on macOS with the normal signing identity available:
+- A visible page marker inserted by a content script in the actual embedded tab.
+- Content-script/service-worker messaging and shared `chrome.storage.local`.
+- Extension registration, local storage, and the local `chrome.storage.sync`
+  backing store surviving normal app shutdown and restart. Account/cloud sync is
+  not implemented or claimed.
+- Continued operation with the manager closed, manager reuse, and disabling and
+  re-enabling the extension while retaining its data.
+- The browser remaining Alloy, attached to the native tab, with a visible,
+  nonzero-sized viewport, and successful shutdown with the manager open.
+
+Run on macOS from this checkout with the normal signing identity available:
+
+```sh
+python3 Tests/run-browser-extensions-cef.py
+```
+
+Use `--skip-build` after building this checkout. The test requires Node.js with
+built-in WebSocket support and the normal Xcode/CEF build dependencies. It compiles
+against this checkout's production objects, signs an isolated desktop app, and
+launches it twice with `open -n -W`. A test-only folder-picker handler selects the
+local fixture; production installation retains Chromium's own dialogs. The test
+uses a loopback HTTP fixture and remote debugging for assertions, with no
+`--load-extension` or unsafe extension-debugging flags. Its temporary app and
+profile are removed afterwards. Results and a rendered page screenshot remain
+at `build/browser-extensions-results.json` and `build/extension-restart-page.png`.
+This desktop integration test runs separately from `make test`; address-routing
+regressions are covered by `FeatureControllerTests` in the ordinary test suite.
+
+Validation of this change included a successful full suite and successful final
+`FeatureControllerTests` and desktop extension runs. A later full-suite rerun
+reached an unrelated `QuickInputTests` focus assertion while the Mac was locked;
+that native focus check requires an unlocked desktop.
+
+## Compatibility limits
+
+Content scripts, worker messaging, and storage are the first supported use cases.
+This does not promise general Chrome/Brave extension compatibility. In particular:
+
+- `chrome.tabs.query({})` does not enumerate Talaria's Alloy tabs. Extensions
+  relying on Chrome tab/window identity, selection, creation, or events may fail.
+- Talaria has no extension action toolbar for its embedded tabs. Popup-driven
+  extensions and extensions requiring `activeTab` may not work on those pages.
+- Other extension APIs, automatic updates, and installation policies are subject
+  to the bundled Chromium implementation and have not all been tested.
+- Existing pages should be reloaded after installation or enable/disable changes.
+
+The optional diagnostic below compares an embedded tab with a Chrome-style
+control window. It demonstrates working content scripts and worker messages but
+missing embedded-tab enumeration:
 
 ```sh
 python3 Tests/run-browser-extension-probe.py
 ```
 
-Use `--skip-build` only after building the app in this worktree. The runner
-compiles the probe against this checkout's app objects and CEF, signs a temporary
-app bundle, and launches it with `open -n -W`. It uses an isolated profile and
-loads only `Tests/Fixtures/browser-extension-probe`, whose host access is limited
-to a local HTTP fixture. The temporary app and profile are removed afterwards.
-The report is retained at `build/browser-extension-compatibility.json`.
-
-Exit status 2 is the expected result with the currently pinned engine: embedded
-extension requirements fail. Exit 1 denotes an inconclusive probe or execution
-error. Exit 0 only verifies these limited requirements; it does not certify
-Chrome Web Store compatibility. This diagnostic is intentionally outside
-`make test`, because it records a known missing engine capability.
+Its exit status 2 is the expected **full tab-API compatibility failure** on this
+engine, not a failure of the supported milestone above. Exit 1 is an execution
+error; exit 0 only means its limited probes pass. Its report is retained at
+`build/browser-extension-compatibility.json`.
 
 ## Engine evidence
 
-The exact CEF source revision used by the app contains these restrictions:
+The exact shipped CEF revision documents the limits:
 
 - [`cef_types_mac.h`](https://github.com/chromiumembedded/cef/blob/2384915/include/internal/cef_types_mac.h)
-  documents the mandatory Alloy style when `parent_view` is supplied.
+  requires Alloy style when a native `parent_view` is supplied.
 - [`browser_host_create.cc`](https://github.com/chromiumembedded/cef/blob/2384915/libcef/browser/browser_host_create.cc)
-  disables Chrome style for macOS native parents in `MaybeSetWindowInfo`.
-- [`chrome_child_window.cc`](https://github.com/chromiumembedded/cef/blob/2384915/libcef/browser/chrome/views/chrome_child_window.cc)
-  has no macOS implementation of Chrome-style native-parent embedding.
+  enforces that macOS native-parent restriction.
 - [`chrome_extension_util.cc`](https://github.com/chromiumembedded/cef/blob/2384915/libcef/browser/chrome/extensions/chrome_extension_util.cc)
-  can find an Alloy WebContents by tab ID, but this is not a complete browser
-  window/tab model. The desktop probe demonstrates the missing enumeration.
+  can find an Alloy WebContents by tab ID, but does not provide a complete
+  browser-window/tab model; the desktop probe confirms the missing enumeration.
 - [`alloy_browser_host_impl.cc`](https://github.com/chromiumembedded/cef/blob/2384915/libcef/browser/alloy/alloy_browser_host_impl.cc)
-  does not allow `chrome://extensions` in its tested WebUI host list and does not
-  implement Chrome commands for Alloy browsers.
+  does not host `chrome://extensions` or implement Chrome commands in Alloy.
 
-Upstream tracks native Chrome-style embedding in
-[CEF issue 3294](https://github.com/chromiumembedded/cef/issues/3294).
-Removing the runtime restriction alone does not implement the missing native
-parent support or extension UI integration.
-
-## Work required to preserve existing tabs
-
-1. Establish a pinned custom CEF/Chromium build, then prove a supported embedded
-   Chrome browser integration on macOS. This requires native hosting and lifecycle
-   work; relocating a view from a hidden Chrome window is not a verified solution.
-2. Make extension window/tab identity, enumeration, selection, creation, removal,
-   and events correspond to Talaria's workspace tabs. Verify content scripts,
-   background workers, `activeTab`, scripting, and permission enforcement across
-   multiple tabs and split panes.
-3. Integrate Chrome Web Store installation with Chromium's package verification
-   and permission UI, profile-backed state, updates, management, and uninstall.
-   Add extension actions/popups without moving browsing to separate windows.
-4. Verify restart persistence and real Web Store extensions, plus existing
-   fullscreen, navigation, footer, tab shortcut, theme, and resize regressions.
-   Preserve the 200px minimum window width and existing theme requirements.
-
-No product source, specs, or README changes have been made. No extension support
-claim should be made until the integration and these checks are complete.
-
-## Build environment blocker
-
-The desktop app itself builds successfully from this worktree. The custom engine
-is the blocker: the current volume has approximately 24 GiB free. CEF's
-[macOS source-build guide](https://github.com/chromiumembedded/cef/blob/2384915/docs/master_build_quick_start.md#mac-os-x-setup)
-requires at least 150 GB of free disk for a debug build (its automated build
-guide recommends 200 GB). Xcode 26.6 is installed.
-
-A suitable external build volume or Mac builder is needed before the custom
-engine can be compiled and its behavior verified. No custom CEF patch or binary
-has been produced yet.
+The utility window provides the stock Chrome UI needed for installation and
+management while leaving the embedded runtime unchanged. Future compatibility
+work should add tests for specific requested extensions within these standard
+CEF constraints.

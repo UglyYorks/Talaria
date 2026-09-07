@@ -518,8 +518,17 @@
   TLBrowserAddressInput *input = self.browserAddressInput;
   NSString *text = [input.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   if (text.length == 0) return;
+  NSURL *extensionURL = [NSURL URLWithString:text];
+  if ([self.browserService openExtensionURL:extensionURL fromWindow:self.view.window]) {
+    [input setDisplayedAddress:[self displayAddressForBrowserURL:self.URL]];
+    return;
+  }
   NSURL *URL = input.hasUserDraft ? [TLInputSuggestions browserURLForInput:text] : self.URL;
   if (!URL) { [self sendBrowserPrompt:text]; return; }
+  if ([self.browserService openExtensionURL:URL fromWindow:self.view.window]) {
+    [input setDisplayedAddress:[self displayAddressForBrowserURL:self.URL]];
+    return;
+  }
   [input setDisplayedAddress:[self displayAddressForBrowserURL:URL]];
   input.textView.toolTip = URL.absoluteString;
   [self.view.window makeFirstResponder:self.browserHostView];

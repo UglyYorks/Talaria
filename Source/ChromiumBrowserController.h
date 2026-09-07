@@ -21,6 +21,12 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 @interface TLChromiumBrowserController : NSObject
 
 + (instancetype)sharedController;
+// Installation/management use Chromium's own UI and the same persistent profile
+// as embedded tabs. Other Chrome tab/window APIs remain best-effort in those tabs.
++ (BOOL)isExtensionURL:(nullable NSURL *)URL;
+- (BOOL)openExtensionURL:(nullable NSURL *)URL fromWindow:(nullable NSWindow *)window;
+- (void)showExtensionsFromWindow:(nullable NSWindow *)window;
+- (void)showChromeWebStoreFromWindow:(nullable NSWindow *)window;
 - (BOOL)initializeRuntimeFromWindow:(nullable NSWindow *)window;
 - (void)openURL:(NSURL *)url fromWindow:(nullable NSWindow *)window;
 - (void)openURL:(NSURL *)url fromWindow:(nullable NSWindow *)window modifierFlags:(NSEventModifierFlags)modifierFlags;

@@ -217,6 +217,15 @@
   tabMenuItem.submenu = TLCreateTabMenu(self, @selector(performTabMenuCommand:));
   [mainMenu addItem:tabMenuItem];
 
+  NSMenuItem *extensionsItem = [[NSMenuItem alloc] initWithTitle:@"Extensions" action:nil keyEquivalent:@""];
+  NSMenu *extensionsMenu = [[NSMenu alloc] initWithTitle:@"Extensions"];
+  [extensionsMenu addItemWithTitle:@"Chrome Web Store…" action:@selector(showChromeWebStore:) keyEquivalent:@""].target = self;
+  [extensionsMenu addItemWithTitle:@"Manage Extensions…" action:@selector(showExtensions:) keyEquivalent:@""].target = self;
+  [extensionsMenu addItem:NSMenuItem.separatorItem];
+  [extensionsMenu addItemWithTitle:@"About Extension Support…" action:@selector(showExtensionSupport:) keyEquivalent:@""].target = self;
+  extensionsItem.submenu = extensionsMenu;
+  [mainMenu addItem:extensionsItem];
+
   NSMenuItem *windowMenuItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
   [mainMenu addItem:windowMenuItem];
   NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
@@ -226,6 +235,21 @@
   NSApp.windowsMenu = windowMenu;
 
   NSApp.mainMenu = mainMenu;
+}
+
+- (void)showChromeWebStore:(id)sender {
+  [TLChromiumBrowserController.sharedController showChromeWebStoreFromWindow:NSApp.keyWindow];
+}
+
+- (void)showExtensions:(id)sender {
+  [TLChromiumBrowserController.sharedController showExtensionsFromWindow:NSApp.keyWindow];
+}
+
+- (void)showExtensionSupport:(id)sender {
+  NSAlert *alert = [[NSAlert alloc] init];
+  alert.messageText = @"Extensions in Talaria";
+  alert.informativeText = @"Install extensions from the Chrome Web Store, then reload your Talaria tabs. Compatible content scripts, background messaging, and extension storage work in embedded tabs.\n\nExtensions that need Chrome’s tab or window APIs, toolbar actions, or active-tab permissions may not work. Use Manage Extensions to change permissions, turn extensions on or off, or remove them. Installed extensions are saved in Talaria’s browser profile.";
+  [alert runModal];
 }
 
 - (void)installStatusItem {

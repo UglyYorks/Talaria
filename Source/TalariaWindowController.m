@@ -2131,6 +2131,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)openBrowserTabWithURL:(NSURL *)URL {
+  if ([TLChromiumBrowserController.sharedController openExtensionURL:URL fromWindow:self.window]) return;
   if (![self isBrowserURL:URL]) return;
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser
     tabID:self.nextBrowserTabID++ title:[self browserTabTitleForURL:URL]

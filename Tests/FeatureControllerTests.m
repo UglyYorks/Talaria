@@ -1154,6 +1154,8 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @property (nonatomic) NSUInteger startCount;
 @property (nonatomic) NSUInteger closeCount;
 @property (nonatomic) NSUInteger backCount;
+@property (nonatomic) NSUInteger extensionOpenCount, navigateCount;
+@property (nonatomic, strong) NSURL *openedExtensionURL, *navigatedURL;
 @property (nonatomic) NSUInteger overlayCount;
 @property (nonatomic, strong) TLChromiumBrowserSession *overlaySession;
 @property (nonatomic) NSRect overlayRect;
@@ -1173,6 +1175,14 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @property (nonatomic, copy) TLChromiumBrowserLinkHandler linkCallback;
 @end
 @implementation TLFeatureBrowserMock
+- (BOOL)openExtensionURL:(NSURL *)URL fromWindow:(NSWindow *)window {
+  if (![TLChromiumBrowserController isExtensionURL:URL]) return NO;
+  self.extensionOpenCount++; self.openedExtensionURL = URL;
+  return YES;
+}
+- (void)navigateSession:(TLChromiumBrowserSession *)session toURL:(NSURL *)URL {
+  self.navigateCount++; self.navigatedURL = URL;
+}
 - (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(TLChromiumBrowserSession *)session completion:(void (^)(BOOL))completion {
   self.footerConfiguration=configuration;
   if(completion){if(self.deferFooter)self.footerCompletion=completion;else completion(YES);}
@@ -1206,12 +1216,48 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @end
 
 @interface TLBrowserTabController (OverlayTests)
+- (void)navigateBrowserFromAddressInput:(id)sender;
 - (void)sampleOverlay;
 - (void)toggleBrowserHeightMode:(id)sender;
 - (void)updateFooterContentColor:(NSColor *)color animated:(BOOL)animated;
 - (BOOL)canSampleOverlay;
 - (void)useFooterBanner:(NSDictionary *)banner;
 @end
+
+static void TestExtensionRouting(void) {
+  for (NSString *URL in @[@"https://chromewebstore.google.com/detail/example/abc",
+                          @"https://chrome.google.com/webstore/detail/example/abc",
+                          @"chrome://extensions/", @"chrome://extensions/?id=abc"]) {
+    Check([TLChromiumBrowserController isExtensionURL:[NSURL URLWithString:URL]], @"extension entry points use the Chromium installer");
+  }
+  for (NSString *URL in @[@"https://chromewebstore.google.com.example.org/",
+                          @"https://example.org/?url=https://chromewebstore.google.com/",
+                          @"http://chromewebstore.google.com/", @"https://chrome.google.com/webstore-spoof/",
+                          @"https://user@chromewebstore.google.com/", @"https://chromewebstore.google.com:444/",
+                          @"chrome://settings/", @"chrome://extensions-spoof/", @"file:///tmp/extension"]) {
+    Check(![TLChromiumBrowserController isExtensionURL:[NSURL URLWithString:URL]], @"unrelated URLs never become privileged extension-manager entry points");
+  }
+  TLFeatureBrowserMock *service = [TLFeatureBrowserMock new];
+  NSURL *original = [NSURL URLWithString:@"https://example.com/retained-page"];
+  TLBrowserTabController *controller = [[TLBrowserTabController alloc] initWithURL:original
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]
+    database:(id)[TLFeatureSettingsStoreMock new] orchestrator:(id)[TLFeatureCatalogueMock new]
+    inputWidth:360 browserService:service];
+  TLBrowserAddressInput *input = [controller valueForKey:@"browserAddressInput"];
+  for (NSString *address in @[@"chrome://extensions/", @"https://chromewebstore.google.com/", @"chromewebstore.google.com/category/extensions"]) {
+    NSUInteger before = service.extensionOpenCount;
+    input.textView.string = address;
+    input.textChangeHandler();
+    [controller navigateBrowserFromAddressInput:nil];
+    Check(service.extensionOpenCount == before + 1, @"typed extension URLs open the manager");
+    Check(service.navigateCount == 0 && [[controller valueForKey:@"URL"] isEqual:original], @"opening extension UI preserves the embedded page and its metadata");
+  }
+  input.textView.string = @"https://example.org/ordinary";
+  input.textChangeHandler();
+  [controller navigateBrowserFromAddressInput:nil];
+  Check(service.navigateCount == 1 && [service.navigatedURL.absoluteString isEqualToString:@"https://example.org/ordinary"], @"ordinary addresses still navigate the embedded tab");
+  [controller close];
+}
 @interface TLOverlayTestWindow : NSWindow
 @property (nonatomic) BOOL testVisible, testMiniaturized;
 @end
@@ -2368,6 +2414,7 @@ int main(void) {
     TestComposerModelButtonLayout();
     TestComposerModelDialog();
     TestBrowserOwnsCallbacksAndSession();
+    TestExtensionRouting();
     TestBrowserOverlayLifecycle();
     TestBrowserContentColorTheme();
     TestDocumentFooterExclusivity();

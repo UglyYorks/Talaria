@@ -147,6 +147,8 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 - (nullable NSWindow *)windowForBrowser:(CefRefPtr<CefBrowser>)browser;
 - (void)attachBrowserViewForBrowser:(CefRefPtr<CefBrowser>)browser toContainerView:(NSView *)containerView;
 - (void)presentCEFError:(NSString *)message fromWindow:(nullable NSWindow *)window;
+- (void)createOrFocusExtensionWindow;
+- (void)extensionBrowserCreated:(CefRefPtr<CefBrowser>)browser;
 @end
 
 // A short-lived DevTools observer owns one extraction, independent of navigation/UI handlers.
@@ -453,6 +455,11 @@ class TLChromiumClient : public CefClient,
                       bool user_gesture,
                       bool is_redirect) override {
     CEF_REQUIRE_UI_THREAD();
+    if (frame && frame->IsMain() && request &&
+        [browserController_ openExtensionURL:[NSURL URLWithString:TLNSStringFromCefString(request->GetURL())]
+                                 fromWindow:nil]) {
+      return true;
+    }
     if (!user_gesture || is_redirect || !frame || !frame->IsMain() || !request) {
       return false;
     }
@@ -479,6 +486,25 @@ class TLChromiumClient : public CefClient,
   __unsafe_unretained NSView *parentView_;
 
   IMPLEMENT_REFCOUNTING(TLChromiumClient);
+};
+
+// Keep Chromium's installer, permission prompts, extension manager, and popup
+// handling intact. This client never applies the embedded tab's link interception
+// or native-view teardown to a Chrome-style utility window.
+class TLChromiumExtensionClient : public CefClient, public CefLifeSpanHandler {
+ public:
+  explicit TLChromiumExtensionClient(TLChromiumBrowserController *controller)
+      : controller_(controller) {}
+  CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+  void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
+    [controller_ extensionBrowserCreated:browser];
+  }
+  void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
+    [controller_ browserClosed:browser];
+  }
+ private:
+  __unsafe_unretained TLChromiumBrowserController *controller_;
+  IMPLEMENT_REFCOUNTING(TLChromiumExtensionClient);
 };
 
 class TLChromiumCreateBrowserTask : public CefTask {
@@ -593,6 +619,9 @@ class TLChromiumNavigationCommandTask : public CefTask {
   BOOL _messagePumpReentrancyDetected;
   BOOL _terminating;
   BOOL _terminationReplyPending;
+  NSInteger _extensionBrowserIdentifier;
+  BOOL _extensionWindowOpening;
+  NSString *_pendingExtensionURLString;
 }
 
 + (instancetype)sharedController {
@@ -607,6 +636,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
 - (instancetype)init {
   self = [super init];
   if (self) {
+    _extensionBrowserIdentifier = -1;
     _fullscreenBrowserIdentifier = -1;
     _browserIdentifiersByContainer = [NSMutableDictionary dictionary];
     _containersByBrowserIdentifier = [NSMutableDictionary dictionary];
@@ -627,7 +657,75 @@ class TLChromiumNavigationCommandTask : public CefTask {
   [self openURL:url fromWindow:window modifierFlags:TLChromiumCurrentModifierFlags()];
 }
 
++ (BOOL)isExtensionURL:(NSURL *)URL {
+  if (URL.user.length || URL.password.length || URL.port) return NO;
+  NSString *scheme = URL.scheme.lowercaseString;
+  NSString *host = URL.host.lowercaseString;
+  if ([scheme isEqualToString:@"chrome"]) return [host isEqualToString:@"extensions"];
+  if (![scheme isEqualToString:@"https"]) return NO;
+  return [host isEqualToString:@"chromewebstore.google.com"] ||
+    ([host isEqualToString:@"chrome.google.com"] &&
+      ([URL.path isEqualToString:@"/webstore"] || [URL.path hasPrefix:@"/webstore/"]));
+}
+
+- (void)showExtensionsFromWindow:(NSWindow *)window {
+  [self openExtensionURL:[NSURL URLWithString:@"chrome://extensions/"] fromWindow:window];
+}
+
+- (void)showChromeWebStoreFromWindow:(NSWindow *)window {
+  [self openExtensionURL:[NSURL URLWithString:@"https://chromewebstore.google.com/category/extensions"] fromWindow:window];
+}
+
+- (BOOL)openExtensionURL:(NSURL *)URL fromWindow:(NSWindow *)window {
+  if (![TLChromiumBrowserController isExtensionURL:URL]) return NO;
+  if (_terminating || _shuttingDown || ![self initializeCEFIfNeededFromWindow:window]) return YES;
+  _pendingExtensionURLString = URL.absoluteString;
+  // Native Chrome windows must be created/focused outside CEF event callbacks.
+  TLChromiumDeferToMainRunLoop(^{ [self createOrFocusExtensionWindow]; });
+  return YES;
+}
+
+- (void)createOrFocusExtensionWindow {
+  if (!_initialized || _terminating || _shuttingDown || !_pendingExtensionURLString) return;
+  CefRefPtr<CefBrowser> browser = [self browserWithIdentifier:(int)_extensionBrowserIdentifier];
+  if (browser) {
+    browser->GetMainFrame()->LoadURL(TLStringFromNSString(_pendingExtensionURLString));
+    _pendingExtensionURLString = nil;
+    NSWindow *window = [self windowForBrowser:browser];
+    [window deminiaturize:nil];
+    [window makeKeyAndOrderFront:nil];
+    browser->GetHost()->SetFocus(true);
+    return;
+  }
+  if (_extensionWindowOpening) return;
+  _extensionWindowOpening = YES;
+  CefWindowInfo windowInfo;
+  windowInfo.runtime_style = CEF_RUNTIME_STYLE_CHROME;
+  windowInfo.bounds = CefRect(100, 100, 1000, 760);
+  CefBrowserSettings settings;
+  // The null request context intentionally shares the embedded tabs' persistent
+  // global profile. Chromium owns installation, storage, updates and removal.
+  if (!CefBrowserHost::CreateBrowser(windowInfo, new TLChromiumExtensionClient(self),
+                                    TLStringFromNSString(_pendingExtensionURLString), settings, nullptr, nullptr)) {
+    _extensionWindowOpening = NO;
+    _pendingExtensionURLString = nil;
+    [self presentCEFError:@"The extension manager could not be opened. Please try again." fromWindow:NSApp.keyWindow];
+  }
+}
+
+- (void)extensionBrowserCreated:(CefRefPtr<CefBrowser>)browser {
+  [self browserCreated:browser parentView:nil];
+  if (_terminating || _shuttingDown) { browser->GetHost()->CloseBrowser(true); return; }
+  // Popups and Chromium-created tabs also need lifecycle tracking, but should
+  // not replace the utility's primary tab or consume a pending navigation.
+  if (!_extensionWindowOpening) return;
+  _extensionBrowserIdentifier = browser->GetIdentifier();
+  _extensionWindowOpening = NO;
+  TLChromiumDeferToMainRunLoop(^{ [self createOrFocusExtensionWindow]; });
+}
+
 - (void)openURL:(NSURL *)url fromWindow:(NSWindow *)window modifierFlags:(NSEventModifierFlags)modifierFlags {
+  if ([self openExtensionURL:url fromWindow:window]) return;
   NSURL *browserURL = [self browserURLFromURL:url];
   if (!browserURL) {
     return;
@@ -1129,6 +1227,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
 
 - (void)browserClosed:(CefRefPtr<CefBrowser>)browser {
   int identifier = browser ? browser->GetIdentifier() : -1;
+  if (identifier == _extensionBrowserIdentifier) _extensionBrowserIdentifier = -1;
   if (identifier == _fullscreenBrowserIdentifier) [self restoreFullscreenBrowser];
   NSNumber *browserIdentifier = @(identifier);
   NSValue *containerKey = _containersByBrowserIdentifier[browserIdentifier];
@@ -1407,6 +1506,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
 
 - (BOOL)handleBrowserLinkURLString:(NSString *)urlString fromBrowser:(CefRefPtr<CefBrowser>)browser userGesture:(BOOL)userGesture {
   NSURL *url = [NSURL URLWithString:urlString];
+  if ([self openExtensionURL:url fromWindow:nil]) return YES;
   NSURL *browserURL = url ? [self browserURLFromURL:url] : nil;
   if (!browserURL) {
     return NO;
