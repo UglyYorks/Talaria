@@ -18,6 +18,7 @@ import plistlib
 
 DOCUMENT_FOOTER = "--document-footer" in sys.argv
 FULLSCREEN = "--fullscreen" in sys.argv
+DEVTOOLS = "--devtools" in sys.argv
 ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 subprocess.run(["make", "build"], check=True)
@@ -35,7 +36,7 @@ try:
                   "SceneKit", "CoreText", "Cocoa", "IOSurface", "WebKit", "Virtualization", "Security"]
     subprocess.run([
         "xcrun", "clang++", "-fobjc-arc", "-std=c++20", "-fno-exceptions", "-fno-rtti",
-        "-mmacosx-version-min=13.0", "-I" + str(cef), "-ISource", "Tests/BrowserFullscreenCEFTests.mm" if FULLSCREEN else "Tests/BrowserDocumentFooterCEFTests.mm" if DOCUMENT_FOOTER else "Tests/BrowserOverlayCEFTests.mm",
+        "-mmacosx-version-min=13.0", "-I" + str(cef), "-ISource", "Tests/BrowserDevToolsCEFTests.mm" if DEVTOOLS else "Tests/BrowserFullscreenCEFTests.mm" if FULLSCREEN else "Tests/BrowserDocumentFooterCEFTests.mm" if DOCUMENT_FOOTER else "Tests/BrowserOverlayCEFTests.mm",
         *objects, "build/libcef_dll_wrapper.a",
         *[arg for framework in frameworks for arg in ("-framework", framework)],
         "-lsqlite3", "-lpthread", "-o", str(binary)], check=True)
@@ -135,7 +136,8 @@ try:
     threading.Thread(target=peer_server.serve_forever, daemon=True).start()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     result = work / "results.json"
-    runner = subprocess.Popen(["open", "-n", "-W", str(app), "--args",
+    app_log = work / "application.log"
+    runner = subprocess.Popen(["open", "-n", "-W", "--stdout", str(app_log), "--stderr", str(app_log), str(app), "--args",
                                f"http://127.0.0.1:{server.server_port}", str(profile), str(result),
                                *([os.environ["TALARIA_OVERLAY_LIVE_URL"]] if os.environ.get("TALARIA_OVERLAY_LIVE_URL") else [])])
     try:
@@ -151,10 +153,13 @@ try:
         runner.wait(timeout=5)
         raise
     records = json.loads(result.read_text())
-    output = ROOT / ("build/BrowserFullscreenCEFResults.json" if FULLSCREEN else "build/BrowserDocumentFooterCEFResults.json" if DOCUMENT_FOOTER else "build/BrowserOverlayCEFResults.json")
+    output = ROOT / ("build/BrowserDevToolsCEFResults.json" if DEVTOOLS else "build/BrowserFullscreenCEFResults.json" if FULLSCREEN else "build/BrowserDocumentFooterCEFResults.json" if DOCUMENT_FOOTER else "build/BrowserOverlayCEFResults.json")
     output.write_text(json.dumps(records, indent=2))
     print(json.dumps(records, indent=2))
-    if FULLSCREEN:
+    if DEVTOOLS:
+        assert len(records) >= 15 and all(r["passed"] for r in records), "DevTools integration failed"
+        print("BrowserDevToolsCEFTests passed; results:", output)
+    elif FULLSCREEN:
         assert len(records) >= 35 and all(r["passed"] for r in records), "Fullscreen integration failed"
         print("BrowserFullscreenCEFTests passed; results:", output)
     elif DOCUMENT_FOOTER:
@@ -210,6 +215,8 @@ try:
         print("BrowserOverlayCEFTests: 13 probe checks, 7 native latency checks and 72 rapid toggles passed; results:", output)
 
 finally:
+    if DEVTOOLS and (work / "application.log").exists():
+        shutil.copy2(work / "application.log", ROOT / "build/BrowserDevToolsCEF.log")
     if server:
         server.shutdown()
     if peer_server:

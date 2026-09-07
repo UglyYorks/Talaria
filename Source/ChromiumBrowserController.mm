@@ -1,5 +1,8 @@
 #import "ChromiumBrowserController.h"
 #import "ChromiumRunLoop.h"
+#import "ChromiumContextMenu.h"
+#import "ChromiumPageArchive.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "ChromiumOverlayProbe.h"
 #import "ChromiumDocumentFooter.h"
 #import "BrowserPageContext.h"
@@ -16,6 +19,7 @@
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_command_line.h"
+#include "include/cef_context_menu_handler.h"
 #include "include/cef_display_handler.h"
 #include "include/cef_devtools_message_observer.h"
 #include "include/cef_life_span_handler.h"
@@ -27,6 +31,9 @@
 #include "include/internal/cef_mac.h"
 #include "include/wrapper/cef_helpers.h"
 #include "include/wrapper/cef_library_loader.h"
+
+static const int TLChromiumInspectElementCommand = MENU_ID_USER_FIRST;
+static const int TLChromiumSavePageCommand = MENU_ID_USER_FIRST + 1;
 
 static int TLChromiumMainArgc = 0;
 static char **TLChromiumMainArgv = nullptr;
@@ -91,6 +98,7 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 @property (nonatomic, readwrite) NSInteger browserIdentifier;
 @property (nonatomic, readwrite) NSUInteger documentGeneration;
 @property (nonatomic, readwrite, getter=isFullscreen) BOOL fullscreen;
+@property (nonatomic, readwrite) BOOL devToolsVisible;
 @property (nonatomic) NSUInteger overlayCursor;
 @property (nonatomic, copy) NSDictionary *overlayHint;
 @property (nonatomic) NSTimeInterval overlayFallbackAfter;
@@ -120,6 +128,12 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 - (void)performMessagePumpWork;
 - (void)browserCreated:(CefRefPtr<CefBrowser>)browser parentView:(nullable NSView *)parentView;
 - (void)browserClosed:(CefRefPtr<CefBrowser>)browser;
+- (void)devToolsVisibilityChanged:(BOOL)visible forBrowserIdentifier:(NSInteger)identifier;
+- (void)showPageSourceForBrowser:(CefRefPtr<CefBrowser>)browser;
+- (void)savePageForBrowser:(CefRefPtr<CefBrowser>)browser;
+- (void)presentPageArchive:(NSData *)archive suggestedName:(NSString *)name fromWindow:(NSWindow *)window;
+- (NSSavePanel *)pageSavePanel;
+- (void)choosePageArchiveURL:(NSString *)name fromWindow:(NSWindow *)window completion:(void (^)(NSURL *))completion;
 - (void)browserFullscreenChanged:(CefRefPtr<CefBrowser>)browser fullscreen:(BOOL)fullscreen;
 - (void)restoreFullscreenBrowser;
 - (void)exitBrowserFullscreen;
@@ -292,6 +306,7 @@ class TLChromiumApp : public CefApp, public CefBrowserProcessHandler {
 };
 
 class TLChromiumClient : public CefClient,
+                         public CefContextMenuHandler,
                          public CefDisplayHandler,
                          public CefKeyboardHandler,
                          public CefLifeSpanHandler,
@@ -299,9 +314,74 @@ class TLChromiumClient : public CefClient,
                          public CefRequestHandler {
  public:
   explicit TLChromiumClient(TLChromiumBrowserController *browserController,
-                            NSView *parentView = nil)
+                            NSView *parentView = nil,
+                            int inspectedBrowserIdentifier = -1)
       : browserController_(browserController),
-        parentView_(parentView) {}
+        parentView_(parentView),
+        inspectedBrowserIdentifier_(inspectedBrowserIdentifier) {}
+
+  CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override {
+    return inspectedBrowserIdentifier_ < 0 ? this : nullptr;
+  }
+
+  void OnBeforeContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+                           CefRefPtr<CefContextMenuParams> params,
+                           CefRefPtr<CefMenuModel> model) override {
+    CEF_REQUIRE_UI_THREAD();
+    // Keep editing, selection and link-specific actions, then add the page menu.
+    for (int command : {MENU_ID_BACK, MENU_ID_FORWARD, MENU_ID_RELOAD, MENU_ID_RELOAD_NOCACHE,
+                        MENU_ID_STOPLOAD, MENU_ID_PRINT, MENU_ID_VIEW_SOURCE}) model->Remove(command);
+    for (int index=(int)model->GetCount()-1;index>=0;index--) {
+      if (model->GetTypeAt(index)==MENUITEMTYPE_SEPARATOR &&
+          (index==0 || index==(int)model->GetCount()-1 || model->GetTypeAt(index-1)==MENUITEMTYPE_SEPARATOR))
+        model->RemoveAt(index);
+    }
+    if (model->GetCount() > 0) model->AddSeparator();
+    model->AddItem(MENU_ID_RELOAD, "Reload Page");
+    model->AddSeparator();
+    model->AddItem(MENU_ID_VIEW_SOURCE, "Show Page Source");
+    model->AddItem(TLChromiumSavePageCommand, "Save Page As…");
+    model->AddSeparator();
+    model->AddItem(MENU_ID_PRINT, "Print Page…");
+    model->AddSeparator();
+    model->AddItem(TLChromiumInspectElementCommand, "Inspect Element");
+  }
+
+  bool RunContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+                      CefRefPtr<CefContextMenuParams> params, CefRefPtr<CefMenuModel> model,
+                      CefRefPtr<CefRunContextMenuCallback> callback) override {
+    CEF_REQUIRE_UI_THREAD();
+    TLChromiumShowContextMenu(browser, model, CefPoint(params->GetXCoord(),params->GetYCoord()), callback);
+    return true;
+  }
+
+  bool OnContextMenuCommand(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+                            CefRefPtr<CefContextMenuParams> params, int command_id,
+                            cef_event_flags_t event_flags) override {
+    CEF_REQUIRE_UI_THREAD();
+    switch (command_id) {
+      case MENU_ID_RELOAD: browser->Reload();return true;
+      case MENU_ID_VIEW_SOURCE: [browserController_ showPageSourceForBrowser:browser];return true;
+      case TLChromiumSavePageCommand: [browserController_ savePageForBrowser:browser];return true;
+      case MENU_ID_PRINT: browser->GetHost()->Print();return true;
+      case TLChromiumInspectElementCommand: break;
+      default: return false;
+    }
+    CefWindowInfo windowInfo;
+    CefBrowserSettings settings;
+    browser->GetHost()->ShowDevTools(windowInfo, nullptr, settings,
+      CefPoint(params->GetXCoord(), params->GetYCoord()));
+    return true;
+  }
+
+  void OnBeforeDevToolsPopup(CefRefPtr<CefBrowser> browser, CefWindowInfo &windowInfo,
+                             CefRefPtr<CefClient> &client, CefBrowserSettings &settings,
+                             CefRefPtr<CefDictionaryValue> &extra_info,
+                             bool *use_default_window) override {
+    CEF_REQUIRE_UI_THREAD();
+    // DevTools owns a separate window; it must not inherit the page's host view.
+    client = new TLChromiumClient(browserController_, nil, browser->GetIdentifier());
+  }
 
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
   CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override { return this; }
@@ -403,6 +483,8 @@ class TLChromiumClient : public CefClient,
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     CEF_REQUIRE_UI_THREAD();
     [browserController_ browserCreated:browser parentView:parentView_];
+    if (inspectedBrowserIdentifier_ >= 0)
+      [browserController_ devToolsVisibilityChanged:YES forBrowserIdentifier:inspectedBrowserIdentifier_];
   }
 
   bool DoClose(CefRefPtr<CefBrowser> browser) override {
@@ -424,6 +506,8 @@ class TLChromiumClient : public CefClient,
 
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
     CEF_REQUIRE_UI_THREAD();
+    if (inspectedBrowserIdentifier_ >= 0)
+      [browserController_ devToolsVisibilityChanged:NO forBrowserIdentifier:inspectedBrowserIdentifier_];
     [browserController_ browserClosed:browser];
   }
 
@@ -477,6 +561,8 @@ class TLChromiumClient : public CefClient,
  private:
   __unsafe_unretained TLChromiumBrowserController *browserController_;
   __unsafe_unretained NSView *parentView_;
+
+  int inspectedBrowserIdentifier_;
 
   IMPLEMENT_REFCOUNTING(TLChromiumClient);
 };
@@ -801,6 +887,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
     return;
   }
   if (session.browserIdentifier == _fullscreenBrowserIdentifier) [self exitBrowserFullscreen];
+  [self devToolsVisibilityChanged:NO forBrowserIdentifier:session.browserIdentifier];
   [session.documentFooter stop]; session.documentFooter = nil;
 
   NSView *containerView = session.containerView;
@@ -818,6 +905,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
   CefRefPtr<CefBrowser> browser = [self browserWithIdentifier:(int)session.browserIdentifier];
   session.browserIdentifier = -1;
   if (browser) {
+    browser->GetHost()->CloseDevTools();
     browser->GetHost()->CloseBrowser(true);
   }
 }
@@ -830,6 +918,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
 
   NSNumber *browserIdentifier = _browserIdentifiersByContainer[containerKey];
   TLChromiumBrowserSession *session = _sessionsByContainer[containerKey];
+  [self devToolsVisibilityChanged:NO forBrowserIdentifier:session.browserIdentifier];
   if (browserIdentifier && browserIdentifier.integerValue == _fullscreenBrowserIdentifier) [self exitBrowserFullscreen];
   [_browserIdentifiersByContainer removeObjectForKey:containerKey];
   [session.documentFooter stop]; session.documentFooter = nil;
@@ -853,6 +942,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
   session.browserIdentifier = -1;
   CefRefPtr<CefBrowser> browser = [self browserWithIdentifier:browserIdentifier.intValue];
   if (browser) {
+    browser->GetHost()->CloseDevTools();
     browser->GetHost()->CloseBrowser(true);
   }
 }
@@ -1055,6 +1145,57 @@ class TLChromiumNavigationCommandTask : public CefTask {
   }
 }
 
+- (void)showPageSourceForBrowser:(CefRefPtr<CefBrowser>)browser {
+  NSString *URLString=TLNSStringFromCefString(browser->GetMainFrame()->GetURL());
+  if (URLString.length==0) return;
+  if (![URLString hasPrefix:@"view-source:"]) URLString=[@"view-source:" stringByAppendingString:URLString];
+  [self createBrowserWithURLString:URLString parentView:nil];
+}
+
+- (void)savePageForBrowser:(CefRefPtr<CefBrowser>)browser {
+  NSWindow *window=[self windowForBrowser:browser];
+  NSString *name=TLNSStringFromCefString(browser->GetMainFrame()->GetURL());
+  name=[NSURL URLWithString:name].host ?: @"Page";
+  TLChromiumCapturePageArchive(browser, ^(NSData *archive, NSError *error) {
+    if(error) { [NSApp presentError:error];return; }
+    [self presentPageArchive:archive suggestedName:name fromWindow:window];
+  });
+}
+
+- (NSSavePanel *)pageSavePanel { return [NSSavePanel savePanel]; }
+
+- (void)presentPageArchive:(NSData *)archive suggestedName:(NSString *)name fromWindow:(NSWindow *)window {
+  [self choosePageArchiveURL:name fromWindow:window completion:^(NSURL *URL) {
+    if(!URL)return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+      NSError *error=nil;
+      if (![archive writeToURL:URL options:NSDataWritingAtomic error:&error])
+        dispatch_async(dispatch_get_main_queue(),^{[NSApp presentError:error];});
+    });
+  }];
+}
+
+- (void)choosePageArchiveURL:(NSString *)name fromWindow:(NSWindow *)window completion:(void (^)(NSURL *))completion {
+  NSSavePanel *panel=[self pageSavePanel];
+  panel.title=@"Save Page As";
+  panel.allowedContentTypes=@[[UTType typeWithFilenameExtension:@"mhtml"] ?: UTTypeData];
+  panel.nameFieldStringValue=[name stringByAppendingPathExtension:@"mhtml"];
+  panel.canCreateDirectories=YES;
+  void (^responseHandler)(NSModalResponse)=^(NSModalResponse response) {
+    [panel orderOut:nil];
+    completion(response==NSModalResponseOK ? panel.URL : nil);
+  };
+  if(window.isVisible)[panel beginSheetModalForWindow:window completionHandler:responseHandler];
+  else [panel beginWithCompletionHandler:responseHandler];
+}
+
+- (void)devToolsVisibilityChanged:(BOOL)visible forBrowserIdentifier:(NSInteger)identifier {
+  TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(identifier)];
+  if (!session || session.devToolsVisible == visible) return;
+  session.devToolsVisible = visible;
+  if (session.devToolsVisibilityChangedHandler) session.devToolsVisibilityChangedHandler();
+}
+
 // Alloy reports renderer fullscreen but leaves native presentation to the host.
 // Move only the CEF view: the original window, split layout and footer stay intact.
 - (void)browserFullscreenChanged:(CefRefPtr<CefBrowser>)browser fullscreen:(BOOL)fullscreen {
@@ -1130,6 +1271,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
 - (void)browserClosed:(CefRefPtr<CefBrowser>)browser {
   int identifier = browser ? browser->GetIdentifier() : -1;
   if (identifier == _fullscreenBrowserIdentifier) [self restoreFullscreenBrowser];
+  [self devToolsVisibilityChanged:NO forBrowserIdentifier:identifier];
   NSNumber *browserIdentifier = @(identifier);
   NSValue *containerKey = _containersByBrowserIdentifier[browserIdentifier];
   if (containerKey) {

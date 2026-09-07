@@ -74,6 +74,7 @@
 - (void)dealloc {
   [_overlayTimer invalidate];
   [_heightTransition cancel];
+  _browserSession.devToolsVisibilityChangedHandler = nil;
   [_browserService closeSession:_browserSession];
 }
 
@@ -96,6 +97,7 @@
                              self.browserAddressInput.chatButton]) {
     button.target = nil;
   }
+  self.browserSession.devToolsVisibilityChangedHandler = nil;
   [self.browserService closeSession:self.browserSession];
   self.browserSession = nil;
   self.metadataChangedHandler = nil;
@@ -265,6 +267,16 @@
       controller.browserAddressInput.reloadButton.enabled = YES;
     }];
   if (self.browserSession) {
+    self.browserSession.devToolsVisibilityChangedHandler = ^{
+      TLBrowserTabController *controller = weakSelf;
+      if (!controller || controller.isClosed) return;
+      controller.overlayGeneration++;
+      controller.overlayClearProofUntil = 0;
+      controller.overlayNextProbe = 0;
+      controller.overlayNextFullProbe = 0;
+      [controller.overlayPolicy observe:nil atTime:NSProcessInfo.processInfo.systemUptime];
+      [controller applyHeightMode];
+    };
     self.overlayDocumentGeneration = self.browserSession.documentGeneration;
     [self configureDocumentFooter];
     [self updateHeightDescription];
@@ -287,6 +299,14 @@
 - (void)reloadBrowser:(id)sender { [self.browserService reloadSession:self.browserSession]; }
 
 - (void)updateHeightDescription {
+  BOOL inspecting = self.browserSession.devToolsVisible;
+  self.browserAddressInput.heightToggleButton.enabled = !inspecting;
+  if (inspecting) {
+    NSString *description = @"Address bar stays below page while DevTools is open";
+    self.browserAddressInput.heightToggleButton.toolTip = description;
+    [self.browserAddressInput.heightToggleButton setAccessibilityLabel:description];
+    return;
+  }
   NSString *action = self.browserUsesReducedHeight ? @"Show address bar over page" : @"Show address bar below page";
   self.browserAddressInput.heightToggleButton.toolTip = [NSString stringWithFormat:@"%@ (%@)", action,
     self.overlayPolicy.manuallyOverridden ? @"Manual until next page" : @"Automatic"];
@@ -309,9 +329,10 @@
 - (void)applyHeightMode {
   NSUInteger reveal = ++self.footerRevealGeneration;
   self.overlayDismissalProbePending = NO;
-  BOOL changed = self.browserUsesReducedHeight != self.overlayPolicy.reducedHeight;
+  BOOL reducedHeight = self.browserSession.devToolsVisible || self.overlayPolicy.reducedHeight;
+  BOOL changed = self.browserUsesReducedHeight != reducedHeight;
   if (changed) self.footerColorNext = 0;
-  self.browserUsesReducedHeight = self.overlayPolicy.reducedHeight;
+  self.browserUsesReducedHeight = reducedHeight;
   self.browserAddressInput.reducedHeight = self.browserUsesReducedHeight;
   CGFloat inset = self.browserUsesReducedHeight ? -[self footerHeight] : 0;
   if (!changed && !self.footerTransitionPending && self.browserHostBottomConstraint.constant == inset) {
@@ -353,6 +374,7 @@
   [self updateHeightDescription];
 }
 - (void)toggleBrowserHeightMode:(id)sender {
+  if (self.browserSession.devToolsVisible) return;
   self.overlayGeneration++;
   [self.overlayPolicy setManualReducedHeight:!self.browserUsesReducedHeight];
   [self applyHeightMode];
@@ -449,6 +471,7 @@
     self.overlayClearProofUntil = 0;
     [self.overlayPolicy observe:nil atTime:now]; return;
   }
+  if (self.browserSession.devToolsVisible) return;
   if (self.overlayInFlight || (self.overlayPolicy.manuallyOverridden && !self.footerBanner) || now < self.overlayNextProbe) return;
   [self.view layoutSubtreeIfNeeded];
   BOOL dismissal = self.overlayDismissalProbePending;

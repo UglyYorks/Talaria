@@ -1285,6 +1285,53 @@ static void TestDocumentFooterExclusivity(void) {
   service.footerCompletion=nil;[controller close];[window close];
 }
 
+static void SetTestDevToolsVisible(TLFeatureBrowserMock *service, BOOL visible) {
+  [service.overlaySession setValue:@(visible) forKey:@"devToolsVisible"];
+  service.overlaySession.devToolsVisibilityChangedHandler();
+}
+static void TestDevToolsFooterPlacement(void) {
+  for (NSNumber *mode in @[@0, @1, @2]) {
+    TLFeatureBrowserMock *service=[TLFeatureBrowserMock new];
+    TLBrowserTabController *controller=[[TLBrowserTabController alloc]
+      initWithURL:[NSURL URLWithString:@"https://example.com"] palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]
+      database:(id)[TLFeatureSettingsStoreMock new] orchestrator:(id)[TLFeatureCatalogueMock new] inputWidth:480 browserService:service];
+    TLOverlayTestWindow *window=[[TLOverlayTestWindow alloc] initWithContentRect:NSMakeRect(0,0,800,700)
+      styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed=NO;window.contentView=controller.view;
+    [controller startInWindow:window];[[controller valueForKey:@"overlayTimer"] invalidate];
+    [controller.view layoutSubtreeIfNeeded];
+    // Exercise automatic, manual overlay, and manual raised modes.
+    if(mode.intValue>0)[controller toggleBrowserHeightMode:nil];
+    if(mode.intValue==1)[controller toggleBrowserHeightMode:nil];
+    TLBrowserOverlayPolicy *policy=[controller valueForKey:@"overlayPolicy"];
+    TLBrowserAddressInput *input=[controller valueForKey:@"browserAddressInput"];
+    NSLayoutConstraint *bottom=[controller valueForKey:@"browserHostBottomConstraint"];
+    BOOL previous=policy.reducedHeight, manual=policy.manuallyOverridden;
+    SetTestDevToolsVisible(service,YES);
+    [controller toggleBrowserHeightMode:nil];
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+    Check(input.reducedHeight && !input.heightToggleButton.enabled && bottom.constant<0,
+      @"DevTools raises the footer and prevents manually lowering it");
+    Check(![service.footerConfiguration[@"enabled"] boolValue],@"DevTools never duplicates the native footer with a document spacer");
+    Check(policy.reducedHeight==previous && policy.manuallyOverridden==manual,@"DevTools preserves the previous placement preference");
+    window.testVisible=YES;AllowOverlayProbe(controller);[controller sampleOverlay];
+    Check(service.overlayCount==0,@"page probes cannot override placement while DevTools is open");
+    window.testVisible=NO;
+    SetTestDevToolsVisible(service,NO);
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+    Check(input.reducedHeight==previous && input.heightToggleButton.enabled,
+      @"closing DevTools restores the prior automatic or manual mode");
+    SetTestDevToolsVisible(service,YES);
+    [service.overlaySession setValue:@1 forKey:@"documentGeneration"];
+    [controller sampleOverlay];
+    Check(input.reducedHeight && !policy.manuallyOverridden && !input.heightToggleButton.enabled,
+      @"navigation clears the manual preference while DevTools keeps the footer raised");
+    [controller close];
+    Check(service.overlaySession.devToolsVisibilityChangedHandler==nil,@"closing the tab removes its DevTools callback");
+    [window close];
+  }
+}
+
 static void TestFooterColorReadyBeforeOpening(void) {
   TLFeatureBrowserMock *service = [TLFeatureBrowserMock new];
   service.deferColor = YES;
@@ -2371,6 +2418,7 @@ int main(void) {
     TestBrowserOverlayLifecycle();
     TestBrowserContentColorTheme();
     TestDocumentFooterExclusivity();
+    TestDevToolsFooterPlacement();
     TestFooterColorReadyBeforeOpening();
     TestBannerColorOwnership();
     TestDragCommitRendersBeforeDeferredReload();
