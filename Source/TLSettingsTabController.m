@@ -9,6 +9,7 @@
 #import "design_system/TLSettingsWorkspaceView.h"
 #import "design_system/TLWrappingActionView.h"
 #import "design_system/TLSettingsRowView.h"
+#import "design_system/TLSkillsPicker.h"
 
 @interface TLSettingsTabController () <NSTextFieldDelegate, NSSearchFieldDelegate>
 @property (nonatomic, strong) TLDatabase *database;
@@ -42,6 +43,12 @@
 @property (nonatomic) NSUInteger credentialGeneration;
 @property (nonatomic) NSInteger credentialAgentID;
 @property (nonatomic) BOOL credentialBusy;
+@property (nonatomic, strong) TLSkillsPicker *skillsPicker;
+@property (nonatomic) NSInteger skillsAgentID;
+@property (nonatomic) NSUInteger skillsGeneration;
+@property (nonatomic) BOOL skillsBusy;
+@property (nonatomic) BOOL skillsLoaded;
+@property (nonatomic, copy) NSString *skillsStatus;
 @property TLBrowserSettingsController *browserSettingsController;
 @end
 
@@ -70,7 +77,7 @@
 - (NSArray<NSString *> *)pageNames {
   if (self.sectionIndex == 1) return TLBrowserPreferences.categories;
   if (self.sectionIndex == 2) return @[];
-  return @[@"Model", @"Tools & Keys"];
+  return @[@"Model", @"Tools & Keys", @"Skills"];
 }
 
 - (TLThemedButton *)button:(NSString *)title action:(SEL)action {
@@ -210,7 +217,7 @@
   NSString *section = self.sectionIndex == 0 ? @"Agent" : @"Browser";
   NSTextField *label = [self labelWithString:section font:self.palette.labelFont colorToken:@"textMuted"];
   NSMutableArray *items = [NSMutableArray arrayWithObject:label];
-  NSArray *icons = self.sectionIndex == 0 ? @[@"cube", @"key.horizontal"] :
+  NSArray *icons = self.sectionIndex == 0 ? @[@"cube", @"key.horizontal", @"sparkles"] :
     @[@"lock.shield", @"hand.raised", @"person.text.rectangle", @"magnifyingglass", @"textformat",
       @"power", @"speedometer", @"character.bubble", @"arrow.down.circle", @"accessibility",
       @"gearshape", @"arrow.counterclockwise"];
@@ -246,8 +253,9 @@
   if (self.sectionIndex == 0) {
     self.agentPageIndex = index;
     self.selectedPage = self.pageNames[index]; title = self.selectedPage;
-    detail = index == 0 ? @"Choose the models and provider behind your conversations." : @"Connect your tools with credentials stored in Hermes.";
-    if (!self.pages[self.selectedPage]) self.pages[self.selectedPage] = [self buildCredentialsPage];
+    detail = index == 0 ? @"Choose the models and provider behind your conversations." : index == 1
+      ? @"Connect your tools with credentials stored in Hermes." : @"Choose which installed skills your agent can use.";
+    if (!self.pages[self.selectedPage]) self.pages[self.selectedPage] = index == 2 ? [self buildSkillsPage] : [self buildCredentialsPage];
   } else if (self.sectionIndex == 1) {
     self.browserPageIndex = index;
     self.selectedPage = @"Browser"; title = self.pageNames[index];
@@ -271,10 +279,16 @@
   if (self.workspace.showsSidebar) [self.workspace.pageMenu selectItemAtIndex:index];
   self.workspace.pageTitle.stringValue = title;
   self.workspace.pageDescription.stringValue = detail;
-  self.workspace.footer.hidden = ![self.selectedPage isEqual:@"Model"];
+  self.workspace.footer.hidden = ![self.selectedPage isEqual:@"Model"] && ![self.selectedPage isEqual:@"Skills"];
   self.workspace.needsLayout = YES;
   self.footerLabel.stringValue = @"Changes apply when saved.";
+  self.footerLabel.toolTip = nil;
+  self.saveButton.enabled = YES;
   if ([self.selectedPage isEqual:@"Tools & Keys"] && !self.credentialBusy && (!self.credentials || self.credentialAgentID != self.database.currentAgentID)) [self reloadCredentials:nil];
+  if ([self.selectedPage isEqual:@"Skills"]) {
+    if (!self.skillsBusy && (!self.skillsLoaded || self.skillsAgentID != self.database.currentAgentID)) [self requestSkillsWithChanges:nil];
+    [self updateSkillsFooter];
+  }
 }
 
 - (void)updateModelLabelsInView:(NSView *)view {
@@ -302,6 +316,11 @@
 }
 - (void)save:(id)sender {
   if (self.isClosed) return;
+  if ([self.selectedPage isEqual:@"Skills"]) {
+    if (self.skillsAgentID != self.database.currentAgentID) [self requestSkillsWithChanges:nil];
+    else if (self.skillsPicker.changes.count) [self requestSkillsWithChanges:self.skillsPicker.changes];
+    return;
+  }
   self.draftSettings.openRouterToken = self.tokenField.stringValue;
   self.draftSettings.rememberOpenRouterToken = self.rememberButton.state == NSControlStateValueOn;
   TLAppSettings *latest = [self.database appSettings:nil];
@@ -320,6 +339,66 @@
   if (self.settingsSavedHandler) self.settingsSavedHandler(saved);
 }
 - (void)requestOnboarding:(id)sender { if (self.onboardingHandler) self.onboardingHandler(); }
+
+- (NSView *)buildSkillsPage {
+  self.skillsPicker = [[TLSkillsPicker alloc] init];
+  self.skillsPicker.palette = self.palette;
+  __weak typeof(self) weakSelf = self;
+  self.skillsPicker.reloadHandler = ^{ [weakSelf requestSkillsWithChanges:nil]; };
+  self.skillsPicker.changesHandler = ^{
+    weakSelf.skillsStatus = nil;
+    [weakSelf updateSkillsFooter];
+  };
+  NSTextField *detail = [self description:@"Talaria keeps grounded-citations disabled. Skills already loaded in a conversation can remain in its history."];
+  return [self scrollPageWithStack:[self stack:@[self.skillsPicker, detail] vertical:YES]];
+}
+
+- (void)updateSkillsFooter {
+  if (![self.selectedPage isEqual:@"Skills"]) return;
+  self.saveButton.enabled = self.skillsLoaded && !self.skillsBusy && self.skillsPicker.changes.count > 0;
+  self.footerLabel.stringValue = self.skillsStatus ?: @"Changes apply when saved.";
+  self.footerLabel.toolTip = self.footerLabel.stringValue;
+}
+
+- (void)requestSkillsWithChanges:(NSDictionary<NSString *, NSNumber *> *)changes {
+  if (self.isClosed || self.skillsBusy) return;
+  NSInteger agentID = self.database.currentAgentID;
+  if (self.skillsAgentID != agentID) {
+    self.skillsPicker.skills = @[];
+    self.skillsLoaded = NO;
+    changes = nil;
+  }
+  self.skillsAgentID = agentID;
+  self.skillsBusy = YES;
+  self.skillsPicker.enabled = NO;
+  self.skillsPicker.loading = changes == nil;
+  self.skillsPicker.message = @"";
+  self.skillsStatus = changes ? @"Saving skills…" : @"Loading skills…";
+  [self updateSkillsFooter];
+  NSUInteger generation = ++self.skillsGeneration;
+  BOOL saving = changes != nil;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesSkillsForAgentWithID:agentID changes:changes completion:^(NSDictionary *result, NSError *error) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      typeof(self) owner = weakSelf;
+      if (!owner || owner.isClosed || generation != owner.skillsGeneration) return;
+      owner.skillsBusy = NO;
+      owner.skillsPicker.enabled = YES;
+      owner.skillsPicker.loading = NO;
+      if (owner.database.currentAgentID != agentID) { [owner requestSkillsWithChanges:nil]; return; }
+      if (error || ![result[@"skills"] isKindOfClass:NSArray.class]) {
+        owner.skillsStatus = error.localizedDescription ?: @"Hermes returned an invalid skill catalogue.";
+        if (!saving) { owner.skillsLoaded = NO; owner.skillsPicker.message = owner.skillsStatus; }
+      } else {
+        owner.skillsPicker.skills = result[@"skills"];
+        owner.skillsLoaded = YES;
+        owner.skillsStatus = saving ? @"Changes saved." : @"Changes apply when saved.";
+        if (saving && owner.skillsSavedHandler) owner.skillsSavedHandler(agentID);
+      }
+      [owner updateSkillsFooter];
+    });
+  }];
+}
 
 - (NSView *)buildBrowserPage {
   self.browserSettingsController = [[TLBrowserSettingsController alloc] initWithPalette:self.palette preferences:self.browserPreferences];
@@ -488,6 +567,7 @@
   [self.modelSelection applyPalette:palette];
   [self.browserSettingsController applyPalette:palette];
   [self.applicationSettingsController applyPalette:palette];
+  self.skillsPicker.palette = palette;
   [TLChromiumBrowserController.sharedController applyDarkAppearance:palette.dark];
 }
 - (void)close {
@@ -498,10 +578,14 @@
   self.workspace.sectionTabs.target = nil;
   self.workspace.pageMenu.target = nil;
   self.credentialGeneration++;
+  self.skillsGeneration++;
+  self.skillsPicker.reloadHandler = nil;
+  self.skillsPicker.changesHandler = nil;
   [self.credentialDrafts removeAllObjects];
   for (NSTextField *field in self.credentialFields.allValues) field.stringValue = @"";
   [self.modelSelection.window.sheetParent endSheet:self.modelSelection.window];
   [self.modelSelection close];
   self.onboardingHandler = nil; self.settingsSavedHandler = nil; self.errorHandler = nil;
+  self.skillsSavedHandler = nil;
 }
 @end

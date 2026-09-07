@@ -11,6 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL enabled;
 @property (nonatomic, copy) NSString *message;
 @property (nonatomic, copy, nullable) void (^reloadHandler)(void);
+@property (nonatomic, copy, nullable) void (^changesHandler)(void);
 @property (nonatomic, strong, readonly) NSTableView *tableView;
 @end
 

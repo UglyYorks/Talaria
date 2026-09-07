@@ -4011,6 +4011,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   __weak typeof(self) weakSelf = self;
   controller.onboardingHandler = ^{ [weakSelf showOnboardingDemoWindow:weakSelf]; };
   controller.errorHandler = ^(NSString *message) { [weakSelf presentErrorMessage:message]; };
+  controller.skillsSavedHandler = ^(NSInteger agentID) {
+    if (agentID == weakSelf.database.currentAgentID) [weakSelf prepareHermesCommands];
+  };
   controller.settingsSavedHandler = ^(TLAppSettings *settings) {
     TalariaWindowController *windowController = weakSelf;
     BOOL inferenceChanged = ![windowController.settings.openRouterToken isEqualToString:settings.openRouterToken] ||

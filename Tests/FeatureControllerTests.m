@@ -1652,7 +1652,7 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   NSWindow *window = HostController(controller);
   TLSettingsWorkspaceView *shell = [controller valueForKey:@"workspace"];
   NSArray<TLSidebarNavigationButton *> *nav = [controller valueForKey:@"navigation"];
-  Check([[nav valueForKey:@"title"] isEqual:@[@"Model", @"Tools & Keys"]], @"Agent has Model and Tools & Keys in its sidebar");
+  Check([[nav valueForKey:@"title"] isEqual:@[@"Model", @"Tools & Keys", @"Skills"]], @"Agent exposes Model, Tools & Keys, and Skills in its sidebar");
   NSSegmentedControl *sections = shell.sectionTabs;
   Check(sections.segmentCount == 3 && [[sections labelForSegment:0] isEqual:@"Agent"] &&
     [[sections labelForSegment:1] isEqual:@"Browser"] && [[sections labelForSegment:2] isEqual:@"Application"], @"settings has three native system sections");
@@ -2191,9 +2191,9 @@ static void TestFolderAccessTable(void) {
   }
   if (changes) self.savedSkillChanges = changes;
   completion(@{@"skills": @[
-    @{@"name":@"alpha", @"enabled":changes[@"alpha"] ?: @YES, @"locked_reason":@""},
-    @{@"name":@"beta", @"enabled":changes[@"beta"] ?: @NO, @"locked_reason":@""},
-    @{@"name":@"grounded-citations", @"enabled":@NO, @"locked_reason":@"Managed by Talaria"},
+    @{@"name":@"alpha", @"enabled":changes[@"alpha"] ?: @YES, @"locked_reason":@"", @"description":@"Read documents and turn meeting notes into clear action items, with owners and due dates. Keeps the original context available when you need to review the next steps."},
+    @{@"name":@"beta", @"enabled":changes[@"beta"] ?: @NO, @"locked_reason":@"", @"description":@"Search the web and compare sources."},
+    @{@"name":@"grounded-citations", @"enabled":@NO, @"locked_reason":@"Managed by Talaria", @"description":@"Track source URLs and format numbered citations."},
     @{@"name":@"hermes-agent", @"enabled":@YES, @"locked_reason":@"Required by Hermes"},
   ]}, nil);
 }
@@ -2317,7 +2317,7 @@ static void TestAgentSettingsForm(void) {
   [controller.window close];
 }
 
-static TLThemedButton *SkillButton(TLSkillsPicker *picker, NSInteger row) {
+static NSSwitch *SkillSwitch(TLSkillsPicker *picker, NSInteger row) {
   NSView *cell = [picker.tableView viewAtColumn:0 row:row makeIfNecessary:YES];
   [cell layoutSubtreeIfNeeded];
   return [cell viewWithTag:1];
@@ -2337,15 +2337,19 @@ static void TestAgentSkillSettings(void) {
   [[controller valueForKey:@"skillsTabButton"] performClick:nil];
   [controller.window.contentView layoutSubtreeIfNeeded];
   Check(store.skillsAgentID == 19 && picker.tableView.numberOfRows == 4, @"skills load for the edited agent, including disabled skills");
-  Check(!SkillButton(picker, 2).enabled && !SkillButton(picker, 3).enabled, @"managed and required skills cannot be toggled");
-  [SkillButton(picker, 0) performClick:nil];
+  Check(!SkillSwitch(picker, 2).enabled && !SkillSwitch(picker, 3).enabled, @"managed and required skills cannot be toggled");
+  [SkillSwitch(picker, 0) performClick:nil];
   Check([picker.changes isEqual:@{@"alpha":@NO}] && !store.savedSkillChanges, @"skill toggles stay in the draft until Save");
   NSSearchField *search = [picker valueForKey:@"searchField"];
   search.stringValue = @"BETA";
   [(id<NSTextFieldDelegate>)picker controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
   Check(picker.tableView.numberOfRows == 1, @"skill search ignores case");
-  [SkillButton(picker, 0) performClick:nil];
+  [SkillSwitch(picker, 0) performClick:nil];
   Check([picker.changes isEqual:@{@"alpha":@NO, @"beta":@YES}], @"filtered toggles change the correct skill");
+  search.stringValue = @"compare sources";
+  [(id<NSTextFieldDelegate>)picker controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
+  Check(picker.tableView.numberOfRows == 1 && [SkillSwitch(picker, 0).identifier isEqual:@"beta"],
+    @"skill search includes Hermes descriptions");
   [[controller valueForKey:@"generalTabButton"] performClick:nil];
   [[controller valueForKey:@"skillsTabButton"] performClick:nil];
   Check(picker.changes.count == 2, @"switching sections preserves the skills draft");
@@ -2362,21 +2366,27 @@ static void TestAgentSkillSettings(void) {
     NSRect saveFrame = [save convertRect:save.bounds toView:root];
     Check(NSContainsRect(root.bounds, pickerFrame) && NSMinY(pickerFrame) > NSMaxY(saveFrame), @"skills fit above the settings footer");
     for (NSInteger row = 0; row < 4; row++) {
-      TLThemedButton *button = SkillButton(picker, row);
-      Check(NSWidth(button.bounds) > 0 && NSHeight(button.bounds) > 0, @"skill controls have visible bounds");
-      NSBitmapImageRep *bitmap = RenderThemedButton(button);
-      CGFloat surface[3], alpha;
-      RGBComponents(palette.tabBackground, surface, &alpha);
-      CGFloat opacity = button.enabled ? 1 : palette.disabledOpacity;
-      CompositeColor(button.primary ? palette.primaryActionSurface : palette.secondaryActionSurface, opacity, surface);
-      Check(PixelMatches(bitmap, 10, NSHeight(button.bounds) / 2, surface), @"skill controls render their theme surface");
-      CGFloat foreground[3] = {surface[0], surface[1], surface[2]};
-      CompositeColor(button.primary ? palette.primaryActionText : palette.secondaryActionText, opacity, foreground);
-      NSUInteger textPixels = 0;
-      for (NSInteger y = 7; y < bitmap.pixelsHigh - 7; y++)
-        for (NSInteger x = 20; x < bitmap.pixelsWide - 20; x++)
-          if (PixelMatches(bitmap, x, y, foreground)) textPixels++;
-      Check(textPixels > 5, @"skill controls render readable text in each theme");
+      NSSwitch *toggle = SkillSwitch(picker, row);
+      Check([toggle isKindOfClass:NSSwitch.class] && NSWidth(toggle.bounds) > 0 && NSHeight(toggle.bounds) > 0,
+        @"skills use visible native switches");
+      Check(toggle.state == (row == 1 || row == 3 ? NSControlStateValueOn : NSControlStateValueOff),
+        @"native switch state reflects draft and locked values in both themes");
+      NSTableCellView *cell = (NSTableCellView *)toggle.superview;
+      NSTextField *detail = [cell viewWithTag:2];
+      Check(detail.hidden == (row == 3), @"missing descriptions do not leave an empty label");
+      if (!detail.hidden) {
+        Check(NSMinY(detail.frame) >= NSMaxY(cell.textField.frame) && NSMaxY(detail.frame) <= NSHeight(cell.bounds),
+          @"skill descriptions fit beneath their names without overlapping the next row");
+        NSBitmapImageRep *bitmap = [cell bitmapImageRepForCachingDisplayInRect:cell.bounds];
+        [cell cacheDisplayInRect:cell.bounds toBitmapImageRep:bitmap];
+        CGFloat foreground[3], alpha;
+        RGBComponents(palette.textMuted, foreground, &alpha);
+        NSUInteger textPixels = 0;
+        for (NSInteger y = 0; y < bitmap.pixelsHigh; y++)
+          for (NSInteger x = 0; x < bitmap.pixelsWide; x++)
+            if (PixelMatches(bitmap, x, y, foreground)) textPixels++;
+        Check(textPixels > 5, @"skill descriptions render readable theme text");
+      }
     }
     NSBitmapImageRep *preview = [root bitmapImageRepForCachingDisplayInRect:root.bounds];
     [root cacheDisplayInRect:root.bounds toBitmapImageRep:preview];
@@ -2396,7 +2406,7 @@ static void TestAgentSkillSettings(void) {
   store.failSkills = NO;
   [[picker valueForKey:@"reloadButton"] performClick:nil];
   [controller.window.contentView layoutSubtreeIfNeeded];
-  [SkillButton(picker, 0) performClick:nil];
+  [SkillSwitch(picker, 0) performClick:nil];
   store.failSkills = YES;
   [[controller valueForKey:@"createButton"] performClick:nil];
   Check(!store.savedProfile && picker.changes.count == 1 &&
@@ -2412,6 +2422,84 @@ static void TestAgentSkillSettings(void) {
   Check([store.savedSkillChanges isEqual:@{@"alpha":@NO}] && store.savedProfile.agentID == 19 && picker.changes.count == 0,
         @"Save persists skill changes for this agent and then saves the profile");
   [controller.window close];
+}
+
+static void TestSkillsInSettingsWorkspace(void) {
+  TLFeatureSettingsStoreMock *database = [TLFeatureSettingsStoreMock new];
+  database.currentAgentID = 19;
+  TLAgentCreationStoreMock *service = [TLAgentCreationStoreMock new];
+  TLSettingsTabController *controller = [[TLSettingsTabController alloc] initWithSettings:TLAppSettings.defaultSettings
+    database:(id)database orchestrator:(id)service palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
+  NSWindow *window = HostController(controller);
+  [window setContentSize:NSMakeSize(1100, 780)];
+  TLSettingsWorkspaceView *shell = [controller valueForKey:@"workspace"];
+  NSArray<TLSidebarNavigationButton *> *nav = [controller valueForKey:@"navigation"];
+  Check(service.skillsAgentID == 0, @"opening Model does not request skills");
+  [nav[2] accessibilityPerformPress]; SettingsTick(window);
+  TLSkillsPicker *picker = [controller valueForKey:@"skillsPicker"];
+  TLThemedButton *save = [controller valueForKey:@"saveButton"];
+  Check([shell.pageTitle.stringValue isEqual:@"Skills"] && !shell.footer.hidden &&
+    service.skillsAgentID == 19 && picker.tableView.numberOfRows == 4, @"Settings > Agent > Skills loads the current agent's installed skills");
+  Check(!SkillSwitch(picker, 2).enabled && !SkillSwitch(picker, 3).enabled, @"workspace respects managed and required skills");
+  [SkillSwitch(picker, 0) performClick:nil];
+  Check(save.enabled && !service.savedSkillChanges, @"workspace skill changes remain drafts until Save");
+  [nav[0] accessibilityPerformPress]; [nav[2] accessibilityPerformPress]; SettingsTick(window);
+  Check(picker.changes.count == 1, @"navigation keeps the skill draft");
+  for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@1100, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 780)]; SettingsTick(window);
+      Check([[shell.pageMenu titleOfSelectedItem] isEqual:@"Skills"], @"compact navigation includes Skills");
+      NSRect pickerRect = [picker convertRect:picker.bounds toView:shell];
+      Check(NSMinX(pickerRect) >= 0 && NSMaxX(pickerRect) <= NSWidth(shell.bounds) + 1,
+        @"skills fit the available settings width");
+      NSSwitch *toggle = SkillSwitch(picker, 0);
+      NSRect toggleRect = [toggle convertRect:toggle.bounds toView:picker];
+      Check(NSMinX(toggleRect) >= 0 && NSMaxX(toggleRect) <= NSWidth(picker.bounds) + 1,
+        @"skill actions stay visible at narrow widths");
+      NSTableCellView *cell = (NSTableCellView *)toggle.superview;
+      Check(width.doubleValue > 200 || NSWidth(cell.textField.bounds) >= NSWidth(picker.bounds) / 2,
+        @"narrow rows keep space for identifying the skill");
+      NSTextField *detail = [cell viewWithTag:2];
+      Check(NSMaxY(detail.frame) <= NSHeight(cell.bounds) && NSMaxX(detail.frame) <= NSWidth(cell.bounds),
+        @"wrapped descriptions remain inside their rows at every window width");
+      Check(width.doubleValue > 200 || NSHeight(detail.frame) > NSHeight(cell.textField.frame),
+        @"narrow descriptions wrap onto multiple lines");
+      Check([picker.palette.controlText isEqual:palette.controlText], @"skills follow the active settings theme");
+      SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-skills-%@-%@.png", palette.dark ? @"dark" : @"light", width]);
+    }
+  }
+  [window setContentSize:NSMakeSize(1100, 780)]; SettingsTick(window);
+  __block NSInteger savedAgentID = 0;
+  controller.skillsSavedHandler = ^(NSInteger agentID) { savedAgentID = agentID; };
+  service.failSkills = YES;
+  [save performClick:nil]; SettingsTick(window);
+  Check(picker.changes.count == 1 && save.enabled && !savedAgentID &&
+    [[[controller valueForKey:@"footerLabel"] stringValue] isEqual:@"Hermes unavailable"], @"failed skill Save keeps the draft available for retry");
+  service.failSkills = NO; service.deferSkills = YES;
+  [save performClick:nil];
+  Check(!save.enabled && !picker.enabled, @"pending skill Save prevents duplicate writes");
+  service.deferSkills = NO;
+  [service hermesSkillsForAgentWithID:19 changes:picker.changes completion:service.skillsCompletion]; SettingsTick(window);
+  Check(savedAgentID == 19 && picker.changes.count == 0 && !database.savedSettings &&
+    [service.savedSkillChanges isEqual:@{@"alpha":@NO}], @"workspace saves skills separately from model settings and refreshes the command catalogue");
+  [SkillSwitch(picker, 1) performClick:nil];
+  database.currentAgentID = 20;
+  [save performClick:nil]; SettingsTick(window);
+  Check(service.skillsAgentID == 20 && picker.changes.count == 0 &&
+    [service.savedSkillChanges isEqual:@{@"alpha":@NO}], @"an agent switch reloads skills without writing another agent's draft");
+  service.deferSkills = YES;
+  [[picker valueForKey:@"reloadButton"] performClick:nil];
+  void (^late)(NSDictionary *, NSError *) = service.skillsCompletion;
+  database.currentAgentID = 21;
+  late(@{@"skills":@[]}, nil); SettingsTick(window);
+  Check(service.skillsAgentID == 21 && picker.loading, @"late results from the previous agent trigger a fresh catalogue request");
+  late = service.skillsCompletion;
+  [controller close]; late(@{@"skills":@[]}, nil); SettingsTick(window);
+  Check(picker.loading, @"closing settings discards late skill callbacks");
+  [window close];
 }
 
 @interface TLFolderAccessStoreMock : NSObject
@@ -2746,6 +2834,10 @@ static void TestWarmupAfterSettingsAndManualStart(void) {
   store.currentAgentID = 43;
   [controller startSelectedAgent:nil];
   Check(controller.warmupCount == 3, @"starting another VM does not wake the current agent");
+  tab.skillsSavedHandler(42);
+  Check(controller.warmupCount == 3, @"saving another agent's skills does not refresh the current catalogue");
+  tab.skillsSavedHandler(43);
+  Check(controller.warmupCount == 4, @"saving the current agent's skills refreshes the command catalogue");
 }
 
 static void TestRunningAgentRepairAction(void) {
@@ -2859,6 +2951,7 @@ int main(void) {
     TestAgentFolderEditing();
     TestAgentSettingsForm();
     TestAgentSkillSettings();
+    TestSkillsInSettingsWorkspace();
     TestRealSidebarAgents();
     TestSuggestionTypingAndVirtualization();
     TestRunningAgentRepairAction();

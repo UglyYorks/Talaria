@@ -328,7 +328,8 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     for (id skill in result[@"skills"]) {
       if (![skill isKindOfClass:NSDictionary.class] || ![skill[@"name"] isKindOfClass:NSString.class] ||
           ![skill[@"name"] length] || ![skill[@"enabled"] isKindOfClass:NSNumber.class] ||
-          ![skill[@"locked_reason"] isKindOfClass:NSString.class]) {
+          ![skill[@"locked_reason"] isKindOfClass:NSString.class] ||
+          ![skill[@"description"] isKindOfClass:NSString.class]) {
         completion(nil, TLAgentClientError(@"Hermes returned an invalid skill catalogue."));
         return;
       }

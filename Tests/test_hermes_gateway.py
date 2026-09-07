@@ -480,11 +480,16 @@ class SkillsSettingsTests(unittest.TestCase):
         self.gateway.skill_settings_lock = threading.Lock()
         self.disabled = {'grounded-citations', 'beta', 'uninstalled'}
         self.names = ['hermes-agent', 'grounded-citations', 'beta', 'alpha']
+        self.descriptions = {'alpha': 'Read documents.', 'beta': 'Search the web.',
+                             'grounded-citations': 'Cite sources.'}
 
         def rpc(method, params=None):
             if method == 'profiles.describe':
                 self.assertEqual(params, {'name': 'default'})
                 return {'skills': [{'name': name, 'enabled': name not in self.disabled} for name in self.names]}
+            if method == 'talaria.skills.describe':
+                return {'skills': [{'name': name, 'description': description}
+                                   for name, description in self.descriptions.items()]}
             if method == 'config.get':
                 return {'config': {'skills': {'disabled': sorted(self.disabled)}}}
             if method == 'profiles.configure':
@@ -502,7 +507,10 @@ class SkillsSettingsTests(unittest.TestCase):
         self.assertFalse(rows[1]['enabled'])
         self.assertEqual(rows[2]['locked_reason'], 'Managed by Talaria')
         self.assertEqual(rows[3]['locked_reason'], 'Required by Hermes')
-        self.gateway.call.assert_called_once_with('profiles.describe', {'name': 'default'})
+        self.assertEqual([row['description'] for row in rows],
+                         ['Read documents.', 'Search the web.', 'Cite sources.', ''])
+        self.assertEqual(self.gateway.call.call_args_list, [call('profiles.describe', {'name': 'default'}),
+                                                          call('talaria.skills.describe')])
 
     def test_save_merges_only_changed_skills_with_current_configuration(self):
         self.gateway.manage_skills()
@@ -511,8 +519,42 @@ class SkillsSettingsTests(unittest.TestCase):
         self.assertEqual(self.disabled, {'alpha', 'grounded-citations', 'uninstalled', 'disabled-elsewhere'})
         self.assertFalse(rows[0]['enabled'])
         self.assertTrue(rows[1]['enabled'])
-        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list][-3:],
-                         ['config.get', 'skills.reload', 'profiles.describe'])
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list][-4:],
+                         ['config.get', 'skills.reload', 'profiles.describe', 'talaria.skills.describe'])
+
+    def test_metadata_errors_are_reported_without_writing_settings(self):
+        original = self.gateway.call.side_effect
+        for result in [{}, {'skills': [{'name': 'alpha', 'description': 42}]}]:
+            with self.subTest(result=result):
+                self.gateway.call.side_effect = lambda method, params=None: result if method == 'talaria.skills.describe' else original(method, params)
+                with self.assertRaisesRegex(RuntimeError, 'invalid skill descriptions'):
+                    self.gateway.manage_skills({'alpha': False})
+                self.assertNotIn('alpha', self.disabled)
+
+    def test_metadata_reader_uses_hermes_parser_and_keeps_disabled_and_platform_skills(self):
+        import types
+        from talaria_gateway_entry import skill_metadata
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = []
+            for name, metadata in [('alpha', {'description': '  "Read documents."  ', 'platforms': ['macos']}),
+                                   ('grounded-citations', {'description': 'Cite sources.'}),
+                                   ('missing', {}), ('null', {'description': None})]:
+                path = root / name / 'SKILL.md'
+                path.parent.mkdir()
+                path.write_text(json.dumps(metadata))
+                paths.append(path)
+            index = Mock(return_value=paths)
+            parser = Mock(side_effect=lambda text: (json.loads(text), 'Ignore these body instructions.'))
+            with patch.dict(sys.modules, {
+                'agent.skill_utils': types.SimpleNamespace(iter_skill_index_files=index, parse_frontmatter=parser),
+                'hermes_constants': types.SimpleNamespace(get_skills_dir=lambda: root),
+            }):
+                result = skill_metadata()
+            index.assert_called_once_with(root, 'SKILL.md')
+            self.assertEqual(parser.call_count, 4)
+            self.assertEqual([row['description'] for row in result['skills']], ['Read documents.', 'Cite sources.', '', ''])
+            self.assertEqual([row['name'] for row in result['skills']], ['alpha', 'grounded-citations', 'missing', 'null'])
 
     def test_invalid_unknown_and_locked_changes_never_write(self):
         for changes in [[], {'alpha': 1}, {'removed-skill': False}, {'grounded-citations': True}, {'hermes-agent': False}]:
@@ -750,7 +792,7 @@ class CredentialRPCTests(unittest.TestCase):
                     else:
                         main()
                 self.assertEqual(set(handlers), {"talaria.credentials.list", "talaria.credentials.set",
-                                                "talaria.credentials.remove", "talaria.automations"})
+                                                "talaria.credentials.remove", "talaria.skills.describe", "talaria.automations"})
                 self.assertIn("talaria.automations", server._LONG_HANDLERS)
                 entry.main.assert_called_once_with()
                 automations.stop_event.set.assert_called_once_with()

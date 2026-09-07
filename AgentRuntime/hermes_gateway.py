@@ -140,12 +140,19 @@ class HermesGateway:
                 not isinstance(row.get("name"), str) or not row["name"].strip() or
                 not isinstance(row.get("enabled"), bool) for row in rows):
             raise RuntimeError("Hermes returned an invalid skill catalogue.")
+        metadata = self.call("talaria.skills.describe")
+        details = metadata.get("skills") if isinstance(metadata, dict) else None
+        if not isinstance(details, list) or any(not isinstance(row, dict) or
+                not isinstance(row.get("name"), str) or not isinstance(row.get("description"), str) for row in details):
+            raise RuntimeError("Hermes returned invalid skill descriptions.")
+        descriptions = {row["name"]: row["description"].strip() for row in details}
         skills = {}
         for row in rows:
             name = row["name"]
             reason = "Managed by Talaria" if name in TALARIA_DISABLED_SKILLS else (
                 "Required by Hermes" if name == "hermes-agent" else "")
-            skills[name] = {"name": name, "enabled": row["enabled"], "locked_reason": reason}
+            skills[name] = {"name": name, "enabled": row["enabled"], "locked_reason": reason,
+                            "description": descriptions.get(name, "")}
         return {"skills": sorted(skills.values(), key=lambda row: row["name"].casefold())}
 
     def manage_skills(self, changes=None):
