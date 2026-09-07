@@ -2,6 +2,7 @@
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
+#import "TLBrowserPreferences.h"
 #import "PromptBuilder.h"
 #import "AgentOrchestrator.h"
 #import "AppStateManager.h"
@@ -1734,6 +1735,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.agents = [loadedAgents mutableCopy];
   [self rebuildSidebarAgents];
 
+  TLBrowserPreferences *browserPreferences = TLBrowserPreferences.sharedPreferences;
+  if (![[browserPreferences localValue:@"startup"] isEqual:@"restore"]) {
+    for (TLWorkspaceTab *tab in self.appStateManager.snapshot.workspaceTabs.copy) {
+      if (tab.kind == TLWorkspaceTabKindBrowser) [self.appStateManager removeWorkspaceTabWithKind:tab.kind tabID:tab.tabID];
+    }
+  }
   if (self.appStateManager.snapshot.workspaceTabs.count > 0) {
     [self hydrateWorkspaceTabsFromAppState];
     [self restoreWorkspaceFromAppState];
@@ -1743,6 +1750,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self startNewChatWithModel:self.settings.selectedModel focus:NO];
   }
 
+  for (NSURL *URL in browserPreferences.startupURLs) [self openBrowserTabWithURL:URL];
   self.isLoading = NO;
   self.errorMessage = @"";
   [self applyTheme];
@@ -5503,6 +5511,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.window.appearance = requestedAppearance;
   NSAppearance *effectiveAppearance = requestedAppearance ?: self.window.effectiveAppearance;
   self.palette = [TLThemePalette paletteForPreference:themePreference effectiveAppearance:effectiveAppearance];
+  [TLChromiumBrowserController.sharedController applyDarkAppearance:self.palette.dark];
   self.window.opaque = NO;
   self.window.backgroundColor = self.palette.appBackground;
   self.frostedBackgroundView.material = NSVisualEffectMaterialUnderWindowBackground;

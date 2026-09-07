@@ -1,4 +1,5 @@
 #import "TLSettingsTabController.h"
+#import "TLBrowserSettingsController.h"
 #import "AgentOrchestrator.h"
 #import "ChromiumBrowserController.h"
 #import "TLModelSelectionWindowController.h"
@@ -37,6 +38,7 @@
 @property (nonatomic) NSUInteger credentialGeneration;
 @property (nonatomic) NSInteger credentialAgentID;
 @property (nonatomic) BOOL credentialBusy;
+@property TLBrowserSettingsController *browserSettingsController;
 @end
 
 @implementation TLSettingsTabController
@@ -44,6 +46,7 @@
                    orchestrator:(TLAgentOrchestrator *)orchestrator palette:(TLThemePalette *)palette {
   self = [super initWithPalette:palette];
   if (!self) return nil;
+  _browserPreferences = TLBrowserPreferences.sharedPreferences;
   _database = database;
   _agentOrchestrator = orchestrator;
   _draftSettings = [settings copy];
@@ -249,7 +252,7 @@
   self.workspace.pageTitle.stringValue = self.selectedPage;
   self.workspace.pageDescription.stringValue = self.pageDescriptions[index];
   self.saveButton.hidden = index >= 2;
-  self.footerLabel.stringValue = index == 2 ? @"Opens in Talaria’s browser settings window." : index == 3 ? @"Credentials apply to the selected agent." : @"Changes apply when saved.";
+  self.footerLabel.stringValue = index == 2 ? @"Browser preferences save here in Talaria." : index == 3 ? @"Credentials apply to the selected agent." : @"Changes apply when saved.";
   if (index == 3 && !self.credentialBusy && (!self.credentials || self.credentialAgentID != self.database.currentAgentID)) [self reloadCredentials:nil];
 }
 
@@ -299,34 +302,10 @@
 - (void)requestOnboarding:(id)sender { if (self.onboardingHandler) self.onboardingHandler(); }
 
 - (NSView *)buildBrowserPage {
-  NSArray *categories = @[
-    @[@"All browser settings", @"Open the complete settings for Talaria’s browser. Changes save automatically and apply to your browser tabs.", @"chrome://settings/"],
-    @[@"Privacy and security", @"Browsing data, cookies, site permissions, and security preferences.", @"chrome://settings/privacy"],
-    @[@"Autofill and passwords", @"Saved passwords, payment methods, and addresses.", @"chrome://settings/autofill"],
-    @[@"Search engine", @"Choose a search engine and manage site search shortcuts.", @"chrome://settings/search"],
-    @[@"Appearance", @"Fonts, page zoom, and browser appearance.", @"chrome://settings/appearance"],
-    @[@"On startup", @"Choose what opens when the browser starts.", @"chrome://settings/onStartup"],
-    @[@"Performance", @"Memory and energy preferences for browser tabs.", @"chrome://settings/performance"],
-    @[@"Languages", @"Preferred languages, translation, and spell check.", @"chrome://settings/languages"],
-    @[@"Downloads", @"Download location and file handling preferences.", @"chrome://settings/downloads"],
-    @[@"Accessibility", @"Captions, text, and accessibility features.", @"chrome://settings/accessibility"],
-    @[@"System", @"Browser system preferences and your Mac’s proxy settings.", @"chrome://settings/system"],
-    @[@"Reset settings", @"Review options to restore browser defaults.", @"chrome://settings/reset"],
-    @[@"Extensions", @"Manage the extensions installed in Talaria’s browser.", @"chrome://extensions/"],
-  ];
-  NSMutableArray *rows = [NSMutableArray array];
-  for (NSArray *category in categories) {
-    TLThemedButton *open = [self button:rows.count ? @"Open…" : @"Open browser settings…" action:@selector(openBrowserCategory:)];
-    open.identifier = category[2];
-    open.accessibilityLabel = [@"Open " stringByAppendingString:category[0]];
-    open.primary = rows.count == 0;
-    [rows addObject:[self card:category[0] description:category[1] controls:@[open]]];
-  }
-  return [self scrollPageWithStack:[self stack:rows vertical:YES]];
-}
-- (void)openBrowserCategory:(NSButton *)sender {
-  [TLChromiumBrowserController.sharedController openSettingsURL:[NSURL URLWithString:sender.identifier] fromWindow:self.view.window];
-  [TLChromiumBrowserController.sharedController applyDarkAppearance:self.palette.dark];
+  self.browserSettingsController = [[TLBrowserSettingsController alloc] initWithPalette:self.palette preferences:self.browserPreferences];
+  [self addChildViewController:self.browserSettingsController];
+  [self.browserSettingsController prepareInWindow:self.view.window];
+  return self.browserSettingsController.view;
 }
 
 - (NSView *)buildCredentialsPage {
@@ -389,7 +368,7 @@
   for (NSString *key in self.credentialFields) self.credentialDrafts[key] = self.credentialFields[key].stringValue;
   for (NSView *view in self.credentialRows.arrangedSubviews.copy) { [self.credentialRows removeArrangedSubview:view]; [view removeFromSuperview]; }
   [self.buttons filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(TLThemedButton *button, NSDictionary *bindings) {
-    return !button.identifier.length || [button.identifier hasPrefix:@"chrome://"];
+    return !button.identifier.length;
   }]];
   [self.credentialFields removeAllObjects];
   NSString *category = self.credentialCategory.indexOfSelectedItem == 1 ? @"setting" : @"tool";
@@ -487,11 +466,13 @@
   for (TLThemedButton *button in self.buttons) button.palette = palette;
   for (TLSidebarNavigationButton *button in self.navigation) button.palette = palette;
   [self.modelSelection applyPalette:palette];
+  [self.browserSettingsController applyPalette:palette];
   [TLChromiumBrowserController.sharedController applyDarkAppearance:palette.dark];
 }
 - (void)close {
   if (self.isClosed) return;
   [super close];
+  [self.browserSettingsController close];
   self.credentialGeneration++;
   [self.credentialDrafts removeAllObjects];
   for (NSTextField *field in self.credentialFields.allValues) field.stringValue = @"";

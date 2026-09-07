@@ -6,9 +6,11 @@
 #import "ChromiumOverlayProbe.h"
 #import "ChromiumDocumentFooter.h"
 #import "BrowserPageContext.h"
+#import "TLBrowserPreferences.h"
 
 #include <algorithm>
 #include <limits.h>
+#include <cmath>
 #include <stdint.h>
 
 #include <string>
@@ -18,6 +20,10 @@
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
+#include "include/cef_parser.h"
+#include "include/cef_cookie.h"
+#include "include/cef_download_handler.h"
+#include "include/cef_permission_handler.h"
 #include "include/cef_command_line.h"
 #include "include/cef_context_menu_handler.h"
 #include "include/cef_display_handler.h"
@@ -52,6 +58,15 @@ static std::string TLStringFromNSString(NSString *value) {
 static NSString *TLNSStringFromCefString(const CefString &value) {
   std::string stringValue(value);
   return [NSString stringWithUTF8String:stringValue.c_str()] ?: @"";
+}
+
+static NSString *TLBrowserOrigin(NSString *string) {
+  NSURLComponents *URL = [NSURLComponents componentsWithString:string];
+  if (!URL.host.length || ![@[@"http",@"https"] containsObject:URL.scheme.lowercaseString]) return @"";
+  URL.scheme = URL.scheme.lowercaseString; URL.host = URL.host.lowercaseString;
+  if (([URL.scheme isEqual:@"https"] && URL.port.intValue == 443) || ([URL.scheme isEqual:@"http"] && URL.port.intValue == 80)) URL.port = nil;
+  URL.user = nil; URL.password = nil; URL.path = @""; URL.query = nil; URL.fragment = nil;
+  return URL.string;
 }
 
 static NSValue *TLChromiumContainerKey(NSView *view) {
@@ -122,6 +137,11 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 @end
 
 @interface TLChromiumBrowserController ()
+- (void)browserContextReady;
+- (void)trackPermissionAlert:(NSAlert *)alert browser:(int)browserID prompt:(uint64_t)promptID;
+- (void)dismissPermissionAlertForBrowser:(int)browserID prompt:(uint64_t)promptID;
+- (void)applyBrowserPreferences;
+- (void)checkBackgroundBrowsers;
 - (BOOL)initializeCEFIfNeededFromWindow:(nullable NSWindow *)window;
 - (void)scheduleMessagePumpWork:(int64_t)delayMS;
 - (void)handleScheduledMessagePumpWork:(int64_t)delayMS;
@@ -293,7 +313,10 @@ class TLChromiumApp : public CefApp, public CefBrowserProcessHandler {
   void OnBeforeCommandLineProcessing(const CefString &process_type,
                                      CefRefPtr<CefCommandLine> command_line) override {
     command_line->AppendSwitch("use-mock-keychain");
+    if (![[TLBrowserPreferences.sharedPreferences localValue:@"hardwareAcceleration"] boolValue]) command_line->AppendSwitch("disable-gpu");
   }
+
+  void OnContextInitialized() override { [controller_ browserContextReady]; }
 
   void OnScheduleMessagePumpWork(int64_t delay_ms) override {
     [controller_ scheduleMessagePumpWork:delay_ms];
@@ -311,7 +334,9 @@ class TLChromiumClient : public CefClient,
                          public CefKeyboardHandler,
                          public CefLifeSpanHandler,
                          public CefLoadHandler,
-                         public CefRequestHandler {
+                         public CefRequestHandler,
+                         public CefDownloadHandler,
+                         public CefPermissionHandler {
  public:
   explicit TLChromiumClient(TLChromiumBrowserController *browserController,
                             NSView *parentView = nil,
@@ -405,6 +430,100 @@ class TLChromiumClient : public CefClient,
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
+  CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return this; }
+  CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
+
+  bool OnBeforeDownload(CefRefPtr<CefBrowser> browser, CefRefPtr<CefDownloadItem> item,
+                        const CefString &suggested_name, CefRefPtr<CefBeforeDownloadCallback> callback) override {
+    auto context = browser->GetHost()->GetRequestContext();
+    auto pathPref = context->GetPreference("download.default_directory");
+    auto askPref = context->GetPreference("download.prompt_for_download");
+    NSString *directory = pathPref ? TLNSStringFromCefString(pathPref->GetString()) : [NSSearchPathForDirectoriesInDomains(NSDownloadsDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *name = TLNSStringFromCefString(suggested_name).lastPathComponent;
+    if (!name.length || [name isEqual:@"."] || [name isEqual:@".."]) name = @"Download";
+    NSString *path = [directory stringByAppendingPathComponent:name];
+    // Automatic downloads must never overwrite an existing file.
+    NSUInteger suffix = 1;
+    while ([NSFileManager.defaultManager fileExistsAtPath:path]) {
+      NSString *stem = name.stringByDeletingPathExtension, *ext = name.pathExtension;
+      NSString *candidate = [NSString stringWithFormat:@"%@ (%lu)%@%@",stem,(unsigned long)suffix++,ext.length ? @"." : @"",ext];
+      path = [directory stringByAppendingPathComponent:candidate];
+    }
+    callback->Continue(TLStringFromNSString(path), !askPref || askPref->GetBool());
+    return true;
+  }
+
+  bool OnShowPermissionPrompt(CefRefPtr<CefBrowser> browser, uint64_t prompt_id,
+                             const CefString &origin, uint32_t requested,
+                             CefRefPtr<CefPermissionPromptCallback> callback) override {
+    NSMutableArray *names = [NSMutableArray array];
+    const std::pair<uint32_t, NSString *> permissions[] = {
+      {CEF_PERMISSION_TYPE_GEOLOCATION,@"location"}, {CEF_PERMISSION_TYPE_NOTIFICATIONS,@"notifications"},
+      {CEF_PERMISSION_TYPE_CAMERA_STREAM,@"camera"}, {CEF_PERMISSION_TYPE_MIC_STREAM,@"microphone"},
+      {CEF_PERMISSION_TYPE_CLIPBOARD,@"clipboard"}, {CEF_PERMISSION_TYPE_LOCAL_FONTS,@"local fonts"},
+      {CEF_PERMISSION_TYPE_MULTIPLE_DOWNLOADS,@"multiple downloads"}, {CEF_PERMISSION_TYPE_MIDI_SYSEX,@"MIDI devices"},
+      {CEF_PERMISSION_TYPE_STORAGE_ACCESS,@"site storage"}, {CEF_PERMISSION_TYPE_FILE_SYSTEM_ACCESS,@"files"},
+      {CEF_PERMISSION_TYPE_WINDOW_MANAGEMENT,@"window management"}, {CEF_PERMISSION_TYPE_SENSORS,@"motion sensors"},
+      {CEF_PERMISSION_TYPE_LOCAL_NETWORK_ACCESS_DEPRECATED,@"local network"}, {CEF_PERMISSION_TYPE_LOCAL_NETWORK,@"local network"},
+      {CEF_PERMISSION_TYPE_LOOPBACK_NETWORK,@"local services"}, {CEF_PERMISSION_TYPE_TOP_LEVEL_STORAGE_ACCESS,@"third-party storage"},
+      {CEF_PERMISSION_TYPE_KEYBOARD_LOCK,@"keyboard lock"}, {CEF_PERMISSION_TYPE_POINTER_LOCK,@"pointer lock"}
+    };
+    uint32_t known = 0;
+    for (auto p : permissions) if (requested & p.first) { [names addObject:p.second]; known |= p.first; }
+    if (requested & ~known) { callback->Continue(CEF_PERMISSION_RESULT_DENY); return true; }
+    __weak TLChromiumBrowserController *owner = browserController_;
+    NSString *requestOrigin = TLNSStringFromCefString(origin);
+    NSString *topLevelURL = TLNSStringFromCefString(browser->GetMainFrame()->GetURL());
+    TLChromiumDeferToMainRunLoop(^{
+      NSWindow *window = [owner windowForBrowser:browser];
+      if (!window || window.attachedSheet || !browser->IsValid() || ![TLNSStringFromCefString(browser->GetMainFrame()->GetURL()) isEqual:topLevelURL]) { callback->Continue(CEF_PERMISSION_RESULT_IGNORE); return; }
+      NSAlert *alert = [[NSAlert alloc] init];
+      alert.messageText = [NSString stringWithFormat:@"Allow %@?", [names componentsJoinedByString:@", "]];
+      alert.informativeText = [NSString stringWithFormat:@"%@ is requesting access in Talaria.", requestOrigin];
+      [alert addButtonWithTitle:@"Block"]; [alert addButtonWithTitle:@"Allow"];
+      [owner trackPermissionAlert:alert browser:browser->GetIdentifier() prompt:prompt_id];
+      [alert beginSheetModalForWindow:window completionHandler:^(NSModalResponse result) {
+        callback->Continue(result == NSAlertSecondButtonReturn && browser->IsValid() ? CEF_PERMISSION_RESULT_ACCEPT : CEF_PERMISSION_RESULT_DENY);
+      }];
+    });
+    return true;
+  }
+
+  void OnDismissPermissionPrompt(CefRefPtr<CefBrowser> browser, uint64_t prompt_id, cef_permission_request_result_t result) override {
+    [browserController_ dismissPermissionAlertForBrowser:browser->GetIdentifier() prompt:prompt_id];
+  }
+
+  bool OnRequestMediaAccessPermission(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+      const CefString &origin, uint32_t requested, CefRefPtr<CefMediaAccessCallback> callback) override {
+    if (requested & ~(CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE | CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE)) { callback->Cancel(); return true; }
+    auto context = browser->GetHost()->GetRequestContext();
+    bool needsAsk = false;
+    for (auto p : {std::make_pair(CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE, CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_MIC),
+                   std::make_pair(CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE, CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_CAMERA)}) {
+      if (!(requested & p.first)) continue;
+      auto permission = context->GetContentSetting(origin, origin, p.second);
+      if (permission == CEF_CONTENT_SETTING_VALUE_BLOCK) { callback->Cancel(); return true; }
+      needsAsk |= permission != CEF_CONTENT_SETTING_VALUE_ALLOW;
+    }
+    if (!needsAsk) { callback->Continue(requested); return true; }
+    __weak TLChromiumBrowserController *owner = browserController_;
+    NSString *requestOrigin = TLNSStringFromCefString(origin);
+    NSString *devices = (requested & CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE) && (requested & CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE)
+      ? @"camera and microphone" : (requested & CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE) ? @"camera" : @"microphone";
+    TLChromiumDeferToMainRunLoop(^{
+      NSWindow *window = [owner windowForBrowser:browser];
+      if (!window || window.attachedSheet || !browser->IsValid() || !frame->IsValid() || ![TLBrowserOrigin(TLNSStringFromCefString(frame->GetURL())) isEqual:TLBrowserOrigin(requestOrigin)]) { callback->Cancel(); return; }
+      NSAlert *alert = [[NSAlert alloc] init];
+      alert.messageText = [NSString stringWithFormat:@"Allow access to your %@?", devices];
+      alert.informativeText = [NSString stringWithFormat:@"%@ is requesting access in Talaria.", requestOrigin];
+      [alert addButtonWithTitle:@"Block"]; [alert addButtonWithTitle:@"Allow once"];
+      [alert beginSheetModalForWindow:window completionHandler:^(NSModalResponse result) {
+        if (result == NSAlertSecondButtonReturn && browser->IsValid() && frame->IsValid() && [TLBrowserOrigin(TLNSStringFromCefString(frame->GetURL())) isEqual:TLBrowserOrigin(requestOrigin)]) callback->Continue(requested);
+        else callback->Cancel();
+      }];
+    });
+    return true;
+  }
 
   void OnLoadingStateChange(CefRefPtr<CefBrowser> browser,
                             bool isLoading,
@@ -419,7 +538,11 @@ class TLChromiumClient : public CefClient,
 
   void OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, TransitionType transition_type) override {
     CEF_REQUIRE_UI_THREAD();
-    if (frame && frame->IsMain()) [browserController_ browserDocumentStarted:browser];
+    if (frame && frame->IsMain()) {
+      double zoom = log([[TLBrowserPreferences.sharedPreferences localValue:@"zoom"] doubleValue] / 100.0) / log(1.2);
+      browser->GetHost()->SetZoomLevel(zoom);
+      [browserController_ browserDocumentStarted:browser];
+    }
   }
 
   void OnTitleChange(CefRefPtr<CefBrowser> browser, const CefString &title) override {
@@ -651,6 +774,23 @@ class TLChromiumNavigationCommandTask : public CefTask {
   IMPLEMENT_REFCOUNTING(TLChromiumNavigationCommandTask);
 };
 
+class TLBrowserCompletion : public CefCompletionCallback {
+ public:
+ explicit TLBrowserCompletion(void (^completion)(NSError *)) : completion_([completion copy]) {}
+ void OnComplete() override { completion_(nil); }
+ private:
+ void (^completion_)(NSError *);
+ IMPLEMENT_REFCOUNTING(TLBrowserCompletion);
+};
+class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
+ public:
+ explicit TLBrowserCookieCompletion(void (^completion)(NSError *)) : completion_([completion copy]) {}
+ void OnComplete(int count) override { auto completion = completion_; dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); }); }
+ private:
+ void (^completion_)(NSError *);
+ IMPLEMENT_REFCOUNTING(TLBrowserCookieCompletion);
+};
+
 @implementation TLChromiumBrowserController {
   CefScopedLibraryLoader *_libraryLoader;
   CefRefPtr<TLChromiumApp> _cefApp;
@@ -672,6 +812,13 @@ class TLChromiumNavigationCommandTask : public CefTask {
   id _fullscreenCloseObserver;
   id _fullscreenDeactivateObserver;
   NSTimer *_messagePumpTimer;
+  NSTimer *_backgroundTimer;
+  NSMutableDictionary<NSNumber *, NSDate *> *_backgroundSince;
+  NSMutableSet<NSNumber *> *_pausedBrowsers;
+  NSMutableArray<void (^)(NSError *)> *_settingsReadyCallbacks;
+  BOOL _browserSettingsReady;
+  BOOL _browserDarkAppearance;
+  NSMutableDictionary<NSString *, NSAlert *> *_permissionAlerts;
   BOOL _initialized;
   BOOL _shuttingDown;
   BOOL _shutdownRequested;
@@ -705,6 +852,11 @@ class TLChromiumNavigationCommandTask : public CefTask {
     _navigationHandlersByContainer = [NSMutableDictionary dictionary];
     _pendingFaviconURLsByBrowserIdentifier = [NSMutableDictionary dictionary];
     _hostsByBrowserIdentifier = [NSMutableDictionary dictionary];
+    _backgroundSince = [NSMutableDictionary dictionary];
+    _pausedBrowsers = [NSMutableSet set];
+    _settingsReadyCallbacks = [NSMutableArray array];
+    _permissionAlerts = [NSMutableDictionary dictionary];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(browserPreferencesChanged:) name:TLBrowserPreferencesDidChangeNotification object:nil];
   }
   return self;
 }
@@ -976,6 +1128,8 @@ class TLChromiumNavigationCommandTask : public CefTask {
 }
 
 - (void)shutdown {
+  [_backgroundTimer invalidate]; _backgroundTimer = nil;
+  _browserSettingsReady = NO;
   if (!NSThread.isMainThread) {
     TLChromiumDeferToMainRunLoop(^{
       [self shutdown];
@@ -1124,6 +1278,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
 
 - (void)browserCreated:(CefRefPtr<CefBrowser>)browser parentView:(NSView *)parentView {
   _browsers.push_back(browser);
+  [self applyBrowserPreferences];
   if (parentView) {
     NSNumber *browserIdentifier = @(browser ? browser->GetIdentifier() : -1);
     NSValue *containerKey = TLChromiumContainerKey(parentView);
@@ -1143,14 +1298,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
                               isLoading:browser->IsLoading()];
     return;
   }
-  if (browser->GetHost()->GetRuntimeStyle() == CEF_RUNTIME_STYLE_CHROME) {
-    TLChromiumDeferToMainRunLoop(^{
-      if (!browser->IsValid()) return;
-      NSView *view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(browser->GetHost()->GetWindowHandle());
-      [view.window makeKeyAndOrderFront:nil];
-      browser->GetHost()->SetFocus(true);
-    });
-  }
+
 }
 
 - (void)showPageSourceForBrowser:(CefRefPtr<CefBrowser>)browser {
@@ -1281,6 +1429,8 @@ class TLChromiumNavigationCommandTask : public CefTask {
   if (identifier == _fullscreenBrowserIdentifier) [self restoreFullscreenBrowser];
   [self devToolsVisibilityChanged:NO forBrowserIdentifier:identifier];
   NSNumber *browserIdentifier = @(identifier);
+  [_backgroundSince removeObjectForKey:browserIdentifier];
+  [_pausedBrowsers removeObject:browserIdentifier];
   NSValue *containerKey = _containersByBrowserIdentifier[browserIdentifier];
   if (containerKey) {
     [_browserIdentifiersByContainer removeObjectForKey:containerKey];
@@ -1517,8 +1667,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
     windowInfo.bounds = CefRect(80, 80, 1120, 760);
     windowInfo.hidden = false;
   }
-  BOOL chromeSettingsWindow = !parentView && [[NSURL URLWithString:urlString].scheme.lowercaseString isEqualToString:@"chrome"];
-  windowInfo.runtime_style = chromeSettingsWindow ? CEF_RUNTIME_STYLE_CHROME : CEF_RUNTIME_STYLE_ALLOY;
+  windowInfo.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
   CefString(&windowInfo.window_name) = TLStringFromNSString(urlString);
 
   CefBrowserSettings browserSettings;
@@ -1594,7 +1743,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
 }
 
 - (NSWindow *)windowForBrowser:(CefRefPtr<CefBrowser>)browser {
-  if (!browser) {
+  if (!browser || !browser->IsValid()) {
     return nil;
   }
 
@@ -1630,25 +1779,134 @@ class TLChromiumNavigationCommandTask : public CefTask {
   browserView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 }
 
-- (void)openSettingsURL:(NSURL *)URL fromWindow:(NSWindow *)window {
-  if (![URL.scheme.lowercaseString isEqualToString:@"chrome"] || ![self browserURLFromURL:URL]) return;
-  if (![self initializeCEFIfNeededFromWindow:window]) return;
-  // Full Chrome WebUI pages are intentionally unavailable in Alloy child views.
-  // Use a Chrome-style window with the same global request context/profile.
-  for (const auto &browser : _browsers) {
-    if (browser->GetHost()->GetRuntimeStyle() == CEF_RUNTIME_STYLE_CHROME) {
-      browser->GetMainFrame()->LoadURL(TLStringFromNSString(URL.absoluteString));
-      NSView *view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(browser->GetHost()->GetWindowHandle());
-      [view.window makeKeyAndOrderFront:nil];
-      browser->GetHost()->SetFocus(true);
-      return;
-    }
+- (void)trackPermissionAlert:(NSAlert *)alert browser:(int)browserID prompt:(uint64_t)promptID {
+  _permissionAlerts[[NSString stringWithFormat:@"%d:%llu",browserID,promptID]] = alert;
+}
+- (void)dismissPermissionAlertForBrowser:(int)browserID prompt:(uint64_t)promptID {
+  NSString *key = [NSString stringWithFormat:@"%d:%llu",browserID,promptID];
+  NSAlert *alert = _permissionAlerts[key]; [_permissionAlerts removeObjectForKey:key];
+  TLChromiumDeferToMainRunLoop(^{ if (alert.window.sheetParent) [alert.window.sheetParent endSheet:alert.window returnCode:NSAlertFirstButtonReturn]; });
+}
+- (void)browserContextReady {
+  _browserSettingsReady = YES;
+  CefRequestContext::GetGlobalContext()->SetChromeColorScheme(_browserDarkAppearance ? CEF_COLOR_VARIANT_DARK : CEF_COLOR_VARIANT_LIGHT, 0);
+  [self applyBrowserPreferences];
+  _backgroundTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(checkBackgroundBrowsers) userInfo:nil repeats:YES];
+  NSArray *callbacks = _settingsReadyCallbacks.copy;
+  [_settingsReadyCallbacks removeAllObjects];
+  for (void (^completion)(NSError *) in callbacks) completion(nil);
+}
+- (void)prepareBrowserSettingsInWindow:(NSWindow *)window completion:(void (^)(NSError *))completion {
+  if (![self initializeCEFIfNeededFromWindow:window]) {
+    completion([NSError errorWithDomain:@"Talaria.Browser" code:1 userInfo:@{NSLocalizedDescriptionKey:@"The built-in browser could not start."}]); return;
   }
-  CefPostTask(TID_UI, new TLChromiumCreateBrowserTask(self, TLStringFromNSString(URL.absoluteString), nil));
+  if (_browserSettingsReady) completion(nil); else [_settingsReadyCallbacks addObject:[completion copy]];
+}
+- (NSDictionary *)browserSettingState:(NSDictionary *)setting {
+  if (!_browserSettingsReady) return @{@"available":@NO,@"reason":@"The browser is still starting."};
+  CefRefPtr<CefPreferenceManager> manager = [setting[@"scope"] isEqual:@"global"]
+    ? CefPreferenceManager::GetGlobalPreferenceManager() : CefRequestContext::GetGlobalContext();
+  NSString *path = [setting[@"scope"] isEqual:@"content"] ? [@"profile.default_content_setting_values." stringByAppendingString:setting[@"path"]] : setting[@"path"];
+  auto key = TLStringFromNSString(path);
+  if (!manager->HasPreference(key)) return @{@"available":@NO,@"reason":@"This option is unavailable in this version of Talaria."};
+  auto pref = manager->GetPreference(key);
+  std::string json = CefWriteJSON(pref, JSON_WRITER_DEFAULT);
+  NSData *data = [NSData dataWithBytes:json.data() length:json.size()];
+  id value = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingFragmentsAllowed error:nil];
+  if ([setting[@"scope"] isEqual:@"proxy"]) {
+    NSString *field = @{@"proxyMode":@"mode",@"proxyServer":@"server",@"proxyPAC":@"pac_url",@"proxyBypass":@"bypass_list"}[setting[@"id"]];
+    value = [value isKindOfClass:NSDictionary.class] ? value[field] : nil;
+  }
+  // Chromium's incognito-only cookie block has the same effect as Allow in Talaria's regular profile.
+  if ([setting[@"id"] isEqual:@"thirdPartyCookies"] && [value isEqual:@2]) value = @0;
+  if ([setting[@"id"] isEqual:@"preloading"] && [value isEqual:@1]) value = @0;
+  return @{@"available":@(manager->CanSetPreference(key)),@"value":value ?: setting[@"default"],@"reason":@"This option is managed by the browser or a policy."};
+}
+- (BOOL)setBrowserSetting:(NSDictionary *)setting value:(id)value error:(NSError **)error {
+  NSDictionary *canonical = [TLBrowserPreferences settingWithID:setting[@"id"]];
+  if (!canonical || ![canonical isEqual:setting] || !_browserSettingsReady ||
+      (value && ![TLBrowserPreferences.sharedPreferences validateValue:value forSetting:setting error:error])) return NO;
+  CefRefPtr<CefPreferenceManager> manager = [setting[@"scope"] isEqual:@"global"]
+    ? CefPreferenceManager::GetGlobalPreferenceManager() : CefRequestContext::GetGlobalContext();
+  NSString *path = [setting[@"scope"] isEqual:@"content"] ? [@"profile.default_content_setting_values." stringByAppendingString:setting[@"path"]] : setting[@"path"];
+  CefRefPtr<CefValue> pref;
+  if (value) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingFragmentsAllowed error:error];
+    if (!data) return NO;
+    pref = CefParseJSON(data.bytes, data.length, JSON_PARSER_RFC);
+  }
+  if ([setting[@"scope"] isEqual:@"proxy"] && value) {
+    auto current = manager->GetPreference("proxy");
+    auto proxy = current && current->GetType() == VTYPE_DICTIONARY ? current->GetDictionary()->Copy(false) : CefDictionaryValue::Create();
+    NSString *field = @{@"proxyMode":@"mode",@"proxyServer":@"server",@"proxyPAC":@"pac_url",@"proxyBypass":@"bypass_list"}[setting[@"id"]];
+    proxy->SetString(TLStringFromNSString(field), TLStringFromNSString(value));
+    std::string mode = proxy->GetString("mode");
+    if ((mode == "fixed_servers" && proxy->GetString("server").empty()) || (mode == "pac_script" && proxy->GetString("pac_url").empty())) {
+      if (error) *error = [NSError errorWithDomain:@"Talaria.Browser" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Save the proxy server or PAC URL before selecting that proxy mode."}]; return NO;
+    }
+    pref = CefValue::Create(); pref->SetDictionary(proxy);
+  }
+  CefString message;
+  if (!manager->SetPreference(TLStringFromNSString(path), pref, message)) {
+    if (error) *error = [NSError errorWithDomain:@"Talaria.Browser" code:2 userInfo:@{NSLocalizedDescriptionKey:TLNSStringFromCefString(message)}]; return NO;
+  }
+  return YES;
+}
+- (void)browserPreferencesChanged:(NSNotification *)notification {
+  if (_browserSettingsReady) [self applyBrowserPreferences];
+}
+- (void)applyBrowserPreferences {
+  if (!_browserSettingsReady) return;
+  TLBrowserPreferences *preferences = TLBrowserPreferences.sharedPreferences;
+  double zoom = log([[preferences localValue:@"zoom"] doubleValue] / 100.0) / log(1.2);
+  for (auto browser : _browsers) {
+    if (!browser->IsValid()) continue;
+    browser->GetHost()->SetZoomLevel(zoom);
+    browser->GetHost()->SetAccessibilityState([[preferences localValue:@"screenReader"] boolValue] ? STATE_ENABLED : STATE_DEFAULT);
+  }
+  [self checkBackgroundBrowsers];
+}
+- (void)checkBackgroundBrowsers {
+  if (!_browserSettingsReady || _shuttingDown) return;
+  TLBrowserPreferences *preferences = TLBrowserPreferences.sharedPreferences;
+  BOOL enabled = [[preferences localValue:@"pauseBackground"] boolValue];
+  NSTimeInterval delay = [[preferences localValue:@"pauseDelay"] doubleValue];
+  for (auto browser : _browsers) {
+    NSNumber *identifier = @(browser->GetIdentifier());
+    NSView *container = _sessionsByBrowserIdentifier[identifier].containerView;
+    BOOL hidden = container && (!container.window || !container.window.visible || container.hiddenOrHasHiddenAncestor);
+    if (hidden && !_backgroundSince[identifier]) _backgroundSince[identifier] = NSDate.date;
+    if (!hidden) [_backgroundSince removeObjectForKey:identifier];
+    BOOL pause = enabled && hidden && -[_backgroundSince[identifier] timeIntervalSinceNow] >= delay;
+    if (pause == [_pausedBrowsers containsObject:identifier]) continue;
+    auto params = CefDictionaryValue::Create(); params->SetString("state", pause ? "frozen" : "active");
+    browser->GetHost()->ExecuteDevToolsMethod(0, "Page.setWebLifecycleState", params);
+    if (pause) [_pausedBrowsers addObject:identifier]; else [_pausedBrowsers removeObject:identifier];
+  }
+}
+- (void)clearBrowserData:(NSString *)kind completion:(void (^)(NSError *))completion {
+  if (!_browserSettingsReady) { completion([NSError errorWithDomain:@"Talaria.Browser" code:3 userInfo:@{NSLocalizedDescriptionKey:@"The browser is not ready."}]); return; }
+  auto context = CefRequestContext::GetGlobalContext();
+  if ([kind isEqual:@"cache"]) context->ClearHttpCache(new TLBrowserCompletion(completion));
+  else if ([kind isEqual:@"cookies"]) {
+    if (!context->GetCookieManager(nullptr)->DeleteCookies("", "", new TLBrowserCookieCompletion(completion)))
+      completion([NSError errorWithDomain:@"Talaria.Browser" code:4 userInfo:@{NSLocalizedDescriptionKey:@"The browser could not delete cookies."}]);
+  } else if ([kind isEqual:@"permissions"]) {
+    CefString error;
+    for (NSDictionary *setting in TLBrowserPreferences.catalogue) {
+      if (![setting[@"scope"] isEqual:@"content"]) continue;
+      NSString *path = [@"profile.content_settings.exceptions." stringByAppendingString:setting[@"path"]];
+      if (context->HasPreference(TLStringFromNSString(path)) && !context->SetPreference(TLStringFromNSString(path), nullptr, error)) {
+        completion([NSError errorWithDomain:@"Talaria.Browser" code:4 userInfo:@{NSLocalizedDescriptionKey:TLNSStringFromCefString(error)}]); return;
+      }
+    }
+    context->ClearCertificateExceptions(new TLBrowserCompletion(completion));
+  } else completion([NSError errorWithDomain:@"Talaria.Browser" code:4 userInfo:@{NSLocalizedDescriptionKey:@"Unknown browsing data category."}]);
 }
 
 - (void)applyDarkAppearance:(BOOL)dark {
-  if (!_initialized) return;
+  _browserDarkAppearance = dark;
+  if (!_browserSettingsReady) return;
   CefRequestContext::GetGlobalContext()->SetChromeColorScheme(
     dark ? CEF_COLOR_VARIANT_DARK : CEF_COLOR_VARIANT_LIGHT, 0);
 }
@@ -1659,24 +1917,11 @@ class TLChromiumNavigationCommandTask : public CefTask {
     return url;
   }
 
-  // Only browser-owned settings destinations may be loaded from app chrome.
-  if ([scheme isEqualToString:@"chrome"] &&
-      [@[@"settings", @"password-manager", @"extensions", @"downloads", @"history", @"version", @"management", @"policy"] containsObject:url.host.lowercaseString]) {
-    return url;
-  }
   return nil;
 }
 
 - (NSString *)chromiumCachePath {
-  // Explicit isolation for desktop verification while another worktree owns
-  // the normal Chromium profile. Ordinary launches keep the existing profile.
-  NSString *profileOverride = NSProcessInfo.processInfo.environment[@"TL_CHROMIUM_PROFILE_DIR"];
-  if (profileOverride.isAbsolutePath) return profileOverride.stringByStandardizingPath;
-  NSURL *supportURL = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
-                                                           inDomains:NSUserDomainMask].firstObject;
-  NSURL *profileURL = [[supportURL URLByAppendingPathComponent:@"com.talaria.chat" isDirectory:YES]
-    URLByAppendingPathComponent:@"Chromium" isDirectory:YES];
-  return profileURL.path;
+  return TLBrowserPreferences.profileURL.path;
 }
 
 - (BOOL)createDirectoryAtPath:(NSString *)path {

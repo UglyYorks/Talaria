@@ -8,6 +8,8 @@
 #import "TLBrowserOverlayPolicy.h"
 #import "TLBrowserContentColor.h"
 #import "TLSettingsTabController.h"
+#import "TLBrowserSettingsController.h"
+#import "TLBrowserPreferences.h"
 #import "design_system/TLSettingsWorkspaceView.h"
 #import "TLModelSelectionWindowController.h"
 #import "AgentOrchestrator.h"
@@ -1153,6 +1155,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @end
 
 @interface TLFeatureBrowserMock : TLChromiumBrowserController
+@property NSURL *navigatedURL;
 @property (nonatomic) NSUInteger startCount;
 @property (nonatomic) NSUInteger closeCount;
 @property (nonatomic) NSUInteger backCount;
@@ -1205,6 +1208,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 }
 - (void)closeSession:(TLChromiumBrowserSession *)session { if (session) self.closeCount += 1; }
 - (void)goBackInSession:(TLChromiumBrowserSession *)session { self.backCount += 1; }
+- (void)navigateSession:(TLChromiumBrowserSession *)session toURL:(NSURL *)URL { self.navigatedURL = URL; }
 @end
 
 @interface TLBrowserTabController (OverlayTests)
@@ -1540,6 +1544,43 @@ static void SettingsSnapshot(TLSettingsTabController *controller, NSWindow *wind
   [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
     writeToFile:[@"build/" stringByAppendingString:name] atomically:YES];
 }
+@interface TLBrowserPreferencesMock : NSObject <TLBrowserPreferencesService>
+@property NSMutableDictionary *values;
+@property BOOL failSave;
+@property NSUInteger writes;
+@end
+@implementation TLBrowserPreferencesMock
+- (instancetype)init { if ((self = [super init])) _values = [NSMutableDictionary dictionary]; return self; }
+- (void)prepareInWindow:(NSWindow *)window completion:(void (^)(NSError *))completion { completion(nil); }
+- (NSDictionary *)stateForSetting:(NSDictionary *)setting { return @{@"available":@YES,@"value":self.values[setting[@"id"]] ?: setting[@"default"]}; }
+- (BOOL)saveValue:(id)value forSetting:(NSDictionary *)setting error:(NSError **)error {
+  if (self.failSave) { if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Save failed"}]; return NO; }
+  self.values[setting[@"id"]] = value; self.writes++; return YES;
+}
+- (void)clearData:(NSString *)kind completion:(void (^)(NSError *))completion { completion(nil); }
+- (BOOL)resetDefaults:(NSError **)error { [self.values removeAllObjects]; return YES; }
+@end
+static void TestBrowserPreferencePersistenceAndValidation(void) {
+  NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
+  TLBrowserPreferences *preferences = [[TLBrowserPreferences alloc] initWithProfileURL:directory];
+  NSError *error = nil;
+  Check(![preferences saveValue:@"file:///tmp/{searchTerms}" forSetting:[TLBrowserPreferences settingWithID:@"customSearchURL"] error:&error], @"search templates reject non-web URLs");
+  Check(![preferences saveValue:@"https://user:password@example.com/{searchTerms}" forSetting:[TLBrowserPreferences settingWithID:@"customSearchURL"] error:&error], @"search templates reject credentials");
+  Check(![preferences saveValue:@999 forSetting:[TLBrowserPreferences settingWithID:@"zoom"] error:&error], @"zoom rejects out-of-range values");
+  Check(![preferences saveValue:@"https://example.com\nfile:///tmp/test" forSetting:[TLBrowserPreferences settingWithID:@"startupPages"] error:&error], @"startup URLs are validated as a whole");
+  Check([preferences saveValue:@"https://duckduckgo.com/?q={searchTerms}" forSetting:[TLBrowserPreferences settingWithID:@"searchEngine"] error:&error], @"search engine saves");
+  Check([[preferences searchURLForText:@"a & b#東京"].absoluteString isEqual:@"https://duckduckgo.com/?q=a%20%26%20b%23%E6%9D%B1%E4%BA%AC"], @"search queries cannot inject extra URL parameters");
+  Check([preferences saveValue:@"https://example.com/one\nhttps://example.org/two" forSetting:[TLBrowserPreferences settingWithID:@"startupPages"] error:&error], @"startup page list saves");
+  Check([preferences saveValue:@"pages" forSetting:[TLBrowserPreferences settingWithID:@"startup"] error:&error], @"startup mode saves");
+  Check([preferences saveValue:@125 forSetting:[TLBrowserPreferences settingWithID:@"zoom"] error:&error], @"zoom saves");
+  TLBrowserPreferences *reopened = [[TLBrowserPreferences alloc] initWithProfileURL:directory];
+  Check([[reopened localValue:@"zoom"] intValue] == 125 && reopened.startupURLs.count == 2, @"browser preferences survive reopening the profile");
+  Check([preferences saveValue:@"empty" forSetting:[TLBrowserPreferences settingWithID:@"startup"] error:&error] && preferences.startupURLs.count == 0, @"startup pages only open in specific-pages mode");
+  Check(![preferences validateValue:@"en-AU, bad code" forSetting:[TLBrowserPreferences settingWithID:@"acceptLanguages"] error:&error], @"invalid language lists are rejected");
+  Check(![preferences validateValue:@"socks5://user:secret@localhost:1080" forSetting:[TLBrowserPreferences settingWithID:@"proxyServer"] error:&error], @"proxy credentials cannot be saved as plain settings");
+  [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
+}
+
 static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   TLSettingsCredentialMock *service = [[TLSettingsCredentialMock alloc] init];
   TLFeatureSettingsStoreMock *store = [[TLFeatureSettingsStoreMock alloc] init];
@@ -1547,6 +1588,8 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   TLSettingsTabController *controller = [[TLSettingsTabController alloc]
     initWithSettings:TLAppSettings.defaultSettings database:(TLDatabase *)store orchestrator:(TLAgentOrchestrator *)service
     palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  TLBrowserPreferencesMock *browserPreferences = [[TLBrowserPreferencesMock alloc] init];
+  controller.browserPreferences = browserPreferences;
   NSWindow *window = HostController(controller);
   TLSettingsWorkspaceView *shell = [controller valueForKey:@"workspace"];
   NSArray<TLSidebarNavigationButton *> *nav = [controller valueForKey:@"navigation"];
@@ -1571,10 +1614,38 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   }
   [window setContentSize:NSMakeSize(1100, 780)]; SettingsTick(window);
   [NSApp sendAction:nav[2].action to:nav[2].target from:nav[2]]; SettingsTick(window);
-  NSUInteger categories = 0;
-  for (TLThemedButton *button in [controller valueForKey:@"buttons"])
-    if ([button.identifier hasPrefix:@"chrome://"]) categories++;
-  Check(categories == 13, @"Browser exposes all standard categories through Talaria’s Chromium settings window");
+  TLBrowserSettingsController *browser = [controller valueForKey:@"browserSettingsController"];
+  NSDictionary *browserControls = [browser valueForKey:@"controls"];
+  Check(browserControls.count == TLBrowserPreferences.catalogue.count && browserControls.count > 40, @"Browser has native controls instead of external settings links");
+  NSSwitch *tracking = browserControls[@"doNotTrack"];
+  tracking.state = NSControlStateValueOn; [NSApp sendAction:tracking.action to:tracking.target from:tracking];
+  Check([browserPreferences.values[@"doNotTrack"] boolValue], @"browser toggles save to the browser service");
+  browserPreferences.failSave = YES;
+  tracking.state = NSControlStateValueOff; [NSApp sendAction:tracking.action to:tracking.target from:tracking];
+  Check(tracking.state == NSControlStateValueOn && [[[browser valueForKey:@"status"] stringValue] isEqual:@"Save failed"], @"failed saves restore the actual toggle state and display the error");
+  browserPreferences.failSave = NO;
+  [NSApp sendAction:tracking.action to:tracking.target from:tracking];
+  NSTextField *template = browserControls[@"customSearchURL"]; template.stringValue = @"draft search template";
+  NSSearchField *browserSearch = [browser valueForKey:@"search"]; browserSearch.stringValue = @"zoom";
+  [(id<NSTextFieldDelegate>)browser controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:browserSearch]];
+  Check(![[browser valueForKey:@"cards"][@"zoom"] isHidden] && [[browser valueForKey:@"cards"][@"cookies"] isHidden], @"browser search filters across categories");
+  browserSearch.stringValue = @""; [(id<NSTextFieldDelegate>)browser controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:browserSearch]];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@1100,@200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue,780)]; SettingsTick(window);
+      SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-browser-%@-%@.png",theme,width]);
+    }
+  }
+  Check([template.stringValue isEqual:@"draft search template"], @"browser theme and filter changes preserve text drafts");
+  [browser setValue:@YES forKey:@"busy"];
+  Check(!tracking.enabled && !template.enabled, @"browser controls cannot show unsaved changes during data operations");
+  [browser setValue:@NO forKey:@"busy"];
+  Check(tracking.enabled && template.enabled && [template.stringValue isEqual:@"draft search template"], @"browser data operations preserve drafts when controls resume");
+  [window setContentSize:NSMakeSize(1100,780)]; SettingsTick(window);
+  Check(NSWidth([[browser valueForKey:@"rows"] frame]) > 700, @"browser settings use the available width for aligned columns");
   SettingsSnapshot(controller, window, @"settings-browser.png");
   [NSApp sendAction:nav[3].action to:nav[3].target from:nav[3]];
   Check([service.action isEqual:@"list"], @"tools loads credentials from the active Hermes agent");
@@ -1800,6 +1871,14 @@ static void TestBrowserOwnsCallbacksAndSession(void) {
     [controller applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
     Check(controller.view == content && window.firstResponder == input.textView &&
       [input.textView.string isEqualToString:@"unfinished browser prompt"], @"browser theme preserves content, draft and focus");
+    NSURL *profile = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+    TLBrowserPreferences *preferences = [[TLBrowserPreferences alloc] initWithProfileURL:profile];
+    [preferences saveValue:@"https://duckduckgo.com/?q={searchTerms}" forSetting:[TLBrowserPreferences settingWithID:@"searchEngine"] error:nil];
+    [controller setValue:preferences forKey:@"browserPreferences"];
+    [input beginPromptEditing]; input.textView.string = @"red & blue";
+    [NSApp sendAction:input.sendButton.action to:input.sendButton.target from:input.sendButton];
+    Check([service.navigatedURL.absoluteString isEqual:@"https://duckduckgo.com/?q=red%20%26%20blue"], @"the address bar uses the selected browser search engine");
+    [NSFileManager.defaultManager removeItemAtURL:profile error:nil];
     TLChromiumBrowserTitleHandler lateTitle = service.titleCallback;
     NSUInteger changesBeforeClose = metadataChanges;
     [controller close];
@@ -2516,6 +2595,7 @@ int main(void) {
     TestDebugResetLayout();
     TestTerminalRequiresRunningVM();
     TestSettingsThemeAndLateCatalogue();
+    TestBrowserPreferencePersistenceAndValidation();
     TestSettingsNavigationCredentialsAndResponsiveLayout();
     TestComposerModelButtonLayout();
     TestComposerModelDialog();

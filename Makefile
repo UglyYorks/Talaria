@@ -382,3 +382,13 @@ $(BUILD_DIR)/BrowserOverlayPolicyTests: Source/TLBrowserOverlayPolicy.m Tests/Br
 test-browser-overlay:
 	node Tests/BrowserDocumentFooterTests.mjs
 	node Tests/BrowserOverlayTests.mjs
+
+# Explicit integration test: signed desktop bundle, local HTTP fixtures, disposable profile.
+.PHONY: test-browser-preferences
+test-browser-preferences: build
+	mkdir -p "$(BUILD_DIR)/BrowserPreferencesProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/BrowserPreferencesProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserPreferencesProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserPreferencesIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserPreferencesProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserPreferencesProbe.app"
+	python3 Scripts/test-browser-preferences.py

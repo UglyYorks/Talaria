@@ -1,6 +1,7 @@
 #import "TLBrowserContentColor.h"
 #import <QuartzCore/QuartzCore.h>
 #import "TLBrowserTabController.h"
+#import "TLBrowserPreferences.h"
 #import "TLBrowserHeightTransition.h"
 #import "TLBrowserOverlayPolicy.h"
 #import "BrowserConversation.h"
@@ -10,6 +11,7 @@
 
 @interface TLBrowserTabController ()
 @property (nonatomic, strong) TLDatabase *database;
+@property (nonatomic, strong) TLBrowserPreferences *browserPreferences;
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
 @property (nonatomic, strong) TLChromiumBrowserController *browserService;
 @property (nonatomic, strong) TLChromiumBrowserSession *browserSession;
@@ -61,12 +63,15 @@
   self = [super initWithPalette:palette];
   if (self) {
     _database = database;
+    _browserPreferences = TLBrowserPreferences.sharedPreferences;
     _agentOrchestrator = orchestrator;
     _browserService = browserService;
     _URL = URL;
     _overlayPolicy = [TLBrowserOverlayPolicy new];
     self.title = URL.host ?: URL.absoluteString;
     [self buildContentWithURL:URL inputWidth:inputWidth];
+    [self updateAddressBarLabels];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(browserPreferencesChanged:) name:TLBrowserPreferencesDidChangeNotification object:nil];
   }
   return self;
 }
@@ -84,6 +89,7 @@
   [self.overlayTimer invalidate];
   self.overlayTimer = nil;
   self.overlayGeneration++;
+  [NSNotificationCenter.defaultCenter removeObserver:self name:TLBrowserPreferencesDidChangeNotification object:nil];
   [self.heightTransition cancel];
   self.browserConversation.changeHandler = nil;
   self.browserChatPane.linkHandler = nil;
@@ -536,12 +542,22 @@
   }];
 }
 
+- (void)browserPreferencesChanged:(NSNotification *)notification { [self updateAddressBarLabels]; }
+
+- (void)updateAddressBarLabels {
+  BOOL search = [[self.browserPreferences localValue:@"addressBarMode"] isEqual:@"search"];
+  self.browserAddressInput.textView.accessibilityLabel = search ? @"Search or enter a URL" : @"Give a task or enter a URL";
+  self.browserAddressInput.sendButton.accessibilityLabel = search ? @"Search or navigate" : @"Send task or navigate";
+  self.browserAddressInput.sendButton.toolTip = search ? @"Search or navigate" : @"Send task or navigate";
+}
+
 - (void)navigateBrowserFromAddressInput:(id)sender {
   if (self.isClosed) return;
   TLBrowserAddressInput *input = self.browserAddressInput;
   NSString *text = [input.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   if (text.length == 0) return;
   NSURL *URL = input.hasUserDraft ? [TLInputSuggestions browserURLForInput:text] : self.URL;
+  if (!URL && [[self.browserPreferences localValue:@"addressBarMode"] isEqual:@"search"]) URL = [self.browserPreferences searchURLForText:text];
   if (!URL) { [self sendBrowserPrompt:text]; return; }
   [input setDisplayedAddress:[self displayAddressForBrowserURL:URL]];
   input.textView.toolTip = URL.absoluteString;

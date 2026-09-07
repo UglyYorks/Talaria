@@ -15,6 +15,7 @@
   _columns = [NSStackView stackViewWithViews:@[summary, controls]];
   _columns.translatesAutoresizingMaskIntoConstraints = NO;
   _columns.spacing = palette.space12;
+  _columns.alignment = NSLayoutAttributeNotAnAttribute;
   _columns.orientation = NSUserInterfaceLayoutOrientationVertical;
   _columns.alignment = NSLayoutAttributeLeading;
   _stacked = YES;
@@ -38,6 +39,7 @@
     self.equalColumns.active = !stacked;
     if (stacked) [NSLayoutConstraint activateConstraints:self.stackedConstraints];
     else [NSLayoutConstraint deactivateConstraints:self.stackedConstraints];
+    self.columns.alignment = NSLayoutAttributeNotAnAttribute;
     self.columns.distribution = stacked ? NSStackViewDistributionFill : NSStackViewDistributionFillEqually;
     self.columns.orientation = stacked ? NSUserInterfaceLayoutOrientationVertical : NSUserInterfaceLayoutOrientationHorizontal;
     self.columns.alignment = stacked ? NSLayoutAttributeLeading : NSLayoutAttributeTop;
