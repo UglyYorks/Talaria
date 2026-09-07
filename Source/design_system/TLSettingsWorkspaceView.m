@@ -47,7 +47,8 @@
   self.sidebar.frame = NSMakeRect(0, 0, side, height);
   self.header.frame = NSMakeRect(side, MAX(0, height - headerHeight), width, headerHeight);
   self.footer.frame = NSMakeRect(side, 0, width, footerHeight);
-  self.pageHost.frame = NSMakeRect(side, footerHeight, width, MAX(0, height - headerHeight - footerHeight));
+  CGFloat pageBottom = self.footer.hidden ? 0 : footerHeight;
+  self.pageHost.frame = NSMakeRect(side, pageBottom, width, MAX(0, height - headerHeight - pageBottom));
   self.pageMenu.hidden = !compact;
   self.pageTitle.hidden = compact;
   CGFloat titleY = headerHeight - p.space12 - p.settingsActionHeight;

@@ -3939,7 +3939,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     database:self.database orchestrator:self.agentOrchestrator palette:self.palette];
   self.settingsTabController = controller;
   __weak typeof(self) weakSelf = self;
-  controller.closeHandler = ^{ [weakSelf closeSettingsTab:weakSelf]; };
   controller.onboardingHandler = ^{ [weakSelf showOnboardingDemoWindow:weakSelf]; };
   controller.errorHandler = ^(NSString *message) { [weakSelf presentErrorMessage:message]; };
   controller.settingsSavedHandler = ^(TLAppSettings *settings) {

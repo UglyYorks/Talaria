@@ -186,9 +186,8 @@
 
   self.saveButton = [self button:@"Save" action:@selector(save:)];
   self.saveButton.primary = YES;
-  TLThemedButton *close = [self button:@"Close" action:@selector(requestClose:)];
   self.footerLabel = [self labelWithString:@"" font:self.palette.smallFont colorToken:@"textMuted"];
-  NSStackView *footer = [self stack:@[self.footerLabel, close, self.saveButton] vertical:NO];
+  NSStackView *footer = [self stack:@[self.footerLabel, self.saveButton] vertical:NO];
   [self pin:footer in:self.workspace.footer inset:self.palette.space8];
   [self.footerLabel setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
   [self.footerLabel setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -251,8 +250,9 @@
   [self.workspace.pageMenu selectItemAtIndex:index];
   self.workspace.pageTitle.stringValue = self.selectedPage;
   self.workspace.pageDescription.stringValue = self.pageDescriptions[index];
-  self.saveButton.hidden = index >= 2;
-  self.footerLabel.stringValue = index == 2 ? @"Browser preferences save here in Talaria." : index == 3 ? @"Credentials apply to the selected agent." : @"Changes apply when saved.";
+  self.workspace.footer.hidden = index >= 2;
+  self.workspace.needsLayout = YES;
+  self.footerLabel.stringValue = @"Changes apply when saved.";
   if (index == 3 && !self.credentialBusy && (!self.credentials || self.credentialAgentID != self.database.currentAgentID)) [self reloadCredentials:nil];
 }
 
@@ -298,7 +298,6 @@
   self.footerLabel.stringValue = @"Changes saved.";
   if (self.settingsSavedHandler) self.settingsSavedHandler(saved);
 }
-- (void)requestClose:(id)sender { if (self.closeHandler) self.closeHandler(); }
 - (void)requestOnboarding:(id)sender { if (self.onboardingHandler) self.onboardingHandler(); }
 
 - (NSView *)buildBrowserPage {
@@ -478,6 +477,6 @@
   for (NSTextField *field in self.credentialFields.allValues) field.stringValue = @"";
   [self.modelSelection.window.sheetParent endSheet:self.modelSelection.window];
   [self.modelSelection close];
-  self.closeHandler = nil; self.onboardingHandler = nil; self.settingsSavedHandler = nil; self.errorHandler = nil;
+  self.onboardingHandler = nil; self.settingsSavedHandler = nil; self.errorHandler = nil;
 }
 @end

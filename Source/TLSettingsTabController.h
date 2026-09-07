@@ -6,7 +6,6 @@
 NS_ASSUME_NONNULL_BEGIN
 @interface TLSettingsTabController : TLFeatureTabController
 @property (nonatomic, strong) id<TLBrowserPreferencesService> browserPreferences;
-@property (nonatomic, copy, nullable) void (^closeHandler)(void);
 @property (nonatomic, copy, nullable) void (^onboardingHandler)(void);
 @property (nonatomic, copy, nullable) void (^settingsSavedHandler)(TLAppSettings *settings);
 @property (nonatomic, copy, nullable) void (^errorHandler)(NSString *message);
