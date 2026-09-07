@@ -204,4 +204,3 @@ def register(server, home):
         except Exception as exc:
             automations.scheduler_error = str(exc)
     return automations
-

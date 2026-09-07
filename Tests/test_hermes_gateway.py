@@ -566,6 +566,30 @@ class CredentialRPCTests(unittest.TestCase):
             handlers["talaria.credentials.set"](1, {"value": "test-secret"})
         self.assertNotIn("test-secret", str(server._err.call_args))
 
+    def test_entry_registers_credentials_and_automations_and_stops_scheduler(self):
+        from talaria_gateway_entry import main
+        for failure in (None, RuntimeError("gateway stopped")):
+            with self.subTest(failure=failure):
+                handlers = {}
+                server = Mock(_LONG_HANDLERS=frozenset())
+                server.method.side_effect = lambda name: lambda fn: handlers.update({name: fn})
+                entry = types.SimpleNamespace(server=server, main=Mock(side_effect=failure))
+                automations = Mock()
+                automations.preference.exists.return_value = False
+                with patch.dict(sys.modules, {"tui_gateway": types.SimpleNamespace(entry=entry)}), \
+                     patch.dict(os.environ, {"HERMES_HOME": "/tmp/talaria-entry-test"}), \
+                     patch("hermes_automations.Automations", return_value=automations):
+                    if failure:
+                        with self.assertRaisesRegex(RuntimeError, "gateway stopped"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(set(handlers), {"talaria.credentials.list", "talaria.credentials.set",
+                                                "talaria.credentials.remove", "talaria.automations"})
+                self.assertIn("talaria.automations", server._LONG_HANDLERS)
+                entry.main.assert_called_once_with()
+                automations.stop_event.set.assert_called_once_with()
+
     def test_worker_uses_gateway_and_returns_structured_response(self):
         gateway = Mock()
         gateway.credentials.return_value = {"entries": []}
