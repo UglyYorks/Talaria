@@ -11,6 +11,7 @@
 #import "TLBrowserSettingsController.h"
 #import "TLBrowserPreferences.h"
 #import "design_system/TLSettingsWorkspaceView.h"
+#import "design_system/TLSettingsTabBar.h"
 #import "TLModelSelectionWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AssistantTurnRunner.h"
@@ -1629,13 +1630,46 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   NSSearchField *browserSearch = [browser valueForKey:@"search"]; browserSearch.stringValue = @"zoom";
   [(id<NSTextFieldDelegate>)browser controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:browserSearch]];
   Check(![[browser valueForKey:@"cards"][@"zoom"] isHidden] && [[browser valueForKey:@"cards"][@"cookies"] isHidden], @"browser search filters across categories");
-  browserSearch.stringValue = @""; [(id<NSTextFieldDelegate>)browser controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:browserSearch]];
+  TLSettingsTabBar *tabs = [browser valueForKey:@"categoryTabs"];
+  Check(tabs.tabButtons.count == TLBrowserPreferences.categories.count, @"every browser category has a native top tab");
+  for (NSUInteger index = 0; index < tabs.tabButtons.count; index++) {
+    TLThemedButton *tab = tabs.tabButtons[index];
+    [tab performClick:nil]; SettingsTick(window);
+    Check(tabs.selectedIndex == (NSInteger)index && [tab.accessibilityValue boolValue], @"tab clicks update the accessible selection");
+    Check(!browserSearch.stringValue.length, @"tabs remain actionable during search and open their category");
+    for (NSDictionary *setting in TLBrowserPreferences.catalogue) {
+      BOOL belongs = [setting[@"category"] isEqual:TLBrowserPreferences.categories[index]];
+      Check([[browser valueForKey:@"cards"] [setting[@"id"]] isHidden] != belongs, @"tab clicks show exactly the selected category's settings");
+    }
+    for (NSDictionary *row in [browser valueForKey:@"extraRows"])
+      Check([row[@"row"] isHidden] != [row[@"category"] isEqual:TLBrowserPreferences.categories[index]], @"data actions follow the selected category");
+  }
+  [tabs.tabButtons[0] performClick:nil];
+  NSEvent *nextCategory = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
+    windowNumber:window.windowNumber context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:124];
+  [tabs.tabButtons[0] keyDown:nextCategory];
+  Check(tabs.selectedIndex == 1 && ![[browser valueForKey:@"cards"][@"geolocation"] isHidden], @"arrow keys switch category content");
+  [tabs.tabButtons[0] performClick:nil];
   for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
     TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
     window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
     [controller applyPalette:palette];
     for (NSNumber *width in @[@1100,@200]) {
       [window setContentSize:NSMakeSize(width.doubleValue,780)]; SettingsTick(window);
+      [tabs.tabButtons.lastObject performClick:nil]; SettingsTick(window);
+      NSRect visible = tabs.tabButtons.lastObject.superview.visibleRect;
+      Check(NSContainsRect(visible, tabs.tabButtons.lastObject.frame), @"selecting the final category reveals it at wide and narrow widths");
+      [tabs.tabButtons[0] performClick:nil]; SettingsTick(window);
+      NSPoint center = [tabs.tabButtons[0] convertPoint:NSMakePoint(NSMidX(tabs.tabButtons[0].bounds), NSMidY(tabs.tabButtons[0].bounds)) toView:window.contentView.superview];
+      Check([window.contentView hitTest:center] == tabs.tabButtons[0], @"the visible category tab receives native pointer events");
+      for (TLThemedButton *tab in @[tabs.tabButtons[0], tabs.tabButtons[1]]) {
+        [tab setValue:@NO forKey:@"hovered"]; [tab.cell setHighlighted:NO];
+        CGFloat surface[3], alpha;
+        RGBComponents(palette.tabBackground, surface, &alpha);
+        CompositeColor(tab.primary ? palette.primaryActionSurface : palette.secondaryActionSurface, 1, surface);
+        NSBitmapImageRep *render = RenderThemedButton(tab);
+        Check(PixelMatches(render, NSWidth(tab.bounds) / 2, 3, surface), @"selected and unselected tabs render their theme surfaces at wide and narrow widths");
+      }
       SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-browser-%@-%@.png",theme,width]);
     }
   }
