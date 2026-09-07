@@ -3940,7 +3940,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       ![windowController.settings.selectedModel isEqualToString:settings.selectedModel];
     windowController.settings = settings;
     windowController.palette = [TLThemePalette paletteForPreference:settings.theme];
-    [windowController closeSettingsTab:windowController];
     [windowController applyTheme];
     if (inferenceChanged) [windowController prepareHermesCommands];
   };

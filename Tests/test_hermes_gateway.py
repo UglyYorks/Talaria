@@ -500,5 +500,81 @@ class TUIOnlyTests(unittest.TestCase):
                     self.assertNotEqual(node.func.attr, 'urlopen', f'HTTP request in {function.name}')
 
 
+class CredentialRPCTests(unittest.TestCase):
+    def setUp(self):
+        import types
+        self.store = {}
+        self.config = Mock()
+        self.config.OPTIONAL_ENV_VARS = {
+            "SEARCH_API_KEY": {"category": "tool", "description": "Search service", "password": True},
+            "WEBHOOK_SECRET": {"category": "setting", "password": True},
+            "PROVIDER_KEY": {"category": "provider"},
+            "CHAT_TOKEN": {"category": "messaging"},
+        }
+        self.config.load_env.side_effect = lambda: dict(self.store)
+        self.config.is_managed.return_value = False
+        self.config.save_env_value.side_effect = lambda key, value: self.store.update({key: value})
+        self.config.remove_env_value.side_effect = lambda key: self.store.pop(key, None)
+        scope = types.SimpleNamespace(is_env_managed=lambda key: False)
+        modules = patch.dict(sys.modules, {"hermes_cli": types.SimpleNamespace(managed_scope=scope)})
+        modules.start()
+        self.addCleanup(modules.stop)
+
+    def test_registry_roundtrip_and_no_secret_in_list(self):
+        from talaria_gateway_entry import credentials
+        result = credentials("set", {"key": "SEARCH_API_KEY", "value": "test-secret"}, self.config)
+        self.assertEqual(result, {"ok": True, "key": "SEARCH_API_KEY", "is_set": True})
+        listed = credentials("list", {}, self.config)
+        self.assertEqual([row["key"] for row in listed["entries"]], ["SEARCH_API_KEY", "WEBHOOK_SECRET"])
+        self.assertNotIn("test-secret", json.dumps(listed))
+        self.assertTrue(listed["entries"][0]["is_set"])
+        credentials("remove", {"key": "SEARCH_API_KEY"}, self.config)
+        self.assertFalse(credentials("list", {}, self.config)["entries"][0]["is_set"])
+
+    def test_rejects_unknown_provider_managed_and_multiline_writes(self):
+        from talaria_gateway_entry import credentials
+        for key, value in [("PATH", "bad"), ("PROVIDER_KEY", "bad"), ("SEARCH_API_KEY", "one\ntwo"), ("SEARCH_API_KEY", "")]:
+            with self.assertRaises(ValueError):
+                credentials("set", {"key": key, "value": value}, self.config)
+        self.config.is_managed.return_value = True
+        with self.assertRaises(ValueError):
+            credentials("set", {"key": "SEARCH_API_KEY", "value": "secret"}, self.config)
+        self.config.save_env_value.assert_not_called()
+
+    def test_failure_is_not_reported_as_success(self):
+        from talaria_gateway_entry import credentials
+        self.config.save_env_value.side_effect = None
+        with self.assertRaises(ValueError):
+            credentials("set", {"key": "SEARCH_API_KEY", "value": "not-saved"}, self.config)
+
+    def test_gateway_uses_only_credential_rpc(self):
+        gateway = HermesGateway.__new__(HermesGateway)
+        gateway.call = Mock(return_value={"ok": True})
+        gateway.credentials("set", "SEARCH_API_KEY", "test-secret")
+        gateway.call.assert_called_once_with("talaria.credentials.set", {"key": "SEARCH_API_KEY", "value": "test-secret"})
+        with self.assertRaises(ValueError):
+            gateway.credentials("exec", "", "")
+
+    def test_rpc_error_never_echoes_value(self):
+        from talaria_gateway_entry import register
+        server = Mock()
+        handlers = {}
+        server.method.side_effect = lambda name: lambda fn: handlers.update({name: fn})
+        register(server)
+        with patch("talaria_gateway_entry.credentials", side_effect=RuntimeError("test-secret")):
+            handlers["talaria.credentials.set"](1, {"value": "test-secret"})
+        self.assertNotIn("test-secret", str(server._err.call_args))
+
+    def test_worker_uses_gateway_and_returns_structured_response(self):
+        gateway = Mock()
+        gateway.credentials.return_value = {"entries": []}
+        output = io.BytesIO()
+        with patch.object(worker, "tui_gateway", return_value=gateway):
+            worker.handle_request({"operation": "hermes_credentials", "request_id": "keys", "action": "list"}, output)
+        frames = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(json.loads(frames[0]["text"]), {"entries": []})
+        self.assertEqual(frames[-1]["type"], "complete")
+
+
 if __name__ == '__main__':
     unittest.main()

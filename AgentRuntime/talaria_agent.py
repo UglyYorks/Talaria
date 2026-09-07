@@ -371,6 +371,17 @@ def generate_hermes_text(request, output=None):
         error(f"Could not generate text through Hermes: {exc}", output)
 
 
+def hermes_credentials(request, output=None):
+    try:
+        result = tui_gateway(trim(request.get("token"))).credentials(
+            request.get("action"), request.get("key", ""), request.get("value", ""))
+        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
+              "text": json.dumps(result)}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError):
+        error("Could not access Hermes tool credentials. Check that Hermes is installed and up to date, then retry.", output)
+
+
 def handle_request(request, output=None, cancellation=None):
     operation = request.get("operation")
     if operation == "shell_command":
@@ -378,6 +389,9 @@ def handle_request(request, output=None, cancellation=None):
         return 0
     if operation == "install_hermes":
         install_hermes(request, output)
+        return 0
+    if operation == "hermes_credentials":
+        hermes_credentials(request, output)
         return 0
     if operation == "hermes_history":
         hermes_history(request, output)

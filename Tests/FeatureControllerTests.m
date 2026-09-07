@@ -8,6 +8,7 @@
 #import "TLBrowserOverlayPolicy.h"
 #import "TLBrowserContentColor.h"
 #import "TLSettingsTabController.h"
+#import "design_system/TLSettingsWorkspaceView.h"
 #import "TLModelSelectionWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AssistantTurnRunner.h"
@@ -1140,6 +1141,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 
 @interface TLFeatureSettingsStoreMock : NSObject
 @property (nonatomic, strong) TLAppSettings *savedSettings;
+@property (nonatomic) NSInteger currentAgentID;
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error;
 @end
 @implementation TLFeatureSettingsStoreMock
@@ -1513,6 +1515,109 @@ static void TestBrowserOverlayLifecycle(void) {
   [window close];
 }
 
+@interface TLSettingsCredentialMock : TLFeatureCatalogueMock
+@property (nonatomic, copy) void (^pendingCredentials)(NSDictionary *, NSError *);
+@property (nonatomic, copy) NSString *action;
+@property (nonatomic, copy) NSString *key;
+@property (nonatomic, copy) NSString *value;
+@end
+@implementation TLSettingsCredentialMock
+- (void)hermesCredentialsWithAction:(NSString *)action key:(NSString *)key value:(NSString *)value
+                              token:(NSString *)token completion:(void (^)(NSDictionary *, NSError *))completion {
+  self.action = action; self.key = key; self.value = value; self.pendingCredentials = completion;
+}
+@end
+
+static void SettingsTick(NSWindow *window) {
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+  [window.contentView layoutSubtreeIfNeeded];
+}
+static void SettingsSnapshot(TLSettingsTabController *controller, NSWindow *window, NSString *name) {
+  SettingsTick(window);
+  NSView *view = controller.view;
+  NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+  [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+  [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+    writeToFile:[@"build/" stringByAppendingString:name] atomically:YES];
+}
+static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
+  TLSettingsCredentialMock *service = [[TLSettingsCredentialMock alloc] init];
+  TLFeatureSettingsStoreMock *store = [[TLFeatureSettingsStoreMock alloc] init];
+  store.currentAgentID = 7;
+  TLSettingsTabController *controller = [[TLSettingsTabController alloc]
+    initWithSettings:TLAppSettings.defaultSettings database:(TLDatabase *)store orchestrator:(TLAgentOrchestrator *)service
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  NSWindow *window = HostController(controller);
+  TLSettingsWorkspaceView *shell = [controller valueForKey:@"workspace"];
+  NSArray<TLSidebarNavigationButton *> *nav = [controller valueForKey:@"navigation"];
+  Check(nav[0].isAccessibilityElement && [nav[0].accessibilityLabel isEqual:@"Model"], @"settings navigation is exposed to assistive technology");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@1100, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 780)]; SettingsTick(window);
+      Check(fabs(NSWidth(window.contentView.bounds) - width.doubleValue) < 1, @"settings respects the 200px window minimum");
+      Check(shell.sidebar.hidden == (width.doubleValue < palette.settingsCompactWidth), @"settings switches to a menu on narrow windows");
+      Check(shell.pageMenu.hidden != shell.sidebar.hidden, @"one navigation surface remains available");
+      if (width.doubleValue == 1100) {
+        NSArray<NSButton *> *models = [controller valueForKey:@"modelButtons"];
+        CGFloat firstX = NSMinX([models[0] convertRect:models[0].bounds toView:controller.view]);
+        CGFloat secondX = NSMinX([models[1] convertRect:models[1].bounds toView:controller.view]);
+        Check(fabs(firstX - secondX) < 1, @"model controls align in a consistent column");
+      }
+      SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-model-%ld-%@.png", (long)theme.integerValue, width]);
+    }
+  }
+  [window setContentSize:NSMakeSize(1100, 780)]; SettingsTick(window);
+  [NSApp sendAction:nav[2].action to:nav[2].target from:nav[2]]; SettingsTick(window);
+  NSUInteger categories = 0;
+  for (TLThemedButton *button in [controller valueForKey:@"buttons"])
+    if ([button.identifier hasPrefix:@"chrome://"]) categories++;
+  Check(categories == 13, @"Browser exposes all standard categories through Talaria’s Chromium settings window");
+  SettingsSnapshot(controller, window, @"settings-browser.png");
+  [NSApp sendAction:nav[3].action to:nav[3].target from:nav[3]];
+  Check([service.action isEqual:@"list"], @"tools loads credentials from the active Hermes agent");
+  NSArray *entries = @[@{@"key": @"BRAVE_API_KEY", @"description": @"Web search with Brave Search.", @"category": @"tool", @"is_password": @YES, @"is_set": @YES, @"url": @"https://brave.com/search/api/"},
+    @{@"key": @"FIRECRAWL_API_KEY", @"description": @"Read and extract content from websites.", @"category": @"tool", @"is_password": @YES, @"is_set": @NO},
+    @{@"key": @"WEBHOOK_SECRET", @"category": @"setting", @"is_password": @YES, @"is_set": @NO}];
+  service.pendingCredentials(@{@"entries":entries}, nil); SettingsTick(window);
+  NSMutableDictionary *fields = [controller valueForKey:@"credentialFields"];
+  Check(fields.count == 2, @"tools and settings credential categories stay separate");
+  Check([fields[@"BRAVE_API_KEY"] isKindOfClass:NSSecureTextField.class] && ![fields[@"BRAVE_API_KEY"] stringValue].length, @"saved keys remain masked and are never loaded into fields");
+  [fields[@"BRAVE_API_KEY"] setStringValue:@"draft-test-key"];
+  NSSearchField *search = [controller valueForKey:@"credentialSearch"];
+  search.stringValue = @"firecrawl";
+  [(id<NSTextFieldDelegate>)controller controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
+  Check(fields.count == 1, @"search filters the installed catalogue");
+  search.stringValue = @"";
+  [(id<NSTextFieldDelegate>)controller controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
+  Check([[fields[@"BRAVE_API_KEY"] stringValue] isEqual:@"draft-test-key"], @"filtering preserves unsaved key drafts");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@1100, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 780)];
+      SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-tools-%ld-%@.png", (long)theme.integerValue, width]);
+    }
+  }
+  TLThemedButton *save = nil;
+  for (TLThemedButton *button in [controller valueForKey:@"buttons"])
+    if ([button.identifier isEqual:@"BRAVE_API_KEY"] && [button.title isEqual:@"Save"]) save = button;
+  [NSApp sendAction:save.action to:save.target from:save];
+  Check([service.action isEqual:@"set"] && [service.value isEqual:@"draft-test-key"], @"save sends only the entered key to Hermes");
+  service.pendingCredentials(@{@"ok":@YES}, nil); SettingsTick(window);
+  Check([service.action isEqual:@"list"], @"save refreshes authoritative credential status");
+  store.currentAgentID = 8;
+  service.pendingCredentials(@{@"entries":entries}, nil); SettingsTick(window);
+  Check(fields.count == 0 && [[controller valueForKey:@"credentialDrafts"] count] == 0, @"changing agents clears old credentials and drafts before reloading");
+  void (^late)(NSDictionary *, NSError *) = service.pendingCredentials;
+  [controller close]; late(@{@"entries": entries}, nil); SettingsTick(window);
+  Check(fields.count == 0, @"late credential callbacks cannot revive a closed settings page");
+  [window close];
+}
+
 static void TestSettingsThemeAndLateCatalogue(void) {
   TLFeatureCatalogueMock *catalogue = [[TLFeatureCatalogueMock alloc] init];
   TLFeatureSettingsStoreMock *store = [[TLFeatureSettingsStoreMock alloc] init];
@@ -1534,7 +1639,7 @@ static void TestSettingsThemeAndLateCatalogue(void) {
   Check([token.stringValue isEqualToString:@"test-only-unsaved-token"], @"settings drafts survive theme change");
   Check(window.firstResponder == responder && theme.indexOfSelectedItem == TLThemePreferenceDark, @"settings focus and theme draft survive palette application");
   Check([token.textColor isEqual:dark.controlText], @"settings controls update theme");
-  Check(catalogue.pendingCatalogue == nil, @"settings does not fetch or offer model selection");
+  Check(catalogue.pendingCatalogue == nil, @"settings only fetches the model catalogue when the picker opens");
   store.savedSettings = [TLAppSettings defaultSettings];
   store.savedSettings.selectedModel = @"new/large";
   store.savedSettings.supportingModel = @"new/small";
@@ -2242,7 +2347,6 @@ static void TestSuggestionTypingAndVirtualization(void) {
 - (void)updateAgentControlStates {}
 @end
 @interface TLWarmupStore : TLFeatureSettingsStoreMock
-@property NSInteger currentAgentID;
 @end
 @implementation TLWarmupStore
 @end
@@ -2412,6 +2516,7 @@ int main(void) {
     TestDebugResetLayout();
     TestTerminalRequiresRunningVM();
     TestSettingsThemeAndLateCatalogue();
+    TestSettingsNavigationCredentialsAndResponsiveLayout();
     TestComposerModelButtonLayout();
     TestComposerModelDialog();
     TestBrowserOwnsCallbacksAndSession();

@@ -165,6 +165,9 @@ CGColorRef TLCGColor(NSColor *color) {
   self.assistantMessageMaxWidthMultiplier = 0.90;
   self.controlMinWidth = 78.0;
   self.fieldHeight = 32.0;
+  self.settingsSidebarWidth = 208.0;
+  self.settingsContentMaxWidth = 820.0;
+  self.settingsCompactWidth = 640.0;
   self.settingsSheetWidth = 760.0;
   self.settingsSheetHeight = 640.0;
   self.settingsActionHeight = 34.0;

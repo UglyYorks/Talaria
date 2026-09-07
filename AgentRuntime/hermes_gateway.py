@@ -4,6 +4,7 @@ Protocol reference: NousResearch/hermes-agent, tui_gateway/entry.py and
 tui_gateway/methods_tools.py (commands.catalog, command.dispatch, slash.exec).
 """
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 import queue
 import subprocess
@@ -31,7 +32,7 @@ class HermesGateway:
         self.mappings = json.loads(self.mapping_path.read_text()) if self.mapping_path.exists() else {}
         with (home / "talaria-tui-gateway.log").open("ab") as log:
             self.process = subprocess.Popen(
-                [str(python), "-u", "-m", "tui_gateway.entry"],
+                [str(python), "-u", str(Path(__file__).with_name("talaria_gateway_entry.py"))],
                 cwd=str(home.parent), env=environment, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1,
             )
@@ -86,6 +87,14 @@ class HermesGateway:
         finally:
             with self.lock:
                 self.pending.pop(request_id, None)
+
+    def credentials(self, action, key="", value=""):
+        if action not in ("list", "set", "remove"):
+            raise ValueError("Unsupported credential action.")
+        params = {} if action == "list" else {"key": key}
+        if action == "set":
+            params["value"] = value
+        return self.call("talaria.credentials." + action, params)
 
     def catalog(self):
         result = self.call("commands.catalog")

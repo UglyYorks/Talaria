@@ -1143,6 +1143,14 @@ class TLChromiumNavigationCommandTask : public CefTask {
                               isLoading:browser->IsLoading()];
     return;
   }
+  if (browser->GetHost()->GetRuntimeStyle() == CEF_RUNTIME_STYLE_CHROME) {
+    TLChromiumDeferToMainRunLoop(^{
+      if (!browser->IsValid()) return;
+      NSView *view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(browser->GetHost()->GetWindowHandle());
+      [view.window makeKeyAndOrderFront:nil];
+      browser->GetHost()->SetFocus(true);
+    });
+  }
 }
 
 - (void)showPageSourceForBrowser:(CefRefPtr<CefBrowser>)browser {
@@ -1509,7 +1517,8 @@ class TLChromiumNavigationCommandTask : public CefTask {
     windowInfo.bounds = CefRect(80, 80, 1120, 760);
     windowInfo.hidden = false;
   }
-  windowInfo.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
+  BOOL chromeSettingsWindow = !parentView && [[NSURL URLWithString:urlString].scheme.lowercaseString isEqualToString:@"chrome"];
+  windowInfo.runtime_style = chromeSettingsWindow ? CEF_RUNTIME_STYLE_CHROME : CEF_RUNTIME_STYLE_ALLOY;
   CefString(&windowInfo.window_name) = TLStringFromNSString(urlString);
 
   CefBrowserSettings browserSettings;
@@ -1621,12 +1630,40 @@ class TLChromiumNavigationCommandTask : public CefTask {
   browserView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 }
 
+- (void)openSettingsURL:(NSURL *)URL fromWindow:(NSWindow *)window {
+  if (![URL.scheme.lowercaseString isEqualToString:@"chrome"] || ![self browserURLFromURL:URL]) return;
+  if (![self initializeCEFIfNeededFromWindow:window]) return;
+  // Full Chrome WebUI pages are intentionally unavailable in Alloy child views.
+  // Use a Chrome-style window with the same global request context/profile.
+  for (const auto &browser : _browsers) {
+    if (browser->GetHost()->GetRuntimeStyle() == CEF_RUNTIME_STYLE_CHROME) {
+      browser->GetMainFrame()->LoadURL(TLStringFromNSString(URL.absoluteString));
+      NSView *view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(browser->GetHost()->GetWindowHandle());
+      [view.window makeKeyAndOrderFront:nil];
+      browser->GetHost()->SetFocus(true);
+      return;
+    }
+  }
+  CefPostTask(TID_UI, new TLChromiumCreateBrowserTask(self, TLStringFromNSString(URL.absoluteString), nil));
+}
+
+- (void)applyDarkAppearance:(BOOL)dark {
+  if (!_initialized) return;
+  CefRequestContext::GetGlobalContext()->SetChromeColorScheme(
+    dark ? CEF_COLOR_VARIANT_DARK : CEF_COLOR_VARIANT_LIGHT, 0);
+}
+
 - (NSURL *)browserURLFromURL:(NSURL *)url {
   NSString *scheme = url.scheme.lowercaseString;
   if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
     return url;
   }
 
+  // Only browser-owned settings destinations may be loaded from app chrome.
+  if ([scheme isEqualToString:@"chrome"] &&
+      [@[@"settings", @"password-manager", @"extensions", @"downloads", @"history", @"version", @"management", @"policy"] containsObject:url.host.lowercaseString]) {
+    return url;
+  }
   return nil;
 }
 

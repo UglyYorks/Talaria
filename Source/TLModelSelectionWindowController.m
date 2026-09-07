@@ -101,6 +101,11 @@
   button.palette = self.palette;
   return button;
 }
+- (void)configureForDefaultSelection:(BOOL)small {
+  self.descriptionLabel.stringValue = small ? @"Choose the default model for supporting tasks, including chat icons."
+    : @"Choose the default model for new conversations. Existing chats keep their own selection.";
+  self.switchButton.title = @"Use model";
+}
 - (void)presentForWindow:(NSWindow *)window {
   self.dismissed = NO;
   [window beginSheet:self.window completionHandler:nil];

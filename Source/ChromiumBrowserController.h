@@ -35,6 +35,8 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
                                 faviconHandler:(nullable TLChromiumBrowserFaviconHandler)faviconHandler
                              navigationHandler:(nullable TLChromiumBrowserNavigationHandler)navigationHandler;
 - (void)navigateSession:(nullable TLChromiumBrowserSession *)session toURL:(NSURL *)URL;
+- (void)openSettingsURL:(NSURL *)URL fromWindow:(nullable NSWindow *)window;
+- (void)applyDarkAppearance:(BOOL)dark;
 - (void)goBackInSession:(nullable TLChromiumBrowserSession *)session;
 - (void)goForwardInSession:(nullable TLChromiumBrowserSession *)session;
 - (void)reloadSession:(nullable TLChromiumBrowserSession *)session;
