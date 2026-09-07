@@ -2868,6 +2868,24 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   return NSMakeSize(NSViewNoIntrinsicMetric, self.palette.fieldHeight);
 }
 
+- (NSView *)hitTest:(NSPoint)point {
+  // Labels and icons are decorative; the whole navigation row is one control.
+  return [super hitTest:point] ? self : nil;
+}
+
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSAccessibilityRole)accessibilityRole { return NSAccessibilityButtonRole; }
+- (NSString *)accessibilityLabel { return self.title; }
+- (BOOL)accessibilityPerformPress {
+  return self.enabled && [self sendAction:self.action to:self.target];
+}
+- (BOOL)acceptsFirstResponder { return self.enabled; }
+- (void)keyDown:(NSEvent *)event {
+  if ([event.charactersIgnoringModifiers isEqualToString:@" "] || event.keyCode == 36) {
+    [self accessibilityPerformPress];
+  } else { [super keyDown:event]; }
+}
+
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
   return YES;
 }

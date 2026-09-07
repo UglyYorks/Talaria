@@ -423,6 +423,7 @@ static NSUInteger TLFileCountFromPasteboard(NSPasteboard *pasteboard) {
 - (instancetype)initWithPalette:(TLThemePalette *)palette target:(id)target action:(SEL)action {
   self = [super init];
   if (self) {
+    _enabled = YES;
     _palette = palette;
     _target = target;
     _action = action;
@@ -455,8 +456,12 @@ static NSUInteger TLFileCountFromPasteboard(NSPasteboard *pasteboard) {
   [self.overlayView setNeedsDisplay:YES];
 }
 
+- (void)setEnabled:(BOOL)enabled {
+  _enabled = enabled;
+  if (!enabled) [self stopTracking];
+}
 - (void)startTracking {
-  if (self.trackingTimer) {
+  if (!self.enabled || self.trackingTimer) {
     return;
   }
 

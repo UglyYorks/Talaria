@@ -19,6 +19,7 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 - (NSSize)windowWillResize:(NSWindow *)sender toSize:(NSSize)size;
 - (void)buildInterface;
 - (void)installAppStateBindings;
+- (void)installEffectiveAppearanceObserver;
 - (void)startNewChatWithModel:(NSString *)model focus:(BOOL)focus;
 - (void)splitTab:(TLWorkspaceTab *)tab besideTab:(TLWorkspaceTab *)other onLeft:(BOOL)left;
 - (void)focusSplitPane:(BOOL)right;
@@ -218,12 +219,17 @@ static void TestRealWorkspace(void) {
   [owner workspaceTabsController:nil dragTab:d atWindowPoint:drop];
   [owner workspaceTabsController:nil endDraggingTab:d cancelled:NO];
   Check(workspace.split && [[splits groupForTab:d].leftIdentity isEqual:TLWorkspaceTabIdentity(d)], @"dropping commits the previewed left split");
+  NSAppearance *originalAppearance = NSApp.appearance;
+  [owner installEffectiveAppearanceObserver];
   for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
-    settings.theme = theme.integerValue; [owner applyTheme]; Drain();
-    Check(workspace.palette.dark == (theme.integerValue == TLThemePreferenceDark), @"theme reaches existing split chrome");
+    NSApp.appearance = [NSAppearance appearanceNamed:theme.integerValue == TLThemePreferenceDark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    Drain();
+    Check(window.appearance == nil, @"the app window inherits the system color scheme without a manual override");
+    Check(workspace.palette.dark == (theme.integerValue == TLThemePreferenceDark), @"system appearance changes reach existing split chrome despite a legacy theme preference");
     for (TLChatPresentation *presentation in [[owner valueForKey:@"chatPresentations"] allValues])
       Check(presentation.messageInput.palette.dark == workspace.palette.dark, @"theme reaches every cached composer");
   }
+  NSApp.appearance = originalAppearance; Drain();
   [[[owner valueForKey:@"workspaceTabsController"] transitionCoordinator] finishAllTransitions];
   Drain();
   for (NSNumber *width in @[@200,@500,@1100]) {

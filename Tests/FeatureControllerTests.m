@@ -8,6 +8,13 @@
 #import "TLBrowserOverlayPolicy.h"
 #import "TLBrowserContentColor.h"
 #import "TLSettingsTabController.h"
+#import "TLBrowserSettingsController.h"
+#import "TLBrowserPreferences.h"
+#import "design_system/TLSettingsWorkspaceView.h"
+#import "design_system/TLShortcutRecorder.h"
+#import "TLApplicationSettingsController.h"
+#import "TLGlobalShortcut.h"
+#import <Carbon/Carbon.h>
 #import "TLModelSelectionWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AssistantTurnRunner.h"
@@ -1140,6 +1147,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 
 @interface TLFeatureSettingsStoreMock : NSObject
 @property (nonatomic, strong) TLAppSettings *savedSettings;
+@property (nonatomic) NSInteger currentAgentID;
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error;
 @end
 @implementation TLFeatureSettingsStoreMock
@@ -1151,6 +1159,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @end
 
 @interface TLFeatureBrowserMock : TLChromiumBrowserController
+@property NSURL *navigatedURL;
 @property (nonatomic) NSUInteger startCount;
 @property (nonatomic) NSUInteger closeCount;
 @property (nonatomic) NSUInteger backCount;
@@ -1203,6 +1212,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 }
 - (void)closeSession:(TLChromiumBrowserSession *)session { if (session) self.closeCount += 1; }
 - (void)goBackInSession:(TLChromiumBrowserSession *)session { self.backCount += 1; }
+- (void)navigateSession:(TLChromiumBrowserSession *)session toURL:(NSURL *)URL { self.navigatedURL = URL; }
 @end
 
 @interface TLBrowserTabController (OverlayTests)
@@ -1513,6 +1523,327 @@ static void TestBrowserOverlayLifecycle(void) {
   [window close];
 }
 
+@interface TLSettingsCredentialMock : TLFeatureCatalogueMock
+@property (nonatomic, copy) void (^pendingCredentials)(NSDictionary *, NSError *);
+@property (nonatomic, copy) NSString *action;
+@property (nonatomic, copy) NSString *key;
+@property (nonatomic, copy) NSString *value;
+@end
+@implementation TLSettingsCredentialMock
+- (void)hermesCredentialsWithAction:(NSString *)action key:(NSString *)key value:(NSString *)value
+                              token:(NSString *)token completion:(void (^)(NSDictionary *, NSError *))completion {
+  self.action = action; self.key = key; self.value = value; self.pendingCredentials = completion;
+}
+@end
+
+static void SettingsTick(NSWindow *window) {
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+  [window.contentView layoutSubtreeIfNeeded];
+}
+static void SettingsSnapshot(TLSettingsTabController *controller, NSWindow *window, NSString *name) {
+  SettingsTick(window);
+  NSView *view = controller.view;
+  NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+  [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+  [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+    writeToFile:[@"build/" stringByAppendingString:name] atomically:YES];
+}
+@interface TLBrowserPreferencesMock : NSObject <TLBrowserPreferencesService>
+@property NSMutableDictionary *values;
+@property BOOL failSave;
+@property NSUInteger writes;
+@end
+@implementation TLBrowserPreferencesMock
+- (instancetype)init { if ((self = [super init])) _values = [NSMutableDictionary dictionary]; return self; }
+- (void)prepareInWindow:(NSWindow *)window completion:(void (^)(NSError *))completion { completion(nil); }
+- (NSDictionary *)stateForSetting:(NSDictionary *)setting { return @{@"available":@YES,@"value":self.values[setting[@"id"]] ?: setting[@"default"]}; }
+- (BOOL)saveValue:(id)value forSetting:(NSDictionary *)setting error:(NSError **)error {
+  if (self.failSave) { if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Save failed"}]; return NO; }
+  self.values[setting[@"id"]] = value; self.writes++; return YES;
+}
+- (void)clearData:(NSString *)kind completion:(void (^)(NSError *))completion { completion(nil); }
+- (BOOL)resetDefaults:(NSError **)error { [self.values removeAllObjects]; return YES; }
+@end
+static void TestBrowserPreferencePersistenceAndValidation(void) {
+  NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
+  TLBrowserPreferences *preferences = [[TLBrowserPreferences alloc] initWithProfileURL:directory];
+  NSError *error = nil;
+  Check(![preferences saveValue:@"file:///tmp/{searchTerms}" forSetting:[TLBrowserPreferences settingWithID:@"customSearchURL"] error:&error], @"search templates reject non-web URLs");
+  Check(![preferences saveValue:@"https://user:password@example.com/{searchTerms}" forSetting:[TLBrowserPreferences settingWithID:@"customSearchURL"] error:&error], @"search templates reject credentials");
+  Check(![preferences saveValue:@999 forSetting:[TLBrowserPreferences settingWithID:@"zoom"] error:&error], @"zoom rejects out-of-range values");
+  Check(![preferences saveValue:@"https://example.com\nfile:///tmp/test" forSetting:[TLBrowserPreferences settingWithID:@"startupPages"] error:&error], @"startup URLs are validated as a whole");
+  Check([preferences saveValue:@"https://duckduckgo.com/?q={searchTerms}" forSetting:[TLBrowserPreferences settingWithID:@"searchEngine"] error:&error], @"search engine saves");
+  Check([[preferences searchURLForText:@"a & b#東京"].absoluteString isEqual:@"https://duckduckgo.com/?q=a%20%26%20b%23%E6%9D%B1%E4%BA%AC"], @"search queries cannot inject extra URL parameters");
+  Check([preferences saveValue:@"https://example.com/one\nhttps://example.org/two" forSetting:[TLBrowserPreferences settingWithID:@"startupPages"] error:&error], @"startup page list saves");
+  Check([preferences saveValue:@"pages" forSetting:[TLBrowserPreferences settingWithID:@"startup"] error:&error], @"startup mode saves");
+  Check([preferences saveValue:@125 forSetting:[TLBrowserPreferences settingWithID:@"zoom"] error:&error], @"zoom saves");
+  TLBrowserPreferences *reopened = [[TLBrowserPreferences alloc] initWithProfileURL:directory];
+  Check([[reopened localValue:@"zoom"] intValue] == 125 && reopened.startupURLs.count == 2, @"browser preferences survive reopening the profile");
+  Check([preferences saveValue:@"empty" forSetting:[TLBrowserPreferences settingWithID:@"startup"] error:&error] && preferences.startupURLs.count == 0, @"startup pages only open in specific-pages mode");
+  Check(![preferences validateValue:@"en-AU, bad code" forSetting:[TLBrowserPreferences settingWithID:@"acceptLanguages"] error:&error], @"invalid language lists are rejected");
+  Check(![preferences validateValue:@"socks5://user:secret@localhost:1080" forSetting:[TLBrowserPreferences settingWithID:@"proxyServer"] error:&error], @"proxy credentials cannot be saved as plain settings");
+  [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
+}
+
+@interface TLLoginItemMock : NSObject <TLLoginItemService>
+@property SMAppServiceStatus status;
+@property BOOL fail;
+@property NSUInteger registrations;
+@end
+@implementation TLLoginItemMock
+- (BOOL)registerAndReturnError:(NSError **)error {
+  self.registrations++;
+  if (self.fail) { if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Login item failed"}]; return NO; }
+  self.status = SMAppServiceStatusRequiresApproval; return YES;
+}
+- (BOOL)unregisterAndReturnError:(NSError **)error {
+  if (self.fail) { if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Login item failed"}]; return NO; }
+  self.status = SMAppServiceStatusNotRegistered; return YES;
+}
+@end
+@interface TLShortcutRegistrationMock : NSObject <TLGlobalShortcutRegistration>
+@property (nonatomic, copy) void (^handler)(void);
+@property NSDictionary *registered;
+@property BOOL fail;
+@end
+@implementation TLShortcutRegistrationMock
+- (BOOL)registerShortcut:(NSDictionary *)shortcut error:(NSError **)error {
+  if (self.fail) { if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Shortcut in use"}]; return NO; }
+  self.registered = shortcut; return YES;
+}
+@end
+
+static void TestNativeGlobalShortcutRegistration(void) {
+  TLGlobalShortcut *first = [[TLGlobalShortcut alloc] init], *second = [[TLGlobalShortcut alloc] init];
+  NSDictionary *shortcut = @{@"keyCode":@80,@"modifiers":@(NSEventModifierFlagControl | NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagShift),@"label":@"F19"};
+  NSError *error = nil;
+  Check([first registerShortcut:shortcut error:&error], @"macOS accepts an available global shortcut");
+  Check(![second registerShortcut:shortcut error:&error] && error != nil, @"macOS reports a conflicting shortcut");
+  __block NSUInteger invocations = 0;
+  first.handler = ^{ invocations++; };
+  EventRef event = NULL;
+  EventHotKeyID identifier = { 'Tlqi', [[first valueForKey:@"identifier"] unsignedIntValue] };
+  Check(CreateEvent(NULL, kEventClassKeyboard, kEventHotKeyPressed, 0, 0, &event) == noErr, @"create native hotkey event");
+  SetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, sizeof(identifier), &identifier);
+  SendEventToEventTarget(event, GetApplicationEventTarget()); ReleaseEvent(event);
+  Check(invocations == 1, @"native hotkey event reaches the quick input callback once");
+  [first registerShortcut:nil error:nil];
+  Check([second registerShortcut:shortcut error:&error], @"clearing a global shortcut releases it to macOS");
+  [second registerShortcut:nil error:nil];
+}
+
+static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
+  TLSettingsCredentialMock *service = [[TLSettingsCredentialMock alloc] init];
+  TLFeatureSettingsStoreMock *store = [[TLFeatureSettingsStoreMock alloc] init];
+  store.currentAgentID = 7;
+  TLSettingsTabController *controller = [[TLSettingsTabController alloc]
+    initWithSettings:TLAppSettings.defaultSettings database:(TLDatabase *)store orchestrator:(TLAgentOrchestrator *)service
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  TLBrowserPreferencesMock *browserPreferences = [[TLBrowserPreferencesMock alloc] init];
+  controller.browserPreferences = browserPreferences;
+  NSString *suite = [@"Talaria.SettingsTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+  TLLoginItemMock *login = [[TLLoginItemMock alloc] init];
+  login.status = SMAppServiceStatusNotFound;
+  TLShortcutRegistrationMock *registration = [[TLShortcutRegistrationMock alloc] init];
+  TLApplicationPreferences *appPreferences = [[TLApplicationPreferences alloc] initWithDefaults:defaults loginItem:login shortcutRegistration:registration];
+  controller.applicationPreferences = appPreferences;
+  NSWindow *window = HostController(controller);
+  TLSettingsWorkspaceView *shell = [controller valueForKey:@"workspace"];
+  NSArray<TLSidebarNavigationButton *> *nav = [controller valueForKey:@"navigation"];
+  Check([[nav valueForKey:@"title"] isEqual:@[@"Model", @"Tools & Keys"]], @"Agent has Model and Tools & Keys in its sidebar");
+  NSSegmentedControl *sections = shell.sectionTabs;
+  Check(sections.segmentCount == 3 && [[sections labelForSegment:0] isEqual:@"Agent"] &&
+    [[sections labelForSegment:1] isEqual:@"Browser"] && [[sections labelForSegment:2] isEqual:@"Application"], @"settings has three native system sections");
+  Check(nav[0].isAccessibilityElement && [nav[0].accessibilityLabel isEqual:@"Model"], @"settings navigation is exposed to assistive technology");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@1100, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 780)]; SettingsTick(window);
+      Check(fabs(NSWidth(window.contentView.bounds) - width.doubleValue) < 1, @"settings respects the 200px window minimum");
+      Check(shell.sidebar.hidden == (width.doubleValue < palette.settingsCompactWidth), @"settings switches to a menu on narrow windows");
+      Check(shell.pageMenu.hidden != shell.sidebar.hidden, @"one navigation surface remains available");
+      if (width.doubleValue == 1100) {
+        NSArray<NSButton *> *models = [controller valueForKey:@"modelButtons"];
+        CGFloat firstX = NSMinX([models[0] convertRect:models[0].bounds toView:controller.view]);
+        CGFloat secondX = NSMinX([models[1] convertRect:models[1].bounds toView:controller.view]);
+        Check(fabs(firstX - secondX) < 1, @"model controls align in a consistent column");
+      }
+      SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-model-%ld-%@.png", (long)theme.integerValue, width]);
+    }
+  }
+  [window setContentSize:NSMakeSize(1100, 780)]; SettingsTick(window);
+  sections.selectedSegment = 1; [NSApp sendAction:sections.action to:sections.target from:sections]; SettingsTick(window);
+  nav = [controller valueForKey:@"navigation"];
+  TLBrowserSettingsController *browser = [controller valueForKey:@"browserSettingsController"];
+  NSDictionary *browserControls = [browser valueForKey:@"controls"];
+  Check(browserControls.count == TLBrowserPreferences.catalogue.count && browserControls.count > 40, @"Browser has native controls instead of external settings links");
+  NSSwitch *tracking = browserControls[@"doNotTrack"];
+  tracking.state = NSControlStateValueOn; [NSApp sendAction:tracking.action to:tracking.target from:tracking];
+  Check([browserPreferences.values[@"doNotTrack"] boolValue], @"browser toggles save to the browser service");
+  browserPreferences.failSave = YES;
+  tracking.state = NSControlStateValueOff; [NSApp sendAction:tracking.action to:tracking.target from:tracking];
+  Check(tracking.state == NSControlStateValueOn && [[[browser valueForKey:@"status"] stringValue] isEqual:@"Save failed"], @"failed saves restore the actual toggle state and display the error");
+  browserPreferences.failSave = NO;
+  [NSApp sendAction:tracking.action to:tracking.target from:tracking];
+  NSTextField *template = browserControls[@"customSearchURL"]; template.stringValue = @"draft search template";
+  NSSearchField *browserSearch = [browser valueForKey:@"search"]; browserSearch.stringValue = @"zoom";
+  [(id<NSTextFieldDelegate>)browser controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:browserSearch]];
+  Check(![[browser valueForKey:@"cards"][@"zoom"] isHidden] && [[browser valueForKey:@"cards"][@"cookies"] isHidden], @"browser search filters across categories");
+  Check([[nav valueForKey:@"title"] isEqual:TLBrowserPreferences.categories], @"every browser category has a sidebar entry");
+  for (NSUInteger index = 0; index < nav.count; index++) {
+    TLSidebarNavigationButton *item = nav[index];
+    [item accessibilityPerformPress]; SettingsTick(window);
+    Check(browser.selectedCategoryIndex == (NSInteger)index && item.selected, @"sidebar selection updates the browser category");
+    Check(!browserSearch.stringValue.length, @"category selection opens the category after searching");
+    for (NSDictionary *setting in TLBrowserPreferences.catalogue) {
+      BOOL belongs = [setting[@"category"] isEqual:TLBrowserPreferences.categories[index]];
+      Check([[browser valueForKey:@"cards"] [setting[@"id"]] isHidden] != belongs, @"sidebar entries show exactly the selected category's settings");
+    }
+    for (NSDictionary *row in [browser valueForKey:@"extraRows"])
+      Check([row[@"row"] isHidden] != [row[@"category"] isEqual:TLBrowserPreferences.categories[index]], @"data actions follow the selected category");
+  }
+  NSEvent *activateCategory = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
+    windowNumber:window.windowNumber context:nil characters:@" " charactersIgnoringModifiers:@" " isARepeat:NO keyCode:49];
+  [nav[1] keyDown:activateCategory];
+  Check(browser.selectedCategoryIndex == 1 && ![[browser valueForKey:@"cards"][@"geolocation"] isHidden], @"keyboard activation opens a sidebar category");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@1100,@200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue,780)]; SettingsTick(window);
+      Check(NSContainsRect(sections.superview.bounds, sections.frame), @"all three native sections fit within the top bar at every width");
+      if (width.doubleValue == 200) {
+        [shell.pageMenu selectItemAtIndex:11]; [NSApp sendAction:shell.pageMenu.action to:shell.pageMenu.target from:shell.pageMenu];
+        Check(browser.selectedCategoryIndex == 11, @"compact navigation reaches the final browser category");
+        [shell.pageMenu selectItemAtIndex:0]; [NSApp sendAction:shell.pageMenu.action to:shell.pageMenu.target from:shell.pageMenu];
+      } else {
+        [nav[0] accessibilityPerformPress]; SettingsTick(window);
+        NSPoint center = [nav[0] convertPoint:NSMakePoint(NSMidX(nav[0].bounds), NSMidY(nav[0].bounds)) toView:window.contentView.superview];
+        Check([window.contentView hitTest:center] == nav[0], @"browser sidebar receives native pointer events");
+      }
+      SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-browser-%@-%@.png",theme,width]);
+    }
+  }
+  Check([template.stringValue isEqual:@"draft search template"], @"browser theme and filter changes preserve text drafts");
+  [browser setValue:@YES forKey:@"busy"];
+  Check(!tracking.enabled && !template.enabled, @"browser controls cannot show unsaved changes during data operations");
+  [browser setValue:@NO forKey:@"busy"];
+  Check(tracking.enabled && template.enabled && [template.stringValue isEqual:@"draft search template"], @"browser data operations preserve drafts when controls resume");
+  [window setContentSize:NSMakeSize(1100,780)]; SettingsTick(window);
+  Check(NSWidth([[browser valueForKey:@"rows"] frame]) > 700, @"browser settings use the available width for aligned columns");
+  SettingsSnapshot(controller, window, @"settings-browser.png");
+  sections.selectedSegment = 2; [NSApp sendAction:sections.action to:sections.target from:sections]; SettingsTick(window);
+  TLApplicationSettingsController *application = [controller valueForKey:@"applicationSettingsController"];
+  Check(shell.sidebar.hidden && shell.pageMenu.hidden && shell.footer.hidden && NSMinX(shell.pageHost.frame) == 0, @"Application has no sidebar, submenu, or Save footer");
+  NSSwitch *loginToggle = [application valueForKey:@"loginToggle"], *notchToggle = [application valueForKey:@"notchToggle"];
+  Check(loginToggle.state == NSControlStateValueOff && [[application valueForKey:@"loginStatus"] isHidden], @"an unseen login item starts off without a misleading error");
+  Check(notchToggle.state == NSControlStateValueOn && login.registrations == 0, @"notch defaults on and simply opening settings never registers a login item");
+  loginToggle.state = NSControlStateValueOn; [NSApp sendAction:loginToggle.action to:loginToggle.target from:loginToggle];
+  Check(login.status == SMAppServiceStatusRequiresApproval && ![[application valueForKey:@"reviewLoginButton"] isHidden], @"login registration exposes the macOS approval state");
+  login.status = SMAppServiceStatusEnabled; [application refresh];
+  Check([[application valueForKey:@"reviewLoginButton"] isHidden] && loginToggle.state == NSControlStateValueOn, @"login state refreshes after external approval");
+  login.fail = YES; loginToggle.state = NSControlStateValueOff;
+  [NSApp sendAction:loginToggle.action to:loginToggle.target from:loginToggle];
+  Check(loginToggle.state == NSControlStateValueOn && [[[application valueForKey:@"loginStatus"] stringValue] isEqual:@"Login item failed"], @"failed login changes restore authoritative state and explain the failure");
+  login.fail = NO; loginToggle.state = NSControlStateValueOff;
+  [NSApp sendAction:loginToggle.action to:loginToggle.target from:loginToggle];
+  Check(login.status == SMAppServiceStatusNotRegistered, @"login item can be disabled");
+  __block NSUInteger notifications = 0, quickInputs = 0;
+  id observation = [NSNotificationCenter.defaultCenter addObserverForName:TLApplicationPreferencesDidChangeNotification object:appPreferences queue:nil usingBlock:^(NSNotification *note) { notifications++; }];
+  notchToggle.state = NSControlStateValueOff; [NSApp sendAction:notchToggle.action to:notchToggle.target from:notchToggle];
+  Check(!appPreferences.notchEnabled && notifications == 1, @"notch changes persist and notify the live app immediately");
+  TLShortcutRecorder *recorder = [application valueForKey:@"shortcutRecorder"];
+  [window makeKeyAndOrderFront:nil]; [recorder performClick:nil];
+  Check(recorder.recording && appPreferences.shortcutRecording, @"recording temporarily suspends the global binding");
+  NSEvent *key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagOption timestamp:0
+    windowNumber:window.windowNumber context:nil characters:@" " charactersIgnoringModifiers:@" " isARepeat:NO keyCode:49];
+  [recorder keyDown:key];
+  Check(!recorder.recording && [recorder.title isEqual:@"⌥Space"] && [registration.registered isEqual:appPreferences.quickInputShortcut], @"recording saves and registers the chosen native combination");
+  appPreferences.quickInputHandler = ^{ quickInputs++; }; registration.handler();
+  Check(quickInputs == 1, @"the registered combination invokes quick input");
+  NSDictionary *savedShortcut = appPreferences.quickInputShortcut;
+  [recorder performClick:nil];
+  NSEvent *cancel = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
+    windowNumber:window.windowNumber context:nil characters:@"\x1b" charactersIgnoringModifiers:@"\x1b" isARepeat:NO keyCode:53];
+  [recorder keyDown:cancel];
+  Check(!recorder.recording && [registration.registered isEqual:savedShortcut], @"Escape cancels recording without changing the saved global shortcut");
+  NSError *validationError = nil;
+  Check(![appPreferences setQuickInputShortcut:@{@"keyCode":@40,@"modifiers":@0,@"label":@"K"} error:&validationError] &&
+    [appPreferences.quickInputShortcut isEqual:savedShortcut], @"unmodified keys cannot intercept normal typing globally");
+  registration.fail = YES;
+  recorder.changeHandler(@{@"keyCode":@40,@"modifiers":@(NSEventModifierFlagCommand),@"label":@"K"});
+  Check([appPreferences.quickInputShortcut isEqual:savedShortcut] && [registration.registered isEqual:savedShortcut] &&
+    [[[application valueForKey:@"shortcutStatus"] stringValue] isEqual:@"Shortcut in use"], @"a conflicting replacement preserves the working shortcut and displays the error");
+  registration.fail = NO;
+  TLShortcutRegistrationMock *reopenedRegistration = [[TLShortcutRegistrationMock alloc] init];
+  TLApplicationPreferences *reopened = [[TLApplicationPreferences alloc] initWithDefaults:[[NSUserDefaults alloc] initWithSuiteName:suite] loginItem:login shortcutRegistration:reopenedRegistration];
+  Check(!reopened.notchEnabled && [reopenedRegistration.registered isEqual:savedShortcut], @"notch and global shortcut survive an application restart");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette]; [application refresh];
+    for (NSNumber *width in @[@1100, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue,780)]; SettingsTick(window);
+      Check(shell.sidebar.hidden && shell.pageMenu.hidden && !shell.pageTitle.hidden, @"Application never shows sidebar navigation, including at compact widths");
+      SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-application-%@-%@.png", theme, width]);
+    }
+  }
+  [recorder performClick:nil];
+  sections.selectedSegment = 1; [NSApp sendAction:sections.action to:sections.target from:sections];
+  Check(!recorder.recording && !appPreferences.shortcutRecording && [registration.registered isEqual:savedShortcut], @"leaving Application ends recording and restores the global binding");
+  Check(browser.selectedCategoryIndex == 0 && [template.stringValue isEqual:@"draft search template"], @"switching sections preserves browser category and unsaved text");
+  sections.selectedSegment = 2; [NSApp sendAction:sections.action to:sections.target from:sections];
+  TLThemedButton *clearShortcut = [application valueForKey:@"clearShortcutButton"]; [clearShortcut performClick:nil];
+  Check(!appPreferences.quickInputShortcut && !registration.registered && !clearShortcut.enabled, @"clearing unregisters and removes the saved shortcut");
+  [NSNotificationCenter.defaultCenter removeObserver:observation];
+  [defaults removePersistentDomainForName:suite];
+  sections.selectedSegment = 0; [NSApp sendAction:sections.action to:sections.target from:sections];
+  nav = [controller valueForKey:@"navigation"]; [nav[1] accessibilityPerformPress];
+  Check([service.action isEqual:@"list"], @"tools loads credentials from the active Hermes agent");
+  NSArray *entries = @[@{@"key": @"BRAVE_API_KEY", @"description": @"Web search with Brave Search.", @"category": @"tool", @"is_password": @YES, @"is_set": @YES, @"url": @"https://brave.com/search/api/"},
+    @{@"key": @"FIRECRAWL_API_KEY", @"description": @"Read and extract content from websites.", @"category": @"tool", @"is_password": @YES, @"is_set": @NO},
+    @{@"key": @"WEBHOOK_SECRET", @"category": @"setting", @"is_password": @YES, @"is_set": @NO}];
+  service.pendingCredentials(@{@"entries":entries}, nil); SettingsTick(window);
+  NSMutableDictionary *fields = [controller valueForKey:@"credentialFields"];
+  Check(fields.count == 2, @"tools and settings credential categories stay separate");
+  Check([fields[@"BRAVE_API_KEY"] isKindOfClass:NSSecureTextField.class] && ![fields[@"BRAVE_API_KEY"] stringValue].length, @"saved keys remain masked and are never loaded into fields");
+  [fields[@"BRAVE_API_KEY"] setStringValue:@"draft-test-key"];
+  NSSearchField *search = [controller valueForKey:@"credentialSearch"];
+  search.stringValue = @"firecrawl";
+  [(id<NSTextFieldDelegate>)controller controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
+  Check(fields.count == 1, @"search filters the installed catalogue");
+  search.stringValue = @"";
+  [(id<NSTextFieldDelegate>)controller controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
+  Check([[fields[@"BRAVE_API_KEY"] stringValue] isEqual:@"draft-test-key"], @"filtering preserves unsaved key drafts");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@1100, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 780)];
+      SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-tools-%ld-%@.png", (long)theme.integerValue, width]);
+    }
+  }
+  TLThemedButton *save = nil;
+  for (TLThemedButton *button in [controller valueForKey:@"buttons"])
+    if ([button.identifier isEqual:@"BRAVE_API_KEY"] && [button.title isEqual:@"Save"]) save = button;
+  [NSApp sendAction:save.action to:save.target from:save];
+  Check([service.action isEqual:@"set"] && [service.value isEqual:@"draft-test-key"], @"save sends only the entered key to Hermes");
+  service.pendingCredentials(@{@"ok":@YES}, nil); SettingsTick(window);
+  Check([service.action isEqual:@"list"], @"save refreshes authoritative credential status");
+  store.currentAgentID = 8;
+  service.pendingCredentials(@{@"entries":entries}, nil); SettingsTick(window);
+  Check(fields.count == 0 && [[controller valueForKey:@"credentialDrafts"] count] == 0, @"changing agents clears old credentials and drafts before reloading");
+  void (^late)(NSDictionary *, NSError *) = service.pendingCredentials;
+  [controller close]; late(@{@"entries": entries}, nil); SettingsTick(window);
+  Check(fields.count == 0, @"late credential callbacks cannot revive a closed settings page");
+  [window close];
+}
+
 static void TestSettingsThemeAndLateCatalogue(void) {
   TLFeatureCatalogueMock *catalogue = [[TLFeatureCatalogueMock alloc] init];
   TLFeatureSettingsStoreMock *store = [[TLFeatureSettingsStoreMock alloc] init];
@@ -1522,9 +1853,8 @@ static void TestSettingsThemeAndLateCatalogue(void) {
     palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
   NSWindow *window = HostController(controller);
   NSSecureTextField *token = [controller valueForKey:@"tokenField"];
-  NSPopUpButton *theme = [controller valueForKey:@"themePopup"];
   token.stringValue = @"test-only-unsaved-token";
-  [theme selectItemAtIndex:TLThemePreferenceDark];
+  [[controller valueForKey:@"draftSettings"] setTheme:TLThemePreferenceDark];
   [window makeFirstResponder:token];
   NSResponder *responder = window.firstResponder;
   NSView *view = controller.view;
@@ -1532,9 +1862,9 @@ static void TestSettingsThemeAndLateCatalogue(void) {
   [controller applyPalette:dark];
   Check(controller.view == view && [controller valueForKey:@"tokenField"] == token, @"settings theme keeps existing controls");
   Check([token.stringValue isEqualToString:@"test-only-unsaved-token"], @"settings drafts survive theme change");
-  Check(window.firstResponder == responder && theme.indexOfSelectedItem == TLThemePreferenceDark, @"settings focus and theme draft survive palette application");
+  Check(window.firstResponder == responder, @"settings focus survives system palette changes");
   Check([token.textColor isEqual:dark.controlText], @"settings controls update theme");
-  Check(catalogue.pendingCatalogue == nil, @"settings does not fetch or offer model selection");
+  Check(catalogue.pendingCatalogue == nil, @"settings only fetches the model catalogue when the picker opens");
   store.savedSettings = [TLAppSettings defaultSettings];
   store.savedSettings.selectedModel = @"new/large";
   store.savedSettings.supportingModel = @"new/small";
@@ -1542,7 +1872,7 @@ static void TestSettingsThemeAndLateCatalogue(void) {
   controller.settingsSavedHandler = ^(TLAppSettings *settings) { saved = settings; };
   NSButton *save = [controller valueForKey:@"saveButton"];
   [NSApp sendAction:save.action to:save.target from:save];
-  Check([saved.openRouterToken isEqualToString:token.stringValue] && saved.theme == TLThemePreferenceDark, @"settings saves current control drafts");
+  Check([saved.openRouterToken isEqualToString:token.stringValue] && saved.theme == TLThemePreferenceSystem, @"settings saves model drafts with the system color scheme");
   Check([saved.selectedModel isEqual:@"new/large"] && [saved.supportingModel isEqual:@"new/small"], @"stale settings draft cannot overwrite composer choices");
   [controller close];
   [window close];
@@ -1695,6 +2025,14 @@ static void TestBrowserOwnsCallbacksAndSession(void) {
     [controller applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
     Check(controller.view == content && window.firstResponder == input.textView &&
       [input.textView.string isEqualToString:@"unfinished browser prompt"], @"browser theme preserves content, draft and focus");
+    NSURL *profile = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+    TLBrowserPreferences *preferences = [[TLBrowserPreferences alloc] initWithProfileURL:profile];
+    [preferences saveValue:@"https://duckduckgo.com/?q={searchTerms}" forSetting:[TLBrowserPreferences settingWithID:@"searchEngine"] error:nil];
+    [controller setValue:preferences forKey:@"browserPreferences"];
+    [input beginPromptEditing]; input.textView.string = @"red & blue";
+    [NSApp sendAction:input.sendButton.action to:input.sendButton.target from:input.sendButton];
+    Check([service.navigatedURL.absoluteString isEqual:@"https://duckduckgo.com/?q=red%20%26%20blue"], @"the address bar uses the selected browser search engine");
+    [NSFileManager.defaultManager removeItemAtURL:profile error:nil];
     TLChromiumBrowserTitleHandler lateTitle = service.titleCallback;
     NSUInteger changesBeforeClose = metadataChanges;
     [controller close];
@@ -2242,7 +2580,6 @@ static void TestSuggestionTypingAndVirtualization(void) {
 - (void)updateAgentControlStates {}
 @end
 @interface TLWarmupStore : TLFeatureSettingsStoreMock
-@property NSInteger currentAgentID;
 @end
 @implementation TLWarmupStore
 @end
@@ -2269,9 +2606,9 @@ static void TestWarmupAfterSettingsAndManualStart(void) {
   [controller buildSettingsTabContent];
   TLSettingsTabController *tab = [controller valueForKey:@"settingsTabController"];
   TLAppSettings *saved = [settings copy];
-  saved.theme = TLThemePreferenceDark;
+  saved.rememberOpenRouterToken = YES;
   tab.settingsSavedHandler(saved);
-  Check(controller.warmupCount == 0, @"theme-only settings do not warm or restart inference");
+  Check(controller.warmupCount == 0, @"credential-storage-only settings do not warm or restart inference");
   saved = [saved copy];
   saved.openRouterToken = @"new-token";
   tab.settingsSavedHandler(saved);
@@ -2412,6 +2749,9 @@ int main(void) {
     TestDebugResetLayout();
     TestTerminalRequiresRunningVM();
     TestSettingsThemeAndLateCatalogue();
+    TestBrowserPreferencePersistenceAndValidation();
+    TestSettingsNavigationCredentialsAndResponsiveLayout();
+    TestNativeGlobalShortcutRegistration();
     TestComposerModelButtonLayout();
     TestComposerModelDialog();
     TestBrowserOwnsCallbacksAndSession();

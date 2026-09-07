@@ -8,6 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithSmallModel:(BOOL)small selectedModel:(NSString *)model
                             token:(NSString *)token orchestrator:(TLAgentOrchestrator *)orchestrator
                           palette:(TLThemePalette *)palette;
+- (void)configureForDefaultSelection:(BOOL)small;
 - (void)presentForWindow:(NSWindow *)window;
 - (void)applyPalette:(TLThemePalette *)palette;
 @end

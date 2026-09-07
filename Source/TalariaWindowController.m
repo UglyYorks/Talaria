@@ -2,6 +2,8 @@
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
+#import "TLBrowserPreferences.h"
+#import "TLApplicationPreferences.h"
 #import "PromptBuilder.h"
 #import "AgentOrchestrator.h"
 #import "AppStateManager.h"
@@ -496,7 +498,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     _workspaceTabRuntimes = [NSMutableDictionary dictionary];
     _chatIconRequests = [NSMutableSet set];
     _settings = [TLAppSettings defaultSettings];
-    _palette = [TLThemePalette paletteForPreference:_settings.theme];
+    _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _sidebarPreferredWidth = _palette.sidebarWidth;
     _chats = [NSMutableArray array];
     _agents = [NSMutableArray array];
@@ -524,12 +526,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     _notchOverlayController.fileDropHandler = ^(NSArray<NSURL *> *fileURLs) {
       [weakSelf handleFileURLsDroppedOnNotch:fileURLs];
     };
-    [_notchOverlayController startTracking];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationPreferencesChanged:)
+      name:TLApplicationPreferencesDidChangeNotification object:TLApplicationPreferences.sharedPreferences];
+    TLApplicationPreferences.sharedPreferences.quickInputHandler = ^{ [weakSelf openFromNotchOverlay:nil]; };
+    [self applicationPreferencesChanged:nil];
   }
   return self;
 }
 
 - (void)dealloc {
+  [NSNotificationCenter.defaultCenter removeObserver:self name:TLApplicationPreferencesDidChangeNotification object:nil];
   [self.debugTerminalStateTimer invalidate];
   if (self.effectiveAppearanceObserverInstalled) {
     [NSApp removeObserver:self
@@ -578,15 +584,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 
 - (void)handleEffectiveAppearanceChanged {
-  if (self.settings.theme != TLThemePreferenceSystem) {
-    return;
-  }
-
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (self.settings.theme != TLThemePreferenceSystem) {
-      return;
-    }
-
     [self applyTheme];
   });
 }
@@ -1729,11 +1727,17 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
 
   self.settings = storedSettings;
-  self.palette = [TLThemePalette paletteForPreference:self.settings.theme];
+  self.palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
   self.chats = [loadedChats mutableCopy];
   self.agents = [loadedAgents mutableCopy];
   [self rebuildSidebarAgents];
 
+  TLBrowserPreferences *browserPreferences = TLBrowserPreferences.sharedPreferences;
+  if (![[browserPreferences localValue:@"startup"] isEqual:@"restore"]) {
+    for (TLWorkspaceTab *tab in self.appStateManager.snapshot.workspaceTabs.copy) {
+      if (tab.kind == TLWorkspaceTabKindBrowser) [self.appStateManager removeWorkspaceTabWithKind:tab.kind tabID:tab.tabID];
+    }
+  }
   if (self.appStateManager.snapshot.workspaceTabs.count > 0) {
     [self hydrateWorkspaceTabsFromAppState];
     [self restoreWorkspaceFromAppState];
@@ -1743,6 +1747,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self startNewChatWithModel:self.settings.selectedModel focus:NO];
   }
 
+  for (NSURL *URL in browserPreferences.startupURLs) [self openBrowserTabWithURL:URL];
   self.isLoading = NO;
   self.errorMessage = @"";
   [self applyTheme];
@@ -3931,7 +3936,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     database:self.database orchestrator:self.agentOrchestrator palette:self.palette];
   self.settingsTabController = controller;
   __weak typeof(self) weakSelf = self;
-  controller.closeHandler = ^{ [weakSelf closeSettingsTab:weakSelf]; };
   controller.onboardingHandler = ^{ [weakSelf showOnboardingDemoWindow:weakSelf]; };
   controller.errorHandler = ^(NSString *message) { [weakSelf presentErrorMessage:message]; };
   controller.settingsSavedHandler = ^(TLAppSettings *settings) {
@@ -3939,8 +3943,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     BOOL inferenceChanged = ![windowController.settings.openRouterToken isEqualToString:settings.openRouterToken] ||
       ![windowController.settings.selectedModel isEqualToString:settings.selectedModel];
     windowController.settings = settings;
-    windowController.palette = [TLThemePalette paletteForPreference:settings.theme];
-    [windowController closeSettingsTab:windowController];
     [windowController applyTheme];
     if (inferenceChanged) [windowController prepareHermesCommands];
   };
@@ -5493,17 +5495,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.sidebarAgentPaneSurface removeFromSuperview];
   self.sidebarAgentPaneSurface = nil;
   self.sidebarAgentPane = nil;
-  TLThemePreference themePreference = self.settings.theme;
-  NSAppearance *requestedAppearance = nil;
-  if (themePreference == TLThemePreferenceLight) {
-    requestedAppearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
-  } else if (themePreference == TLThemePreferenceDark) {
-    requestedAppearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-  }
-
-  self.window.appearance = requestedAppearance;
-  NSAppearance *effectiveAppearance = requestedAppearance ?: self.window.effectiveAppearance;
-  self.palette = [TLThemePalette paletteForPreference:themePreference effectiveAppearance:effectiveAppearance];
+  self.window.appearance = nil;
+  self.palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem effectiveAppearance:self.window.effectiveAppearance];
+  [TLChromiumBrowserController.sharedController applyDarkAppearance:self.palette.dark];
   self.window.opaque = NO;
   self.window.backgroundColor = self.palette.appBackground;
   self.frostedBackgroundView.material = NSVisualEffectMaterialUnderWindowBackground;
@@ -5652,6 +5646,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.contentShadowView setNeedsDisplay:YES];
   [self.contentHost setNeedsDisplay:YES];
   [self.workspaceOutline updateOutline];
+}
+
+- (void)applicationPreferencesChanged:(NSNotification *)notification {
+  self.notchOverlayController.enabled = TLApplicationPreferences.sharedPreferences.notchEnabled;
+  if (!self.quickInputController.window.visible) [self.notchOverlayController startTracking];
 }
 
 - (void)openFromNotchOverlay:(id)sender {

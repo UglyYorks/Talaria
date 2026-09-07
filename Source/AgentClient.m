@@ -257,6 +257,31 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   return self;
 }
 
+- (void)hermesCredentialsWithAgent:(TLAgentRecord *)agent action:(NSString *)action
+                              key:(NSString *)key value:(NSString *)value token:(NSString *)token
+                   completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
+  NSString *requestID = NSUUID.UUID.UUIDString;
+  NSMutableString *response = [NSMutableString string];
+  [self startWorkerWithAgent:agent
+                    payload:@{@"operation": @"hermes_credentials", @"request_id": requestID,
+                              @"action": action, @"key": key ?: @"", @"value": value ?: @"",
+                              @"token": token ?: @""}
+                  operation:@"hermes_credentials"
+                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
+    if ([deltaID isEqualToString:requestID]) [response appendString:text];
+  } streamCompletion:^(NSError *error) {
+    if (error) { completion(nil, error); return; }
+    NSError *parseError = nil;
+    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
+                                               options:0 error:&parseError];
+    if (![result isKindOfClass:NSDictionary.class]) {
+      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned invalid credential data."));
+      return;
+    }
+    completion(result, nil);
+  } modelCompletion:nil];
+}
+
 - (void)hermesHistoryWithAgent:(TLAgentRecord *)agent action:(NSString *)action sessionID:(NSString *)sessionID
                         token:(NSString *)token model:(NSString *)model
                    completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {

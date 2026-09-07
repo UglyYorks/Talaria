@@ -33,6 +33,12 @@
   <string>Copyright (C) 2026 UglyYorks</string>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>Talaria uses Bluetooth when a website you visit requests access to nearby Bluetooth devices.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Talaria uses your camera only when you allow a website to access it.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Talaria uses your microphone only when you allow a website to access it.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Talaria shares your location only with websites you allow.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key>

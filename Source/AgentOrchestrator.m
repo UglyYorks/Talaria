@@ -562,6 +562,21 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   });
 }
 
+- (void)hermesCredentialsWithAction:(NSString *)action key:(NSString *)key value:(NSString *)value
+                              token:(NSString *)token
+                         completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
+  // Resolve the selected agent before starting async VM work, so switching
+  // agents cannot redirect a credential write to another profile.
+  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(hermesCredentialsWithAgent:action:key:value:token:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to manage Hermes tool credentials."));
+      return;
+    }
+    [self.agentClient hermesCredentialsWithAgent:agent action:action key:key value:value token:token completion:completion];
+  }];
+}
+
 - (void)hermesHistoryWithAction:(NSString *)action sessionID:(NSString *)sessionID
                          token:(NSString *)token model:(NSString *)model
                     completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {

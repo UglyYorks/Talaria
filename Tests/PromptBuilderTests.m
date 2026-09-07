@@ -422,6 +422,12 @@ static void TestDatabasePersistence(void) {
   TLAppSettings *settings = [database appSettings:&error];
   TLAssertEqualObjects(settings.selectedModel, TLDefaultModelID, @"loads default selected model");
   TLAssertTrue(settings.theme == TLThemePreferenceSystem, @"loads default theme");
+  TLSQLiteConnection *legacy = [TLSQLiteConnection openURL:url error:&error];
+  for (NSString *theme in @[@"light", @"dark"]) {
+    NSString *SQL = [NSString stringWithFormat:@"INSERT OR REPLACE INTO settings (key, value) VALUES ('theme', '%@')", theme];
+    TLAssertTrue([legacy executeSQL:SQL.UTF8String error:&error], @"stores a legacy theme override");
+    TLAssertTrue([database appSettings:&error].theme == TLThemePreferenceSystem, @"legacy light and dark overrides load as system");
+  }
 
   settings.openRouterToken = @"  sk-test-token  ";
   settings.rememberOpenRouterToken = NO;
@@ -435,7 +441,11 @@ static void TestDatabasePersistence(void) {
   TLAppSettings *unrememberedSettings = [database appSettings:&error];
   TLAssertEqualObjects(unrememberedSettings.openRouterToken, @"", @"does not reload an unremembered token");
   TLAssertEqualObjects(unrememberedSettings.selectedModel, @"openai/gpt-4", @"persists selected model");
-  TLAssertTrue(unrememberedSettings.theme == TLThemePreferenceDark, @"persists theme");
+  TLAssertTrue(savedSettings.theme == TLThemePreferenceSystem && unrememberedSettings.theme == TLThemePreferenceSystem, @"saving normalizes manual themes to system");
+  TLSQLiteStatement *storedTheme = [legacy prepareSQL:"SELECT value FROM settings WHERE key = 'theme'" error:&error];
+  TLAssertTrue([storedTheme step] == SQLITE_ROW, @"reads the normalized theme");
+  TLAssertEqualObjects([storedTheme stringAtColumn:0], @"system", @"persists the system color scheme");
+  storedTheme = nil; legacy = nil;
   TLAssertTrue(unrememberedSettings.onboardingCompleted, @"persists onboarding completion");
 
   settings.rememberOpenRouterToken = YES;
