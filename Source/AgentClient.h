@@ -45,6 +45,9 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLAgentModel *> *_Nullable 
                                delta:(TLAgentStreamDeltaHandler)delta
                           completion:(TLAgentStreamCompletionHandler)completion;
 @optional
+- (void)hermesAutomationsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
+                            token:(NSString *)token model:(NSString *)model
+                       completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 - (void)hermesCredentialsWithAgent:(TLAgentRecord *)agent action:(NSString *)action
                               key:(NSString *)key value:(NSString *)value token:(NSString *)token
                        completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;

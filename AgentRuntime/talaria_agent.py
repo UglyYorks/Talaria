@@ -246,6 +246,20 @@ def tui_gateway(token="", model=""):
         return _tui_gateway
 
 
+def hermes_automations(request, output=None):
+    try:
+        params = request.get("params")
+        if not isinstance(params, dict):
+            raise ValueError("Automation parameters must be an object.")
+        result = tui_gateway(trim(request.get("token")), trim(request.get("model"))).call(
+            "talaria.automations", params, timeout=600)
+        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
+              "text": json.dumps(result)}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not manage Hermes automations: {exc}", output)
+
+
 def hermes_history(request, output=None):
     try:
         gateway = tui_gateway(trim(request.get("token")), trim(request.get("model")))
@@ -395,6 +409,9 @@ def handle_request(request, output=None, cancellation=None):
         return 0
     if operation == "hermes_history":
         hermes_history(request, output)
+        return
+    if operation == "hermes_automations":
+        hermes_automations(request, output)
         return
     if operation == "hermes_commands":
         fetch_hermes_commands(request, output)

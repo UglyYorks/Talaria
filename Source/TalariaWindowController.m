@@ -1,3 +1,4 @@
+#import "TLAutomationsTabController.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLInputSuggestionListView.h"
@@ -155,6 +156,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @property (nonatomic, strong, nullable) TLWorkspaceTab *settingsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *agentsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *debugTab;
+@property (nonatomic, strong, nullable) TLWorkspaceTab *automationsTab;
+@property (nonatomic, strong, nullable) TLAutomationsTabController *automationsController;
 @property (nonatomic, strong) TLChatRecord *activeChat;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<NSURL *> *> *attachmentDrafts;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *attachmentPromptDrafts;
@@ -738,6 +741,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     case TLWorkspaceTabKindSettings: [self showSettings:self]; break;
     case TLWorkspaceTabKindAgents: [self showAgents:self]; break;
     case TLWorkspaceTabKindDebug: [self showDebug:self]; break;
+    case TLWorkspaceTabKindAutomations: [self showAutomations:self]; break;
   }
   if (tab && [self.appStateManager hasWorkspaceTabWithKind:tab.kind tabID:tab.tabID]) {
     [self workspaceTabsController:self.workspaceTabsController moveTab:tab
@@ -1805,6 +1809,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
           [self addWorkspaceContentView:runtime.contentView];
         }
         break;
+      case TLWorkspaceTabKindAutomations:
+        self.automationsTab = tab;
+        if (!runtime) {
+          runtime = [TLWorkspaceTabRuntime runtimeWithContentView:[self buildAutomationsContent]
+            openAction:@selector(showAutomations:) closeAction:@selector(closeAutomationsTab:)];
+          [self setRuntime:runtime forTab:tab];
+        }
+        if (runtime.contentView) [self addWorkspaceContentView:runtime.contentView];
+        break;
       case TLWorkspaceTabKindDebug:
         self.debugTab = tab;
         if (!runtime) {
@@ -1844,6 +1857,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self showSettings:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindAgents) {
     [self showAgents:self];
+  } else if (snapshot.activeTabKind == TLWorkspaceTabKindAutomations) {
+    [self showAutomations:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindDebug) {
     [self showDebug:self];
   }
@@ -2000,6 +2015,12 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   historyItem.target = self;
   historyItem.image = [self symbolImageNamed:@"clock" accessibilityDescription:@"History"];
   [menu addItem:historyItem];
+
+  NSMenuItem *automationsItem = [[NSMenuItem alloc] initWithTitle:@"Automations"
+    action:@selector(showAutomations:) keyEquivalent:@""];
+  automationsItem.target = self;
+  automationsItem.image = [self symbolImageNamed:@"clock.arrow.circlepath" accessibilityDescription:@"Automations"];
+  [menu addItem:automationsItem];
 
   NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:@"Debug"
                                                      action:@selector(showDebug:)
@@ -3293,6 +3314,48 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
   [self updateControlStates];
+}
+
+- (NSView *)buildAutomationsContent {
+  __weak typeof(self) weakSelf = self;
+  NSArray *agents = [self.agentOrchestrator listAgents:nil] ?: @[];
+  NSInteger agentID = self.database.currentAgentID;
+  if (!agentID) agentID = [(TLAgentRecord *)agents.lastObject agentID];
+  self.automationsController = [[TLAutomationsTabController alloc] initWithPalette:self.palette
+    agents:agents agentID:agentID request:^(NSInteger selectedAgentID, NSDictionary *parameters, TLAutomationReply reply) {
+      typeof(self) controller = weakSelf;
+      if (!controller) return;
+      [controller.agentOrchestrator hermesAutomationsWithParameters:parameters agentID:selectedAgentID
+        token:controller.settings.openRouterToken model:controller.settings.selectedModel completion:reply];
+    }];
+  return self.automationsController.view;
+}
+
+- (void)showAutomations:(id)sender {
+  if (self.widgetbookMode) return;
+  if (!self.automationsTab) {
+    NSView *content = [self buildAutomationsContent];
+    self.automationsTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindAutomations tabID:0
+      title:@"Automations" toolTip:@"Hermes scheduled jobs" URL:nil closeable:YES];
+    [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:content
+      openAction:@selector(showAutomations:) closeAction:@selector(closeAutomationsTab:)] forTab:self.automationsTab];
+    [self addWorkspaceContentView:content];
+    [self.appStateManager addWorkspaceTab:self.automationsTab activate:NO];
+  }
+  [self activateTabKind:TLWorkspaceTabKindAutomations tabID:self.automationsTab.tabID];
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
+  [self.automationsController refresh:nil];
+}
+
+- (void)closeAutomationsTab:(id)sender {
+  if (!self.automationsTab || [self closeWindowIfOnlyWorkspaceTab:self.automationsTab]) return;
+  [self rememberClosedWorkspaceTab:self.automationsTab];
+  [self.automationsController close];
+  [self.appStateManager removeWorkspaceTabWithKind:self.automationsTab.kind tabID:self.automationsTab.tabID];
+  [[self contentViewForTab:self.automationsTab] removeFromSuperview];
+  [self removeRuntimeForKind:self.automationsTab.kind tabID:self.automationsTab.tabID];
+  self.automationsTab = nil; self.automationsController = nil;
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
 }
 
 - (void)showDebug:(id)sender {
@@ -4917,6 +4980,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
   if (tab.kind == TLWorkspaceTabKindSettings) runtime.featureController = self.settingsTabController;
+  if (tab.kind == TLWorkspaceTabKindAutomations) runtime.featureController = self.automationsController;
   self.workspaceTabRuntimes[TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID)] = runtime;
 }
 
@@ -5074,6 +5138,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return @"gearshape";
     case TLWorkspaceTabKindAgents:
       return @"cpu";
+    case TLWorkspaceTabKindAutomations:
+      return @"clock.arrow.circlepath";
     case TLWorkspaceTabKindDebug:
       return @"terminal";
     case TLWorkspaceTabKindChat:
@@ -5185,6 +5251,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindAgents &&
         self.agentsTab &&
         self.appStateManager.snapshot.activeTabID == self.agentsTab.tabID;
+    case TLWorkspaceTabKindAutomations:
+      return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindAutomations &&
+        self.automationsTab && self.appStateManager.snapshot.activeTabID == self.automationsTab.tabID;
     case TLWorkspaceTabKindDebug:
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindDebug &&
         self.debugTab &&

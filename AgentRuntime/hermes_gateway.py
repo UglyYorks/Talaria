@@ -4,6 +4,7 @@ Protocol reference: NousResearch/hermes-agent, tui_gateway/entry.py and
 tui_gateway/methods_tools.py (commands.catalog, command.dispatch, slash.exec).
 """
 import json
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 import queue
@@ -20,7 +21,7 @@ class RPCError(RuntimeError):
 
 
 class HermesGateway:
-    def __init__(self, python, environment, home):
+    def __init__(self, python, environment, home, entry_module="talaria_gateway_entry"):
         self.home = home
         self.lock = threading.RLock()
         self.pending = {}
@@ -30,9 +31,11 @@ class HermesGateway:
         self.session_locks = {}
         self.mapping_path = home / "talaria-sessions.json"
         self.mappings = json.loads(self.mapping_path.read_text()) if self.mapping_path.exists() else {}
+        environment = dict(environment)
+        environment["PYTHONPATH"] = os.pathsep.join(filter(None, [str(Path(__file__).parent), environment.get("PYTHONPATH")]))
         with (home / "talaria-tui-gateway.log").open("ab") as log:
             self.process = subprocess.Popen(
-                [str(python), "-u", str(Path(__file__).with_name("talaria_gateway_entry.py"))],
+                [str(python), "-u", "-m", entry_module],
                 cwd=str(home.parent), env=environment, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1,
             )

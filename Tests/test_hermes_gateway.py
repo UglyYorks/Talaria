@@ -397,7 +397,8 @@ for line in sys.stdin:
     print(json.dumps({'jsonrpc': '2.0', 'method': 'event', 'params': {'session_id': 'live', 'type': 'message.delta', 'payload': {'text': 'event'}}}), flush=True)
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {'method': request['method']}}), flush=True)
 """)
-            gateway = HermesGateway(sys.executable, {**os.environ, 'PYTHONPATH': str(root)}, home)
+            gateway = HermesGateway(sys.executable, {**os.environ, 'PYTHONPATH': str(root)}, home,
+                                    entry_module='tui_gateway.entry')
             try:
                 events = queue.Queue()
                 gateway.listeners['live'] = events
