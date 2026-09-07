@@ -108,10 +108,12 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     requestMessages.lastObject.content = [builder build];
   }
   NSUInteger assistantMessageIndex = messages.count + 1;
+  requestMessages.lastObject.approvalResponse = self.approvalResponse;
   NSString *requestID = NSUUID.UUID.UUIDString;
   NSMutableString *assistantContent = [NSMutableString string];
   NSMutableString *assistantThinking = [NSMutableString string];
   TLStreamingBlockBuffer *assistantContentDisplay = [[TLStreamingBlockBuffer alloc] init];
+  __block NSString *assistantStatus = @"";
 
   TLChatMessage *userMessage = [TLChatMessage messageWithRole:TLRoleUser content:trimmedPrompt thinking:nil];
   userMessage.attachments = attachments;
@@ -168,6 +170,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
         assistantSaveError = TLAssistantTurnError(@"Could not save assistant message.");
       }
       if (savedAssistant && !assistantSaveError) {
+        savedAssistant.approvalRequest = assistantMessage.approvalRequest;
         resultAssistant = savedAssistant;
         NSUInteger currentIndex = [messages indexOfObjectIdenticalTo:assistantMessage];
         if (currentIndex != NSNotFound) messages[currentIndex] = savedAssistant;
@@ -187,19 +190,26 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
                                                         delta:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
     TLAssistantTurnRunner *strongSelf = weakSelf;
     if (!strongSelf || !strongSelf.running || ![strongSelf.activeRequestID isEqualToString:requestID] ||
-        ![deltaRequestID isEqualToString:requestID] || text.length == 0) {
+        ![deltaRequestID isEqualToString:requestID] ||
+        (text.length == 0 && kind != TLAgentStreamDeltaKindStatus)) {
       return;
     }
 
     BOOL displayChanged = NO;
-    if (kind == TLAgentStreamDeltaKindThinking) {
+    if (kind == TLAgentStreamDeltaKindApproval) {
+      id request = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+      if (![request isKindOfClass:NSDictionary.class] || ![request[@"request_id"] isKindOfClass:NSString.class] ||
+          ![request[@"request_id"] length] || ![request[@"command"] isKindOfClass:NSString.class]) return;
+      assistantMessage.approvalRequest = request;
+      assistantStatus = @"";
+      displayChanged = YES;
+    } else if (kind == TLAgentStreamDeltaKindStatus) {
+      assistantStatus = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    } else if (kind == TLAgentStreamDeltaKindThinking) {
+      assistantStatus = @"";
       [assistantThinking appendString:text];
-      NSString *displayThinking = [assistantThinking copy];
-      if (![assistantMessage.thinking isEqualToString:displayThinking]) {
-        assistantMessage.thinking = displayThinking.length > 0 ? displayThinking : nil;
-        displayChanged = YES;
-      }
     } else {
+      assistantStatus = @"";
       [assistantContent appendString:text];
       // Partial streaming needs no Markdown scan of the growing response.
       NSString *displayContent = strongSelf.streamsPartialContent
@@ -208,6 +218,18 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
         assistantMessage.content = displayContent;
         displayChanged = YES;
       }
+    }
+
+    // Status snapshots replace one another immediately. Keep real reasoning
+    // intact and separate it from the current notice by a paragraph boundary.
+    NSString *displayThinking = [assistantThinking copy];
+    if (assistantStatus.length) {
+      displayThinking = displayThinking.length
+        ? [displayThinking stringByAppendingFormat:@"\n\n%@", assistantStatus] : assistantStatus;
+    }
+    if (![(assistantMessage.thinking ?: @"") isEqualToString:displayThinking]) {
+      assistantMessage.thinking = displayThinking.length ? displayThinking : nil;
+      displayChanged = YES;
     }
 
     if (displayChanged && updateHandler) {

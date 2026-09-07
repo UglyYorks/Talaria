@@ -13,6 +13,8 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 @property (nonatomic, weak, readonly, nullable) NSView *containerView;
 @property (nonatomic, copy, readonly) NSString *initialURLString;
 @property (nonatomic, readonly) NSInteger browserIdentifier;
+@property (nonatomic, readonly) NSUInteger documentGeneration;
+@property (nonatomic, readonly, getter=isFullscreen) BOOL fullscreen;
 
 @end
 
@@ -37,7 +39,15 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 - (void)readPageInSession:(nullable TLChromiumBrowserSession *)session
              expectedURL:(NSURL *)URL
               completion:(void (^)(NSDictionary * _Nullable page, NSError * _Nullable error))completion;
+// Geometry is native points with a bottom origin. Unknown results never mean clear.
+- (void)probeOverlayInSession:(nullable TLChromiumBrowserSession *)session
+                 overlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick
+                  completion:(void (^)(NSDictionary *result))completion;
 - (void)closeSession:(nullable TLChromiumBrowserSession *)session;
+// A document spacer shares the page's real scrollbar. Configuration completes
+// after Chromium applies it, allowing exclusive switching to the native footer.
+- (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(nullable TLChromiumBrowserSession *)session completion:(nullable void (^)(BOOL applied))completion;
+- (void)sampleFooterColorInSession:(nullable TLChromiumBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion;
 - (void)closeBrowserInView:(NSView *)view;
 - (BOOL)prepareForApplicationTermination;
 - (void)shutdown;

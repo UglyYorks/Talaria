@@ -36,6 +36,9 @@ NSString *TLAgentDisplayStatus(NSString *status);
 @property (nonatomic, copy) NSString *role;
 @property (nonatomic, copy) NSString *content;
 @property (nonatomic, copy, nullable) NSString *thinking;
+// Runtime-only structured approval state; never sent as model context or loaded as a live request from history.
+@property (nonatomic, copy, nullable) NSDictionary *approvalRequest;
+@property (nonatomic, copy, nullable) NSDictionary *approvalResponse;
 // JSON-compatible records: name, guestPath, directory. Originals are never exposed to the VM.
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *attachments;
 

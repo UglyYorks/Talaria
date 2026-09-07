@@ -9,6 +9,8 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, TLAgentStreamDeltaKind) {
   TLAgentStreamDeltaKindContent = 0,
   TLAgentStreamDeltaKindThinking,
+  TLAgentStreamDeltaKindStatus,
+  TLAgentStreamDeltaKindApproval,
 };
 
 typedef void (^TLAgentStreamDeltaHandler)(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text);
@@ -49,6 +51,10 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLAgentModel *> *_Nullable 
 - (void)hermesHistoryWithAgent:(TLAgentRecord *)agent action:(NSString *)action sessionID:(NSString *)sessionID
                         token:(NSString *)token model:(NSString *)model
                    completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
+- (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent requestID:(NSString *)requestID
+                          sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model
+                             prompt:(NSString *)prompt approvalResponse:(nullable NSDictionary *)approvalResponse
+                              delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion;
 - (void)cancelChatWithRequestID:(NSString *)requestID;
 - (void)installHermesWithAgent:(TLAgentRecord *)agent
                      requestID:(NSString *)requestID

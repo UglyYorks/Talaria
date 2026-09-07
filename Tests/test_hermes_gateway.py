@@ -261,6 +261,23 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(chunks, [('thinking', 'thinking'), ('content', 'Hello'), ('content', ' world')])
         self.assertEqual(self.gateway.listeners, {})
 
+    def test_spinner_updates_are_status_snapshots_and_empty_updates_clear(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
+        frames = [('thinking.delta', 'computing...'),
+                  ('thinking.delta', 'waiting — 30s'), ('thinking.delta', 'waiting — 30s'),
+                  ('thinking.delta', 'waiting — 60s'), ('thinking.delta', ''),
+                  ('reasoning.delta', 'First'), ('reasoning.delta', ' thought'),
+                  ('message.complete', 'Answer')]
+        def call(method, params):
+            for kind, text in frames:
+                self.gateway.listeners['runtime'].put({'type': kind, 'payload': {'text': text}})
+            return {}
+        self.gateway.call.side_effect = call
+        chunks = []
+        self.gateway.run('chat', 'model', 'hello', lambda kind, text: chunks.append((kind, text)))
+        self.assertEqual(chunks, [('status', text) for _, text in frames[:5]] +
+                         [('thinking', 'First'), ('thinking', ' thought'), ('content', 'Answer')])
+
     def test_skill_result_is_submitted_through_live_session(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
         self.gateway.command = Mock(return_value={'type': 'skill', 'message': 'Hermes skill expansion'})
@@ -286,13 +303,44 @@ class GatewayTests(unittest.TestCase):
         self.gateway.call.side_effect = call
         output = []
         self.gateway.run('chat', 'model', 'do work', lambda kind, text: output.append(text))
-        self.assertIn('Reply /approve or /deny.', output[0])
+        self.assertEqual(json.loads(output[0])['request_id'], 'approval')
         with self.assertRaisesRegex(RuntimeError, 'Reply /approve or /deny'):
             self.gateway.run('chat', 'model', 'unrelated message', lambda *_: None)
         self.gateway.run('chat', 'model', '/deny', lambda kind, text: output.append(text))
         self.assertEqual(output[-1], 'Denied')
         self.assertEqual(self.gateway.waiting, {})
         self.assertEqual(self.gateway.listeners, {})
+
+    def test_approval_card_response_is_bound_to_request_and_allowed_choices(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
+        command = "execute_code <<'PY'\nprint('literal **code**')\n# not a heading\nPY"
+        payload = {'request_id': 'exact-id', 'command': command, 'description': 'Run research',
+                   'choices': ['once', 'deny']}
+        def call(method, params):
+            events = self.gateway.listeners['runtime']
+            if method == 'prompt.submit':
+                events.put({'type': 'approval.request', 'payload': payload})
+            else:
+                self.assertEqual((method, params), ('approval.respond',
+                    {'session_id': 'runtime', 'request_id': 'exact-id', 'choice': 'once'}))
+                events.put({'type': 'message.complete', 'payload': {'text': 'Finished'}})
+            return {}
+        self.gateway.call.side_effect = call
+        output = []
+        self.gateway.run('chat', 'model', 'research', lambda kind, text: output.append((kind, text)))
+        self.assertEqual(output[0][0], 'approval')
+        self.assertEqual(json.loads(output[0][1]), payload)
+        for response in [{'request_id': 'stale-id', 'choice': 'once'},
+                         {'request_id': 'exact-id', 'choice': 'always'}]:
+            with self.assertRaises(RuntimeError):
+                self.gateway.run('chat', 'model', 'Allow once', lambda *_: None, approval_response=response)
+        self.assertEqual(self.gateway.call.call_count, 1)
+        response = {'request_id': 'exact-id', 'choice': 'once'}
+        self.gateway.run('chat', 'model', 'Allow once', lambda kind, text: output.append((kind, text)), approval_response=response)
+        self.assertEqual(output[-1], ('content', 'Finished'))
+        with self.assertRaisesRegex(RuntimeError, 'no longer pending'):
+            self.gateway.run('chat', 'model', 'Allow once', lambda *_: None, approval_response=response)
+        self.assertEqual(self.gateway.call.call_count, 2)  # A repeated click never submits a new prompt.
 
     def test_stop_does_not_wait_for_running_turn_lock(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}

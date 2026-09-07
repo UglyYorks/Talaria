@@ -1,8 +1,12 @@
 #import "TLBrowserChatPane.h"
+#import "TLApprovalCardView.h"
 #import "TLGlassButton.h"
 #import <QuartzCore/QuartzCore.h>
 
 @interface TLBrowserChatPane ()
+@property NSDictionary *approvalRequest;
+@property TLApprovalCardView *approvalCard;
+@property NSLayoutConstraint *markdownBottom;
 @property (nonatomic, readwrite) NSButton *minimizeButton;
 @property NSTextField *titleLabel;
 @property NSProgressIndicator *spinner;
@@ -80,6 +84,8 @@
   self.titleLabel.font = palette.labelFont;
   self.titleLabel.textColor = palette.controlText;
   if (!self.document) return;
+  [self.approvalCard removeFromSuperview];
+  self.approvalCard = nil;
   [self.markdownView removeFromSuperview];
   self.renderer = [[TLMarkdownRenderer alloc] initWithPalette:palette];
   __weak typeof(self) weakSelf = self;
@@ -95,12 +101,35 @@
   };
   self.markdownView = [self.renderer viewForMarkdown:self.markdown ?: @"" textColor:palette.assistantMessageText baseFont:palette.messageBodyFont];
   [self.document addSubview:self.markdownView];
+  self.markdownBottom = [self.markdownView.bottomAnchor constraintEqualToAnchor:self.document.bottomAnchor];
   [NSLayoutConstraint activateConstraints:@[
     [self.markdownView.leadingAnchor constraintEqualToAnchor:self.document.leadingAnchor],
     [self.markdownView.trailingAnchor constraintEqualToAnchor:self.document.trailingAnchor],
     [self.markdownView.topAnchor constraintEqualToAnchor:self.document.topAnchor],
-    [self.markdownView.bottomAnchor constraintEqualToAnchor:self.document.bottomAnchor],
+    self.markdownBottom,
   ]];
+  NSDictionary *approval = self.approvalRequest;
+  self.approvalRequest = nil;
+  [self showApprovalRequest:approval];
+}
+- (void)showApprovalRequest:(NSDictionary *)request {
+  if ([(self.approvalRequest ?: @{}) isEqual:request ?: @{}]) return;
+  self.approvalRequest = request;
+  [self.approvalCard removeFromSuperview];
+  self.approvalCard = nil;
+  self.markdownBottom.active = !request;
+  if (!request) return;
+  self.approvalCard = [[TLApprovalCardView alloc] initWithRequest:request palette:self.palette];
+  __weak typeof(self) weakSelf = self;
+  self.approvalCard.choiceHandler = ^BOOL(NSString *choice) {
+    return weakSelf.approvalHandler ? weakSelf.approvalHandler(request[@"request_id"], choice) : NO;
+  };
+  [self.document addSubview:self.approvalCard];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.approvalCard.leadingAnchor constraintEqualToAnchor:self.document.leadingAnchor],
+    [self.approvalCard.trailingAnchor constraintEqualToAnchor:self.document.trailingAnchor],
+    [self.approvalCard.topAnchor constraintEqualToAnchor:self.markdownView.bottomAnchor constant:self.palette.space5],
+    [self.approvalCard.bottomAnchor constraintEqualToAnchor:self.document.bottomAnchor]]];
 }
 - (void)setTitle:(NSString *)title {
   _title = [title copy];

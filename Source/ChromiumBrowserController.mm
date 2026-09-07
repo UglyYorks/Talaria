@@ -1,5 +1,7 @@
 #import "ChromiumBrowserController.h"
 #import "ChromiumRunLoop.h"
+#import "ChromiumOverlayProbe.h"
+#import "ChromiumDocumentFooter.h"
 #import "BrowserPageContext.h"
 
 #include <algorithm>
@@ -17,6 +19,7 @@
 #include "include/cef_display_handler.h"
 #include "include/cef_devtools_message_observer.h"
 #include "include/cef_life_span_handler.h"
+#include "include/cef_keyboard_handler.h"
 #include "include/cef_load_handler.h"
 #include "include/cef_request_handler.h"
 #include "include/cef_task.h"
@@ -86,6 +89,13 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 @property (nonatomic, weak, readwrite, nullable) NSView *containerView;
 @property (nonatomic, copy, readwrite) NSString *initialURLString;
 @property (nonatomic, readwrite) NSInteger browserIdentifier;
+@property (nonatomic, readwrite) NSUInteger documentGeneration;
+@property (nonatomic, readwrite, getter=isFullscreen) BOOL fullscreen;
+@property (nonatomic) NSUInteger overlayCursor;
+@property (nonatomic, copy) NSDictionary *overlayHint;
+@property (nonatomic) NSTimeInterval overlayFallbackAfter;
+@property (nonatomic, strong) TLChromiumDocumentFooter *documentFooter;
+@property (nonatomic, copy) NSDictionary *documentFooterConfiguration;
 - (instancetype)initWithContainerView:(NSView *)containerView initialURLString:(NSString *)initialURLString;
 @end
 
@@ -110,12 +120,17 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 - (void)performMessagePumpWork;
 - (void)browserCreated:(CefRefPtr<CefBrowser>)browser parentView:(nullable NSView *)parentView;
 - (void)browserClosed:(CefRefPtr<CefBrowser>)browser;
+- (void)browserFullscreenChanged:(CefRefPtr<CefBrowser>)browser fullscreen:(BOOL)fullscreen;
+- (void)restoreFullscreenBrowser;
+- (void)exitBrowserFullscreen;
 - (void)browserTitleChanged:(CefRefPtr<CefBrowser>)browser title:(NSString *)title;
 - (void)browserFaviconURLChanged:(CefRefPtr<CefBrowser>)browser URLString:(NSString *)URLString;
 - (void)browserFaviconDownloadedForIdentifier:(NSInteger)browserIdentifier
                                     URLString:(NSString *)URLString
                                         image:(nullable NSImage *)image;
 - (void)browserURLChanged:(CefRefPtr<CefBrowser>)browser URL:(NSURL *)URL;
+- (void)browserDocumentStarted:(CefRefPtr<CefBrowser>)browser;
+- (void)installDocumentFooterInSession:(TLChromiumBrowserSession *)session browser:(CefRefPtr<CefBrowser>)browser;
 - (void)browserNavigationStateChanged:(CefRefPtr<CefBrowser>)browser
                            canGoBack:(BOOL)canGoBack
                         canGoForward:(BOOL)canGoForward
@@ -278,6 +293,7 @@ class TLChromiumApp : public CefApp, public CefBrowserProcessHandler {
 
 class TLChromiumClient : public CefClient,
                          public CefDisplayHandler,
+                         public CefKeyboardHandler,
                          public CefLifeSpanHandler,
                          public CefLoadHandler,
                          public CefRequestHandler {
@@ -288,6 +304,24 @@ class TLChromiumClient : public CefClient,
         parentView_(parentView) {}
 
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+  CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override { return this; }
+
+  void OnFullscreenModeChange(CefRefPtr<CefBrowser> browser, bool fullscreen) override {
+    CEF_REQUIRE_UI_THREAD();
+    [browserController_ browserFullscreenChanged:browser fullscreen:fullscreen];
+  }
+
+  bool OnPreKeyEvent(CefRefPtr<CefBrowser> browser, const CefKeyEvent &event,
+                    CefEventHandle os_event, bool *is_keyboard_shortcut) override {
+    CEF_REQUIRE_UI_THREAD();
+    if ((event.type == KEYEVENT_RAWKEYDOWN || event.type == KEYEVENT_KEYDOWN) &&
+        event.windows_key_code == 27 && browser->GetHost()->IsFullscreen()) {
+      browser->GetHost()->ExitFullscreen(true);
+      return true;
+    }
+    return false;
+  }
+
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
@@ -301,6 +335,11 @@ class TLChromiumClient : public CefClient,
                                            canGoBack:canGoBack
                                         canGoForward:canGoForward
                                            isLoading:isLoading];
+  }
+
+  void OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, TransitionType transition_type) override {
+    CEF_REQUIRE_UI_THREAD();
+    if (frame && frame->IsMain()) [browserController_ browserDocumentStarted:browser];
   }
 
   void OnTitleChange(CefRefPtr<CefBrowser> browser, const CefString &title) override {
@@ -541,6 +580,11 @@ class TLChromiumNavigationCommandTask : public CefTask {
   NSMutableDictionary<NSValue *, TLChromiumBrowserNavigationHandler> *_navigationHandlersByContainer;
   NSMutableDictionary<NSNumber *, NSString *> *_pendingFaviconURLsByBrowserIdentifier;
   NSMutableDictionary<NSNumber *, NSString *> *_hostsByBrowserIdentifier;
+  NSView *_fullscreenView;
+  NSInteger _fullscreenBrowserIdentifier;
+  __weak NSWindow *_fullscreenOriginWindow;
+  id _fullscreenCloseObserver;
+  id _fullscreenDeactivateObserver;
   NSTimer *_messagePumpTimer;
   BOOL _initialized;
   BOOL _shuttingDown;
@@ -563,6 +607,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
 - (instancetype)init {
   self = [super init];
   if (self) {
+    _fullscreenBrowserIdentifier = -1;
     _browserIdentifiersByContainer = [NSMutableDictionary dictionary];
     _containersByBrowserIdentifier = [NSMutableDictionary dictionary];
     _sessionsByContainer = [NSMutableDictionary dictionary];
@@ -718,10 +763,45 @@ class TLChromiumNavigationCommandTask : public CefTask {
   reader->Start(browser);
 }
 
+- (void)probeOverlayInSession:(TLChromiumBrowserSession *)session
+                 overlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick
+                  completion:(void (^)(NSDictionary *))completion {
+  CefRefPtr<CefBrowser> browser = session ? [self browserWithIdentifier:(int)session.browserIdentifier] : nullptr;
+  static NSString *source;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    NSURL *URL = [NSBundle.mainBundle URLForResource:@"BrowserOverlayProbe" withExtension:@"js"];
+    source = URL ? [NSString stringWithContentsOfURL:URL encoding:NSUTF8StringEncoding error:nil] : nil;
+  });
+  if (!browser || !source.length || NSIsEmptyRect(rect) || viewport.width <= 0 || viewport.height <= 0) {
+    completion(@{@"obstructed":NSNull.null}); return;
+  }
+  NSMutableDictionary *geometry = [@{@"left":@(NSMinX(rect)), @"bottom":@(NSMinY(rect)),
+    @"width":@(NSWidth(rect)), @"height":@(NSHeight(rect)), @"currentWidth":@(viewport.width),
+    @"currentHeight":@(viewport.height), @"cursor":@(session.overlayCursor), @"quick":@(quick)} mutableCopy];
+  if (session.overlayHint) geometry[@"hint"] = session.overlayHint;
+  geometry[@"skipFallback"] = @(NSProcessInfo.processInfo.systemUptime < session.overlayFallbackAfter);
+  NSUInteger generation = session.documentGeneration;
+  TLChromiumProbeOverlay(browser, source, geometry, ^(NSDictionary *result) {
+    if (session.browserIdentifier < 0 || session.documentGeneration != generation) {
+      completion(@{@"obstructed":NSNull.null}); return;
+    }
+    session.overlayCursor = [result[@"cursor"] unsignedIntegerValue];
+    // A detached/loading opaque frame must not stop ordinary DOM checks. Only
+    // the browser-level fallback backs off; skipped fallback remains unknown.
+    if ([result[@"fallbackFailed"] boolValue])
+      session.overlayFallbackAfter = NSProcessInfo.processInfo.systemUptime + 3.0;
+    if ([result[@"hint"] isKindOfClass:NSDictionary.class]) session.overlayHint = result[@"hint"];
+    completion(result);
+  });
+}
+
 - (void)closeSession:(TLChromiumBrowserSession *)session {
   if (!session) {
     return;
   }
+  if (session.browserIdentifier == _fullscreenBrowserIdentifier) [self exitBrowserFullscreen];
+  [session.documentFooter stop]; session.documentFooter = nil;
 
   NSView *containerView = session.containerView;
   if (containerView) {
@@ -750,7 +830,10 @@ class TLChromiumNavigationCommandTask : public CefTask {
 
   NSNumber *browserIdentifier = _browserIdentifiersByContainer[containerKey];
   TLChromiumBrowserSession *session = _sessionsByContainer[containerKey];
+  if (browserIdentifier && browserIdentifier.integerValue == _fullscreenBrowserIdentifier) [self exitBrowserFullscreen];
   [_browserIdentifiersByContainer removeObjectForKey:containerKey];
+  [session.documentFooter stop]; session.documentFooter = nil;
+
   [_sessionsByContainer removeObjectForKey:containerKey];
   [_titleHandlersByContainer removeObjectForKey:containerKey];
   [_linkHandlersByContainer removeObjectForKey:containerKey];
@@ -783,6 +866,7 @@ class TLChromiumNavigationCommandTask : public CefTask {
     return YES;
   }
 
+  [self exitBrowserFullscreen];
   _terminating = YES;
   if (_browsers.empty()) {
     BOOL needsDeferredShutdown = _doingMessagePumpWork;
@@ -971,8 +1055,81 @@ class TLChromiumNavigationCommandTask : public CefTask {
   }
 }
 
+// Alloy reports renderer fullscreen but leaves native presentation to the host.
+// Move only the CEF view: the original window, split layout and footer stay intact.
+- (void)browserFullscreenChanged:(CefRefPtr<CefBrowser>)browser fullscreen:(BOOL)fullscreen {
+  if (!browser) return;
+  TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(browser->GetIdentifier())];
+  session.fullscreen = fullscreen;
+  [session.documentFooter configure:fullscreen ? @{@"enabled":@NO} : (session.documentFooterConfiguration ?: @{@"enabled":@NO}) completion:nil];
+  // AppKit can pump events during presentation. Never re-enter Chromium's pump
+  // while it is delivering the fullscreen notification.
+  TLChromiumDeferToMainRunLoop(^{
+    if (!browser->IsValid()) return;
+    BOOL requested = browser->GetHost()->IsFullscreen();
+    NSInteger identifier = browser->GetIdentifier();
+    if (!requested) {
+      if (self->_fullscreenBrowserIdentifier == identifier) [self restoreFullscreenBrowser];
+      return;
+    }
+    if (self->_fullscreenBrowserIdentifier == identifier) return;
+    NSView *view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(browser->GetHost()->GetWindowHandle());
+    NSWindow *window = view.window;
+    if (!window.isVisible || view.isHiddenOrHasHiddenAncestor || !window.screen || self->_shuttingDown) {
+      browser->GetHost()->ExitFullscreen(false);
+      return;
+    }
+    [self exitBrowserFullscreen];
+    self->_fullscreenView = view;
+    self->_fullscreenBrowserIdentifier = identifier;
+    self->_fullscreenOriginWindow = window;
+    BOOL entered = [view enterFullScreenMode:window.screen withOptions:@{
+      NSFullScreenModeAllScreens:@NO,
+      NSFullScreenModeApplicationPresentationOptions:@(NSApplicationPresentationAutoHideDock | NSApplicationPresentationAutoHideMenuBar)
+    }];
+    if (!entered) { [self exitBrowserFullscreen]; return; }
+    [view.window makeKeyAndOrderFront:nil];
+    [view.window makeFirstResponder:view];
+    browser->GetHost()->SetFocus(true);
+    __weak TLChromiumBrowserController *weakSelf = self;
+    self->_fullscreenCloseObserver = [NSNotificationCenter.defaultCenter addObserverForName:NSWindowWillCloseNotification
+      object:window queue:nil usingBlock:^(NSNotification *note) { [weakSelf exitBrowserFullscreen]; }];
+    self->_fullscreenDeactivateObserver = [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationWillResignActiveNotification
+      object:NSApp queue:nil usingBlock:^(NSNotification *note) { [weakSelf exitBrowserFullscreen]; }];
+  });
+}
+
+- (void)exitBrowserFullscreen {
+  CefRefPtr<CefBrowser> browser = [self browserWithIdentifier:(int)_fullscreenBrowserIdentifier];
+  if (browser && browser->GetHost()->IsFullscreen()) browser->GetHost()->ExitFullscreen(true);
+  [self restoreFullscreenBrowser];
+}
+
+- (void)restoreFullscreenBrowser {
+  if (!_fullscreenView) return;
+  NSView *view = _fullscreenView;
+  NSInteger identifier = _fullscreenBrowserIdentifier;
+  NSWindow *origin = _fullscreenOriginWindow;
+  _fullscreenView = nil; _fullscreenBrowserIdentifier = -1; _fullscreenOriginWindow = nil;
+  for (id observer in @[_fullscreenCloseObserver ?: NSNull.null, _fullscreenDeactivateObserver ?: NSNull.null]) {
+    if (observer != NSNull.null) [NSNotificationCenter.defaultCenter removeObserver:observer];
+  }
+  _fullscreenCloseObserver = nil; _fullscreenDeactivateObserver = nil;
+  if (view.inFullScreenMode) [view exitFullScreenModeWithOptions:nil];
+  TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(identifier)];
+  session.fullscreen = NO;
+  if (session.containerView) {
+    [session.containerView layoutSubtreeIfNeeded];
+    view.frame = session.containerView.bounds;
+    view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  }
+  [session.documentFooter configure:session.documentFooterConfiguration ?: @{@"enabled":@NO} completion:nil];
+  if (NSApp.isActive && origin.isVisible) [origin makeFirstResponder:view];
+}
+
 - (void)browserClosed:(CefRefPtr<CefBrowser>)browser {
   int identifier = browser ? browser->GetIdentifier() : -1;
+  if (identifier == _fullscreenBrowserIdentifier) [self restoreFullscreenBrowser];
   NSNumber *browserIdentifier = @(identifier);
   NSValue *containerKey = _containersByBrowserIdentifier[browserIdentifier];
   if (containerKey) {
@@ -983,6 +1140,8 @@ class TLChromiumNavigationCommandTask : public CefTask {
     [_faviconHandlersByContainer removeObjectForKey:containerKey];
     [_navigationHandlersByContainer removeObjectForKey:containerKey];
     TLChromiumBrowserSession *session = _sessionsByContainer[containerKey];
+    [session.documentFooter stop];
+    session.documentFooter = nil;
     session.browserIdentifier = -1;
     [_sessionsByContainer removeObjectForKey:containerKey];
     [_containersByBrowserIdentifier removeObjectForKey:browserIdentifier];
@@ -1079,6 +1238,40 @@ class TLChromiumNavigationCommandTask : public CefTask {
   }
 }
 
+- (void)browserDocumentStarted:(CefRefPtr<CefBrowser>)browser {
+  TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(browser->GetIdentifier())];
+  session.documentGeneration += 1;
+  session.documentFooterConfiguration = nil;
+  session.overlayCursor = 0;
+  session.overlayHint = nil;
+  session.overlayFallbackAfter = 0;
+  [self installDocumentFooterInSession:session browser:browser];
+}
+
+- (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(TLChromiumBrowserSession *)session completion:(void (^)(BOOL))completion {
+  session.documentFooterConfiguration = configuration;
+  if (!session.documentFooter) [self installDocumentFooterInSession:session browser:[self browserWithIdentifier:(int)session.browserIdentifier]];
+  if(session.documentFooter)[session.documentFooter configure:session.fullscreen ? @{@"enabled":@NO} : configuration completion:completion];
+  else if(completion)completion(NO);
+}
+- (void)sampleFooterColorInSession:(TLChromiumBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
+  if (!session.documentFooter) { completion(@{}); return; }
+  [session.documentFooter sampleColorAllowingCapture:capture completion:completion];
+}
+- (void)installDocumentFooterInSession:(TLChromiumBrowserSession *)session browser:(CefRefPtr<CefBrowser>)browser {
+  [session.documentFooter stop]; session.documentFooter = nil;
+  if (!session || !browser) return;
+  static NSString *source;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSURL *URL=[NSBundle.mainBundle URLForResource:@"BrowserDocumentFooter" withExtension:@"js"];
+    source=URL ? [NSString stringWithContentsOfURL:URL encoding:NSUTF8StringEncoding error:nil] : nil;
+  });
+  if (!source.length) return;
+  session.documentFooter=[[TLChromiumDocumentFooter alloc] initWithBrowser:browser source:source];
+  [session.documentFooter configure:session.fullscreen ? @{@"enabled":@NO} : (session.documentFooterConfiguration ?: @{@"enabled":@NO}) completion:nil];
+}
+
 - (void)browserURLChanged:(CefRefPtr<CefBrowser>)browser URL:(NSURL *)URL {
   if (!browser || !URL) {
     return;
@@ -1118,6 +1311,9 @@ class TLChromiumNavigationCommandTask : public CefTask {
   }
 
   NSNumber *browserIdentifier = @(browser->GetIdentifier());
+  TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[browserIdentifier];
+  if (!isLoading && !session.documentFooter.ready)
+    [self installDocumentFooterInSession:session browser:browser];
   NSValue *containerKey = _containersByBrowserIdentifier[browserIdentifier];
   TLChromiumBrowserNavigationHandler navigationHandler = nil;
   if (containerKey) {

@@ -250,7 +250,8 @@ static void TestBrowserComposer(void) {
   [window.contentView layoutSubtreeIfNeeded];
   CGFloat compactHeight = NSHeight(input.frame);
   Check(compactHeight == input.palette.composerButtonHeight, @"browser starts at chat composer height");
-  Check(input.textView.editable && !input.textView.richText, @"browser uses editable plain multiline text");
+  Check(input.textView.editable && !input.textView.richText && input.singleLine, @"URL uses editable single-line plain text");
+  Check([input.textView.string isEqual:@"example.com"], @"idle address shows only its domain");
   Check(input.sendButton.enabled, @"address enables send button");
 
   [window makeFirstResponder:nil];
@@ -274,7 +275,7 @@ static void TestBrowserComposer(void) {
   [input updateDisplayedAddress:@"example.com/redirect"];
   Check([input.textView.string isEqualToString:@"example.com/path"], @"redirect does not disturb focused address");
   [window makeFirstResponder:nil];
-  Check([input.textView.string isEqualToString:@"example.com/redirect"], @"latest address appears after focus leaves");
+  Check([input.textView.string isEqualToString:@"example.com"], @"latest domain appears after focus leaves");
 
   [input beginPromptEditing];
   Check(input.textView.string.length == 0 && window.firstResponder == input.textView, @"opening browser chat clears and focuses composer");
@@ -283,7 +284,7 @@ static void TestBrowserComposer(void) {
   [input updateDisplayedAddress:@"example.com/current-page"];
   Check(input.textView.string.length == 0, @"page navigation does not overwrite an empty chat draft");
   [input setDisplayedAddress:@"example.com/current-page"];
-  Check([input.textView.string isEqualToString:@"example.com/current-page"] && !input.hasUserDraft, @"minimizing restores current page address and exits draft mode");
+  Check([input.textView.string isEqualToString:@"example.com"] && !input.hasUserDraft, @"minimizing restores current domain and exits draft mode");
   [input beginPromptEditing];
   Check(input.textView.string.length == 0 && window.firstResponder == input.textView, @"reopening chat clears and focuses input again");
 
@@ -322,7 +323,7 @@ static void TestBrowserComposer(void) {
   Check([input.textView.string hasSuffix:@"\n"] && target.activationCount == 1, @"Shift+Return inserts newline without sending");
   [input textView:input.textView doCommandBySelector:@selector(cancelOperation:)];
   [window.contentView layoutSubtreeIfNeeded];
-  Check([input.textView.string isEqualToString:@"example.com/another-page"] && !input.hasUserDraft, @"escape restores latest address");
+  Check([input.textView.string isEqualToString:@"example.com"] && !input.hasUserDraft, @"escape restores latest domain");
   Check(NSHeight(input.frame) == compactHeight, @"restoring address collapses composer");
 
   input.textView.string = @" \n ";
@@ -330,6 +331,35 @@ static void TestBrowserComposer(void) {
   Check(!input.sendButton.enabled, @"whitespace cannot be sent");
   [input textView:input.textView doCommandBySelector:@selector(insertNewline:)];
   Check(target.activationCount == 1, @"empty input does not dispatch send");
+
+  [window makeFirstResponder:nil];
+  NSString *longURL = [@"https://www.example.com/" stringByAppendingString:[@"long-path/" stringByPaddingToLength:900 withString:@"long-path/" startingAtIndex:0]];
+  [input setDisplayedAddress:longURL];
+  width.constant = 700;
+  [window.contentView layoutSubtreeIfNeeded];
+  NSTextField *domain = [input valueForKey:@"domainLabel"];
+  Check([domain.stringValue isEqual:@"example.com"] && fabs(NSMidX(domain.frame)-NSMidX(input.bounds))<1,
+    @"idle domain omits www and is centered in the address bar");
+  Check(NSHeight(input.frame)==compactHeight, @"long idle URL never expands the footer");
+  [window makeFirstResponder:input.textView];
+  Check([input.textView.string isEqual:longURL] && input.singleLine, @"focus exposes the entire original URL including scheme and www");
+  if(!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
+    Check([domain.layer animationForKey:@"talaria.domainFocus"]!=nil, @"domain animates left on focus");
+  [window.contentView layoutSubtreeIfNeeded];
+  Check(NSHeight(input.frame)==compactHeight && input.textView.textContainer.maximumNumberOfLines==1,
+    @"long focused URL remains one line at fixed height");
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:input.palette.browserHeightTransitionDuration + 0.02]];
+  NSBitmapImageRep *focusedPreview=[input bitmapImageRepForCachingDisplayInRect:input.bounds];
+  [input cacheDisplayInRect:input.bounds toBitmapImageRep:focusedPreview];
+  [[focusedPreview representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@"/tmp/talaria-domain-focused.png" atomically:YES];
+  [input.textView setSelectedRange:NSMakeRange(input.textView.string.length,0)];
+  [input.textView insertText:@"\n" replacementRange:input.textView.selectedRange];
+  Check([input.textView.string isEqual:longURL], @"URL editing rejects inserted newlines");
+  [window makeFirstResponder:nil];
+  Check([input.textView.string isEqual:@"example.com"], @"blur restores the compact domain");
+  NSBitmapImageRep *domainPreview=[input bitmapImageRepForCachingDisplayInRect:input.bounds];
+  [input cacheDisplayInRect:input.bounds toBitmapImageRep:domainPreview];
+  [[domainPreview representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@"/tmp/talaria-domain-idle.png" atomically:YES];
 
   for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
     input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
@@ -456,27 +486,51 @@ static void TestBrowserHeightAnimation(void) {
   ]];
   [content layoutSubtreeIfNeeded];
   TLBrowserHeightTransition *runtime = [[TLBrowserHeightTransition alloc] initWithContentView:content bottomConstraint:bottom];
-  [runtime setBrowserBottomInset:-100 duration:0.4 overshoot:0.04];
-  Check(bottom.constant == 0, @"resize does not jump immediately to destination");
-  RunFor(0.10);
-  Check(bottom.constant < 0 && bottom.constant > -100, @"resize has intermediate eased geometry");
-  Check(NSHeight(host.frame) < 500 && NSHeight(host.frame) > 400 && NSWidth(host.frame) == 700, @"real browser host resizes without changing width");
-  RunFor(0.21);
-  Check(bottom.constant < -100 && bottom.constant >= -104.1, @"shrinking has a small bounded bounce");
-  RunFor(0.2);
-  Check(bottom.constant == -100 && NSHeight(host.frame) == 400, @"bounce settles at exact footer height");
-  [runtime setBrowserBottomInset:0 duration:0.4 overshoot:0];
-  RunFor(0.1);
-  CGFloat intermediate = bottom.constant;
-  [runtime setBrowserBottomInset:-120 duration:0.15 overshoot:0];
-  Check(bottom.constant == intermediate, @"rapid toggle starts from current geometry");
-  RunFor(0.25);
-  Check(bottom.constant == -120, @"only newest transition completes");
-  [runtime setBrowserBottomInset:0 duration:0.4 overshoot:0];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:content.frame styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  window.contentView = content;
+  [window orderFront:nil];
   RunFor(0.05);
-  [runtime setBrowserBottomInset:-80 duration:0 overshoot:0];
-  RunFor(0.45);
-  Check(bottom.constant == -80, @"nonanimated update cancels stale animation");
+  __block NSUInteger resizes = 0;
+  __block BOOL fractionalResize = NO;
+  host.postsFrameChangedNotifications = YES;
+  id observer = [NSNotificationCenter.defaultCenter addObserverForName:NSViewFrameDidChangeNotification object:host queue:nil usingBlock:^(NSNotification *note) { resizes++; fractionalResize |= fabs(NSHeight(host.frame)-round(NSHeight(host.frame)))>0.001; }];
+  __block NSUInteger completions=0;
+  [runtime setBrowserBottomInset:-100 duration:0.4 overshoot:0.04 completion:^{completions++;}];
+  Check(bottom.constant==0 && runtime.isAnimating, @"resize starts from the existing viewport");
+  RunFor(0.10);
+  Check(NSHeight(host.frame)>400 && NSHeight(host.frame)<500 && resizes>=2, @"actual viewport height moves through intermediate layouts");
+  Check(fabs(NSMaxY(host.frame)-NSHeight(content.bounds))<0.5, @"resizing keeps the page top fixed");
+  Check(!host.layer.mask && CATransform3DIsIdentity(host.layer.transform), @"viewport resizing never masks or scales page content");
+  RunFor(0.41);
+  Check(NSHeight(host.frame)==400 && !runtime.isAnimating && completions==1, @"resize commits exact destination and completes once");
+  Check(resizes<=26, @"viewport animation stays bounded to 60 updates per second");
+  Check(!fractionalResize, @"viewport animation uses whole-point steps to prevent Chromium compositor rounding drift on Retina screens");
+  [runtime setBrowserBottomInset:0 duration:0.4 overshoot:0]; RunFor(0.1);
+  CGFloat intermediate=NSHeight(host.frame);
+  Check(intermediate>400 && intermediate<500, @"expansion also lays out intermediate viewport sizes");
+  [runtime setBrowserBottomInset:-120 duration:0.15 overshoot:0 completion:^{completions++;}];
+  Check(NSHeight(host.frame)==intermediate, @"reversal begins at the current real viewport without jumping");
+  RunFor(0.25);
+  Check(bottom.constant==-120 && !runtime.isAnimating && completions==2, @"only newest transition completes");
+  [runtime setBrowserBottomInset:0 duration:0.4 overshoot:0 completion:^{completions++;}]; RunFor(0.05);
+  [runtime setBrowserBottomInset:-80 duration:0 overshoot:0]; RunFor(0.45);
+  Check(bottom.constant==-80 && !runtime.isAnimating && completions==2, @"immediate update cancels pending animation and its completion");
+  NSUInteger settledResizes=resizes;RunFor(0.08);
+  Check(resizes==settledResizes, @"settled viewport performs no animation work");
+  for (NSUInteger i=0;i<12;i++) {
+    [runtime setBrowserBottomInset:-86 duration:0.08 overshoot:0];
+    [window setContentSize:NSMakeSize(700,500+(i%2)*40)];
+    [content layoutSubtreeIfNeeded];
+    [runtime setBrowserBottomInset:0 duration:0.04 overshoot:0];
+    [runtime setBrowserBottomInset:-86 duration:0.04 overshoot:0];
+    RunFor(0.06);
+    Check(fabs(NSHeight(host.bounds)-(NSHeight(content.bounds)-86))<0.5 && !host.layer.mask,
+      @"window resizing and rapid reversals never accumulate a footer gap");
+  }
+  [NSNotificationCenter.defaultCenter removeObserver:observer];
+  [window close];
+
 }
 
 static void TestCommandDescriptions(void) {

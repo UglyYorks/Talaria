@@ -54,6 +54,8 @@ static NSUInteger TLFailureCount = 0;
 @property (nonatomic, copy) NSString *capturedShellCommand;
 @property (nonatomic, copy) NSString *contentDelta;
 @property (nonatomic, copy) NSString *thinkingDelta;
+@property (nonatomic, copy) NSDictionary *approvalDelta;
+@property (nonatomic, copy) NSDictionary *capturedApprovalResponse;
 @property (nonatomic, strong, nullable) NSError *streamError;
 @property (nonatomic, strong, nullable) NSError *installError;
 @property (nonatomic) NSUInteger installCount;
@@ -95,6 +97,14 @@ static NSUInteger TLFailureCount = 0;
   completion(nil);
 }
 
+- (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent requestID:(NSString *)requestID
+                          sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model
+                             prompt:(NSString *)prompt approvalResponse:(NSDictionary *)response
+                              delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
+  self.capturedApprovalResponse = response;
+  [self streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID token:token model:model prompt:prompt delta:delta completion:completion];
+}
+
 - (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent token:(NSString *)token model:(NSString *)model
                          completion:(void (^)(NSDictionary *, NSError *))completion {
   self.catalogueRequestCount++;
@@ -129,6 +139,10 @@ static NSUInteger TLFailureCount = 0;
   }
   delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
+  if (self.approvalDelta) {
+    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:self.approvalDelta options:0 error:nil] encoding:NSUTF8StringEncoding];
+    delta(requestID, TLAgentStreamDeltaKindApproval, json);
+  }
   completion(nil);
 }
 
@@ -687,6 +701,50 @@ static void TestChatIconGenerator(void) {
 }
 @end
 
+static void TestStatusTransport(void) {
+  TLDeferredSocketService *vm = [[TLDeferredSocketService alloc] init];
+  TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:vm];
+  NSMutableArray *received = [NSMutableArray array];
+  __block BOOL finished = NO;
+  NSDictionary *approvalResponse = @{@"request_id":@"approval-id", @"choice":@"deny"};
+  [client streamHermesSessionWithAgent:[[TLAgentRecord alloc] init] requestID:@"status" sessionID:@"chat"
+    token:@"token" model:@"model" prompt:@"Deny" approvalResponse:approvalResponse delta:^(NSString *rid, TLAgentStreamDeltaKind kind, NSString *text) {
+      [received addObject:@[@(kind), text]];
+    } completion:^(NSError *error) { finished = YES; TLAssertTrue(error == nil, @"status transport completes normally"); }];
+  int descriptors[2];
+  TLAssertTrue(socketpair(AF_UNIX, SOCK_STREAM, 0, descriptors) == 0, @"create status test transport");
+  TLTestSocketConnection *connection = [[TLTestSocketConnection alloc] init];
+  connection.fileDescriptor = descriptors[0];
+  vm.connected((id)connection, nil);
+  char requestBytes[4096];
+  ssize_t length = recv(descriptors[1], requestBytes, sizeof(requestBytes), MSG_DONTWAIT);
+  TLAssertTrue(length > 0, @"approval response writes its request");
+  NSDictionary *wire = length > 0 ? [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:requestBytes length:length] options:0 error:nil] : nil;
+  TLAssertEqualObjects(wire[@"approval_response"], approvalResponse, @"exact approval response is sent as structured metadata");
+  NSString *approvalJSON = @"{\"request_id\":\"next-id\",\"command\":\"print('hi')\",\"choices\":[\"once\",\"deny\"]}";
+  for (NSDictionary *event in @[
+    @{@"type":@"delta", @"request_id":@"status", @"kind":@"status", @"text":@"waiting"},
+    @{@"type":@"delta", @"request_id":@"status", @"kind":@"status", @"text":@""},
+    @{@"type":@"delta", @"request_id":@"status", @"kind":@"thinking", @"text":@"Reasoning"},
+    @{@"type":@"delta", @"request_id":@"status", @"kind":@"unknown", @"text":@"Ignore"},
+    @{@"type":@"delta", @"request_id":@"status", @"kind":@"content", @"text":@"Answer"},
+    @{@"type":@"delta", @"request_id":@"status", @"kind":@"approval", @"text":approvalJSON},
+    @{@"type":@"complete"}]) {
+    NSMutableData *line = [[NSJSONSerialization dataWithJSONObject:event options:0 error:nil] mutableCopy];
+    [line appendBytes:"\n" length:1];
+    TLAssertTrue(write(descriptors[1], line.bytes, line.length) == (ssize_t)line.length, @"send status test frame");
+  }
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+  while (!finished && deadline.timeIntervalSinceNow > 0)
+    [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  TLAssertTrue(finished, @"status frames finish within the test deadline");
+  TLAssertEqualObjects(received, (@[@[@(TLAgentStreamDeltaKindStatus), @"waiting"],
+    @[@(TLAgentStreamDeltaKindStatus), @""], @[@(TLAgentStreamDeltaKindThinking), @"Reasoning"],
+    @[@(TLAgentStreamDeltaKindContent), @"Answer"], @[@(TLAgentStreamDeltaKindApproval), approvalJSON]]),
+    @"wire transport separates approvals from content and preserves status clears");
+  close(descriptors[1]);
+}
+
 static void TestCancellationDuringStartup(void) {
   TLFakeAgentClient *fake = [[TLFakeAgentClient alloc] init];
   TLDeferredReadyOrchestrator *orchestrator = [[TLDeferredReadyOrchestrator alloc]
@@ -1043,6 +1101,20 @@ static void TestBrowserConversation(void) {
   NSString *huge = [@"line\n" stringByPaddingToLength:100000 withString:@"line\n" startingAtIndex:0];
   NSString *context = TLBrowserPageContext(@{@"text":huge});
   TLAssertTrue(context.length < 40000 && [context containsString:@"untrusted reference material"], @"page context has a bounded size and retains safety instructions");
+  client.streamError = nil;
+  client.contentDelta = @"";
+  client.approvalDelta = @{@"request_id":@"browser-approval", @"command":@"print('hello')", @"choices":@[@"once", @"deny"]};
+  [conversation sendPrompt:@"Research" token:@"token" model:@"test/model" pageReader:^(void (^completion)(NSDictionary *, NSError *)) { completion(@{}, nil); }];
+  TLAssertEqualObjects(conversation.pendingApproval, client.approvalDelta, @"browser conversation exposes a structured pending card");
+  TLAssertTrue(!conversation.loading && ![conversation.markdown containsString:@"print('hello')"], @"approval is shown outside browser answer Markdown");
+  TLAssertTrue(![conversation respondToApproval:@"stale" choice:@"once" token:@"token" model:@"test/model"], @"browser rejects stale approval cards");
+  TLAssertTrue(![conversation respondToApproval:@"browser-approval" choice:@"always" token:@"token" model:@"test/model"], @"browser cannot expand approval scope");
+  client.approvalDelta = nil;
+  client.contentDelta = @"Approved answer";
+  TLAssertTrue([conversation respondToApproval:@"browser-approval" choice:@"once" token:@"token" model:@"test/model"], @"browser approval resumes its conversation");
+  TLAssertEqualObjects(client.capturedApprovalResponse, (@{@"request_id":@"browser-approval", @"choice":@"once"}), @"orchestrator forwards exact approval metadata");
+  TLAssertEqualObjects(client.capturedSessionID, summary.hermesSessionID, @"approval resumes the same Hermes session");
+  TLAssertTrue(!conversation.pendingApproval && [conversation.markdown containsString:@"Approved answer"], @"browser clears completed approval and displays continuation");
 }
 
 static void TestAssistantTurnRunner(void) {
@@ -1336,6 +1408,7 @@ int main(int argc, const char *argv[]) {
     TestMessageDeletion();
     TestChatIconGenerator();
     TestCancellationDuringStartup();
+    TestStatusTransport();
     TestAgentOrchestrator();
     TestAgentProfilesAndSelection();
     TestAgentProfileMigration();

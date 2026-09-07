@@ -54,6 +54,7 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
 - (void)cancel;
 // Reference context is sent to the model, never displayed or stored as the user's message.
 @property (nonatomic, copy, nullable) NSString *referenceContext;
+@property (nonatomic, copy, nullable) NSDictionary *approvalResponse;
 // Defaults to YES so each answer delta is visible, including unfinished Markdown.
 @property (nonatomic) BOOL streamsPartialContent;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *attachments;

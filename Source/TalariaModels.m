@@ -108,6 +108,8 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.role = self.role;
   copy.content = self.content;
   copy.thinking = self.thinking;
+  copy.approvalRequest = self.approvalRequest;
+  copy.approvalResponse = self.approvalResponse;
   copy.attachments = self.attachments;
   return copy;
 }

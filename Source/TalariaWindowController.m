@@ -1,4 +1,5 @@
 #import "design_system/TLInputSuggestionPanelView.h"
+#import "design_system/TLApprovalCardView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
 #import "PromptBuilder.h"
@@ -2154,6 +2155,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [windowController.appStateManager upsertWorkspaceTab:updatedTab activate:[windowController isWorkspaceTabActive:updatedTab]];
   };
   controller.faviconChangedHandler = ^{ [weakSelf reloadWorkspaceTabs]; };
+  controller.headerColorChangedHandler = ^{ [weakSelf.workspaceTabsController refreshContentColorsAnimated:YES]; };
   controller.linkHandler = ^(NSURL *linkedURL, NSEventModifierFlags flags) {
     [weakSelf handleBrowserTabRequestURL:linkedURL modifierFlags:flags];
   };
@@ -2277,6 +2279,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
+  [self.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
   self.activeChat = chat;
   self.messages = [NSMutableArray array];
   [self resetMessageRowCache];
@@ -2514,21 +2517,32 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (void)beginPreparedTurnWithChat:(TLChatRecord *)chat messages:(NSMutableArray<TLChatMessage *> *)turnMessages
                           token:(NSString *)token model:(NSString *)model prompt:(NSString *)nextPrompt
                     attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs {
-  self.attachmentDrafts[@(chat.chatID)] = @[];
-  self.attachmentPromptDrafts[@(chat.chatID)] = @"";
-  [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{
-    self.promptTextView.string = @"";
-    self.messageInput.attachmentURLs = @[];
-    self.errorMessage = @"";
-    [self.messageInput recalculateHeight];
-    [self updateControlStates];
-  }];
+  [self beginPreparedTurnWithChat:chat messages:turnMessages token:token model:model prompt:nextPrompt
+                     attachments:attachments sourceURLs:sourceURLs approvalResponse:nil];
+}
+
+- (void)beginPreparedTurnWithChat:(TLChatRecord *)chat messages:(NSMutableArray<TLChatMessage *> *)turnMessages
+                          token:(NSString *)token model:(NSString *)model prompt:(NSString *)nextPrompt
+                    attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs
+               approvalResponse:(NSDictionary *)approvalResponse {
+  if (!approvalResponse) {
+    self.attachmentDrafts[@(chat.chatID)] = @[];
+    self.attachmentPromptDrafts[@(chat.chatID)] = @"";
+    [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{
+      self.promptTextView.string = @"";
+      self.messageInput.attachmentURLs = @[];
+      self.errorMessage = @"";
+      [self.messageInput recalculateHeight];
+      [self updateControlStates];
+    }];
+  }
   TLAssistantTurnRunner *runner = [self newAssistantTurnRunner];
   if (!self.turnRunners) self.turnRunners = [NSMutableDictionary dictionary];
   if (!self.turnMessagesByChat) self.turnMessagesByChat = [NSMutableDictionary dictionary];
   self.turnRunners[@(chat.chatID)] = runner;
   self.turnMessagesByChat[@(chat.chatID)] = turnMessages;
   runner.attachments = attachments;
+  runner.approvalResponse = approvalResponse;
   __weak typeof(self) weakSelf = self;
 
   NSError *startError = nil;
@@ -2556,12 +2570,17 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     }
 
     [strongSelf.turnRunners removeObjectForKey:@(chat.chatID)];
-    [strongSelf.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
+    if (approvalResponse && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+      [strongSelf restorePendingApproval:approvalResponse inMessages:turnMessages];
+    }
+    BOOL hasApproval = NO;
+    for (TLChatMessage *message in turnMessages) if (message.approvalRequest) hasApproval = YES;
+    if (!hasApproval) [strongSelf.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
     BOOL showingOrigin = strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive];
-    if (result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+    if (!approvalResponse && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       [strongSelf restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     }
-    if (showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+    if (!approvalResponse && showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       strongSelf.promptTextView.string = result.userMessage.content;
       [strongSelf.messageInput recalculateHeight];
       [strongSelf updateMessageScrollInsets];
@@ -2569,7 +2588,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
     if ([nextPrompt hasPrefix:@"/"]) strongSelf.hermesCommandsFetchedAt = nil;
     [strongSelf refreshChatsKeepingActiveSelection];
-    if (result.generationStatus == TLAssistantTurnGenerationStatusSucceeded &&
+    if (!result.assistantMessage.approvalRequest && result.generationStatus == TLAssistantTurnGenerationStatusSucceeded &&
         result.persistenceStatus == TLAssistantTurnPersistenceStatusSucceeded) {
       [strongSelf generateChatIconIfNeededForChatID:chat.chatID messages:turnMessages];
     }
@@ -2605,11 +2624,44 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   if (!started) {
     [self.turnRunners removeObjectForKey:@(chat.chatID)];
-    [self.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
-    [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
+    if (approvalResponse) [self restorePendingApproval:approvalResponse inMessages:turnMessages];
+    if (!approvalResponse) {
+      [self.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
+      [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
+    }
     [self presentErrorMessage:startError.localizedDescription ?: @"Could not start assistant turn."];
     [self updateControlStates];
   }
+}
+
+- (void)restorePendingApproval:(NSDictionary *)response inMessages:(NSArray<TLChatMessage *> *)messages {
+  for (TLChatMessage *message in messages) {
+    if ([message.approvalRequest[@"request_id"] isEqual:response[@"request_id"]]) {
+      NSMutableDictionary *request = [message.approvalRequest mutableCopy];
+      [request removeObjectForKey:@"submitted"];
+      message.approvalRequest = request;
+    }
+  }
+}
+
+- (BOOL)respondToApproval:(NSString *)requestID choice:(NSString *)choice chatID:(NSInteger)chatID {
+  if (self.activeChat.chatID != chatID || self.isSending) return NO;
+  TLChatMessage *pending = nil;
+  for (TLChatMessage *message in self.messages) {
+    if ([message.approvalRequest[@"request_id"] isEqual:requestID] && ![message.approvalRequest[@"submitted"] boolValue]) pending = message;
+  }
+  if (!pending || ![TLApprovalChoices(pending.approvalRequest) containsObject:choice]) return NO;
+  if (!self.settings.openRouterToken.length || !self.settings.selectedModel.length) {
+    [self presentErrorMessage:@"Configure your token and model before responding to Hermes."];
+    return NO;
+  }
+  NSMutableDictionary *request = [pending.approvalRequest mutableCopy];
+  request[@"submitted"] = @YES;
+  pending.approvalRequest = request;
+  NSDictionary *response = @{@"request_id":requestID, @"choice":choice};
+  [self beginPreparedTurnWithChat:self.activeChat messages:self.messages token:self.settings.openRouterToken
+    model:self.settings.selectedModel prompt:TLApprovalChoiceTitle(choice) attachments:@[] sourceURLs:@[] approvalResponse:response];
+  return [pending.approvalRequest[@"submitted"] boolValue];
 }
 
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)slashCommandsMatchingPrompt:(NSString *)prompt {
@@ -4052,7 +4104,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     NSView *row = [self.messageRowViews objectForKey:previous];
     if (!row || [self.messageRowViews objectForKey:current] ||
         ![previous.role isEqualToString:current.role] || ![previous.content isEqualToString:current.content] ||
-        ![(previous.thinking ?: @"") isEqualToString:current.thinking ?: @""]) return;
+        ![(previous.thinking ?: @"") isEqualToString:current.thinking ?: @""] ||
+        ![(previous.approvalRequest ?: @{}) isEqual:current.approvalRequest ?: @{}]) return;
     [self.messageRowViews setObject:row forKey:current];
     [self.messageRowSignatures setObject:[self.messageRowSignatures objectForKey:previous] forKey:current];
     NSView *markdown = [self.messageMarkdownViews objectForKey:previous];
@@ -4260,7 +4313,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 - (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
   BOOL user = [message.role isEqualToString:TLRoleUser];
   BOOL showThinking = !user && !message.content.length && message.thinking.length > 0;
-  NSString *mode = showThinking ? @"thinking" : @"content";
+  NSString *mode = message.approvalRequest ? [@"approval:" stringByAppendingString:message.approvalRequest.description] : (showThinking ? @"thinking" : @"content");
   CGFloat layoutWidth = self.messageInputWidthConstraint.constant > 0.0
     ? self.messageInputWidthConstraint.constant
     : self.palette.messageInputMaxWidth;
@@ -4363,7 +4416,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   BOOL hasResponseContent = message.content.length > 0;
   BOOL showThinking = !user && !hasResponseContent && message.thinking.length > 0;
-  if (showThinking) {
+  if (showThinking && !message.approvalRequest) {
     [stack addArrangedSubview:[self labelWithString:@"Thinking"
                                                font:self.palette.roleFont
                                               color:self.palette.thinkingText]];
@@ -4397,7 +4450,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [contentLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                            forOrientation:NSLayoutConstraintOrientationHorizontal];
     [stack addArrangedSubview:contentLabel];
-  } else {
+  } else if (hasResponseContent || !message.approvalRequest) {
     NSString *content = hasResponseContent ? message.content : @"...";
     if ([self messageShowsAWSOutageIntent:message]) {
       content = TLAWSOutageAgentMessage;
@@ -4414,6 +4467,15 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [self.messageMarkdownViews setObject:markdown forKey:message];
   }
 
+  if (!user && message.approvalRequest) {
+    TLApprovalCardView *card = [[TLApprovalCardView alloc] initWithRequest:message.approvalRequest palette:self.palette];
+    NSString *requestID = message.approvalRequest[@"request_id"];
+    NSInteger chatID = self.activeChat.chatID;
+    __weak typeof(self) weakSelf = self;
+    card.choiceHandler = ^BOOL(NSString *choice) { return [weakSelf respondToApproval:requestID choice:choice chatID:chatID]; };
+    [stack addArrangedSubview:card];
+    [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+  }
   [row addSubview:bubble];
   NSLayoutConstraint *assistantWidth = [bubble.widthAnchor constraintEqualToAnchor:row.widthAnchor multiplier:widthMultiplier];
   assistantWidth.priority = NSLayoutPriorityDefaultHigh + 1.0;
@@ -4604,7 +4666,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
-  [self.workspaceTabsController updateTabWidthsForAvailableWidth:[self availableTabStripWidthForLeadingConstant:self.tabStackLeadingConstraint.constant]];
+  [self.workspaceTabsController updateTabWidthsForAvailableWidth:[self availableTabStripWidthForLeadingConstant:self.tabStackLeadingConstraint.constant]
+    contentWidth:NSWidth(self.contentHost.bounds)];
 }
 
 - (CGFloat)contentLeadingPadding {
@@ -4679,7 +4742,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     self.messageInputWidthConstraint.constant = targetInputWidth;
     [self applyBrowserAddressInputWidth:targetInputWidth];
   }
-  [self.workspaceTabsController updateTabWidthsForAvailableWidth:targetTabAvailableWidth];
+  [self.workspaceTabsController updateTabWidthsForAvailableWidth:targetTabAvailableWidth
+    contentWidth:MAX(0,windowWidth-targetContentLeadingOffset-self.palette.space4)];
 }
 
 - (void)toggleSidebar:(id)sender {
@@ -5036,6 +5100,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 }
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller isTabActive:(TLWorkspaceTab *)tab {
   return [self isWorkspaceTabActive:tab];
+}
+
+- (NSColor *)workspaceTabsController:(TLWorkspaceTabsController *)controller backgroundColorForTab:(TLWorkspaceTab *)tab {
+  id feature=[self runtimeForTab:tab].featureController;
+  return [feature isKindOfClass:TLBrowserTabController.class] ? ((TLBrowserTabController *)feature).headerContentColor : nil;
 }
 
 - (NSString *)workspaceTabsController:(TLWorkspaceTabsController *)controller displayTitleForTab:(TLWorkspaceTab *)tab {
@@ -5842,6 +5911,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     return;
   }
 
+  [self.turnMessagesByChat removeObjectForKey:@(chatID)];
   NSError *attachmentCleanupError = nil;
   [self.agentOrchestrator removeAttachmentsForSessionID:deletedChat.hermesSessionID error:&attachmentCleanupError];
   if (attachmentCleanupError) [self presentErrorMessage:attachmentCleanupError.localizedDescription];

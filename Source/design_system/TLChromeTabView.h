@@ -10,6 +10,9 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @interface TLChromeTabSelectionView : NSView
 
 @property (nonatomic, strong) TLThemePalette *palette;
+@property (nonatomic, strong, readonly) NSColor *displayedBackgroundColor;
+@property (nonatomic, copy, nullable) void (^backgroundColorChanged)(NSColor *color);
+- (void)setContentBackgroundColor:(nullable NSColor *)color animated:(BOOL)animated;
 @property (nonatomic) CGFloat leadingFlareOutset;
 @property (nonatomic, readonly) NSRect selectionFrame;
 @property (nonatomic, copy, nullable) void (^geometryChanged)(void);
@@ -44,6 +47,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @property (nonatomic, copy) NSString *icon;
 @property (nonatomic, copy) NSString *systemIconName;
 @property (nonatomic) BOOL active;
+@property (nonatomic, strong, nullable) NSColor *activeBackgroundColor;
 @property (nonatomic) BOOL splitCompanion;
 @property (nonatomic) BOOL drawsActiveBackground;
 @property (nonatomic) BOOL animatesDecorationChanges;
@@ -71,7 +75,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 - (void)clipLifecycleContentToSelectionView:(TLChromeTabSelectionView *)selectionView;
 - (void)resetLifecycleAppearance;
 - (void)updateTitle:(NSString *)title image:(nullable NSImage *)image icon:(NSString *)icon
-    systemIconName:(NSString *)systemIconName animated:(BOOL)animated;
+    systemIconName:(NSString *)systemIconName;
 
 @end
 

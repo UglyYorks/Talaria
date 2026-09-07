@@ -36,6 +36,8 @@ TAB_LAYOUT_TEST_EXECUTABLE := $(BUILD_DIR)/TabLayoutTests
 NOTCH_VIEW_TEST_EXECUTABLE := $(BUILD_DIR)/NotchOverlayViewTests
 GLASS_PANE_TEST_EXECUTABLE := $(BUILD_DIR)/GlassPaneTests
 MARKDOWN_IT := Vendor/markdown-it/markdown-it.min.js
+OVERLAY_PROBE := Source/BrowserOverlayProbe.js
+DOCUMENT_FOOTER := Source/BrowserDocumentFooter.js Source/BrowserFooterColor.js
 CODE_RESOURCES := Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js Vendor/highlight.js/LICENSE
 MATH_RESOURCES := Source/MarkdownMath.js $(shell find Vendor/katex -type f)
 MARKDOWN_RESOURCES_STAMP := $(BUILD_DIR)/.markdown-resources.stamp
@@ -116,11 +118,13 @@ $(SIGNING_CONFIG): FORCE | check-signing-identity
 	@printf '%s\n' '$(CODE_SIGN_IDENTITY)' > "$@.tmp"
 	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
 
-$(APP_BUILD_STAMP): Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
+$(APP_BUILD_STAMP): $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources" "$(APP_BUNDLE)/Contents/Frameworks"
 	xcrun clang++ $(APP_OBJECTS) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(APP_EXECUTABLE)"
 	cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
+	cp "$(OVERLAY_PROBE)" "$(APP_BUNDLE)/Contents/Resources/BrowserOverlayProbe.js"
+	cp $(DOCUMENT_FOOTER) "$(APP_BUNDLE)/Contents/Resources/"
 	cp "$(SIDEBAR_PLANET)" "$(APP_BUNDLE)/Contents/Resources/sidebar-planet.png"
 	cp "$(APP_ICON)" "$(APP_BUNDLE)/Contents/Resources/Talaria.icns"
 	ditto "assets/inbox-icons" "$(APP_BUNDLE)/Contents/Resources/inbox-icons"
@@ -252,9 +256,10 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	test -s "$(AGENT_LINUX_INITRD)"
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
-test: $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+test: test-browser-overlay $(BUILD_DIR)/BrowserOverlayPolicyTests $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
 	"$(BUILD_DIR)/QuickInputTests"
 	"$(BUILD_DIR)/SplitWorkspaceTests"
+	"$(BUILD_DIR)/BrowserOverlayPolicyTests"
 	"$(BUILD_DIR)/ChatAttachmentTests"
 	python3 -B Tests/TerminalServiceTests.py
 	"$(BUILD_DIR)/AppResetTests"
@@ -294,7 +299,7 @@ $(BUILD_DIR)/MarkdownMathTests: Source/Theme.m Source/design_system/ThemeSharedC
 
 $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/FeatureControllerTests: | $(MARKDOWN_RESOURCES_STAMP)
 
-$(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/MarkdownRenderer.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
+$(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/design_system/TLApprovalCardView.m Source/design_system/TLThemedButton.m Source/MarkdownRenderer.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
 	mkdir -p "$(BUILD_DIR)"
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -framework WebKit -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -o "$@"
@@ -367,3 +372,13 @@ $(BUILD_DIR)/TerminalClientProbe: Source/TLTerminalClient.m Tests/TerminalClient
 # Split state, native pane geometry and real chat workspace integration.
 $(BUILD_DIR)/SplitWorkspaceTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/SplitWorkspaceTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+$(BUILD_DIR)/BrowserOverlayPolicyTests: Source/TLBrowserOverlayPolicy.m Tests/BrowserOverlayPolicyTests.m
+	mkdir -p "$(BUILD_DIR)"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
+
+# Uses installed Chromium with a temporary profile; requires Node 22+.
+# CHROME_BIN can override the Chrome/Chromium executable path.
+.PHONY: test-browser-overlay
+test-browser-overlay:
+	node Tests/BrowserDocumentFooterTests.mjs
+	node Tests/BrowserOverlayTests.mjs

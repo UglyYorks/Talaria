@@ -22,6 +22,8 @@ NSColor *TLContentAccentColorWithAlpha(NSColor *color, CGFloat alpha) {
 
 NSColor *TLColorByInterpolatingColors(NSColor *startColor, NSColor *endColor, CGFloat progress) {
   CGFloat clampedProgress = MIN(MAX(progress, 0.0), 1.0);
+  if (clampedProgress == 0) return startColor;
+  if (clampedProgress == 1) return endColor;
   NSColor *startRGBColor = [startColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]] ?: startColor;
   NSColor *endRGBColor = [endColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]] ?: endColor;
   CGFloat startRed = 0.0;
@@ -34,7 +36,7 @@ NSColor *TLColorByInterpolatingColors(NSColor *startColor, NSColor *endColor, CG
   CGFloat endAlpha = 1.0;
   [startRGBColor getRed:&startRed green:&startGreen blue:&startBlue alpha:&startAlpha];
   [endRGBColor getRed:&endRed green:&endGreen blue:&endBlue alpha:&endAlpha];
-  return [NSColor colorWithCalibratedRed:startRed + ((endRed - startRed) * clampedProgress)
+  return [NSColor colorWithSRGBRed:startRed + ((endRed - startRed) * clampedProgress)
                                    green:startGreen + ((endGreen - startGreen) * clampedProgress)
                                     blue:startBlue + ((endBlue - startBlue) * clampedProgress)
                                    alpha:startAlpha + ((endAlpha - startAlpha) * clampedProgress)];
@@ -46,6 +48,14 @@ CGColorRef TLCGColor(NSColor *color) {
 }
 
 @implementation TLThemePalette
+- (NSColor *)textColorForContentBackground:(NSColor *)background {
+  NSColor *color=[background colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  if(!color)return self.appText;
+  double (^linear)(double)=^double(double value){return value<=0.04045 ? value/12.92 : pow((value+0.055)/1.055,2.4);};
+  double luminance=0.2126*linear(color.redComponent)+0.7152*linear(color.greenComponent)+0.0722*linear(color.blueComponent);
+  return (luminance+0.05)/0.05 >= 1.05/(luminance+0.05) ? self.black : self.white;
+}
+
 
 + (instancetype)paletteForPreference:(TLThemePreference)preference {
   NSAppearance *appearance = NSApp.effectiveAppearance ?: [NSAppearance currentDrawingAppearance];
@@ -105,6 +115,8 @@ CGColorRef TLCGColor(NSColor *color) {
   self.tabContentVerticalOffset = 1.0;
   self.tabMinWidth = 112.0;
   self.tabMaxWidth = 160.0;
+  self.tabWidthScalingThreshold = 800.0;
+  self.tabWidthGrowthFactor = 0.30;
   self.tabIconSize = 18.0;
   self.tabIconGlyphSize = 16.0;
   self.tabFlareRadius = 8.0;
@@ -136,6 +148,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.browserToolbarIconSize = 13.0;
   self.browserReducedHeightSpacing = 40.0;
   self.browserHeightTransitionDuration = 0.20;
+  self.browserFooterColorTransitionDuration = 0.40;
   self.browserHeightTransitionOvershoot = 0.04;
   self.browserChatPaneHeightFraction = 0.55;
   self.browserChatPaneTransitionDuration = 0.20;

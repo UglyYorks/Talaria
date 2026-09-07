@@ -17,6 +17,10 @@ THEME_FILES = {
 }
 
 CONTENT_DERIVED_ALLOWANCES = {
+    # Serialization of the same page-derived/theme fallback color for the document spacer.
+    ("Source/TLBrowserContentColor.m", 'stringWithFormat:@"rgb(%d,%d,%d)"'),
+    # Bottom-edge page pixels, isolated to the content extension beneath the webview.
+    ("Source/TLBrowserContentColor.m", "colorWithSRGBRed:[rgb[0] doubleValue]/255"),
     (
         "Source/design_system/UIComponents.m",
         "colorWithCalibratedRed:redTotal / alphaTotal",
