@@ -3,6 +3,7 @@
 #import "design_system/UIComponents.h"
 #import "design_system/TLEmojiPicker.h"
 #import "design_system/TLFolderAccessPicker.h"
+#import "design_system/TLSkillsPicker.h"
 
 @interface TLAgentCreationWindowController () <NSWindowDelegate>
 @property (nonatomic, strong) TLThemePalette *palette;
@@ -17,6 +18,14 @@
 @property (nonatomic, copy, readonly) NSArray<NSString *> *folderPaths;
 @property (nonatomic) NSInteger createdAgentID;
 @property (nonatomic) NSInteger editingAgentID;
+@property (nonatomic, strong) NSStackView *generalSection;
+@property (nonatomic, strong) NSStackView *skillsSection;
+@property (nonatomic, strong) TLSkillsPicker *skillsPicker;
+@property (nonatomic, strong) TLThemedButton *generalTabButton;
+@property (nonatomic, strong) TLThemedButton *skillsTabButton;
+@property (nonatomic) BOOL skillsLoaded;
+@property (nonatomic) BOOL saving;
+@property (nonatomic) BOOL closed;
 @end
 
 @implementation TLAgentCreationWindowController
@@ -88,8 +97,21 @@
   NSTextField *title = [self label:self.editingAgentID ? @"Agent Settings" : @"Create Agent" secondary:NO];
   title.font = p.titleFont;
   [header addArrangedSubview:title];
-  [header addArrangedSubview:[self label:self.editingAgentID ? @"Make this agent your own. Soul changes apply to new chats." : @"Your own Hermes agent, running locally in a private VM." secondary:YES]];
+  [header addArrangedSubview:[self label:self.editingAgentID ? @"Make this agent your own. Soul and skill changes apply to new chats." : @"Your own Hermes agent, running locally in a private VM." secondary:YES]];
   [body addArrangedSubview:header];
+
+  if (self.editingAgentID) {
+    NSStackView *tabs = [[NSStackView alloc] init];
+    tabs.spacing = p.space5;
+    self.generalTabButton = (TLThemedButton *)[self button:@"General" action:@selector(showGeneral:)];
+    self.skillsTabButton = (TLThemedButton *)[self button:@"Skills" action:@selector(showSkills:)];
+    [tabs addArrangedSubview:self.generalTabButton];
+    [tabs addArrangedSubview:self.skillsTabButton];
+    [body addArrangedSubview:tabs];
+  }
+  self.generalSection = [self verticalStack];
+  self.generalSection.spacing = p.space10;
+  [body addArrangedSubview:self.generalSection];
 
   NSStackView *identity = [[NSStackView alloc] init];
   identity.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -116,7 +138,7 @@
   [identity addArrangedSubview:name];
   [name.widthAnchor constraintEqualToAnchor:identity.widthAnchor
     constant:-(self.avatarPicker.intrinsicContentSize.width + p.space10)].active = YES;
-  [body addArrangedSubview:identity];
+  [self.generalSection addArrangedSubview:identity];
 
   NSStackView *soul = [self verticalStack];
   [soul addArrangedSubview:[self label:@"Soul" secondary:NO]];
@@ -141,7 +163,7 @@
   [soul addArrangedSubview:soulScroll];
   [soulScroll.widthAnchor constraintEqualToAnchor:soul.widthAnchor].active = YES;
   [soulScroll.heightAnchor constraintEqualToConstant:soulHeight].active = YES;
-  [body addArrangedSubview:soul];
+  [self.generalSection addArrangedSubview:soul];
 
   if (!self.editingAgentID) {
     NSStackView *folders = [self verticalStack];
@@ -152,7 +174,26 @@
     [folders addArrangedSubview:self.folderPicker];
     [self.folderPicker.widthAnchor constraintEqualToAnchor:folders.widthAnchor].active = YES;
     [folders setCustomSpacing:p.space5 afterView:folders.arrangedSubviews[1]];
-    [body addArrangedSubview:folders];
+    [self.generalSection addArrangedSubview:folders];
+  }
+  for (NSView *section in self.generalSection.arrangedSubviews) {
+    [section.widthAnchor constraintEqualToAnchor:self.generalSection.widthAnchor].active = YES;
+  }
+  if (self.editingAgentID) {
+    self.skillsSection = [self verticalStack];
+    self.skillsSection.spacing = p.space5;
+    [self.skillsSection addArrangedSubview:[self label:@"Skills" secondary:NO]];
+    [self.skillsSection addArrangedSubview:[self label:@"Choose which installed skills this agent can use. Changes take effect when you save." secondary:YES]];
+    self.skillsPicker = [[TLSkillsPicker alloc] init];
+    self.skillsPicker.palette = p;
+    __weak typeof(self) weakSelf = self;
+    self.skillsPicker.reloadHandler = ^{ [weakSelf loadSkills]; };
+    [self.skillsSection addArrangedSubview:self.skillsPicker];
+    for (NSView *view in self.skillsSection.arrangedSubviews) {
+      [view.widthAnchor constraintEqualToAnchor:self.skillsSection.widthAnchor].active = YES;
+    }
+    [body addArrangedSubview:self.skillsSection];
+    self.skillsSection.hidden = YES;
   }
   for (NSView *section in body.arrangedSubviews) {
     [section.widthAnchor constraintEqualToAnchor:body.widthAnchor].active = YES;
@@ -196,16 +237,75 @@
 
 - (NSArray<NSString *> *)folderPaths { return self.folderPicker.folderPaths; }
 
+- (void)showGeneral:(id)sender {
+  self.skillsSection.hidden = YES;
+  self.generalSection.hidden = NO;
+  [self applyPalette:self.palette];
+}
+
+- (void)showSkills:(id)sender {
+  self.generalSection.hidden = YES;
+  self.skillsSection.hidden = NO;
+  [self applyPalette:self.palette];
+  if (!self.skillsLoaded && !self.skillsPicker.loading) [self loadSkills];
+}
+
+- (void)loadSkills {
+  if (self.saving || self.skillsPicker.loading || self.skillsPicker.changes.count) return;
+  self.skillsPicker.loading = YES;
+  self.skillsPicker.message = @"";
+  __weak typeof(self) weakSelf = self;
+  [self.orchestrator hermesSkillsForAgentWithID:self.editingAgentID changes:nil completion:^(NSDictionary *result, NSError *error) {
+    TLAgentCreationWindowController *owner = weakSelf;
+    if (!owner || owner.closed) return;
+    owner.skillsPicker.loading = NO;
+    owner.skillsLoaded = !error;
+    owner.skillsPicker.message = error.localizedDescription ?: @"";
+    if (!error) owner.skillsPicker.skills = result[@"skills"] ?: @[];
+  }];
+}
+
+- (void)setSaving:(BOOL)saving {
+  _saving = saving;
+  self.createButton.enabled = !saving;
+  self.cancelButton.enabled = !saving;
+  self.nameField.enabled = !saving;
+  self.soulView.editable = !saving;
+  self.skillsPicker.enabled = !saving;
+}
+
+- (void)saveProfile:(id)sender {
+  NSError *error = nil;
+  TLAgentRecord *agent = [self.orchestrator updateAgentWithID:self.editingAgentID name:self.nameField.stringValue
+    avatar:self.avatarPicker.emoji soul:self.soulView.string error:&error];
+  if (!agent) { self.statusLabel.stringValue = error.localizedDescription ?: @"Could not save agent settings."; return; }
+  self.createdAgentID = agent.agentID;
+  [self closeSheet:sender];
+  if (self.agentUpdatedHandler) self.agentUpdatedHandler(agent);
+}
+
 - (void)create:(id)sender {
-  if (self.createdAgentID) return;
+  if (self.createdAgentID || self.saving) return;
   NSError *error = nil;
   if (self.editingAgentID) {
-    TLAgentRecord *agent = [self.orchestrator updateAgentWithID:self.editingAgentID name:self.nameField.stringValue
-      avatar:self.avatarPicker.emoji soul:self.soulView.string error:&error];
-    if (!agent) { self.statusLabel.stringValue = error.localizedDescription ?: @"Could not save agent settings."; return; }
-    self.createdAgentID = agent.agentID;
-    [self closeSheet:sender];
-    if (self.agentUpdatedHandler) self.agentUpdatedHandler(agent);
+    if (![self.nameField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) {
+      self.statusLabel.stringValue = @"Give your agent a name.";
+      return;
+    }
+    NSDictionary *changes = self.skillsPicker.changes;
+    if (!changes.count) { [self saveProfile:sender]; return; }
+    self.saving = YES;
+    self.statusLabel.stringValue = @"Saving skills…";
+    __weak typeof(self) weakSelf = self;
+    [self.orchestrator hermesSkillsForAgentWithID:self.editingAgentID changes:changes completion:^(NSDictionary *result, NSError *saveError) {
+      TLAgentCreationWindowController *owner = weakSelf;
+      if (!owner) return;
+      owner.saving = NO;
+      if (saveError) { owner.statusLabel.stringValue = saveError.localizedDescription; return; }
+      owner.skillsPicker.skills = result[@"skills"] ?: @[];
+      owner.statusLabel.stringValue = @"Skills saved.";
+      [owner saveProfile:nil];
+    }];
     return;
   }
   TLAgentRecord *agent = [self.orchestrator createAgentWithName:self.nameField.stringValue
@@ -217,16 +317,23 @@
 }
 
 - (void)closeSheet:(id)sender {
+  if (self.saving) return;
+  self.closed = YES;
   [self.window.sheetParent endSheet:self.window];
   [self.window orderOut:nil];
 }
 
 - (void)showFromWindow:(NSWindow *)parent {
+  self.closed = NO;
   [parent beginSheet:self.window completionHandler:nil];
   [self.window makeFirstResponder:self.nameField];
 }
 
 - (void)applyPaletteToView:(NSView *)view {
+  if ([view isKindOfClass:TLSkillsPicker.class]) {
+    ((TLSkillsPicker *)view).palette = self.palette;
+    return;
+  }
   if ([view isKindOfClass:TLFolderAccessPicker.class]) {
     ((TLFolderAccessPicker *)view).palette = self.palette;
     return;
@@ -251,7 +358,8 @@
   if ([view isKindOfClass:NSScrollView.class]) ((NSScrollView *)view).backgroundColor = self.palette.controlSurface;
   if ([view isKindOfClass:TLThemedButton.class]) {
     TLThemedButton *button = (TLThemedButton *)view;
-    button.primary = button == self.createButton;
+    button.primary = button == self.createButton || (button == self.generalTabButton && !self.generalSection.hidden) ||
+                     (button == self.skillsTabButton && !self.skillsSection.hidden);
     button.palette = self.palette;
   }
   for (NSView *child in view.subviews) [self applyPaletteToView:child];

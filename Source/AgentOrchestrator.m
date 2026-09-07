@@ -499,6 +499,31 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }];
 }
 
+- (void)hermesSkillsForAgentWithID:(NSInteger)agentID changes:(NSDictionary<NSString *, NSNumber *> *)changes
+                      completion:(void (^)(NSDictionary *, NSError *))completion {
+  NSError *error = nil;
+  TLAgentRecord *selected = [self.database agentWithID:agentID error:&error];
+  if (!selected || ![self hasHermesInstallationForAgent:selected]) {
+    completion(nil, error ?: TLAgentOrchestratorError(@"Install Hermes for this agent to manage its skills."));
+    return;
+  }
+  if (![self.agentClient respondsToSelector:@selector(hermesSkillsWithAgent:changes:completion:)]) {
+    completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to manage Hermes skills."));
+    return;
+  }
+  void (^ready)(TLAgentRecord *, NSError *) = ^(TLAgentRecord *agent, NSError *startError) {
+    if (!agent || startError) { completion(nil, startError); return; }
+    [self.agentClient hermesSkillsWithAgent:agent changes:changes completion:^(NSDictionary *result, NSError *skillError) {
+      if (!skillError && changes.count) {
+        [NSFileManager.defaultManager removeItemAtURL:TLHermesCommandCacheURL(agent) error:nil];
+      }
+      completion(result, skillError);
+    }];
+  };
+  if ([self isVMRunningForAgent:selected]) ready(selected, nil);
+  else [self startAgentWithID:agentID completion:ready];
+}
+
 - (NSDictionary *)cachedHermesCommands {
   // The file belongs to one agent, so reinstalling/deleting it cannot leak another
   // installation's skills or custom commands into the picker. Cache only metadata.

@@ -378,6 +378,170 @@ class GatewayTests(unittest.TestCase):
             self.gateway.catalog()
 
 
+class SkillPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.gateway = HermesGateway.__new__(HermesGateway)
+        self.gateway._skill_policy_applied = False
+        self.config = {'skills': {'disabled': ['user-skill', 'uninstalled-skill'],
+                                 'platform_disabled': {'telegram': ['telegram-only']},
+                                 'external_dirs': ['/custom/skills']},
+                       'model': {'default': 'user-model'}}
+
+        def rpc(method, params=None):
+            if method == 'config.get':
+                self.assertEqual(params, {'key': 'full', 'profile': 'default'})
+                return {'config': self.config}
+            if method == 'profiles.configure':
+                self.assertEqual(set(params), {'name', 'disabled_skills'})
+                self.assertEqual(params['name'], 'default')
+                self.config.setdefault('skills', {})['disabled'] = params['disabled_skills']
+                return {'ok': True, 'applied': {'skills': True}}
+            if method == 'skills.reload':
+                return {'result': {'total': 2}}
+            self.fail(f'Unexpected RPC: {method}')
+
+        self.gateway.call = Mock(side_effect=rpc)
+
+    def test_policy_merges_existing_settings_and_verifies_before_reload(self):
+        self.gateway.apply_skill_policy()
+        self.assertEqual(self.config['skills'], {
+            'disabled': ['grounded-citations', 'uninstalled-skill', 'user-skill'],
+            'platform_disabled': {'telegram': ['telegram-only']}, 'external_dirs': ['/custom/skills']})
+        self.assertEqual(self.config['model'], {'default': 'user-model'})
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list],
+                         ['config.get', 'profiles.configure', 'config.get', 'skills.reload'])
+        self.gateway.call.reset_mock()
+        self.gateway.apply_skill_policy()
+        self.gateway.call.assert_not_called()
+
+    def test_existing_policy_avoids_rewriting_profile(self):
+        self.config['skills']['disabled'].append('grounded-citations')
+        self.gateway.apply_skill_policy()
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list], ['config.get', 'skills.reload'])
+
+    def test_fresh_install_and_legacy_scalar_disabled_setting(self):
+        for config, expected in [({}, ['grounded-citations']),
+                                 ({'skills': None}, ['grounded-citations']),
+                                 ({'skills': {'disabled': None}}, ['grounded-citations']),
+                                 ({'skills': {'disabled': ' user-skill '}}, ['grounded-citations', 'user-skill'])]:
+            with self.subTest(config=config):
+                self.gateway._skill_policy_applied = False
+                self.gateway.call.side_effect = [{'config': config}, {'applied': {'skills': True}},
+                                                {'config': {'skills': {'disabled': expected}}}, {}]
+                self.gateway.apply_skill_policy()
+                self.assertEqual(self.gateway.call.call_args_list[-3],
+                                 call('profiles.configure', {'name': 'default', 'disabled_skills': expected}))
+
+    def test_malformed_settings_never_replace_user_configuration(self):
+        for result in [{}, {'config': []}, {'config': {'skills': []}},
+                       {'config': {'skills': {'disabled': {'a': True}}}},
+                       {'config': {'skills': {'disabled': [42]}}}]:
+            with self.subTest(result=result):
+                self.gateway.call.reset_mock()
+                self.gateway.call.side_effect = None
+                self.gateway.call.return_value = result
+                with self.assertRaisesRegex(RuntimeError, 'invalid'):
+                    self.gateway.apply_skill_policy()
+                self.assertFalse(self.gateway._skill_policy_applied)
+                self.assertEqual(self.gateway.call.call_count, 1)
+
+    def test_rejected_or_unpersisted_write_is_not_success(self):
+        for replies in [
+                [{'config': {}}, {'ok': False, 'applied': {'skills': False}}],
+                [{'config': {}}, {'applied': {'skills': True}}, {'config': {}}]]:
+            with self.subTest(replies=replies):
+                self.gateway.call.side_effect = replies
+                with self.assertRaisesRegex(RuntimeError, 'did not'):
+                    self.gateway.apply_skill_policy()
+                self.assertFalse(self.gateway._skill_policy_applied)
+
+    def test_missing_rpc_reports_update_requirement_and_can_retry(self):
+        self.gateway.call.side_effect = RPCError({'code': -32601, 'message': 'method unavailable'})
+        with self.assertRaisesRegex(RuntimeError, 'Update Hermes'):
+            self.gateway.apply_skill_policy()
+        self.assertFalse(self.gateway._skill_policy_applied)
+        self.gateway.call.side_effect = [{'config': {'skills': {'disabled': ['grounded-citations']}}}, {}]
+        self.gateway.apply_skill_policy()
+        self.assertTrue(self.gateway._skill_policy_applied)
+
+    def test_failed_reload_retries_even_after_settings_were_saved(self):
+        self.gateway.call.side_effect = [
+            {'config': {}}, {'applied': {'skills': True}},
+            {'config': {'skills': {'disabled': ['grounded-citations']}}},
+            RPCError({'message': 'reload failed'})]
+        with self.assertRaisesRegex(RuntimeError, 'reload failed'):
+            self.gateway.apply_skill_policy()
+        self.assertFalse(self.gateway._skill_policy_applied)
+
+
+class SkillsSettingsTests(unittest.TestCase):
+    def setUp(self):
+        self.gateway = HermesGateway.__new__(HermesGateway)
+        self.gateway.skill_settings_lock = threading.Lock()
+        self.disabled = {'grounded-citations', 'beta', 'uninstalled'}
+        self.names = ['hermes-agent', 'grounded-citations', 'beta', 'alpha']
+
+        def rpc(method, params=None):
+            if method == 'profiles.describe':
+                self.assertEqual(params, {'name': 'default'})
+                return {'skills': [{'name': name, 'enabled': name not in self.disabled} for name in self.names]}
+            if method == 'config.get':
+                return {'config': {'skills': {'disabled': sorted(self.disabled)}}}
+            if method == 'profiles.configure':
+                self.assertEqual(set(params), {'name', 'disabled_skills'})
+                self.disabled = set(params['disabled_skills'])
+                return {'applied': {'skills': True}}
+            if method == 'skills.reload':
+                return {}
+            self.fail(method)
+        self.gateway.call = Mock(side_effect=rpc)
+
+    def test_catalogue_includes_disabled_and_locked_skills_without_writing(self):
+        rows = self.gateway.manage_skills()['skills']
+        self.assertEqual([row['name'] for row in rows], ['alpha', 'beta', 'grounded-citations', 'hermes-agent'])
+        self.assertFalse(rows[1]['enabled'])
+        self.assertEqual(rows[2]['locked_reason'], 'Managed by Talaria')
+        self.assertEqual(rows[3]['locked_reason'], 'Required by Hermes')
+        self.gateway.call.assert_called_once_with('profiles.describe', {'name': 'default'})
+
+    def test_save_merges_only_changed_skills_with_current_configuration(self):
+        self.gateway.manage_skills()
+        self.disabled.add('disabled-elsewhere')
+        rows = self.gateway.manage_skills({'alpha': False, 'beta': True})['skills']
+        self.assertEqual(self.disabled, {'alpha', 'grounded-citations', 'uninstalled', 'disabled-elsewhere'})
+        self.assertFalse(rows[0]['enabled'])
+        self.assertTrue(rows[1]['enabled'])
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list][-3:],
+                         ['config.get', 'skills.reload', 'profiles.describe'])
+
+    def test_invalid_unknown_and_locked_changes_never_write(self):
+        for changes in [[], {'alpha': 1}, {'removed-skill': False}, {'grounded-citations': True}, {'hermes-agent': False}]:
+            with self.subTest(changes=changes):
+                self.gateway.call.reset_mock()
+                with self.assertRaises((ValueError, RuntimeError)):
+                    self.gateway.manage_skills(changes)
+                self.assertFalse(any(c.args[0] == 'profiles.configure' for c in self.gateway.call.call_args_list))
+
+    def test_malformed_catalogue_is_an_error_not_an_empty_list(self):
+        for result in [{}, {'skills': [{}]}, {'skills': [{'name': 'alpha', 'enabled': 'false'}]}]:
+            with self.subTest(result=result):
+                self.gateway.call.side_effect = None
+                self.gateway.call.return_value = result
+                with self.assertRaisesRegex(RuntimeError, 'invalid skill catalogue'):
+                    self.gateway.manage_skills()
+
+    def test_worker_skill_requests_need_no_inference_credentials(self):
+        for request in [{'operation': 'hermes_skills', 'request_id': 'r'},
+                        {'operation': 'hermes_skills', 'request_id': 'r', 'changes': {'alpha': False}}]:
+            with self.subTest(request=request), patch.object(worker, 'tui_gateway', return_value=self.gateway) as get:
+                output = io.BytesIO()
+                worker.handle_request(request, output)
+                get.assert_called_once_with()
+                events = [json.loads(line) for line in output.getvalue().splitlines()]
+                self.assertEqual([event['type'] for event in events], ['delta', 'complete'])
+                self.assertEqual(len(json.loads(events[0]['text'])['skills']), 4)
+
+
 class TransportTests(unittest.TestCase):
     def test_real_stdio_transport_routes_concurrent_rpc_replies(self):
         with tempfile.TemporaryDirectory() as directory:

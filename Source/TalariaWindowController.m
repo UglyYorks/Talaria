@@ -3776,7 +3776,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.agentSettingsWindowController = [[TLAgentCreationWindowController alloc]
     initWithAgent:agent palette:self.palette orchestrator:self.agentOrchestrator];
   __weak typeof(self) weakSelf = self;
-  self.agentSettingsWindowController.agentUpdatedHandler = ^(TLAgentRecord *updatedAgent) { [weakSelf refreshAgents]; };
+  self.agentSettingsWindowController.agentUpdatedHandler = ^(TLAgentRecord *updatedAgent) {
+    [weakSelf refreshAgents];
+    if (updatedAgent.agentID == weakSelf.database.currentAgentID) [weakSelf prepareHermesCommands];
+  };
   [self.agentSettingsWindowController showFromWindow:self.window];
 }
 

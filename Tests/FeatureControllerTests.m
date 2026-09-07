@@ -26,6 +26,7 @@
 #import "TLAgentFolderAccessWindowController.h"
 #import "design_system/TLEmojiPicker.h"
 #import "design_system/TLFolderAccessPicker.h"
+#import "design_system/TLSkillsPicker.h"
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLButton.h"
 #import "design_system/TLThemedButton.h"
@@ -2173,8 +2174,29 @@ static void TestFolderAccessTable(void) {
 @interface TLAgentCreationStoreMock : NSObject
 @property (nonatomic) NSUInteger creationCount;
 @property (nonatomic, strong) TLAgentRecord *savedProfile;
+@property (nonatomic) NSInteger skillsAgentID;
+@property (nonatomic, copy) NSDictionary *savedSkillChanges;
+@property (nonatomic) BOOL failSkills;
+@property (nonatomic) BOOL deferSkills;
+@property (nonatomic, copy) void (^skillsCompletion)(NSDictionary *, NSError *);
 @end
 @implementation TLAgentCreationStoreMock
+- (void)hermesSkillsForAgentWithID:(NSInteger)agentID changes:(NSDictionary *)changes
+                      completion:(void (^)(NSDictionary *, NSError *))completion {
+  self.skillsAgentID = agentID;
+  if (self.deferSkills) { self.skillsCompletion = completion; return; }
+  if (self.failSkills) {
+    completion(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Hermes unavailable"}]);
+    return;
+  }
+  if (changes) self.savedSkillChanges = changes;
+  completion(@{@"skills": @[
+    @{@"name":@"alpha", @"enabled":changes[@"alpha"] ?: @YES, @"locked_reason":@""},
+    @{@"name":@"beta", @"enabled":changes[@"beta"] ?: @NO, @"locked_reason":@""},
+    @{@"name":@"grounded-citations", @"enabled":@NO, @"locked_reason":@"Managed by Talaria"},
+    @{@"name":@"hermes-agent", @"enabled":@YES, @"locked_reason":@"Required by Hermes"},
+  ]}, nil);
+}
 - (TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar soul:(NSString *)soul
                          folderPaths:(NSArray<NSString *> *)paths error:(NSError **)error {
   if (!name.length) {
@@ -2292,6 +2314,103 @@ static void TestAgentSettingsForm(void) {
   Check(saved && store.savedProfile.agentID == 17 && store.creationCount == 0, @"editing saves the selected agent without provisioning another VM");
   Check([store.savedProfile.name isEqual:@"Nova"] && [store.savedProfile.avatar isEqual:@"🌟"] && store.savedProfile.soul.length == 0,
     @"profile draft survives theme changes and saves all three fields");
+  [controller.window close];
+}
+
+static TLThemedButton *SkillButton(TLSkillsPicker *picker, NSInteger row) {
+  NSView *cell = [picker.tableView viewAtColumn:0 row:row makeIfNecessary:YES];
+  [cell layoutSubtreeIfNeeded];
+  return [cell viewWithTag:1];
+}
+
+static void TestAgentSkillSettings(void) {
+  TLAgentRecord *agent = [TLAgentRecord new];
+  agent.agentID = 19;
+  agent.name = @"Atlas";
+  agent.avatar = @"🦊";
+  agent.soul = @"Be thoughtful.";
+  TLAgentCreationStoreMock *store = [TLAgentCreationStoreMock new];
+  TLAgentCreationWindowController *controller = [[TLAgentCreationWindowController alloc] initWithAgent:agent
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark] orchestrator:(id)store];
+  TLSkillsPicker *picker = [controller valueForKey:@"skillsPicker"];
+  Check(store.skillsAgentID == 0, @"opening general settings does not start a skills request");
+  [[controller valueForKey:@"skillsTabButton"] performClick:nil];
+  [controller.window.contentView layoutSubtreeIfNeeded];
+  Check(store.skillsAgentID == 19 && picker.tableView.numberOfRows == 4, @"skills load for the edited agent, including disabled skills");
+  Check(!SkillButton(picker, 2).enabled && !SkillButton(picker, 3).enabled, @"managed and required skills cannot be toggled");
+  [SkillButton(picker, 0) performClick:nil];
+  Check([picker.changes isEqual:@{@"alpha":@NO}] && !store.savedSkillChanges, @"skill toggles stay in the draft until Save");
+  NSSearchField *search = [picker valueForKey:@"searchField"];
+  search.stringValue = @"BETA";
+  [(id<NSTextFieldDelegate>)picker controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
+  Check(picker.tableView.numberOfRows == 1, @"skill search ignores case");
+  [SkillButton(picker, 0) performClick:nil];
+  Check([picker.changes isEqual:@{@"alpha":@NO, @"beta":@YES}], @"filtered toggles change the correct skill");
+  [[controller valueForKey:@"generalTabButton"] performClick:nil];
+  [[controller valueForKey:@"skillsTabButton"] performClick:nil];
+  Check(picker.changes.count == 2, @"switching sections preserves the skills draft");
+  search.stringValue = @"";
+  [(id<NSTextFieldDelegate>)picker controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
+
+  for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [controller applyPalette:palette];
+    [controller.window.contentView layoutSubtreeIfNeeded];
+    NSView *root = controller.window.contentView;
+    NSRect pickerFrame = [picker convertRect:picker.bounds toView:root];
+    NSView *save = [controller valueForKey:@"createButton"];
+    NSRect saveFrame = [save convertRect:save.bounds toView:root];
+    Check(NSContainsRect(root.bounds, pickerFrame) && NSMinY(pickerFrame) > NSMaxY(saveFrame), @"skills fit above the settings footer");
+    for (NSInteger row = 0; row < 4; row++) {
+      TLThemedButton *button = SkillButton(picker, row);
+      Check(NSWidth(button.bounds) > 0 && NSHeight(button.bounds) > 0, @"skill controls have visible bounds");
+      NSBitmapImageRep *bitmap = RenderThemedButton(button);
+      CGFloat surface[3], alpha;
+      RGBComponents(palette.tabBackground, surface, &alpha);
+      CGFloat opacity = button.enabled ? 1 : palette.disabledOpacity;
+      CompositeColor(button.primary ? palette.primaryActionSurface : palette.secondaryActionSurface, opacity, surface);
+      Check(PixelMatches(bitmap, 10, NSHeight(button.bounds) / 2, surface), @"skill controls render their theme surface");
+      CGFloat foreground[3] = {surface[0], surface[1], surface[2]};
+      CompositeColor(button.primary ? palette.primaryActionText : palette.secondaryActionText, opacity, foreground);
+      NSUInteger textPixels = 0;
+      for (NSInteger y = 7; y < bitmap.pixelsHigh - 7; y++)
+        for (NSInteger x = 20; x < bitmap.pixelsWide - 20; x++)
+          if (PixelMatches(bitmap, x, y, foreground)) textPixels++;
+      Check(textPixels > 5, @"skill controls render readable text in each theme");
+    }
+    NSBitmapImageRep *preview = [root bitmapImageRepForCachingDisplayInRect:root.bounds];
+    [root cacheDisplayInRect:root.bounds toBitmapImageRep:preview];
+    [[preview representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:palette.dark ? @"build/agent-skills-dark.png" : @"build/agent-skills-light.png" atomically:YES];
+  }
+  [[controller valueForKey:@"cancelButton"] performClick:nil];
+  Check(!store.savedSkillChanges && !store.savedProfile, @"Cancel leaves Hermes and the profile unchanged");
+  [controller.window close];
+
+  controller = [[TLAgentCreationWindowController alloc] initWithAgent:agent
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark] orchestrator:(id)store];
+  picker = [controller valueForKey:@"skillsPicker"];
+  store.failSkills = YES;
+  [[controller valueForKey:@"skillsTabButton"] performClick:nil];
+  Check([picker.message isEqual:@"Hermes unavailable"] && !picker.loading, @"load errors are visible and retryable");
+  store.failSkills = NO;
+  [[picker valueForKey:@"reloadButton"] performClick:nil];
+  [controller.window.contentView layoutSubtreeIfNeeded];
+  [SkillButton(picker, 0) performClick:nil];
+  store.failSkills = YES;
+  [[controller valueForKey:@"createButton"] performClick:nil];
+  Check(!store.savedProfile && picker.changes.count == 1 &&
+        [[[controller valueForKey:@"statusLabel"] stringValue] isEqual:@"Hermes unavailable"], @"failed Save keeps the draft and sheet available");
+  store.failSkills = NO;
+  store.deferSkills = YES;
+  [[controller valueForKey:@"createButton"] performClick:nil];
+  Check(![[controller valueForKey:@"createButton"] isEnabled] && ![[controller valueForKey:@"cancelButton"] isEnabled] && !picker.enabled,
+        @"pending Save prevents duplicate submissions and cancellation");
+  store.deferSkills = NO;
+  [store hermesSkillsForAgentWithID:19 changes:picker.changes completion:store.skillsCompletion];
+  store.skillsCompletion = nil;
+  Check([store.savedSkillChanges isEqual:@{@"alpha":@NO}] && store.savedProfile.agentID == 19 && picker.changes.count == 0,
+        @"Save persists skill changes for this agent and then saves the profile");
   [controller.window close];
 }
 
@@ -2739,6 +2858,7 @@ int main(void) {
     TestAgentCreationForm();
     TestAgentFolderEditing();
     TestAgentSettingsForm();
+    TestAgentSkillSettings();
     TestRealSidebarAgents();
     TestSuggestionTypingAndVirtualization();
     TestRunningAgentRepairAction();

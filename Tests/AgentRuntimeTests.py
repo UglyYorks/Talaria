@@ -43,6 +43,8 @@ class HermesWarmupTests(unittest.TestCase):
                 self.assertIs(runtime.tui_gateway("test", "model"), gateway)
             create.assert_called_once()
             gateway.catalog.assert_called_once()
+            self.assertLess(gateway.method_calls.index(unittest.mock.call.apply_skill_policy()),
+                            gateway.method_calls.index(unittest.mock.call.catalog()))
             gateway.process.terminate.assert_not_called()
 
     def test_dead_gateway_is_recreated_on_next_request(self):
@@ -55,6 +57,22 @@ class HermesWarmupTests(unittest.TestCase):
              patch.object(runtime, "HermesGateway", return_value=replacement) as create:
             self.assertIs(runtime.tui_gateway("test", "model"), replacement)
             create.assert_called_once()
+            replacement.apply_skill_policy.assert_called_once()
+
+    def test_failed_skill_setup_blocks_chat_and_retries_on_same_process(self):
+        gateway = Mock()
+        gateway.process.poll.return_value = None
+        gateway.apply_skill_policy.side_effect = [RuntimeError("skill setup failed"), None]
+        with patch.object(runtime, "_tui_gateway", gateway), patch.object(runtime, "_tui_token", "test"), \
+             patch.object(runtime, "save_agent_soul"):
+            output = io.BytesIO()
+            runtime.stream_hermes_session({"request_id": "r", "session_id": "existing-chat", "token": "test",
+                "model": "model", "prompt": "Hello"}, output)
+            self.assertEqual(json.loads(output.getvalue())["type"], "error")
+            gateway.run.assert_not_called()
+            self.assertIs(runtime.tui_gateway("test", "model"), gateway)
+            self.assertEqual(gateway.apply_skill_policy.call_count, 2)
+            gateway.process.terminate.assert_not_called()
 
 
 class HermesStreamingTests(unittest.TestCase):
