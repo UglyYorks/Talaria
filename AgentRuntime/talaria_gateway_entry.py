@@ -1,4 +1,4 @@
-"""Register Talaria credential and automation RPCs in Hermes's TUI gateway.
+"""Register Talaria credential, skill metadata, and automation RPCs in Hermes's TUI gateway.
 
 Hermes Client's Tools & Keys uses the installed OPTIONAL_ENV_VARS registry and
 Hermes's env store. Expose those same owners over stdio JSON-RPC, without a web
@@ -57,7 +57,31 @@ def credentials(action, params, config=None):
     return {"ok": True, "key": key, "is_set": action == "set"}
 
 
+def skill_metadata():
+    # profiles.describe omits descriptions. Read only installed metadata through
+    # Hermes's index and parser, retaining disabled and platform-specific skills.
+    # Do not invoke skills or load their instructions into a conversation.
+    from agent.skill_utils import iter_skill_index_files, parse_frontmatter
+    from hermes_constants import get_skills_dir
+    rows = []
+    for path in iter_skill_index_files(get_skills_dir(), "SKILL.md"):
+        metadata, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        description = metadata.get("description")
+        rows.append({"name": path.parent.name,
+                     "description": description.strip().strip("'\"") if isinstance(description, str) else ""})
+    return {"skills": rows}
+
+
 def register(server):
+    @server.method("talaria.skills.describe")
+    def describe_skills(rid, params):
+        try:
+            return server._ok(rid, skill_metadata())
+        except (ImportError, AttributeError, TypeError):
+            return server._err(rid, -32601, "This Hermes version does not support skill descriptions. Update Hermes and retry.")
+        except Exception:
+            return server._err(rid, -32602, "Could not read Hermes skill descriptions. Reload the skill list and retry.")
+
     for action in ("list", "set", "remove"):
         def handler(rid, params, action=action):
             try:

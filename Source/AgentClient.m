@@ -307,6 +307,37 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   } modelCompletion:nil];
 }
 
+- (void)hermesSkillsWithAgent:(TLAgentRecord *)agent changes:(NSDictionary<NSString *, NSNumber *> *)changes
+                  completion:(void (^)(NSDictionary *, NSError *))completion {
+  NSString *requestID = NSUUID.UUID.UUIDString;
+  NSMutableDictionary *payload = [@{@"operation": @"hermes_skills", @"request_id": requestID} mutableCopy];
+  if (changes) payload[@"changes"] = changes;
+  NSMutableString *response = [NSMutableString string];
+  [self startWorkerWithAgent:agent payload:payload operation:@"hermes_skills"
+                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
+    if ([deltaID isEqualToString:requestID] && kind == TLAgentStreamDeltaKindContent) [response appendString:text];
+  } streamCompletion:^(NSError *error) {
+    if (error) { completion(nil, error); return; }
+    NSError *parseError = nil;
+    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
+                                               options:0 error:&parseError];
+    if (![result isKindOfClass:NSDictionary.class] || ![result[@"skills"] isKindOfClass:NSArray.class]) {
+      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned an invalid skill catalogue."));
+      return;
+    }
+    for (id skill in result[@"skills"]) {
+      if (![skill isKindOfClass:NSDictionary.class] || ![skill[@"name"] isKindOfClass:NSString.class] ||
+          ![skill[@"name"] length] || ![skill[@"enabled"] isKindOfClass:NSNumber.class] ||
+          ![skill[@"locked_reason"] isKindOfClass:NSString.class] ||
+          ![skill[@"description"] isKindOfClass:NSString.class]) {
+        completion(nil, TLAgentClientError(@"Hermes returned an invalid skill catalogue."));
+        return;
+      }
+    }
+    completion(result, nil);
+  } modelCompletion:nil];
+}
+
 - (void)hermesHistoryWithAgent:(TLAgentRecord *)agent action:(NSString *)action sessionID:(NSString *)sessionID
                         token:(NSString *)token model:(NSString *)model
                    completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {

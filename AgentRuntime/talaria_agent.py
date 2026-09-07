@@ -243,6 +243,9 @@ def tui_gateway(token="", model=""):
             python = Path(executable).resolve().parent / "python"
             _tui_gateway = HermesGateway(python, hermes_environment(token, model), HERMES_HOME)
             _tui_token = token
+        # Finish policy setup before exposing this process to chat, commands,
+        # history restoration, or supporting-model tasks. Failed setup retries.
+        _tui_gateway.apply_skill_policy()
         return _tui_gateway
 
 
@@ -396,6 +399,16 @@ def hermes_credentials(request, output=None):
         error("Could not access Hermes tool credentials. Check that Hermes is installed and up to date, then retry.", output)
 
 
+def manage_hermes_skills(request, output=None):
+    try:
+        result = tui_gateway().manage_skills(request.get("changes"))
+        emit({"type": "delta", "request_id": request.get("request_id", ""),
+              "kind": "content", "text": json.dumps(result, ensure_ascii=False)}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not manage Hermes skills: {exc}", output)
+
+
 def handle_request(request, output=None, cancellation=None):
     operation = request.get("operation")
     if operation == "shell_command":
@@ -415,6 +428,9 @@ def handle_request(request, output=None, cancellation=None):
         return
     if operation == "hermes_commands":
         fetch_hermes_commands(request, output)
+        return 0
+    if operation == "hermes_skills":
+        manage_hermes_skills(request, output)
         return 0
     if operation == "hermes_session_chat":
         stream_hermes_session(request, output, cancellation)

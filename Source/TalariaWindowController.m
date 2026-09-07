@@ -3776,7 +3776,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   self.agentSettingsWindowController = [[TLAgentCreationWindowController alloc]
     initWithAgent:agent palette:self.palette orchestrator:self.agentOrchestrator];
   __weak typeof(self) weakSelf = self;
-  self.agentSettingsWindowController.agentUpdatedHandler = ^(TLAgentRecord *updatedAgent) { [weakSelf refreshAgents]; };
+  self.agentSettingsWindowController.agentUpdatedHandler = ^(TLAgentRecord *updatedAgent) {
+    [weakSelf refreshAgents];
+    if (updatedAgent.agentID == weakSelf.database.currentAgentID) [weakSelf prepareHermesCommands];
+  };
   [self.agentSettingsWindowController showFromWindow:self.window];
 }
 
@@ -4008,6 +4011,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   __weak typeof(self) weakSelf = self;
   controller.onboardingHandler = ^{ [weakSelf showOnboardingDemoWindow:weakSelf]; };
   controller.errorHandler = ^(NSString *message) { [weakSelf presentErrorMessage:message]; };
+  controller.skillsSavedHandler = ^(NSInteger agentID) {
+    if (agentID == weakSelf.database.currentAgentID) [weakSelf prepareHermesCommands];
+  };
   controller.settingsSavedHandler = ^(TLAppSettings *settings) {
     TalariaWindowController *windowController = weakSelf;
     BOOL inferenceChanged = ![windowController.settings.openRouterToken isEqualToString:settings.openRouterToken] ||

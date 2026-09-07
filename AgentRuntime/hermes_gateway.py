@@ -14,6 +14,11 @@ import time
 import uuid
 
 
+# Talaria manages these bundled skills through Hermes's own profile settings.
+# Keep the files installed so Hermes upgrades can continue to maintain them.
+TALARIA_DISABLED_SKILLS = frozenset({"grounded-citations"})
+
+
 class RPCError(RuntimeError):
     def __init__(self, payload):
         self.code = payload.get("code")
@@ -29,6 +34,8 @@ class HermesGateway:
         self.sessions = {}
         self.waiting = {}
         self.session_locks = {}
+        self.skill_settings_lock = threading.Lock()
+        self._skill_policy_applied = False
         self.mapping_path = home / "talaria-sessions.json"
         self.mappings = json.loads(self.mapping_path.read_text()) if self.mapping_path.exists() else {}
         environment = dict(environment)
@@ -98,6 +105,109 @@ class HermesGateway:
         if action == "set":
             params["value"] = value
         return self.call("talaria.credentials." + action, params)
+
+    def disabled_skills(self):
+        result = self.call("config.get", {"key": "full", "profile": "default"})
+        config = result.get("config") if isinstance(result, dict) else None
+        if not isinstance(config, dict):
+            raise RuntimeError("Hermes returned invalid skill settings.")
+        skills = config.get("skills")
+        if skills is None:
+            skills = {}
+        if not isinstance(skills, dict):
+            raise RuntimeError("Hermes returned invalid skill settings.")
+        disabled = skills.get("disabled")
+        if disabled is None:
+            disabled = []
+        if isinstance(disabled, str):
+            disabled = [disabled]
+        if not isinstance(disabled, list) or any(not isinstance(name, str) for name in disabled):
+            raise RuntimeError("Hermes returned an invalid disabled-skill list.")
+        return {name.strip() for name in disabled if name.strip()}
+
+    def write_disabled_skills(self, desired):
+        result = self.call("profiles.configure", {"name": "default", "disabled_skills": sorted(desired)})
+        applied = result.get("applied") if isinstance(result, dict) else None
+        if not isinstance(applied, dict) or applied.get("skills") is not True:
+            raise RuntimeError("Hermes did not apply the skill settings.")
+        if self.disabled_skills() != desired:
+            raise RuntimeError("Hermes did not retain the skill settings.")
+
+    def skill_catalogue(self):
+        result = self.call("profiles.describe", {"name": "default"})
+        rows = result.get("skills") if isinstance(result, dict) else None
+        if not isinstance(rows, list) or any(not isinstance(row, dict) or
+                not isinstance(row.get("name"), str) or not row["name"].strip() or
+                not isinstance(row.get("enabled"), bool) for row in rows):
+            raise RuntimeError("Hermes returned an invalid skill catalogue.")
+        metadata = self.call("talaria.skills.describe")
+        details = metadata.get("skills") if isinstance(metadata, dict) else None
+        if not isinstance(details, list) or any(not isinstance(row, dict) or
+                not isinstance(row.get("name"), str) or not isinstance(row.get("description"), str) for row in details):
+            raise RuntimeError("Hermes returned invalid skill descriptions.")
+        descriptions = {row["name"]: row["description"].strip() for row in details}
+        skills = {}
+        for row in rows:
+            name = row["name"]
+            reason = "Managed by Talaria" if name in TALARIA_DISABLED_SKILLS else (
+                "Required by Hermes" if name == "hermes-agent" else "")
+            skills[name] = {"name": name, "enabled": row["enabled"], "locked_reason": reason,
+                            "description": descriptions.get(name, "")}
+        return {"skills": sorted(skills.values(), key=lambda row: row["name"].casefold())}
+
+    def manage_skills(self, changes=None):
+        with self.skill_settings_lock:
+            catalogue = self.skill_catalogue()
+            if changes is None:
+                return catalogue
+            if not isinstance(changes, dict) or any(not isinstance(name, str) or
+                    not isinstance(enabled, bool) for name, enabled in changes.items()):
+                raise ValueError("Skill changes must map skill names to enabled states.")
+            installed = {row["name"]: row for row in catalogue["skills"]}
+            for name in changes:
+                if name not in installed:
+                    raise RuntimeError(f"Skill '{name}' is no longer installed. Reload the skill list.")
+                if installed[name]["locked_reason"]:
+                    raise RuntimeError(f"Skill '{name}' cannot be changed: {installed[name]['locked_reason']}.")
+            existing = self.disabled_skills()
+            desired = existing | TALARIA_DISABLED_SKILLS
+            for name, enabled in changes.items():
+                if enabled:
+                    desired.discard(name)
+                else:
+                    desired.add(name)
+            if desired != existing:
+                self.write_disabled_skills(desired)
+            # Also refresh after a retry whose previous write succeeded but reload failed.
+            self.call("skills.reload")
+            result = self.skill_catalogue()
+            states = {row["name"]: row["enabled"] for row in result["skills"]}
+            if any(states.get(name) != enabled for name, enabled in changes.items()):
+                raise RuntimeError("Hermes did not retain the requested skill changes. Reload the skill list.")
+            return result
+
+    def apply_skill_policy(self):
+        """Apply once per runtime, before any session is created or resumed.
+
+        Reconcile at startup so existing installations and Hermes upgrades receive
+        Talaria's policy too. Only the global disabled list is changed; preserve
+        user entries even when their corresponding skills are no longer installed.
+        """
+        if self._skill_policy_applied:
+            return
+
+        try:
+            existing = self.disabled_skills()
+            desired = existing | TALARIA_DISABLED_SKILLS
+            if desired != existing:
+                self.write_disabled_skills(desired)
+            # Startup can discover slash commands before configuration is applied.
+            # Refresh that catalogue before Talaria advertises it to the user.
+            self.call("skills.reload")
+        except RPCError as exc:
+            raise RuntimeError("Could not apply Talaria's Hermes skill settings. "
+                               "Update Hermes and retry. " + str(exc)) from exc
+        self._skill_policy_applied = True
 
     def catalog(self):
         result = self.call("commands.catalog")

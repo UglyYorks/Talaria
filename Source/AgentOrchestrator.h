@@ -36,6 +36,8 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 - (nullable TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name
                                       avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error;
 - (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error;
+- (void)hermesSkillsForAgentWithID:(NSInteger)agentID changes:(nullable NSDictionary<NSString *, NSNumber *> *)changes
+                      completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 
 - (void)hermesCredentialsWithAction:(NSString *)action key:(NSString *)key value:(NSString *)value
                               token:(NSString *)token
