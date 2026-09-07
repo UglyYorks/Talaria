@@ -7,6 +7,7 @@ typedef void (^TLNotchOverlayFileDropHandler)(NSArray<NSURL *> *fileURLs);
 
 @interface TLNotchOverlayController : NSObject
 
+@property (nonatomic, getter=isEnabled) BOOL enabled;
 @property (nonatomic, readonly) NSPoint lastMouseLocation;
 // Stable visible bounds, including the opening animation's destination.
 @property (nonatomic, readonly) NSRect presentationFrame;

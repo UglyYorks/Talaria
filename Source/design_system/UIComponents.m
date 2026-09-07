@@ -2868,6 +2868,11 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   return NSMakeSize(NSViewNoIntrinsicMetric, self.palette.fieldHeight);
 }
 
+- (NSView *)hitTest:(NSPoint)point {
+  // Labels and icons are decorative; the whole navigation row is one control.
+  return [super hitTest:point] ? self : nil;
+}
+
 - (BOOL)isAccessibilityElement { return YES; }
 - (NSAccessibilityRole)accessibilityRole { return NSAccessibilityButtonRole; }
 - (NSString *)accessibilityLabel { return self.title; }

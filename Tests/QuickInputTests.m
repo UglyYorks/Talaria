@@ -211,6 +211,17 @@ static void TestWorkspaceHandoff(void) {
   [owner showWindow:nil];
   Check(!quick.window.visible, @"opening the main app elsewhere dismisses the popup");
   Check([notch valueForKey:@"trackingTimer"] != nil, @"opening the main app restores notch tracking");
+  notch.enabled = NO;
+  Check([notch valueForKey:@"trackingTimer"] == nil && NSIsEmptyRect(notch.presentationFrame), @"disabling the notch stops and hides its overlay immediately");
+  [notch startTracking];
+  Check([notch valueForKey:@"trackingTimer"] == nil, @"disabled notch cannot restart through another caller");
+  [window orderOut:nil]; Drain();
+  [owner openFromNotchOverlay:nil]; Drain();
+  Check(quick.window.visible, @"quick input still opens while the notch is disabled");
+  Escape(quick);
+  Check([notch valueForKey:@"trackingTimer"] == nil, @"dismissing quick input never re-enables a disabled notch");
+  notch.enabled = YES; [notch startTracking];
+  Check([notch valueForKey:@"trackingTimer"] != nil, @"re-enabling the notch restores tracking");
   [notch stopTracking];
   [window orderOut:nil];
 }

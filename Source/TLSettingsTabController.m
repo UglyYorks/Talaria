@@ -1,5 +1,6 @@
 #import "TLSettingsTabController.h"
 #import "TLBrowserSettingsController.h"
+#import "TLApplicationSettingsController.h"
 #import "AgentOrchestrator.h"
 #import "ChromiumBrowserController.h"
 #import "TLModelSelectionWindowController.h"
@@ -22,6 +23,10 @@
 @property (nonatomic, strong) NSMutableArray<TLSidebarNavigationButton *> *navigation;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSView *> *pages;
 @property (nonatomic, copy) NSString *selectedPage;
+@property (nonatomic) NSInteger sectionIndex;
+@property (nonatomic) NSInteger agentPageIndex;
+@property (nonatomic) NSInteger browserPageIndex;
+@property TLApplicationSettingsController *applicationSettingsController;
 @property (nonatomic, strong) NSMutableArray<TLThemedButton *> *modelButtons;
 @property (nonatomic) BOOL largeModelChanged;
 @property (nonatomic) BOOL smallModelChanged;
@@ -59,11 +64,13 @@
   return self;
 }
 
-- (NSArray<NSString *> *)pageNames { return @[@"Model", @"Browser", @"Tools & Keys"]; }
-- (NSArray<NSString *> *)pageDescriptions {
-  return @[@"Choose the models and provider behind your conversations.",
-           @"Manage the browser profile used by your Talaria tabs.",
-           @"Connect your tools with credentials stored in Hermes."];
+- (TLApplicationPreferences *)applicationPreferences {
+  return _applicationPreferences ?: TLApplicationPreferences.sharedPreferences;
+}
+- (NSArray<NSString *> *)pageNames {
+  if (self.sectionIndex == 1) return TLBrowserPreferences.categories;
+  if (self.sectionIndex == 2) return @[];
+  return @[@"Model", @"Tools & Keys"];
 }
 
 - (TLThemedButton *)button:(NSString *)title action:(SEL)action {
@@ -149,37 +156,8 @@
   self.workspace.translatesAutoresizingMaskIntoConstraints = NO;
   self.view = self.workspace;
   self.workspace.palette = self.palette;
-  NSTextField *title = [self labelWithString:@"Settings" font:self.palette.titleFont colorToken:@"appText"];
-  NSTextField *label = [self labelWithString:@"YOUR WORKSPACE" font:self.palette.smallFont colorToken:@"textMuted"];
-  NSMutableArray *items = [NSMutableArray arrayWithObjects:title, label, nil];
-  NSArray *icons = @[@"cube", @"globe", @"key.horizontal"];
-  for (NSUInteger i = 0; i < self.pageNames.count; i++) {
-    TLSidebarNavigationButton *button = [[TLSidebarNavigationButton alloc] init];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.title = self.pageNames[i]; button.systemIconName = icons[i]; button.palette = self.palette;
-    button.target = self; button.action = @selector(selectPage:); button.tag = i;
-    [button.heightAnchor constraintEqualToConstant:self.palette.settingsActionHeight].active = YES;
-    [items addObject:button]; [self.navigation addObject:button];
-  }
-  NSStackView *nav = [self stack:items vertical:YES];
-  nav.spacing = self.palette.space4;
-  [nav setCustomSpacing:self.palette.space12 afterView:title];
-  [nav setCustomSpacing:self.palette.space8 afterView:label];
-  [self.workspace.sidebar addSubview:nav];
-  [NSLayoutConstraint activateConstraints:@[
-    [nav.leadingAnchor constraintEqualToAnchor:self.workspace.sidebar.leadingAnchor constant:self.palette.space8],
-    [nav.trailingAnchor constraintEqualToAnchor:self.workspace.sidebar.trailingAnchor constant:-self.palette.space8],
-    [nav.topAnchor constraintEqualToAnchor:self.workspace.sidebar.topAnchor constant:self.palette.space12],
-  ]];
-  for (NSView *view in items) [view.widthAnchor constraintEqualToAnchor:nav.widthAnchor].active = YES;
-  NSTextField *local = [self description:@"Talaria"];
-  [self.workspace.sidebar addSubview:local];
-  [NSLayoutConstraint activateConstraints:@[
-    [local.leadingAnchor constraintEqualToAnchor:nav.leadingAnchor],
-    [local.trailingAnchor constraintEqualToAnchor:nav.trailingAnchor],
-    [local.bottomAnchor constraintEqualToAnchor:self.workspace.sidebar.bottomAnchor constant:-self.palette.space12],
-  ]];
-  [self.workspace.pageMenu addItemsWithTitles:self.pageNames];
+  self.workspace.sectionTabs.target = self;
+  self.workspace.sectionTabs.action = @selector(selectSection:);
   self.workspace.pageMenu.target = self; self.workspace.pageMenu.action = @selector(selectPage:);
 
   self.saveButton = [self button:@"Save" action:@selector(save:)];
@@ -190,7 +168,7 @@
   [self.footerLabel setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
   [self.footerLabel setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
   self.pages[@"Model"] = [self buildModelPage];
-  [self showPageAtIndex:0];
+  [self showSectionAtIndex:0];
 }
 
 - (NSView *)buildModelPage {
@@ -222,20 +200,77 @@
   NSView *runtime = [self card:@"Hermes runtime" description:@"Set up a fresh Hermes VM for your agent." controls:@[setup]];
   return [self scrollPageWithStack:[self stack:@[provider, modelCards[0], modelCards[1], runtime] vertical:YES]];
 }
+- (void)rebuildNavigation {
+  for (NSView *view in self.workspace.sidebar.subviews.copy) [view removeFromSuperview];
+  [self.navigation removeAllObjects];
+  [self.workspace.pageMenu removeAllItems];
+  [self.workspace.pageMenu addItemsWithTitles:self.pageNames];
+  self.workspace.showsSidebar = self.sectionIndex != 2;
+  if (!self.workspace.showsSidebar) return;
+  NSString *section = self.sectionIndex == 0 ? @"Agent" : @"Browser";
+  NSTextField *label = [self labelWithString:section font:self.palette.labelFont colorToken:@"textMuted"];
+  NSMutableArray *items = [NSMutableArray arrayWithObject:label];
+  NSArray *icons = self.sectionIndex == 0 ? @[@"cube", @"key.horizontal"] :
+    @[@"lock.shield", @"hand.raised", @"person.text.rectangle", @"magnifyingglass", @"textformat",
+      @"power", @"speedometer", @"character.bubble", @"arrow.down.circle", @"accessibility",
+      @"gearshape", @"arrow.counterclockwise"];
+  for (NSUInteger i = 0; i < self.pageNames.count; i++) {
+    TLSidebarNavigationButton *button = [[TLSidebarNavigationButton alloc] init];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.title = self.pageNames[i]; button.toolTip = button.title; button.systemIconName = icons[i]; button.palette = self.palette;
+    button.target = self; button.action = @selector(selectPage:); button.tag = i;
+    [button.heightAnchor constraintEqualToConstant:self.palette.settingsActionHeight].active = YES;
+    [items addObject:button]; [self.navigation addObject:button];
+  }
+  NSStackView *nav = [self stack:items vertical:YES];
+  nav.spacing = self.palette.space4;
+  [nav setCustomSpacing:self.palette.space8 afterView:label];
+  NSScrollView *scroll = [self scrollPageWithStack:nav];
+  [self pin:scroll in:self.workspace.sidebar inset:0];
+}
+- (void)selectSection:(NSSegmentedControl *)sender { [self showSectionAtIndex:sender.selectedSegment]; }
+- (void)showSectionAtIndex:(NSInteger)index {
+  if (self.isClosed || index < 0 || index > 2) return;
+  [self.applicationSettingsController cancelShortcutRecording];
+  self.sectionIndex = index;
+  self.workspace.sectionTabs.selectedSegment = index;
+  [self rebuildNavigation];
+  [self showPageAtIndex:index == 0 ? self.agentPageIndex : index == 1 ? self.browserPageIndex : 0];
+}
 - (void)selectPage:(id)sender {
   [self showPageAtIndex:sender == self.workspace.pageMenu ? self.workspace.pageMenu.indexOfSelectedItem : [sender tag]];
 }
 - (void)showPageAtIndex:(NSInteger)index {
-  if (self.isClosed || index < 0 || index >= (NSInteger)self.pageNames.count) return;
-  self.selectedPage = self.pageNames[index];
-  if (!self.pages[self.selectedPage]) self.pages[self.selectedPage] = [self.selectedPage isEqual:@"Browser"] ? [self buildBrowserPage] : [self buildCredentialsPage];
+  if (self.isClosed || index < 0 || (self.sectionIndex != 2 && index >= (NSInteger)self.pageNames.count)) return;
+  NSString *title, *detail;
+  if (self.sectionIndex == 0) {
+    self.agentPageIndex = index;
+    self.selectedPage = self.pageNames[index]; title = self.selectedPage;
+    detail = index == 0 ? @"Choose the models and provider behind your conversations." : @"Connect your tools with credentials stored in Hermes.";
+    if (!self.pages[self.selectedPage]) self.pages[self.selectedPage] = [self buildCredentialsPage];
+  } else if (self.sectionIndex == 1) {
+    self.browserPageIndex = index;
+    self.selectedPage = @"Browser"; title = self.pageNames[index];
+    detail = @"Preferences for Talaria’s built-in browser.";
+    if (!self.pages[self.selectedPage]) self.pages[self.selectedPage] = [self buildBrowserPage];
+    self.browserSettingsController.selectedCategoryIndex = index;
+  } else {
+    self.selectedPage = @"Application"; title = @"Application";
+    detail = @"Make Talaria part of your day.";
+    if (!self.applicationSettingsController) {
+      self.applicationSettingsController = [[TLApplicationSettingsController alloc] initWithPalette:self.palette preferences:self.applicationPreferences];
+      [self addChildViewController:self.applicationSettingsController];
+      self.pages[self.selectedPage] = self.applicationSettingsController.view;
+    }
+    [self.applicationSettingsController refresh];
+  }
   NSView *page = self.pages[self.selectedPage];
   if (!page.superview) [self pin:page in:self.workspace.pageHost inset:0];
   for (NSString *name in self.pages) self.pages[name].hidden = ![name isEqual:self.selectedPage];
   for (NSUInteger i = 0; i < self.navigation.count; i++) self.navigation[i].selected = i == (NSUInteger)index;
-  [self.workspace.pageMenu selectItemAtIndex:index];
-  self.workspace.pageTitle.stringValue = self.selectedPage;
-  self.workspace.pageDescription.stringValue = self.pageDescriptions[index];
+  if (self.workspace.showsSidebar) [self.workspace.pageMenu selectItemAtIndex:index];
+  self.workspace.pageTitle.stringValue = title;
+  self.workspace.pageDescription.stringValue = detail;
   self.workspace.footer.hidden = ![self.selectedPage isEqual:@"Model"];
   self.workspace.needsLayout = YES;
   self.footerLabel.stringValue = @"Changes apply when saved.";
@@ -452,12 +487,16 @@
   for (TLSidebarNavigationButton *button in self.navigation) button.palette = palette;
   [self.modelSelection applyPalette:palette];
   [self.browserSettingsController applyPalette:palette];
+  [self.applicationSettingsController applyPalette:palette];
   [TLChromiumBrowserController.sharedController applyDarkAppearance:palette.dark];
 }
 - (void)close {
   if (self.isClosed) return;
   [super close];
   [self.browserSettingsController close];
+  [self.applicationSettingsController close];
+  self.workspace.sectionTabs.target = nil;
+  self.workspace.pageMenu.target = nil;
   self.credentialGeneration++;
   [self.credentialDrafts removeAllObjects];
   for (NSTextField *field in self.credentialFields.allValues) field.stringValue = @"";

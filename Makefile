@@ -69,7 +69,7 @@ CEF_DEFINES := -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -DCEF_USE_SANDBOX
 CEF_INCLUDE_FLAGS := -I$(CEF_ROOT)
 CEF_CXXFLAGS := $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-strict-aliasing -fstack-protector -funwind-tables -fvisibility=hidden -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-narrowing -Wsign-compare -Wno-undefined-var-template -O3 -mmacosx-version-min=13.0
 APP_OBJCXXFLAGS := $(OBJCFLAGS) $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-sign-compare -Wno-nullability-completeness -Wno-missing-field-initializers
-APP_FRAMEWORKS := -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -framework AppKit -framework Foundation -framework QuartzCore -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
+APP_FRAMEWORKS := -framework ServiceManagement -framework Carbon -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -framework AppKit -framework Foundation -framework QuartzCore -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
 TEST_FRAMEWORKS := -framework Foundation -framework AppKit -framework Virtualization -framework Security -lsqlite3
 
 .PHONY: all build test audit-theme-colors clean run widgetbook close-running-app check-signing-identity FORCE

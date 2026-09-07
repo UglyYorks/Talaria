@@ -3,10 +3,8 @@
 #import "design_system/TLSettingsRowView.h"
 #import "design_system/TLWrappingActionView.h"
 #import "design_system/TLThemedButton.h"
-#import "design_system/TLSettingsTabBar.h"
 @interface TLBrowserSettingsController () <NSTextFieldDelegate, NSSearchFieldDelegate>
 @property id<TLBrowserPreferencesService> preferences;
-@property TLSettingsTabBar *categoryTabs;
 @property NSSearchField *search;
 @property NSTextField *status;
 @property NSTextField *empty;
@@ -16,7 +14,7 @@
 @property NSMutableArray<TLThemedButton *> *buttons;
 @property NSMutableArray<NSDictionary *> *extraRows;
 @property BOOL ready;
-@property BOOL busy;
+@property (nonatomic) BOOL busy;
 @end
 @implementation TLBrowserSettingsController
 - (instancetype)initWithPalette:(TLThemePalette *)palette preferences:(id<TLBrowserPreferencesService>)preferences {
@@ -62,19 +60,11 @@
 - (void)buildContent {
   TLTokenView *root = [[TLTokenView alloc] init]; self.view = root;
   [self bindColorForObject:root keyPath:@"fillColor" token:@"tabBackground"];
-  self.categoryTabs = [[TLSettingsTabBar alloc] init];
-  self.categoryTabs.translatesAutoresizingMaskIntoConstraints = NO;
-  self.categoryTabs.palette = self.palette; self.categoryTabs.titles = TLBrowserPreferences.categories;
-  self.categoryTabs.target = self; self.categoryTabs.action = @selector(selectCategory:);
-  [root addSubview:self.categoryTabs];
   NSScrollView *scroll = [[NSScrollView alloc] init]; scroll.drawsBackground = NO;
   scroll.translatesAutoresizingMaskIntoConstraints = NO; [root addSubview:scroll];
   scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.borderType = NSNoBorder;
   [NSLayoutConstraint activateConstraints:@[
-    [self.categoryTabs.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:self.palette.space12],
-    [self.categoryTabs.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-self.palette.space12],
-    [self.categoryTabs.topAnchor constraintEqualToAnchor:root.topAnchor constant:self.palette.space8],
-    [scroll.topAnchor constraintEqualToAnchor:self.categoryTabs.bottomAnchor constant:self.palette.space8],
+    [scroll.topAnchor constraintEqualToAnchor:root.topAnchor],
     [scroll.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
     [scroll.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
     [scroll.bottomAnchor constraintEqualToAnchor:root.bottomAnchor]]];
@@ -226,7 +216,9 @@
     else [owner.preferences clearData:sender.identifier completion:completion];
   }];
 }
-- (void)selectCategory:(id)sender {
+- (void)setSelectedCategoryIndex:(NSInteger)selectedCategoryIndex {
+  if (selectedCategoryIndex < 0 || selectedCategoryIndex >= (NSInteger)TLBrowserPreferences.categories.count) return;
+  _selectedCategoryIndex = selectedCategoryIndex;
   self.search.stringValue = @"";
   [self filter:nil];
   NSScrollView *scroll = self.search.enclosingScrollView;
@@ -235,7 +227,7 @@
 }
 - (void)filter:(id)sender {
   NSString *query = [self.search.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  NSString *category = self.categoryTabs.titles[self.categoryTabs.selectedIndex];
+  NSString *category = TLBrowserPreferences.categories[self.selectedCategoryIndex];
   NSUInteger count = 0;
   for (NSDictionary *setting in TLBrowserPreferences.catalogue) {
     NSString *text = [NSString stringWithFormat:@"%@ %@ %@",setting[@"title"],setting[@"detail"],setting[@"category"]];
@@ -251,12 +243,10 @@
 - (void)controlTextDidChange:(NSNotification *)notification { if (notification.object == self.search) [self filter:nil]; }
 - (void)applyPalette:(TLThemePalette *)palette {
   [super applyPalette:palette];
-  self.categoryTabs.palette = palette;
   for (TLThemedButton *button in self.buttons) button.palette = palette;
 }
 - (void)close {
   [super close]; self.search.delegate = nil;
-  self.categoryTabs.target = nil;
   for (NSControl *control in self.controls.allValues) { control.target = nil; }
   for (TLThemedButton *button in self.buttons) button.target = nil;
 }

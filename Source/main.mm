@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 
 #import "AppDelegate.h"
+#import "design_system/TLShortcutRecorder.h"
 #import "TLTerminalClient.h"
 #import "ChromiumBrowserController.h"
 
@@ -22,6 +23,12 @@
 }
 
 - (void)sendEvent:(NSEvent *)event {
+  NSResponder *responder = self.keyWindow.firstResponder;
+  if (event.type == NSEventTypeKeyDown && [responder isKindOfClass:TLShortcutRecorder.class] &&
+      [(TLShortcutRecorder *)responder recording]) {
+    [(TLShortcutRecorder *)responder keyDown:event];
+    return;
+  }
   NSEventModifierFlags shortcutModifiers = event.modifierFlags &
     (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift);
   if (event.type == NSEventTypeKeyDown && shortcutModifiers == NSEventModifierFlagCommand &&

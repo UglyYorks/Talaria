@@ -11,7 +11,10 @@
 #import "TLBrowserSettingsController.h"
 #import "TLBrowserPreferences.h"
 #import "design_system/TLSettingsWorkspaceView.h"
-#import "design_system/TLSettingsTabBar.h"
+#import "design_system/TLShortcutRecorder.h"
+#import "TLApplicationSettingsController.h"
+#import "TLGlobalShortcut.h"
+#import <Carbon/Carbon.h>
 #import "TLModelSelectionWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AssistantTurnRunner.h"
@@ -1582,6 +1585,53 @@ static void TestBrowserPreferencePersistenceAndValidation(void) {
   [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
 }
 
+@interface TLLoginItemMock : NSObject <TLLoginItemService>
+@property SMAppServiceStatus status;
+@property BOOL fail;
+@property NSUInteger registrations;
+@end
+@implementation TLLoginItemMock
+- (BOOL)registerAndReturnError:(NSError **)error {
+  self.registrations++;
+  if (self.fail) { if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Login item failed"}]; return NO; }
+  self.status = SMAppServiceStatusRequiresApproval; return YES;
+}
+- (BOOL)unregisterAndReturnError:(NSError **)error {
+  if (self.fail) { if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Login item failed"}]; return NO; }
+  self.status = SMAppServiceStatusNotRegistered; return YES;
+}
+@end
+@interface TLShortcutRegistrationMock : NSObject <TLGlobalShortcutRegistration>
+@property (nonatomic, copy) void (^handler)(void);
+@property NSDictionary *registered;
+@property BOOL fail;
+@end
+@implementation TLShortcutRegistrationMock
+- (BOOL)registerShortcut:(NSDictionary *)shortcut error:(NSError **)error {
+  if (self.fail) { if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Shortcut in use"}]; return NO; }
+  self.registered = shortcut; return YES;
+}
+@end
+
+static void TestNativeGlobalShortcutRegistration(void) {
+  TLGlobalShortcut *first = [[TLGlobalShortcut alloc] init], *second = [[TLGlobalShortcut alloc] init];
+  NSDictionary *shortcut = @{@"keyCode":@80,@"modifiers":@(NSEventModifierFlagControl | NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagShift),@"label":@"F19"};
+  NSError *error = nil;
+  Check([first registerShortcut:shortcut error:&error], @"macOS accepts an available global shortcut");
+  Check(![second registerShortcut:shortcut error:&error] && error != nil, @"macOS reports a conflicting shortcut");
+  __block NSUInteger invocations = 0;
+  first.handler = ^{ invocations++; };
+  EventRef event = NULL;
+  EventHotKeyID identifier = { 'Tlqi', [[first valueForKey:@"identifier"] unsignedIntValue] };
+  Check(CreateEvent(NULL, kEventClassKeyboard, kEventHotKeyPressed, 0, 0, &event) == noErr, @"create native hotkey event");
+  SetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, sizeof(identifier), &identifier);
+  SendEventToEventTarget(event, GetApplicationEventTarget()); ReleaseEvent(event);
+  Check(invocations == 1, @"native hotkey event reaches the quick input callback once");
+  [first registerShortcut:nil error:nil];
+  Check([second registerShortcut:shortcut error:&error], @"clearing a global shortcut releases it to macOS");
+  [second registerShortcut:nil error:nil];
+}
+
 static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   TLSettingsCredentialMock *service = [[TLSettingsCredentialMock alloc] init];
   TLFeatureSettingsStoreMock *store = [[TLFeatureSettingsStoreMock alloc] init];
@@ -1591,10 +1641,20 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
     palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
   TLBrowserPreferencesMock *browserPreferences = [[TLBrowserPreferencesMock alloc] init];
   controller.browserPreferences = browserPreferences;
+  NSString *suite = [@"Talaria.SettingsTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+  TLLoginItemMock *login = [[TLLoginItemMock alloc] init];
+  login.status = SMAppServiceStatusNotFound;
+  TLShortcutRegistrationMock *registration = [[TLShortcutRegistrationMock alloc] init];
+  TLApplicationPreferences *appPreferences = [[TLApplicationPreferences alloc] initWithDefaults:defaults loginItem:login shortcutRegistration:registration];
+  controller.applicationPreferences = appPreferences;
   NSWindow *window = HostController(controller);
   TLSettingsWorkspaceView *shell = [controller valueForKey:@"workspace"];
   NSArray<TLSidebarNavigationButton *> *nav = [controller valueForKey:@"navigation"];
-  Check([[nav valueForKey:@"title"] isEqual:@[@"Model", @"Browser", @"Tools & Keys"]], @"settings navigation contains no app appearance page");
+  Check([[nav valueForKey:@"title"] isEqual:@[@"Model", @"Tools & Keys"]], @"Agent has Model and Tools & Keys in its sidebar");
+  NSSegmentedControl *sections = shell.sectionTabs;
+  Check(sections.segmentCount == 3 && [[sections labelForSegment:0] isEqual:@"Agent"] &&
+    [[sections labelForSegment:1] isEqual:@"Browser"] && [[sections labelForSegment:2] isEqual:@"Application"], @"settings has three native system sections");
   Check(nav[0].isAccessibilityElement && [nav[0].accessibilityLabel isEqual:@"Model"], @"settings navigation is exposed to assistive technology");
   for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
     TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
@@ -1615,7 +1675,8 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
     }
   }
   [window setContentSize:NSMakeSize(1100, 780)]; SettingsTick(window);
-  [NSApp sendAction:nav[1].action to:nav[1].target from:nav[1]]; SettingsTick(window);
+  sections.selectedSegment = 1; [NSApp sendAction:sections.action to:sections.target from:sections]; SettingsTick(window);
+  nav = [controller valueForKey:@"navigation"];
   TLBrowserSettingsController *browser = [controller valueForKey:@"browserSettingsController"];
   NSDictionary *browserControls = [browser valueForKey:@"controls"];
   Check(browserControls.count == TLBrowserPreferences.catalogue.count && browserControls.count > 40, @"Browser has native controls instead of external settings links");
@@ -1631,45 +1692,38 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   NSSearchField *browserSearch = [browser valueForKey:@"search"]; browserSearch.stringValue = @"zoom";
   [(id<NSTextFieldDelegate>)browser controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:browserSearch]];
   Check(![[browser valueForKey:@"cards"][@"zoom"] isHidden] && [[browser valueForKey:@"cards"][@"cookies"] isHidden], @"browser search filters across categories");
-  TLSettingsTabBar *tabs = [browser valueForKey:@"categoryTabs"];
-  Check(tabs.tabButtons.count == TLBrowserPreferences.categories.count, @"every browser category has a native top tab");
-  for (NSUInteger index = 0; index < tabs.tabButtons.count; index++) {
-    TLThemedButton *tab = tabs.tabButtons[index];
-    [tab performClick:nil]; SettingsTick(window);
-    Check(tabs.selectedIndex == (NSInteger)index && [tab.accessibilityValue boolValue], @"tab clicks update the accessible selection");
-    Check(!browserSearch.stringValue.length, @"tabs remain actionable during search and open their category");
+  Check([[nav valueForKey:@"title"] isEqual:TLBrowserPreferences.categories], @"every browser category has a sidebar entry");
+  for (NSUInteger index = 0; index < nav.count; index++) {
+    TLSidebarNavigationButton *item = nav[index];
+    [item accessibilityPerformPress]; SettingsTick(window);
+    Check(browser.selectedCategoryIndex == (NSInteger)index && item.selected, @"sidebar selection updates the browser category");
+    Check(!browserSearch.stringValue.length, @"category selection opens the category after searching");
     for (NSDictionary *setting in TLBrowserPreferences.catalogue) {
       BOOL belongs = [setting[@"category"] isEqual:TLBrowserPreferences.categories[index]];
-      Check([[browser valueForKey:@"cards"] [setting[@"id"]] isHidden] != belongs, @"tab clicks show exactly the selected category's settings");
+      Check([[browser valueForKey:@"cards"] [setting[@"id"]] isHidden] != belongs, @"sidebar entries show exactly the selected category's settings");
     }
     for (NSDictionary *row in [browser valueForKey:@"extraRows"])
       Check([row[@"row"] isHidden] != [row[@"category"] isEqual:TLBrowserPreferences.categories[index]], @"data actions follow the selected category");
   }
-  [tabs.tabButtons[0] performClick:nil];
-  NSEvent *nextCategory = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
-    windowNumber:window.windowNumber context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:124];
-  [tabs.tabButtons[0] keyDown:nextCategory];
-  Check(tabs.selectedIndex == 1 && ![[browser valueForKey:@"cards"][@"geolocation"] isHidden], @"arrow keys switch category content");
-  [tabs.tabButtons[0] performClick:nil];
+  NSEvent *activateCategory = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
+    windowNumber:window.windowNumber context:nil characters:@" " charactersIgnoringModifiers:@" " isARepeat:NO keyCode:49];
+  [nav[1] keyDown:activateCategory];
+  Check(browser.selectedCategoryIndex == 1 && ![[browser valueForKey:@"cards"][@"geolocation"] isHidden], @"keyboard activation opens a sidebar category");
   for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
     TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
     window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
     [controller applyPalette:palette];
     for (NSNumber *width in @[@1100,@200]) {
       [window setContentSize:NSMakeSize(width.doubleValue,780)]; SettingsTick(window);
-      [tabs.tabButtons.lastObject performClick:nil]; SettingsTick(window);
-      NSRect visible = tabs.tabButtons.lastObject.superview.visibleRect;
-      Check(NSContainsRect(visible, tabs.tabButtons.lastObject.frame), @"selecting the final category reveals it at wide and narrow widths");
-      [tabs.tabButtons[0] performClick:nil]; SettingsTick(window);
-      NSPoint center = [tabs.tabButtons[0] convertPoint:NSMakePoint(NSMidX(tabs.tabButtons[0].bounds), NSMidY(tabs.tabButtons[0].bounds)) toView:window.contentView.superview];
-      Check([window.contentView hitTest:center] == tabs.tabButtons[0], @"the visible category tab receives native pointer events");
-      for (TLThemedButton *tab in @[tabs.tabButtons[0], tabs.tabButtons[1]]) {
-        [tab setValue:@NO forKey:@"hovered"]; [tab.cell setHighlighted:NO];
-        CGFloat surface[3], alpha;
-        RGBComponents(palette.tabBackground, surface, &alpha);
-        CompositeColor(tab.primary ? palette.primaryActionSurface : palette.secondaryActionSurface, 1, surface);
-        NSBitmapImageRep *render = RenderThemedButton(tab);
-        Check(PixelMatches(render, NSWidth(tab.bounds) / 2, 3, surface), @"selected and unselected tabs render their theme surfaces at wide and narrow widths");
+      Check(NSContainsRect(sections.superview.bounds, sections.frame), @"all three native sections fit within the top bar at every width");
+      if (width.doubleValue == 200) {
+        [shell.pageMenu selectItemAtIndex:11]; [NSApp sendAction:shell.pageMenu.action to:shell.pageMenu.target from:shell.pageMenu];
+        Check(browser.selectedCategoryIndex == 11, @"compact navigation reaches the final browser category");
+        [shell.pageMenu selectItemAtIndex:0]; [NSApp sendAction:shell.pageMenu.action to:shell.pageMenu.target from:shell.pageMenu];
+      } else {
+        [nav[0] accessibilityPerformPress]; SettingsTick(window);
+        NSPoint center = [nav[0] convertPoint:NSMakePoint(NSMidX(nav[0].bounds), NSMidY(nav[0].bounds)) toView:window.contentView.superview];
+        Check([window.contentView hitTest:center] == nav[0], @"browser sidebar receives native pointer events");
       }
       SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-browser-%@-%@.png",theme,width]);
     }
@@ -1682,7 +1736,73 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   [window setContentSize:NSMakeSize(1100,780)]; SettingsTick(window);
   Check(NSWidth([[browser valueForKey:@"rows"] frame]) > 700, @"browser settings use the available width for aligned columns");
   SettingsSnapshot(controller, window, @"settings-browser.png");
-  [NSApp sendAction:nav[2].action to:nav[2].target from:nav[2]];
+  sections.selectedSegment = 2; [NSApp sendAction:sections.action to:sections.target from:sections]; SettingsTick(window);
+  TLApplicationSettingsController *application = [controller valueForKey:@"applicationSettingsController"];
+  Check(shell.sidebar.hidden && shell.pageMenu.hidden && shell.footer.hidden && NSMinX(shell.pageHost.frame) == 0, @"Application has no sidebar, submenu, or Save footer");
+  NSSwitch *loginToggle = [application valueForKey:@"loginToggle"], *notchToggle = [application valueForKey:@"notchToggle"];
+  Check(loginToggle.state == NSControlStateValueOff && [[application valueForKey:@"loginStatus"] isHidden], @"an unseen login item starts off without a misleading error");
+  Check(notchToggle.state == NSControlStateValueOn && login.registrations == 0, @"notch defaults on and simply opening settings never registers a login item");
+  loginToggle.state = NSControlStateValueOn; [NSApp sendAction:loginToggle.action to:loginToggle.target from:loginToggle];
+  Check(login.status == SMAppServiceStatusRequiresApproval && ![[application valueForKey:@"reviewLoginButton"] isHidden], @"login registration exposes the macOS approval state");
+  login.status = SMAppServiceStatusEnabled; [application refresh];
+  Check([[application valueForKey:@"reviewLoginButton"] isHidden] && loginToggle.state == NSControlStateValueOn, @"login state refreshes after external approval");
+  login.fail = YES; loginToggle.state = NSControlStateValueOff;
+  [NSApp sendAction:loginToggle.action to:loginToggle.target from:loginToggle];
+  Check(loginToggle.state == NSControlStateValueOn && [[[application valueForKey:@"loginStatus"] stringValue] isEqual:@"Login item failed"], @"failed login changes restore authoritative state and explain the failure");
+  login.fail = NO; loginToggle.state = NSControlStateValueOff;
+  [NSApp sendAction:loginToggle.action to:loginToggle.target from:loginToggle];
+  Check(login.status == SMAppServiceStatusNotRegistered, @"login item can be disabled");
+  __block NSUInteger notifications = 0, quickInputs = 0;
+  id observation = [NSNotificationCenter.defaultCenter addObserverForName:TLApplicationPreferencesDidChangeNotification object:appPreferences queue:nil usingBlock:^(NSNotification *note) { notifications++; }];
+  notchToggle.state = NSControlStateValueOff; [NSApp sendAction:notchToggle.action to:notchToggle.target from:notchToggle];
+  Check(!appPreferences.notchEnabled && notifications == 1, @"notch changes persist and notify the live app immediately");
+  TLShortcutRecorder *recorder = [application valueForKey:@"shortcutRecorder"];
+  [window makeKeyAndOrderFront:nil]; [recorder performClick:nil];
+  Check(recorder.recording && appPreferences.shortcutRecording, @"recording temporarily suspends the global binding");
+  NSEvent *key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagOption timestamp:0
+    windowNumber:window.windowNumber context:nil characters:@" " charactersIgnoringModifiers:@" " isARepeat:NO keyCode:49];
+  [recorder keyDown:key];
+  Check(!recorder.recording && [recorder.title isEqual:@"⌥Space"] && [registration.registered isEqual:appPreferences.quickInputShortcut], @"recording saves and registers the chosen native combination");
+  appPreferences.quickInputHandler = ^{ quickInputs++; }; registration.handler();
+  Check(quickInputs == 1, @"the registered combination invokes quick input");
+  NSDictionary *savedShortcut = appPreferences.quickInputShortcut;
+  [recorder performClick:nil];
+  NSEvent *cancel = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
+    windowNumber:window.windowNumber context:nil characters:@"\x1b" charactersIgnoringModifiers:@"\x1b" isARepeat:NO keyCode:53];
+  [recorder keyDown:cancel];
+  Check(!recorder.recording && [registration.registered isEqual:savedShortcut], @"Escape cancels recording without changing the saved global shortcut");
+  NSError *validationError = nil;
+  Check(![appPreferences setQuickInputShortcut:@{@"keyCode":@40,@"modifiers":@0,@"label":@"K"} error:&validationError] &&
+    [appPreferences.quickInputShortcut isEqual:savedShortcut], @"unmodified keys cannot intercept normal typing globally");
+  registration.fail = YES;
+  recorder.changeHandler(@{@"keyCode":@40,@"modifiers":@(NSEventModifierFlagCommand),@"label":@"K"});
+  Check([appPreferences.quickInputShortcut isEqual:savedShortcut] && [registration.registered isEqual:savedShortcut] &&
+    [[[application valueForKey:@"shortcutStatus"] stringValue] isEqual:@"Shortcut in use"], @"a conflicting replacement preserves the working shortcut and displays the error");
+  registration.fail = NO;
+  TLShortcutRegistrationMock *reopenedRegistration = [[TLShortcutRegistrationMock alloc] init];
+  TLApplicationPreferences *reopened = [[TLApplicationPreferences alloc] initWithDefaults:[[NSUserDefaults alloc] initWithSuiteName:suite] loginItem:login shortcutRegistration:reopenedRegistration];
+  Check(!reopened.notchEnabled && [reopenedRegistration.registered isEqual:savedShortcut], @"notch and global shortcut survive an application restart");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [controller applyPalette:palette]; [application refresh];
+    for (NSNumber *width in @[@1100, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue,780)]; SettingsTick(window);
+      Check(shell.sidebar.hidden && shell.pageMenu.hidden && !shell.pageTitle.hidden, @"Application never shows sidebar navigation, including at compact widths");
+      SettingsSnapshot(controller, window, [NSString stringWithFormat:@"settings-application-%@-%@.png", theme, width]);
+    }
+  }
+  [recorder performClick:nil];
+  sections.selectedSegment = 1; [NSApp sendAction:sections.action to:sections.target from:sections];
+  Check(!recorder.recording && !appPreferences.shortcutRecording && [registration.registered isEqual:savedShortcut], @"leaving Application ends recording and restores the global binding");
+  Check(browser.selectedCategoryIndex == 0 && [template.stringValue isEqual:@"draft search template"], @"switching sections preserves browser category and unsaved text");
+  sections.selectedSegment = 2; [NSApp sendAction:sections.action to:sections.target from:sections];
+  TLThemedButton *clearShortcut = [application valueForKey:@"clearShortcutButton"]; [clearShortcut performClick:nil];
+  Check(!appPreferences.quickInputShortcut && !registration.registered && !clearShortcut.enabled, @"clearing unregisters and removes the saved shortcut");
+  [NSNotificationCenter.defaultCenter removeObserver:observation];
+  [defaults removePersistentDomainForName:suite];
+  sections.selectedSegment = 0; [NSApp sendAction:sections.action to:sections.target from:sections];
+  nav = [controller valueForKey:@"navigation"]; [nav[1] accessibilityPerformPress];
   Check([service.action isEqual:@"list"], @"tools loads credentials from the active Hermes agent");
   NSArray *entries = @[@{@"key": @"BRAVE_API_KEY", @"description": @"Web search with Brave Search.", @"category": @"tool", @"is_password": @YES, @"is_set": @YES, @"url": @"https://brave.com/search/api/"},
     @{@"key": @"FIRECRAWL_API_KEY", @"description": @"Read and extract content from websites.", @"category": @"tool", @"is_password": @YES, @"is_set": @NO},
@@ -2631,6 +2751,7 @@ int main(void) {
     TestSettingsThemeAndLateCatalogue();
     TestBrowserPreferencePersistenceAndValidation();
     TestSettingsNavigationCredentialsAndResponsiveLayout();
+    TestNativeGlobalShortcutRegistration();
     TestComposerModelButtonLayout();
     TestComposerModelDialog();
     TestBrowserOwnsCallbacksAndSession();

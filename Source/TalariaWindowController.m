@@ -3,6 +3,7 @@
 #import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
 #import "TLBrowserPreferences.h"
+#import "TLApplicationPreferences.h"
 #import "PromptBuilder.h"
 #import "AgentOrchestrator.h"
 #import "AppStateManager.h"
@@ -525,12 +526,16 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     _notchOverlayController.fileDropHandler = ^(NSArray<NSURL *> *fileURLs) {
       [weakSelf handleFileURLsDroppedOnNotch:fileURLs];
     };
-    [_notchOverlayController startTracking];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationPreferencesChanged:)
+      name:TLApplicationPreferencesDidChangeNotification object:TLApplicationPreferences.sharedPreferences];
+    TLApplicationPreferences.sharedPreferences.quickInputHandler = ^{ [weakSelf openFromNotchOverlay:nil]; };
+    [self applicationPreferencesChanged:nil];
   }
   return self;
 }
 
 - (void)dealloc {
+  [NSNotificationCenter.defaultCenter removeObserver:self name:TLApplicationPreferencesDidChangeNotification object:nil];
   [self.debugTerminalStateTimer invalidate];
   if (self.effectiveAppearanceObserverInstalled) {
     [NSApp removeObserver:self
@@ -5641,6 +5646,11 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.contentShadowView setNeedsDisplay:YES];
   [self.contentHost setNeedsDisplay:YES];
   [self.workspaceOutline updateOutline];
+}
+
+- (void)applicationPreferencesChanged:(NSNotification *)notification {
+  self.notchOverlayController.enabled = TLApplicationPreferences.sharedPreferences.notchEnabled;
+  if (!self.quickInputController.window.visible) [self.notchOverlayController startTracking];
 }
 
 - (void)openFromNotchOverlay:(id)sender {
