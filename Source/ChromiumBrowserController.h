@@ -15,6 +15,8 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 @property (nonatomic, readonly) NSInteger browserIdentifier;
 @property (nonatomic, readonly) NSUInteger documentGeneration;
 @property (nonatomic, readonly, getter=isFullscreen) BOOL fullscreen;
+@property (nonatomic, readonly) BOOL devToolsVisible;
+@property (nonatomic, copy, nullable) dispatch_block_t devToolsVisibilityChangedHandler;
 
 @end
 
