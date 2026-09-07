@@ -567,6 +567,7 @@ class CredentialRPCTests(unittest.TestCase):
         self.assertNotIn("test-secret", str(server._err.call_args))
 
     def test_entry_registers_credentials_and_automations_and_stops_scheduler(self):
+        import types
         from talaria_gateway_entry import main
         for failure in (None, RuntimeError("gateway stopped")):
             with self.subTest(failure=failure):
