@@ -277,8 +277,9 @@ test: test-browser-overlay $(BUILD_DIR)/BrowserOverlayPolicyTests $(BUILD_DIR)/S
 	python3 Tests/AgentRuntimeTests.py
 	"$(BUILD_DIR)/MarkdownMathTests"
 	"$(BUILD_DIR)/MarkdownCodeTests"
+	"$(BUILD_DIR)/MarkdownTableTests"
 
-test: $(BUILD_DIR)/MarkdownMathTests $(BUILD_DIR)/MarkdownCodeTests
+test: $(BUILD_DIR)/MarkdownMathTests $(BUILD_DIR)/MarkdownCodeTests $(BUILD_DIR)/MarkdownTableTests
 
 test: $(BUILD_DIR)/QuickInputTests
 
@@ -292,6 +293,9 @@ $(BUILD_DIR)/QuickInputTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJ
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 $(BUILD_DIR)/MarkdownCodeTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Tests/MarkdownCodeTests.m $(MARKDOWN_RESOURCES_STAMP)
+	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
+
+$(BUILD_DIR)/MarkdownTableTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Tests/MarkdownTableTests.m $(MARKDOWN_RESOURCES_STAMP)
 	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
 
 $(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES)
@@ -312,7 +316,7 @@ $(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedCo
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -framework WebKit -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -o "$@"
 
-$(NOTCH_VIEW_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/NotchOverlayState.m Source/NotchOverlayController.m Tests/NotchOverlayViewTests.m
+$(NOTCH_VIEW_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/TLNotchSurfaceView.m Source/NotchOverlayState.m Source/NotchOverlayController.m Tests/NotchOverlayViewTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -o "$@"
 

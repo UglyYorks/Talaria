@@ -2454,6 +2454,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   if (self) {
+    _showsBackground = YES;
     self.backgroundView = [[TLGlassPaneView alloc] init];
     [self applyGlassPalette];
   }
@@ -2470,8 +2471,14 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   [self applyGlassPalette];
 }
 
+- (void)setShowsBackground:(BOOL)showsBackground {
+  _showsBackground = showsBackground;
+  [self applyGlassPalette];
+}
+
 - (void)applyGlassPalette {
   TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
+  glass.hidden = !self.showsBackground;
   glass.palette = self.palette;
   glass.cornerRadius = self.palette.messageInputCornerRadius;
   glass.wantsLayer = YES;

@@ -3,6 +3,10 @@
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLQuickInputPanel.h"
+#import "design_system/TLNotchSurfaceView.h"
+#import "design_system/TLScreenRegionSelectionView.h"
+#import "TLScreenCapture.h"
+#import <QuartzCore/QuartzCore.h>
 
 @interface TLQuickInputWindowController () <NSWindowDelegate>
 @property (nonatomic, strong) TLThemePalette *palette;
@@ -17,6 +21,16 @@
 @property (nonatomic) BOOL focusCheckPending;
 @property (nonatomic) BOOL showingSettings;
 @property (nonatomic) BOOL sheetInteractionActive;
+@property (nonatomic) BOOL notchPresentation;
+@property (nonatomic, strong) TLNotchSurfaceView *notchSurface;
+@property (nonatomic, strong) NSLayoutConstraint *inputLeadingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *inputTrailingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *inputTopConstraint;
+@property (nonatomic, strong) NSPanel *selectionWindow;
+@property (nonatomic, strong) TLScreenRegionSelectionView *selectionView;
+@property (nonatomic, strong) TLScreenCapture *screenCapture;
+@property (nonatomic) BOOL captureInProgress;
+@property (nonatomic) NSUInteger captureGeneration;
 @end
 
 @implementation TLQuickInputWindowController
@@ -42,12 +56,20 @@
     panel.becomesKeyOnlyIfNeeded = NO;
     panel.level = NSFloatingWindowLevel;
     panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+    panel.contentView.wantsLayer = YES;
     __weak typeof(self) weakSelf = self;
     panel.dismissHandler = ^{ [weakSelf dismiss]; };
     NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
     [notifications addObserver:self selector:@selector(menuDidBeginTracking:) name:NSMenuDidBeginTrackingNotification object:nil];
     [notifications addObserver:self selector:@selector(menuDidEndTracking:) name:NSMenuDidEndTrackingNotification object:nil];
     [notifications addObserver:self selector:@selector(focusMayHaveChanged:) name:NSApplicationDidResignActiveNotification object:NSApp];
+    [notifications addObserver:self selector:@selector(screenParametersDidChange:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
+
+    _notchSurface = [[TLNotchSurfaceView alloc] initWithFrame:panel.contentView.bounds];
+    _notchSurface.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _notchSurface.hidden = YES;
+    [panel.contentView addSubview:_notchSurface];
+    _screenCapture = [[TLScreenCapture alloc] init];
 
     _messageInput = [[TLGlassMessageInput alloc] init];
     _messageInput.usesChatBackdrop = YES;
@@ -65,10 +87,11 @@
       [weakSelf layoutPanel];
     };
     [panel.contentView addSubview:_messageInput];
+    _inputLeadingConstraint = [_messageInput.leadingAnchor constraintEqualToAnchor:panel.contentView.leadingAnchor];
+    _inputTrailingConstraint = [_messageInput.trailingAnchor constraintEqualToAnchor:panel.contentView.trailingAnchor];
+    _inputTopConstraint = [_messageInput.topAnchor constraintEqualToAnchor:panel.contentView.topAnchor];
     [NSLayoutConstraint activateConstraints:@[
-      [_messageInput.leadingAnchor constraintEqualToAnchor:panel.contentView.leadingAnchor],
-      [_messageInput.trailingAnchor constraintEqualToAnchor:panel.contentView.trailingAnchor],
-      [_messageInput.topAnchor constraintEqualToAnchor:panel.contentView.topAnchor],
+      _inputLeadingConstraint, _inputTrailingConstraint, _inputTopConstraint,
     ]];
 
     _suggestionPanel = [[TLInputSuggestionPanelView alloc] init];
@@ -91,19 +114,26 @@
 }
 
 - (void)dealloc {
+  [_screenCapture cancel];
+  [_selectionWindow orderOut:nil];
   [NSNotificationCenter.defaultCenter removeObserver:self];
 }
+
+- (void)screenParametersDidChange:(NSNotification *)notification { [self dismiss]; }
 
 - (void)windowDidResignKey:(NSNotification *)notification {
   [self focusMayHaveChanged:notification];
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
+  [self cancelCapture];
+  [self.selectionWindow orderOut:self];
   if (self.visibilityChangeHandler) self.visibilityChangeHandler(NO);
 }
 
 - (void)windowWillBeginSheet:(NSNotification *)notification {
   self.sheetInteractionActive = YES;
+  [self updateSelectionWindow];
 }
 
 - (void)windowDidEndSheet:(NSNotification *)notification {
@@ -118,16 +148,19 @@
       [owner.window makeFirstResponder:owner.messageInput.textView];
     }
     owner.sheetInteractionActive = NO;
+    [owner updateSelectionWindow];
     [owner focusMayHaveChanged:notification];
   });
 }
 
 - (void)menuDidBeginTracking:(NSNotification *)notification {
   if (self.window.visible) [self.trackingMenus addObject:notification.object];
+  [self updateSelectionWindow];
 }
 
 - (void)menuDidEndTracking:(NSNotification *)notification {
   [self.trackingMenus removeObject:notification.object];
+  [self updateSelectionWindow];
   [self focusMayHaveChanged:notification];
 }
 
@@ -142,7 +175,7 @@
     if (!owner) return;
     owner.focusCheckPending = NO;
     if (owner.window.visible && !owner.window.keyWindow && !owner.window.attachedSheet &&
-        !owner.trackingMenus.count && !owner.showingSettings && !owner.sheetInteractionActive) {
+        !owner.trackingMenus.count && !owner.showingSettings && !owner.sheetInteractionActive && !owner.captureInProgress) {
       [owner dismiss];
     }
   });
@@ -153,17 +186,38 @@
 }
 
 - (void)presentBelowRect:(NSRect)anchorRect onScreen:(NSScreen *)screen {
+  if (self.window.attachedSheet || self.captureInProgress) return;
+  self.notchPresentation = NO;
+  [self presentWithAnchorRect:anchorRect onScreen:screen];
+}
+
+- (void)presentInNotchOnScreen:(NSScreen *)screen {
+  if (self.window.attachedSheet || self.captureInProgress) return;
+  self.notchPresentation = YES;
+  [self presentWithAnchorRect:NSMakeRect(NSMidX(screen.frame), NSMaxY(screen.frame), 0, 0) onScreen:screen];
+}
+
+- (void)presentWithAnchorRect:(NSRect)anchorRect onScreen:(NSScreen *)screen {
   if (self.window.attachedSheet) return;
   self.presentationScreen = screen;
   self.anchorRect = anchorRect;
+  ((TLQuickInputPanel *)self.window).pinsToScreenTop = self.notchPresentation;
+  self.window.level = self.notchPresentation ? NSStatusWindowLevel + 1 : NSFloatingWindowLevel;
+  self.window.hasShadow = !self.notchPresentation;
+  self.notchSurface.hidden = !self.notchPresentation;
+  self.messageInput.showsBackground = !self.notchPresentation;
+  [self applyPalette:self.palette];
   [self updateSuggestions];
   if (!self.window.visible && self.visibilityChangeHandler) self.visibilityChangeHandler(YES);
   [self.window makeKeyAndOrderFront:self];
   [self.window makeFirstResponder:self.messageInput.textView];
+  [self updateSelectionWindow];
 }
 
 - (void)dismiss {
   BOOL wasVisible = self.window.visible;
+  [self cancelCapture];
+  [self.selectionWindow orderOut:self];
   // Keep the live composer (including its attachment URLs) as the next draft.
   [self.trackingMenus removeAllObjects];
   NSWindow *sheet = self.window.attachedSheet;
@@ -177,11 +231,15 @@
 
 - (void)applyPalette:(TLThemePalette *)palette {
   self.palette = palette;
-  self.window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+  // The hardware notch remains black in both app themes; resolve its content for that surface.
+  TLThemePalette *contentPalette = self.notchPresentation ? [TLThemePalette paletteForPreference:TLThemePreferenceDark] : palette;
+  self.window.appearance = [NSAppearance appearanceNamed:contentPalette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   self.window.backgroundColor = palette.transparentSurface;
-  self.messageInput.palette = palette;
-  self.suggestionPanel.palette = palette;
-  self.suggestionList.palette = palette;
+  self.notchSurface.palette = palette;
+  self.messageInput.palette = contentPalette;
+  self.suggestionPanel.palette = contentPalette;
+  self.suggestionList.palette = contentPalette;
+  self.selectionView.palette = palette;
   [self layoutPanel];
 }
 
@@ -200,7 +258,7 @@
   self.suggestionList.suggestions = suggestions;
   if (changed) self.suggestionList.selectedIndex = -1;
   self.suggestionPanel.hidden = suggestions.count == 0;
-  self.messageInput.sendButton.enabled = trimmed.length > 0 || self.messageInput.attachmentURLs.count > 0;
+  self.messageInput.sendButton.enabled = !self.captureInProgress && (trimmed.length > 0 || self.messageInput.attachmentURLs.count > 0);
   [self.messageInput recalculateHeight];
   [self layoutPanel];
 }
@@ -210,23 +268,104 @@
   self.layingOut = YES;
   TLThemePalette *palette = self.palette;
   NSRect visibleFrame = self.presentationScreen.visibleFrame;
-  CGFloat width = MIN(palette.messageInputMaxWidth, NSWidth(visibleFrame) - palette.space11 * 2);
+  CGFloat inset = self.notchPresentation ? palette.notchOverlayTopFlareOutset + palette.space4 : 0;
+  CGFloat width = MIN(palette.messageInputMaxWidth + inset * 2, NSWidth(visibleFrame) - palette.space11 * 2);
+  CGFloat cameraInset = self.presentationScreen.safeAreaInsets.top;
+  CGFloat topPadding = self.notchPresentation ?
+    (cameraInset > 0 ? MAX(cameraInset, palette.notchOverlayMinimumHeight) : palette.space5) : 0;
+  CGFloat bottomPadding = self.notchPresentation ? palette.space5 : 0;
+  self.inputLeadingConstraint.constant = inset;
+  self.inputTrailingConstraint.constant = -inset;
+  self.inputTopConstraint.constant = topPadding;
   CGFloat suggestionsHeight = self.suggestionPanel.hidden ? 0 :
     MIN(self.suggestionList.contentHeight + palette.space2 * 2, (palette.slashCommandRowHeight + palette.space2) * 8);
   self.suggestionList.scrollingEnabled = self.suggestionList.contentHeight + palette.space2 * 2 > suggestionsHeight;
   CGFloat gap = suggestionsHeight > 0 ? palette.space5 : 0;
   CGFloat x = MIN(MAX(NSMidX(self.anchorRect) - width / 2, NSMinX(visibleFrame)), NSMaxX(visibleFrame) - width);
-  // Stay just below the clicked notch as text, attachments and suggestions grow down.
-  CGFloat topEdge = MIN(NSMinY(self.anchorRect), NSMaxY(visibleFrame)) - palette.space5;
+  CGFloat topEdge = self.notchPresentation ? NSMaxY(self.presentationScreen.frame) :
+    MIN(NSMinY(self.anchorRect), NSMaxY(visibleFrame)) - palette.space5;
   // A width change may cause TextKit to update the input's height during layout.
   for (NSUInteger pass = 0; pass < 2; pass++) {
-    CGFloat height = self.inputHeight + gap + suggestionsHeight;
+    CGFloat height = topPadding + self.inputHeight + gap + suggestionsHeight + bottomPadding;
     NSRect frame = NSMakeRect(x, MAX(NSMinY(visibleFrame), topEdge - height), width, height);
     [self.window setFrame:frame display:YES];
-    self.suggestionPanel.frame = NSMakeRect(0, 0, width, suggestionsHeight);
+    self.suggestionPanel.frame = NSMakeRect(inset, bottomPadding, width - inset * 2, suggestionsHeight);
     [self.window.contentView layoutSubtreeIfNeeded];
   }
   self.layingOut = NO;
+  [self updateSelectionWindow];
+}
+
+- (void)updateSelectionWindow {
+  BOOL enabled = self.notchPresentation && self.window.visible && !self.captureInProgress &&
+    !self.sheetInteractionActive && !self.window.attachedSheet && !self.trackingMenus.count && !self.showingSettings;
+  if (!enabled) { [self.selectionWindow orderOut:self]; return; }
+  if (!self.selectionWindow) {
+    NSPanel *panel = [[TLScreenRegionSelectionPanel alloc] initWithContentRect:NSZeroRect
+      styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
+    panel.opaque = NO;
+    panel.hasShadow = NO;
+    panel.hidesOnDeactivate = NO;
+    panel.canHide = NO;
+    panel.releasedWhenClosed = NO;
+    panel.becomesKeyOnlyIfNeeded = YES;
+    panel.ignoresMouseEvents = NO;
+    panel.animationBehavior = NSWindowAnimationBehaviorNone;
+    panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+    self.selectionWindow = panel;
+    self.selectionView = [[TLScreenRegionSelectionView alloc] init];
+    panel.contentView = self.selectionView;
+    __weak typeof(self) weakSelf = self;
+    self.selectionView.selectionHandler = ^(NSRect rect) { [weakSelf captureSelection:rect]; };
+    self.selectionView.cancelHandler = ^{ [weakSelf dismiss]; };
+  }
+  self.selectionWindow.backgroundColor = self.palette.transparentSurface;
+  self.selectionView.palette = self.palette;
+  self.selectionWindow.level = self.window.level - 1;
+  [self.selectionWindow setFrame:self.presentationScreen.frame display:YES];
+  [self.selectionWindow orderWindow:NSWindowBelow relativeTo:self.window.windowNumber];
+}
+
+- (void)cancelCapture {
+  self.captureGeneration++;
+  [self.screenCapture cancel];
+  self.captureInProgress = NO;
+  self.messageInput.attachmentsEditable = YES;
+  self.window.alphaValue = 1;
+  [self.selectionView resetSelection];
+}
+
+- (void)captureSelection:(NSRect)rect {
+  if (self.captureInProgress || !self.notchPresentation || !self.window.visible) return;
+  self.captureInProgress = YES;
+  NSUInteger generation = ++self.captureGeneration;
+  self.messageInput.attachmentsEditable = NO;
+  self.messageInput.sendButton.enabled = NO;
+  [self.selectionWindow orderOut:self];
+  // A selection can now cross the notch, so exclude our composer from the captured pixels too.
+  self.window.alphaValue = 0;
+  [self.selectionView resetSelection];
+  [CATransaction flush];
+  __weak typeof(self) weakSelf = self;
+  // Let the window server remove our windows before capturing the selected area.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    typeof(self) owner = weakSelf;
+    if (!owner || owner.captureGeneration != generation || !owner.window.visible) return;
+    [owner.screenCapture captureRect:rect completion:^(NSURL *URL, NSError *error) {
+      typeof(self) current = weakSelf;
+      if (!current || current.captureGeneration != generation || !current.window.visible) return;
+      [current cancelCapture];
+      if (URL) [current.messageInput addAttachmentURLs:@[URL]];
+      if (error) {
+        current.showingSettings = YES;
+        [NSApp presentError:error];
+        current.showingSettings = NO;
+      }
+      [current.window makeKeyAndOrderFront:current];
+      [current.window makeFirstResponder:current.messageInput.textView];
+      [current updateSuggestions];
+    }];
+  });
 }
 
 - (BOOL)moveSelection:(NSInteger)offset {
@@ -265,7 +404,7 @@
 }
 
 - (void)submit:(id)sender {
-  if (!self.window.visible || self.window.attachedSheet) return;
+  if (!self.window.visible || self.window.attachedSheet || self.captureInProgress) return;
   [self updateSuggestions];
   NSInteger index = self.suggestionList.selectedIndex;
   if (index >= 0 && [self performSuggestionAtIndex:index completing:NO]) return;
@@ -273,7 +412,7 @@
 }
 
 - (void)submitAllowingAutomaticRouting:(BOOL)allowAutomaticRouting {
-  if (!self.window.visible || self.window.attachedSheet) return;
+  if (!self.window.visible || self.window.attachedSheet || self.captureInProgress) return;
   NSString *text = [self.messageInput.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSArray<NSURL *> *files = self.messageInput.attachmentURLs;
   if ((!text.length && !files.count) || !self.submissionHandler) return;
@@ -286,10 +425,12 @@
 
 - (void)showSettings:(id)sender {
   self.showingSettings = YES;
+  [self updateSelectionWindow];
   @try {
     if (self.settingsHandler) self.settingsHandler();
   } @finally {
     self.showingSettings = NO;
+    [self updateSelectionWindow];
     [self focusMayHaveChanged:nil];
   }
 }

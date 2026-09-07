@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <objc/runtime.h>
 #import "ChatAttachmentStore.h"
 #import "Database.h"
 #import "DatabaseMigrator.h"
@@ -16,6 +17,15 @@
 @end
 @implementation TLAttachmentTestPanel
 - (void)orderOut:(id)sender { self.orderedOut = YES; }
+@end
+
+// Exercise AppKit's real Paste validation and shortcut without touching the user's clipboard.
+static NSPasteboard *TLTestClipboard;
+@interface NSPasteboard (AttachmentShortcutTesting)
++ (NSPasteboard *)tl_attachmentTestClipboard;
+@end
+@implementation NSPasteboard (AttachmentShortcutTesting)
++ (NSPasteboard *)tl_attachmentTestClipboard { return TLTestClipboard; }
 @end
 
 static void Check(BOOL condition, NSString *message) {
@@ -279,6 +289,81 @@ static void TestComposer(void) {
   [pasteboard releaseGlobally];
 }
 
+static void TestAttachmentPasteShortcut(void) {
+  TLMessageInput *input = [[TLMessageInput alloc] init];
+  input.attachmentsEnabled = YES;
+  input.textView.string = @"Describe this image";
+  NSRange selection = NSMakeRange(9, 4);
+  input.textView.selectedRange = selection;
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Edit"];
+  NSMenuItem *paste = [menu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+  paste.target = input.textView;
+  paste.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+  NSEvent *commandV = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+    modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:0 context:nil
+    characters:@"v" charactersIgnoringModifiers:@"v" isARepeat:NO keyCode:9];
+  NSData *PNG = [NSData dataWithContentsOfFile:@"assets/Talaria-icon.png"];
+  NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:PNG];
+  Check(bitmap != nil, @"loads clipboard image fixture");
+  NSData *TIFF = [bitmap representationUsingType:NSBitmapImageFileTypeTIFF properties:@{}];
+  TLTestClipboard = [NSPasteboard pasteboardWithUniqueName];
+  Method general = class_getClassMethod(NSPasteboard.class, @selector(generalPasteboard));
+  Method test = class_getClassMethod(NSPasteboard.class, @selector(tl_attachmentTestClipboard));
+  method_exchangeImplementations(general, test);
+  @try {
+    NSArray *types = @[NSPasteboardTypePNG, NSPasteboardTypeTIFF];
+    NSArray *images = @[PNG, TIFF];
+    for (NSUInteger index = 0; index < types.count; index++) {
+      [TLTestClipboard clearContents];
+      [TLTestClipboard setData:images[index] forType:types[index]];
+      [menu update];
+      Check(paste.enabled, [NSString stringWithFormat:@"Paste is enabled for an image-only %@ clipboard", types[index]]);
+      Check([menu performKeyEquivalent:commandV], @"Cmd+V dispatches the native Paste command");
+      Check(input.attachmentURLs.count == index + 1, @"Cmd+V adds exactly one image attachment");
+      NSURL *URL = input.attachmentURLs.lastObject;
+      NSBitmapImageRep *saved = [NSBitmapImageRep imageRepWithData:[NSData dataWithContentsOfURL:URL]];
+      Check([URL.pathExtension isEqual:@"png"] && saved.pixelsWide == bitmap.pixelsWide && saved.pixelsHigh == bitmap.pixelsHigh,
+            @"pasted images are retained as readable PNG files at their original dimensions");
+      Check([input.textView.string isEqual:@"Describe this image"] && NSEqualRanges(input.textView.selectedRange, selection),
+            @"image paste preserves prompt text and selection");
+    }
+    Check(![input.attachmentURLs[0] isEqual:input.attachmentURLs[1]], @"successive image pastes have independent files");
+    input.attachmentsEditable = NO;
+    [menu update];
+    Check(!paste.enabled, @"image Paste is disabled while attachments are locked");
+    input.attachmentsEditable = YES;
+    input.attachmentsEnabled = NO;
+    [menu update];
+    Check(!paste.enabled, @"plain address inputs do not accept image attachments");
+    input.attachmentsEnabled = YES;
+    input.textView.editable = NO;
+    [menu update];
+    Check(!paste.enabled, @"read-only editors do not accept image Paste");
+    input.textView.editable = YES;
+    [TLTestClipboard clearContents];
+    NSURL *file = [NSURL fileURLWithPath:[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:@"assets/Talaria-icon.png"]];
+    [TLTestClipboard writeObjects:@[file]];
+    [menu update];
+    Check(paste.enabled && [menu performKeyEquivalent:commandV], @"Cmd+V remains enabled for copied files");
+    Check(input.attachmentURLs.count == 3 && [input.attachmentURLs.lastObject isEqual:file],
+          [NSString stringWithFormat:@"Cmd+V continues to attach copied files: %@", input.attachmentURLs]);
+    [TLTestClipboard clearContents];
+    [TLTestClipboard setString:@"pasted text" forType:NSPasteboardTypeString];
+    input.attachmentsEditable = NO;
+    [menu update];
+    Check(paste.enabled && [menu performKeyEquivalent:commandV], @"plain-text Paste remains available when attachments are locked");
+    Check([input.textView.string isEqual:@"Describe pasted text image"] && input.attachmentURLs.count == 3,
+          @"ordinary text paste replaces the selection without adding an attachment");
+    [TLTestClipboard clearContents];
+    [menu update];
+    Check(!paste.enabled, @"empty clipboard keeps Paste disabled");
+  } @finally {
+    method_exchangeImplementations(general, test);
+    [TLTestClipboard releaseGlobally];
+    TLTestClipboard = nil;
+  }
+}
+
 static void TestAttachmentReconciliationAndAnimation(void) {
   NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 600, 200)];
   TLMessageInput *input = [[TLMessageInput alloc] init];
@@ -477,6 +562,6 @@ static void TestSystemAttachmentThumbnails(void) {
 }
 
 int main(void) {
-  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestVersion8Compatibility(); TestStorageAndPersistence(); TestComposer(); TestAttachmentReconciliationAndAnimation(); TestAttachmentPickerAppearance(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
+  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestVersion8Compatibility(); TestStorageAndPersistence(); TestComposer(); TestAttachmentPasteShortcut(); TestAttachmentReconciliationAndAnimation(); TestAttachmentPickerAppearance(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
   return 0;
 }

@@ -12,9 +12,20 @@
 @end
 
 @implementation TLComposerTextView
-- (void)paste:(id)sender {
-  if (self.filePasteHandler && self.filePasteHandler(NSPasteboard.generalPasteboard)) return;
-  [super paste:sender];
+- (NSArray<NSPasteboardType> *)readablePasteboardTypes {
+  NSArray<NSPasteboardType> *types = super.readablePasteboardTypes;
+  // AppKit uses these types to enable Paste and Cmd+V, even for a plain-text editor.
+  if (self.filePasteHandler && self.fileDropEnabled && self.fileDropEnabled()) {
+    return [@[NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeTIFF] arrayByAddingObjectsFromArray:types];
+  }
+  return types;
+}
+- (BOOL)readSelectionFromPasteboard:(NSPasteboard *)pasteboard type:(NSPasteboardType)type {
+  if ([type isEqualToString:NSPasteboardTypeFileURL] || [type isEqualToString:NSPasteboardTypePNG] ||
+      [type isEqualToString:NSPasteboardTypeTIFF]) {
+    if (self.isEditable && self.filePasteHandler && self.filePasteHandler(pasteboard)) return YES;
+  }
+  return [super readSelectionFromPasteboard:pasteboard type:type];
 }
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
   if (self.filePasteHandler && [sender.draggingPasteboard canReadObjectForClasses:@[NSURL.class]

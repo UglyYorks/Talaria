@@ -5752,7 +5752,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSScreen *notchScreen = self.notchOverlayController.presentationScreen;
   NSRect notchFrame = self.notchOverlayController.presentationFrame;
   if (notchScreen && !NSIsEmptyRect(notchFrame)) {
-    [self.quickInputController presentBelowRect:notchFrame onScreen:notchScreen];
+    [self.quickInputController presentInNotchOnScreen:notchScreen];
     return;
   }
   NSPoint location = NSEvent.mouseLocation;
@@ -5760,7 +5760,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   for (NSScreen *candidate in NSScreen.screens) {
     if (NSPointInRect(location, candidate.frame)) { screen = candidate; break; }
   }
-  [self.quickInputController presentOnScreen:screen];
+  if (self.notchOverlayController.enabled) [self.quickInputController presentInNotchOnScreen:screen];
+  else [self.quickInputController presentOnScreen:screen];
 }
 
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)fileURLs {
