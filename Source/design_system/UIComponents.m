@@ -1,4 +1,5 @@
 #import "UIComponents.h"
+#import "InputSuggestions.h"
 #import <QuartzCore/QuartzCore.h>
 #import <CoreText/CoreText.h>
 #import <math.h>
@@ -1942,7 +1943,57 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 @end
 
+@implementation TLBrowserViewportView
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.wantsLayer = YES;
+    self.layer.masksToBounds = NO;
+    _contentView = [[NSView alloc] initWithFrame:self.bounds];
+    _contentView.wantsLayer = YES;
+    _contentView.layer.masksToBounds = YES;
+    _contentView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [self addSubview:_contentView];
+  }
+  return self;
+}
+- (void)setPalette:(TLThemePalette *)palette {
+  _palette = palette;
+  [self updateDecoration];
+}
+- (void)setFooterRevealFraction:(CGFloat)fraction {
+  _footerRevealFraction = MIN(1, MAX(0, fraction));
+  [self updateDecoration];
+}
+- (void)layout {
+  [super layout];
+  [self updateDecoration];
+}
+- (void)updateDecoration {
+  if (!self.palette) return;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  CGFloat radius = self.palette.radiusMedium * self.footerRevealFraction;
+  self.contentView.layer.cornerRadius = radius;
+  self.layer.shadowColor = TLCGColor(self.palette.contentShadow);
+  self.layer.shadowRadius = self.palette.workspaceShadowRadius;
+  self.layer.shadowOffset = CGSizeMake(self.palette.space0, self.palette.workspaceShadowOffsetY);
+  self.layer.shadowOpacity = self.palette.workspaceShadowOpacity * self.footerRevealFraction;
+  // An explicit outline avoids rasterizing the live Chromium surface for shadows.
+  CGPathRef path = CGPathCreateWithRoundedRect(NSRectToCGRect(self.bounds), radius, radius, NULL);
+  self.layer.shadowPath = path;
+  CGPathRelease(path);
+  [CATransaction commit];
+}
+- (NSView *)hitTest:(NSPoint)point {
+  NSView *hit = [super hitTest:point];
+  return hit == self ? nil : hit;
+}
+@end
+
 @implementation TLBrowserBackdropView
+
+// This full-width visual layer must not intercept page controls beside the bar.
+- (NSView *)hitTest:(NSPoint)point { return nil; }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
@@ -2373,7 +2424,15 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 @end
 
+@interface TLBrowserDomainLabel : NSTextField
+@end
+@implementation TLBrowserDomainLabel
+- (NSView *)hitTest:(NSPoint)point { return nil; }
+@end
+
 @interface TLBrowserAddressInput ()
+@property (nonatomic, strong) NSTextField *domainLabel;
+@property (nonatomic) BOOL addressFocused;
 @property (nonatomic, readwrite) BOOL hasUserDraft;
 @property (nonatomic, copy) NSString *latestAddress;
 @property (nonatomic, strong, readwrite) NSButton *backButton;
@@ -2462,12 +2521,24 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     _trailingStack.translatesAutoresizingMaskIntoConstraints = NO;
     [self setLeadingAccessoryView:_navigationStack trailingAccessoryView:_trailingStack];
     self.selectsAllOnFocus = YES;
+    self.textView.wantsLayer = YES;
     self.textView.delegate = self;
     [self.textView setAccessibilityLabel:@"Give a task or enter a URL"];
     __weak typeof(self) weakSelf = self;
+    _domainLabel = [TLBrowserDomainLabel labelWithString:@""];
+    _domainLabel.wantsLayer = YES;
+    _domainLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    _domainLabel.maximumNumberOfLines = 1;
+    [_domainLabel setAccessibilityElement:NO];
+    [self addSubview:_domainLabel];
+    self.focusChangeHandler = ^(BOOL focused) { [weakSelf addressFocusChanged:focused]; };
+    self.singleLine = YES;
     self.textChangeHandler = ^{
       TLBrowserAddressInput *input = weakSelf;
       input.hasUserDraft = YES;
+      input.singleLine = [TLInputSuggestions browserURLForInput:input.textView.string] != nil;
+      input.domainLabel.layer.opacity = 0;
+      input.textView.alphaValue = 1;
       input.sendButton.enabled = [input.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length > 0;
     };
     NSMutableArray<NSLayoutConstraint *> *buttonSizeConstraints = [NSMutableArray array];
@@ -2498,6 +2569,8 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   [self.trailingStack setCustomSpacing:self.palette.space3 afterView:self.responseCountLabel];
   self.responseCountLabel.font = self.palette.smallFont;
   self.responseCountLabel.textColor = self.palette.controlText;
+  self.domainLabel.font = self.palette.bodyFont;
+  self.domainLabel.textColor = self.palette.controlText;
   self.sendButtonSize = self.palette.composerButtonHeight - (self.palette.space3 * 2.0);
   self.sendButtonInset = self.palette.space3;
   self.sendButton.contentTintColor = self.palette.labelText;
@@ -2521,12 +2594,64 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     if (constraint.constant != size) constraint.constant = size;
   }
   [super layout];
+  [self layoutDomainLabel];
+}
+
+- (NSString *)idleAddress {
+  NSString *address = self.latestAddress ?: @"";
+  NSURL *URL = [NSURL URLWithString:address];
+  if (!URL.scheme.length) URL = [NSURL URLWithString:[@"https://" stringByAppendingString:address]];
+  NSString *domain = URL.host;
+  if ([domain.lowercaseString hasPrefix:@"www."]) domain = [domain substringFromIndex:4];
+  return domain.length ? domain : address;
+}
+
+- (void)layoutDomainLabel {
+  NSScrollView *scroll = self.textView.enclosingScrollView;
+  if (!scroll) return;
+  NSRect area = [self convertRect:scroll.bounds fromView:scroll];
+  CGFloat width = MIN(NSWidth(area), ceil([self.domainLabel.stringValue sizeWithAttributes:@{NSFontAttributeName:self.palette.bodyFont}].width) + self.palette.space3);
+  CGFloat left = MAX(NSMinX(area), MIN(NSMidX(self.bounds)-width/2,NSMaxX(area)-width));
+  if (self.addressFocused) left = NSMinX(area) + self.textView.textContainerInset.width;
+  CGFloat height = self.domainLabel.intrinsicContentSize.height;
+  self.domainLabel.frame = NSMakeRect(left,NSMidY(area)-height/2,width,height);
+}
+
+- (void)addressFocusChanged:(BOOL)focused {
+  CGPoint oldPosition = self.domainLabel.layer.position;
+  BOOL animate = focused && !self.addressFocused && !self.hasUserDraft && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  self.addressFocused = focused;
+  [self.domainLabel.layer removeAllAnimations];
+  [self.textView.layer removeAnimationForKey:@"talaria.addressFocus"];
+  if (!self.hasUserDraft) {
+    self.textView.string = focused ? self.latestAddress ?: @"" : [self idleAddress];
+    self.domainLabel.stringValue = [self idleAddress];
+    self.singleLine = YES;
+    [self.textView scrollRangeToVisible:NSMakeRange(0,0)];
+  }
+  BOOL compact = !focused && !self.hasUserDraft;
+  self.textView.alphaValue = compact ? 0 : 1;
+  self.domainLabel.layer.opacity = compact ? 1 : 0;
+  [self layoutDomainLabel];
+  if (animate) {
+    NSTimeInterval duration = self.palette.browserHeightTransitionDuration;
+    CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:@"position"];
+    move.fromValue = [NSValue valueWithPoint:oldPosition]; move.toValue = [NSValue valueWithPoint:self.domainLabel.layer.position];
+    CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+    fade.values = @[@1,@1,@0]; fade.keyTimes = @[@0,@0.6,@1];
+    CAAnimationGroup *group = [CAAnimationGroup animation]; group.animations = @[move,fade]; group.duration = duration;
+    group.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [self.domainLabel.layer addAnimation:group forKey:@"talaria.domainFocus"];
+    CAKeyframeAnimation *reveal = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+    reveal.values = @[@0,@0,@1]; reveal.keyTimes = @[@0,@0.6,@1]; reveal.duration = duration;
+    [self.textView.layer addAnimation:reveal forKey:@"talaria.addressFocus"];
+  }
 }
 
 - (void)setDisplayedAddress:(NSString *)address {
   self.latestAddress = address;
   self.hasUserDraft = NO;
-  self.textView.string = address;
+  [self addressFocusChanged:self.addressFocused];
   self.sendButton.enabled = address.length > 0;
   [self recalculateHeight];
 }
@@ -2539,6 +2664,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 
 - (void)beginPromptEditing {
+  self.singleLine = NO;
   self.textView.string = @"";
   // Keep the current address separately and protect the empty draft from navigation updates.
   [self.textView didChangeText];
@@ -2546,7 +2672,16 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 
 - (void)textDidEndEditing:(NSNotification *)notification {
-  if (!self.hasUserDraft) { [self setDisplayedAddress:self.latestAddress ?: @""]; }
+  // Responder callbacks also cover focus leaving an untouched address.
+}
+
+- (BOOL)textView:(NSTextView *)textView shouldChangeTextInRange:(NSRange)range replacementString:(NSString *)replacement {
+  if (self.singleLine && replacement.length && [replacement rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound) {
+    NSString *single = [[replacement componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] componentsJoinedByString:@""];
+    if (single.length) { [textView insertText:single replacementRange:range]; }
+    return NO;
+  }
+  return YES;
 }
 
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {

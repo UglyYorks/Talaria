@@ -22,7 +22,7 @@ static BOOL TLDatabaseSetSchemaVersion(TLSQLiteConnection *connection, NSInteger
 
 // Version 5 was introduced by two independent worktrees. Both retain the
 // version-4 columns and only add defaulted TEXT fields that older writes preserve.
-static BOOL TLDatabaseHasCompatibleVersion5Schema(TLSQLiteConnection *connection) {
+static BOOL TLDatabaseHasCompatibleAdditiveSchema(TLSQLiteConnection *connection, BOOL requiresVersion8) {
   NSDictionary<NSString *, NSArray<NSString *> *> *requiredColumns = @{
     @"chats": @[@"id", @"title", @"model", @"created_at", @"updated_at", @"icon", @"hermes_session_id"],
     @"messages": @[@"id", @"chat_id", @"role", @"content", @"thinking", @"created_at"],
@@ -40,15 +40,15 @@ static BOOL TLDatabaseHasCompatibleVersion5Schema(TLSQLiteConnection *connection
     TLSQLiteStatement *columns = [connection prepareSQL:sql.UTF8String error:nil];
     if (!columns) return NO;
     NSMutableSet *missing = [NSMutableSet setWithArray:requiredColumns[table]];
+    if (requiresVersion8) [missing addObjectsFromArray:knownAdditions[table].allKeys];
     int result;
     while ((result = [columns step]) == SQLITE_ROW) {
       NSString *name = [columns stringAtColumn:1];
-      if ([missing containsObject:name]) {
-        [missing removeObject:name];
-        continue;
-      }
+      BOOL required = [missing containsObject:name];
+      [missing removeObject:name];
       NSString *expectedDefault = knownAdditions[table][name];
-      if (!expectedDefault || ![[[columns stringAtColumn:2] uppercaseString] isEqualToString:@"TEXT"] ||
+      if (!expectedDefault) { if (required) continue; return NO; }
+      if ((requiresVersion8 && sqlite3_column_int(columns.handle, 3) != 1) || ![[[columns stringAtColumn:2] uppercaseString] isEqualToString:@"TEXT"] ||
           ![[columns stringAtColumn:4] isEqualToString:expectedDefault]) return NO;
       hasKnownAddition = YES;
     }
@@ -96,8 +96,14 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     return NO;
   }
 
-  if (version == 5 && targetVersion == 4 && TLDatabaseHasCompatibleVersion5Schema(connection)) {
+  if (version == 5 && targetVersion == 4 && TLDatabaseHasCompatibleAdditiveSchema(connection, NO)) {
     // Do not downgrade the version or alter data owned by the newer features.
+    return YES;
+  }
+
+  // Schema 8 adds only a defaulted per-chat supporting model. This build's
+  // INSERT/UPDATE statements preserve that column; never downgrade its version.
+  if (version == 8 && targetVersion == 7 && TLDatabaseHasCompatibleAdditiveSchema(connection, YES)) {
     return YES;
   }
 
@@ -204,7 +210,7 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
   if (version < 6 && targetVersion >= 6) {
     // Earlier builds used version 5 for either attachments or profiles. Complete
     // the profile schema without replacing either variant's existing data.
-    if (!TLDatabaseHasCompatibleVersion5Schema(connection)) {
+    if (!TLDatabaseHasCompatibleAdditiveSchema(connection, NO)) {
       [connection setError:error message:@"Unrecognized version-5 database schema."];
       return NO;
     }
@@ -218,7 +224,7 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
 
   if (version < 7 && targetVersion >= 7) {
     BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
-      if (!TLDatabaseHasCompatibleVersion5Schema(connection)) {
+      if (!TLDatabaseHasCompatibleAdditiveSchema(connection, NO)) {
         [connection setError:transactionError message:@"Unrecognized database schema before attachment migration."];
         return NO;
       }

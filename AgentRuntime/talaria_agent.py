@@ -325,7 +325,8 @@ def stream_hermes_session(request, output=None, cancellation=None):
         save_agent_soul(request)
         gateway = tui_gateway(token, model)
         gateway.run(session_id, model, prompt, lambda kind, text: emit(
-            {"type": "delta", "request_id": request_id, "kind": kind, "text": text}, output), cancellation=cancellation)
+            {"type": "delta", "request_id": request_id, "kind": kind, "text": text}, output),
+            cancellation=cancellation, approval_response=request.get("approval_response"))
         cancellation.finish()
         if not cancellation.cancelled():
             emit({"type": "complete"}, output)

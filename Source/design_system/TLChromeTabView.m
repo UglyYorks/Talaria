@@ -102,6 +102,9 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 
 @interface TLChromeTabSelectionView ()
 @property (nonatomic, strong) CAShapeLayer *backgroundLayer;
+@property (nonatomic, strong) TLTransitionCoordinator *colorTransition;
+@property (nonatomic, strong) NSColor *contentBackgroundColor;
+@property (nonatomic, strong, readwrite) NSColor *displayedBackgroundColor;
 @property (nonatomic, readwrite) NSRect selectionFrame;
 @end
 
@@ -113,6 +116,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _leadingFlareOutset = -1.0;
     self.wantsLayer = YES;
+    _colorTransition = [TLTransitionCoordinator new];
     _backgroundLayer = [CAShapeLayer layer];
     [self.layer addSublayer:_backgroundLayer];
     [self applyCurrentState];
@@ -129,10 +133,30 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 }
 
 - (void)setPalette:(TLThemePalette *)palette {
-  _palette = palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
+  TLThemePalette *next=palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
+  if(_palette==next)return;
+  _palette=next;
+  [self.colorTransition cancelAllTransitions];
   [self applyCurrentState];
 }
 
+- (void)setContentBackgroundColor:(NSColor *)color animated:(BOOL)animated {
+  NSColor *target=color ?: self.palette.tabBackground;
+  BOOL unchanged=[target isEqual:self.contentBackgroundColor ?: self.palette.tabBackground];
+  self.contentBackgroundColor=color;
+  if(unchanged && self.displayedBackgroundColor && (animated || !self.colorTransition.hasTransitions))return;
+  NSColor *start=self.displayedBackgroundColor ?: self.palette.tabBackground;
+  __weak typeof(self) weakSelf=self;
+  NSTimeInterval duration=animated && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ? self.palette.browserFooterColorTransitionDuration : 0;
+  [self.colorTransition startTransitionForKey:@"content-color" duration:duration update:^(CGFloat progress){
+    TLChromeTabSelectionView *owner=weakSelf;if(!owner)return;
+    owner.displayedBackgroundColor=TLColorByInterpolatingColors(start,target,progress);
+    [CATransaction begin];[CATransaction setDisableActions:YES];
+    owner.backgroundLayer.fillColor=TLCGColor(owner.displayedBackgroundColor);
+    [CATransaction commit];
+    if(owner.backgroundColorChanged)owner.backgroundColorChanged(owner.displayedBackgroundColor);
+  } completion:nil];
+}
 - (void)setLeadingFlareOutset:(CGFloat)leadingFlareOutset {
   _leadingFlareOutset = leadingFlareOutset;
   [self updateBackgroundPath];
@@ -141,7 +165,8 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 - (void)applyCurrentState {
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  self.backgroundLayer.fillColor = TLCGColor(self.palette.tabBackground);
+  self.displayedBackgroundColor = self.contentBackgroundColor ?: self.palette.tabBackground;
+  self.backgroundLayer.fillColor = TLCGColor(self.displayedBackgroundColor);
   [CATransaction commit];
   [self updateBackgroundPath];
 }
@@ -426,8 +451,6 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 @end
 
 @interface TLChromeTabView ()
-@property (nonatomic, strong) TLTransitionCoordinator *metadataTransitions;
-@property (nonatomic, copy) NSString *animatedTitle;
 @property (nonatomic, strong) NSView *contentContainer;
 @property (nonatomic, strong) TLTabIconView *tabIconView;
 @property (nonatomic, strong) NSView *titleClipView;
@@ -503,6 +526,18 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.closeButton.tag = tag;
 }
 
+- (void)setActiveBackgroundColor:(NSColor *)color {
+  if([_activeBackgroundColor isEqual:color] || (!_activeBackgroundColor && !color))return;
+  _activeBackgroundColor=color;
+  // A color-animation tick must not relayout the tab or reload its favicon.
+  BOOL highlighted=self.active || (self.hovered && self.enabled);
+  NSColor *foreground=self.active && color ? [self.palette textColorForContentBackground:color] : (highlighted ? self.palette.appText : self.palette.labelText);
+  self.titleLabel.textColor=foreground;
+  self.tabIconView.contentTintColor=foreground;
+  self.closeButton.normalContentTintColor=self.active && color ? foreground : self.palette.textMuted;
+  self.closeButton.hoverContentTintColor=foreground;
+  [self setNeedsDisplay:YES];
+}
 - (void)setPalette:(TLThemePalette *)palette {
   _palette = palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
   [self applyCurrentState];
@@ -510,66 +545,17 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 }
 
 - (void)updateTitle:(NSString *)title image:(NSImage *)image icon:(NSString *)icon
-    systemIconName:(NSString *)systemIconName animated:(BOOL)animated {
-  BOOL titleChanged = ![self.title isEqual:title];
-  BOOL iconChanged = self.image != image || ![self.icon isEqual:icon] || ![self.systemIconName isEqual:systemIconName];
-  if (!titleChanged && !iconChanged) return;
-  if (!self.metadataTransitions) self.metadataTransitions = [[TLTransitionCoordinator alloc] init];
-  BOOL animate = animated && self.window && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
-  NSTimeInterval duration = animate ? self.palette.tabMetadataTransitionDuration : 0;
-  if (titleChanged) {
-    NSString *previous = self.animatedTitle ?: self.title ?: @"";
-    [self.metadataTransitions cancelTransitionForKey:@"title"];
-    _title = [title copy];
-    NSMutableArray<NSString *> *oldPrefixes = [NSMutableArray arrayWithObject:@""];
-    NSMutableArray<NSString *> *newPrefixes = [NSMutableArray arrayWithObject:@""];
-    for (NSString *text in @[previous, title]) {
-      NSMutableArray *prefixes = text == previous ? oldPrefixes : newPrefixes;
-      [text enumerateSubstringsInRange:NSMakeRange(0, text.length) options:NSStringEnumerationByComposedCharacterSequences
-        usingBlock:^(NSString *substring, NSRange range, NSRange enclosing, BOOL *stop) {
-          [prefixes addObject:[text substringToIndex:NSMaxRange(range)]];
-        }];
-    }
-    __weak typeof(self) weakSelf = self;
-    [self.metadataTransitions startTransitionForKey:@"title" duration:duration update:^(CGFloat progress) {
-      NSArray *prefixes = progress < 0.5 ? oldPrefixes : newPrefixes;
-      CGFloat fraction = progress < 0.5 ? 1.0 - progress * 2.0 : (progress - 0.5) * 2.0;
-      weakSelf.animatedTitle = prefixes[(NSUInteger)floor((prefixes.count - 1) * fraction)];
-      [weakSelf applyCurrentState];
-    } completion:^(BOOL finished) {
-      weakSelf.animatedTitle = nil;
-      [weakSelf applyCurrentState];
-    }];
-  }
-  if (iconChanged) {
-    [self.metadataTransitions cancelTransitionForKey:@"icon"];
-    [self layoutSubtreeIfNeeded];
-    TLTabIconView *outgoing = [[TLTabIconView alloc] initWithFrame:self.tabIconView.frame];
-    outgoing.palette = self.palette;
-    outgoing.image = self.image;
-    outgoing.icon = self.icon;
-    outgoing.systemIconName = self.systemIconName;
-    [self.contentContainer addSubview:outgoing];
-    _image = image; _icon = [icon copy]; _systemIconName = [systemIconName copy];
-    [self applyCurrentState];
-    __weak typeof(self) weakSelf = self;
-    [self.metadataTransitions startTransitionForKey:@"icon" duration:duration update:^(CGFloat progress) {
-      TLChromeTabView *owner = weakSelf;
-      for (TLTabIconView *view in @[outgoing, owner.tabIconView ?: outgoing]) {
-        CGFloat scale = view == outgoing ? 1.0 - progress : progress;
-        CGFloat x = NSMidX(view.bounds), y = NSMidY(view.bounds);
-        CATransform3D transform = CATransform3DMakeTranslation(x, y, 0);
-        transform = CATransform3DScale(transform, MAX(0.001, scale), MAX(0.001, scale), 1);
-        view.layer.sublayerTransform = CATransform3DTranslate(transform, -x, -y, 0);
-        view.alphaValue = scale;
-      }
-    } completion:^(BOOL finished) {
-      [outgoing removeFromSuperview];
-      weakSelf.tabIconView.layer.sublayerTransform = CATransform3DIdentity;
-      weakSelf.tabIconView.alphaValue = 1;
-    }];
-  }
+    systemIconName:(NSString *)systemIconName {
+  if ([self.title isEqual:title] && self.image == image &&
+      [self.icon isEqual:icon] && [self.systemIconName isEqual:systemIconName]) return;
+  _title = [title copy] ?: @"";
+  _image = image;
+  _icon = [icon copy] ?: @"";
+  _systemIconName = [systemIconName copy] ?: @"";
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
   [self applyCurrentState];
+  [CATransaction commit];
 }
 
 - (void)setTitle:(NSString *)title {
@@ -697,7 +683,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
                                                                                        constant:self.palette.space0];
   // The icon/title/close chain must not impose a minimum tab or window width.
   // Prefer clipping content over breaking the tab controller's assigned width.
-  self.titleClipTrailingConstraint.priority = NSLayoutPriorityDefaultHigh - 1;
+  self.titleClipTrailingConstraint.priority = NSLayoutPriorityDragThatCannotResizeWindow - 1;
   self.closeWidthConstraint = [self.closeButton.widthAnchor constraintEqualToConstant:[self closeButtonLength]];
   self.closeHeightConstraint = [self.closeButton.heightAnchor constraintEqualToConstant:[self closeButtonLength]];
   self.closeTrailingConstraint = [self.closeButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
@@ -773,10 +759,10 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   }
 
   BOOL highlighted = self.active || (self.hovered && self.enabled);
-  NSColor *foreground = highlighted ? self.palette.appText : self.palette.labelText;
+  NSColor *foreground = self.active && self.activeBackgroundColor ? [self.palette textColorForContentBackground:self.activeBackgroundColor] : (highlighted ? self.palette.appText : self.palette.labelText);
   BOOL hasSystemIcon = self.systemIconName.length > 0;
   BOOL hasEmojiIcon = self.icon.length > 0 && !hasSystemIcon;
-  self.titleLabel.stringValue = self.animatedTitle ?: self.title;
+  self.titleLabel.stringValue = self.title;
   self.titleLabel.font = self.palette.labelFont;
   self.titleLabel.textColor = foreground;
   self.tabIconView.palette = self.palette;
@@ -799,7 +785,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.closeButton.alphaValue = closeButtonVisible ? 1.0 : 0.0;
   self.closeButton.palette = self.palette;
   self.closeButton.font = self.palette.smallFont;
-  self.closeButton.normalContentTintColor = self.palette.textMuted;
+  self.closeButton.normalContentTintColor = self.active && self.activeBackgroundColor ? foreground : self.palette.textMuted;
   self.closeButton.hoverContentTintColor = foreground;
   if (@available(macOS 11.0, *)) {
     self.closeButton.image = [self closeButtonImageWithLength:self.palette.space6];
@@ -961,7 +947,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   }
 
   NSBezierPath *path = [self tabPathInRect:[self activeTabRectInRect:self.bounds]];
-  [self.palette.tabBackground setFill];
+  [(self.activeBackgroundColor ?: self.palette.tabBackground) setFill];
   [path fill];
 }
 

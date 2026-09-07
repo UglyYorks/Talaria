@@ -59,6 +59,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 @property (nonatomic) BOOL restoringTabWidths;
 @property (nonatomic) BOOL completingTabLifecycle;
 @property (nonatomic) CGFloat latestAvailableWidth;
+@property (nonatomic) CGFloat contentWidth, appliedContentWidth;
 @property (nonatomic) BOOL hasAvailableWidth;
 @property (nonatomic, strong) NSTrackingArea *widthPreservationTrackingArea;
 @property (nonatomic, weak) NSView *widthPreservationHost;
@@ -97,10 +98,15 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     _removingTabViews = [NSMutableArray array];
     _removalTransitions = [NSMutableArray array];
     _selectionView = [[TLChromeTabSelectionView alloc] init];
+    _selectionView.palette = palette;
     // Keep click-to-select motion below tabs and separators. Only dragging
     // raises the slab above neighboring content, below the dragged tab itself.
     _selectionView.layer.zPosition = -1.0;
     _selectionView.hidden = YES;
+    __weak typeof(self) weakSelf=self;
+    _selectionView.backgroundColorChanged=^(NSColor *color){
+      [weakSelf activeTabView].activeBackgroundColor=color;
+    };
     [_tabStack addSubview:_selectionView positioned:NSWindowBelow relativeTo:nil];
     _tabStack.spacing = -TLChromeTabInterTabOverlapForWidth(palette.tabMaxWidth, palette);
     _draggedStartIndex = NSNotFound;
@@ -174,8 +180,10 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
       }
     }
     if (!width) {
-      width = [tabView.widthAnchor constraintEqualToConstant:self.palette.tabMaxWidth];
-      width.priority = NSLayoutPriorityDefaultHigh;
+      width = [tabView.widthAnchor constraintEqualToConstant:[self preferredTabWidth]];
+      // Preferred widths must yield to AppKit's window-size constraint before
+      // windowWillResize can distribute the newly available strip width.
+      width.priority = NSLayoutPriorityDragThatCannotResizeWindow;
       [NSLayoutConstraint activateConstraints:@[
         width,
         [tabView.heightAnchor constraintEqualToConstant:self.palette.tabHeight],
@@ -205,7 +213,8 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     transition.placeholderView = [[NSView alloc] init];
     transition.placeholderView.translatesAutoresizingMaskIntoConstraints = NO;
     transition.placeholderView.wantsLayer = YES;
-    transition.widthConstraint = [transition.placeholderView.widthAnchor constraintEqualToConstant:self.palette.tabMaxWidth];
+    transition.widthConstraint = [transition.placeholderView.widthAnchor constraintEqualToConstant:[self preferredTabWidth]];
+    transition.widthConstraint.priority = NSLayoutPriorityDragThatCannotResizeWindow;
     [NSLayoutConstraint activateConstraints:@[
       transition.widthConstraint,
       [transition.placeholderView.heightAnchor constraintEqualToConstant:self.palette.tabHeight],
@@ -299,6 +308,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     [self updateSeparatorVisibility];
   }
   [self updateEdgeAttachmentState];
+  [self refreshContentColorsAnimated:YES];
 }
 
 - (NSTimeInterval)lifecycleDuration {
@@ -494,6 +504,16 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   [self updateSeparatorVisibility];
 }
 
+- (void)refreshContentColorsAnimated:(BOOL)animated {
+  TLChromeTabView *active=[self activeTabView];
+  NSColor *color=nil;
+  if(active && [self.delegate respondsToSelector:@selector(workspaceTabsController:backgroundColorForTab:)])
+    color=[self.delegate workspaceTabsController:self backgroundColorForTab:active.representedObject];
+  for(TLChromeTabView *tab in self.tabViews)if(tab!=active)tab.activeBackgroundColor=nil;
+  [self.selectionView setContentBackgroundColor:color animated:animated];
+  active.activeBackgroundColor=self.selectionView.displayedBackgroundColor;
+}
+
 - (void)configureWorkspaceTabView:(TLChromeTabView *)tabView
                            forTab:(TLWorkspaceTab *)tab
                             index:(NSUInteger)index
@@ -503,8 +523,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   [tabView updateTitle:[self.delegate workspaceTabsController:self displayTitleForTab:tab]
     image:[self.delegate workspaceTabsController:self displayImageForTab:tab]
     icon:[self.delegate workspaceTabsController:self displayIconForTab:tab]
-    systemIconName:[self.delegate workspaceTabsController:self displaySystemIconNameForTab:tab]
-    animated:tabView.representedObject != nil];
+    systemIconName:[self.delegate workspaceTabsController:self displaySystemIconNameForTab:tab]];
   tabView.toolTip = [self.delegate workspaceTabsController:self displayToolTipForTab:tab];
   tabView.tag = tab.tabID;
   tabView.target = self.target;
@@ -683,6 +702,11 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   [host addTrackingArea:self.widthPreservationTrackingArea];
 }
 
+- (void)mouseEntered:(NSEvent *)event {
+  // NSTrackingMouseEnteredAndExited delivers both callbacks, even when the
+  // area starts with AssumeInside. Keep the held widths until the pointer exits.
+}
+
 - (void)mouseExited:(NSEvent *)event {
   if (!self.widthPreservationTrackingArea || [self isPointerInsidePreservedTabArea]) return;
   [self restoreNormalTabWidthsAnimated];
@@ -723,13 +747,26 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     }];
 }
 
+- (CGFloat)preferredTabWidth {
+  CGFloat width=self.contentWidth>0 ? self.contentWidth : self.latestAvailableWidth;
+  CGFloat threshold=MAX(1,self.palette.tabWidthScalingThreshold);
+  CGFloat excess=MAX(0,width-threshold)/threshold;
+  return self.palette.tabMaxWidth * (1+self.palette.tabWidthGrowthFactor*excess);
+}
+
+- (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth contentWidth:(CGFloat)contentWidth {
+  self.contentWidth=isfinite(contentWidth) ? MAX(0,contentWidth) : 0;
+  [self updateTabWidthsForAvailableWidth:availableWidth];
+}
+
 - (BOOL)applyTabWidthsForAvailableWidth:(CGFloat)availableWidth {
   if (self.restoringTabWidths) {
-    if (availableWidth == self.latestAvailableWidth) return NO;
+    if (availableWidth == self.latestAvailableWidth && self.contentWidth == self.appliedContentWidth) return NO;
     [self.transitionCoordinator cancelTransitionForKey:@"width-restoration"];
   }
   self.hasAvailableWidth = YES;
   self.latestAvailableWidth = availableWidth;
+  self.appliedContentWidth = self.contentWidth;
   if (self.preservedTabWidth > 0 && ![self isPointerInsidePreservedTabArea]) {
     [self restoreNormalTabWidthsAnimated];
     return NO;
@@ -742,7 +779,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   // Solve against the actual overlap function, including its partially
   // compressed flare range, so spacing changes never expand the window.
   CGFloat lowerWidth = self.palette.space0;
-  CGFloat upperWidth = self.palette.tabMaxWidth;
+  CGFloat upperWidth = [self preferredTabWidth];
   for (NSUInteger iteration = 0; iteration < 48; iteration++) {
     CGFloat candidate = (lowerWidth + upperWidth) * 0.5;
     CGFloat occupiedWidth = tabCount * candidate - sharedBoundaryCount *

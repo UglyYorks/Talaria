@@ -261,6 +261,72 @@ static void TestAnswerDeltasAreImmediatelyVisible(void) {
   }
 }
 
+static void TestThinkingStatusReplacesWithoutAccumulating(void) {
+  for (NSNumber *outcome in @[@0, @1, @2]) {
+    TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
+    TLTurnTestStream *stream = [[TLTurnTestStream alloc] init];
+    stream.deferred = YES;
+    TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+    NSMutableArray<TLChatMessage *> *messages = [NSMutableArray array];
+    __block NSUInteger updates = 0;
+    [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"hello"
+      updateHandler:^{ updates++; } completionHandler:nil error:nil];
+    TLTurnTestRequest *request = stream.requests.lastObject;
+    for (NSString *notice in @[@"computing...", @"waiting — 30s", @"waiting — 30s", @"waiting — 60s"]) {
+      BOOL duplicate = [messages.lastObject.thinking isEqual:notice];
+      NSUInteger before = updates;
+      request.delta(request.requestID, TLAgentStreamDeltaKindStatus, notice);
+      TLAssert([messages.lastObject.thinking isEqual:notice], @"only the current status appears immediately, without waiting for a paragraph");
+      TLAssert(updates == before + (duplicate ? 0 : 1), @"identical status snapshots do not redraw the message");
+    }
+    request.delta(@"other-request", TLAgentStreamDeltaKindStatus, @"unrelated status");
+    TLAssert([messages.lastObject.thinking isEqual:@"waiting — 60s"], @"unrelated status is ignored");
+    request.delta(request.requestID, TLAgentStreamDeltaKindStatus, @"");
+    TLAssert(messages.lastObject.thinking == nil, @"empty status clears the notice");
+    request.delta(request.requestID, TLAgentStreamDeltaKindThinking, @"First");
+    TLAssert([messages.lastObject.thinking isEqual:@"First"], @"reasoning tokens appear immediately");
+    request.delta(request.requestID, TLAgentStreamDeltaKindStatus, @"waiting again");
+    TLAssert([messages.lastObject.thinking isEqual:@"First\n\nwaiting again"], @"status is a separate paragraph from reasoning");
+    request.delta(request.requestID, TLAgentStreamDeltaKindThinking, @" thought");
+    TLAssert([messages.lastObject.thinking isEqual:@"First thought"], @"reasoning resumes without stale status or added token separators");
+    request.delta(request.requestID, TLAgentStreamDeltaKindStatus, @"waiting again");
+    request.delta(request.requestID, TLAgentStreamDeltaKindContent, @"Answer");
+    TLAssert([messages.lastObject.thinking isEqual:@"First thought"], @"answer output clears the waiting notice");
+    request.delta(request.requestID, TLAgentStreamDeltaKindStatus, @"last notice");
+    if (outcome.integerValue == 2) [runner cancel];
+    else request.completion(outcome.integerValue == 1 ? TLTestError(@"Disconnected") : nil);
+    TLAssert([store.savedMessages.lastObject.thinking isEqual:@"First thought"],
+      @"success, failure and cancellation preserve reasoning without storing runtime notices");
+  }
+}
+
+static void TestStructuredApproval(void) {
+  TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
+  TLTurnTestStream *stream = [[TLTurnTestStream alloc] init];
+  stream.deferred = YES;
+  TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+  NSMutableArray<TLChatMessage *> *messages = [NSMutableArray array];
+  __block TLAssistantTurnResult *result = nil;
+  [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"research"
+    updateHandler:nil completionHandler:^(TLAssistantTurnResult *value) { result = value; } error:nil];
+  TLTurnTestRequest *request = stream.requests.lastObject;
+  NSDictionary *approval = @{@"request_id":@"exact-id", @"command":@"execute_code\n# literal comment\nprint('hello')", @"choices":@[@"once", @"deny"]};
+  NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:approval options:0 error:nil] encoding:NSUTF8StringEncoding];
+  request.delta(request.requestID, TLAgentStreamDeltaKindApproval, json);
+  TLAssert([messages.lastObject.approvalRequest isEqual:approval] && !messages.lastObject.content.length,
+    @"approval command is structured metadata, never assistant Markdown");
+  request.completion(nil);
+  TLAssert([messages.lastObject.approvalRequest isEqual:approval] && [result.assistantMessage.approvalRequest isEqual:approval],
+    @"pending card survives terminal snapshot and replacement with a saved message");
+  TLAssert(messages.lastObject.requestDictionary[@"approvalRequest"] == nil, @"approval payload is not model context");
+  runner.approvalResponse = @{@"request_id":@"exact-id", @"choice":@"deny"};
+  [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"Deny"
+    updateHandler:nil completionHandler:nil error:nil];
+  TLAssert([stream.lastMessages.lastObject.approvalResponse isEqual:runner.approvalResponse],
+    @"approval response reaches transport separately from visible user text");
+  [runner cancel];
+}
+
 static void TestValidationAndStaleCallbacks(void) {
   TLTurnTestMessageStore *store = [[TLTurnTestMessageStore alloc] init];
   TLTurnTestStream *stream = [[TLTurnTestStream alloc] init];
@@ -364,6 +430,8 @@ int main(void) {
     TestFailureWithoutOutput();
     TestAnswerDeltasAreImmediatelyVisible();
     TestThinkingDeltasAreImmediatelyVisible();
+    TestThinkingStatusReplacesWithoutAccumulating();
+    TestStructuredApproval();
     TestValidationAndStaleCallbacks();
     if (failures == 0) fprintf(stdout, "AssistantTurnResultTests passed\n");
   }

@@ -10,6 +10,7 @@
 @end
 
 @interface TLWorkspaceTabsController (TabSelectionTesting)
+- (void)mouseEntered:(NSEvent *)event;
 - (void)mouseExited:(NSEvent *)event;
 - (void)updateSelectionIndicatorAnimated:(BOOL)animated;
 - (void)performPendingSelectionAnimation;
@@ -40,6 +41,7 @@
 @property (nonatomic) CGFloat contentCornerRadius;
 @property (nonatomic) BOOL connectsContentEdge;
 @property (nonatomic) BOOL commitsMoves;
+@property (nonatomic, copy) NSDictionary<NSNumber *,NSColor *> *contentColors;
 @end
 
 @implementation TLTabContextMenuHarness
@@ -66,6 +68,9 @@
   return @selector(closeTab:);
 }
 
+- (NSColor *)workspaceTabsController:(TLWorkspaceTabsController *)controller backgroundColorForTab:(TLWorkspaceTab *)tab {
+  return self.contentColors[@(tab.tabID)];
+}
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller isTabActive:(TLWorkspaceTab *)tab {
   return tab.tabID == self.activeTabID;
 }
@@ -398,6 +403,8 @@ static void TestManyTabsFitWithoutExpandingWindow(TLThemePalette *palette) {
   NSStackView *stack = [[NSStackView alloc] init];
   stack.translatesAutoresizingMaskIntoConstraints = NO;
   stack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  [stack setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [stack setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
   [window.contentView addSubview:stack];
   [NSLayoutConstraint activateConstraints:@[
     [stack.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
@@ -450,6 +457,57 @@ static void TestManyTabsFitWithoutExpandingWindow(TLThemePalette *palette) {
   [window close];
 }
 
+static void TestCrowdedTabsYieldToWindowResize(TLThemePalette *palette) {
+  NSWindow *window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,1000,100)
+    styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed=NO;
+  NSView *host=[NSView new];host.translatesAutoresizingMaskIntoConstraints=NO;
+  [window.contentView addSubview:host];
+  // Model the priority AppKit uses for the user's requested window size. The
+  // controller has not received the new size yet: stale tab widths must yield.
+  NSLayoutConstraint *requested=[host.widthAnchor constraintEqualToConstant:800];
+  requested.priority=NSLayoutPriorityWindowSizeStayPut;
+  [NSLayoutConstraint activateConstraints:@[requested,
+    [host.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [host.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [host.heightAnchor constraintEqualToConstant:palette.tabHeight]]];
+  NSStackView *stack=[NSStackView new];stack.translatesAutoresizingMaskIntoConstraints=NO;
+  stack.orientation=NSUserInterfaceLayoutOrientationHorizontal;
+  [stack setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [stack setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [host addSubview:stack];
+  [NSLayoutConstraint activateConstraints:@[
+    [stack.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+    [stack.trailingAnchor constraintLessThanOrEqualToAnchor:host.trailingAnchor],
+    [stack.topAnchor constraintEqualToAnchor:host.topAnchor]]];
+  TLTabContextMenuHarness *harness=[TLTabContextMenuHarness new];
+  NSMutableArray *models=[NSMutableArray array];
+  for(NSInteger i=1;i<=40;i++)[models addObject:[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:i title:@"Long title that cannot set the minimum window width" toolTip:@"" URL:nil closeable:YES]];
+  harness.tabs=models;harness.activeTabID=1;
+  TLTransitionCoordinator *timeline=[[TLTransitionCoordinator alloc] initWithClock:^NSTimeInterval{return 0;} automaticallyAdvances:NO];
+  TLWorkspaceTabsController *controller=[[TLWorkspaceTabsController alloc] initWithTabStack:stack target:harness delegate:(id)harness palette:palette transitionCoordinator:timeline];
+  [controller updateTabWidthsForAvailableWidth:800];[controller reloadTabs];[timeline finishAllTransitions];
+  for(NSNumber *size in @[@200,@1000,@400,@200]) {
+    requested.constant=size.doubleValue;
+    [window.contentView layoutSubtreeIfNeeded];
+    AssertClose(NSWidth(host.frame),size.doubleValue,@"crowded tab preferences yield to the requested window width before resize callbacks");
+    [controller updateTabWidthsForAvailableWidth:size.doubleValue];[window.contentView layoutSubtreeIfNeeded];
+    NSArray<TLChromeTabView *> *views=[controller valueForKey:@"tabViews"];
+    NSArray<NSLayoutConstraint *> *widths=[controller valueForKey:@"tabWidthConstraints"];
+    CGFloat width=widths.firstObject.constant;
+    CGFloat pixel=1.0/window.backingScaleFactor;
+    for(NSUInteger index=0;index<views.count;index++) {
+      AssertClose(widths[index].constant,width,@"resized crowded tabs receive equal widths");
+      // AppKit rounds neighboring fractional frames to different pixel edges.
+      if(fabs(NSWidth(views[index].frame)-width)>pixel+0.001) {
+        NSLog(@"FAIL resized crowded tab width differs by more than pixel rounding");exit(1);
+      }
+    }
+    if(NSMaxX(views.lastObject.frame)>size.doubleValue+0.5 || stack.arrangedSubviews.count!=40){NSLog(@"FAIL resized tab headers must fit without dropping tabs");exit(1);}
+  }
+  [window close];
+}
+
 static void TestClosePreservesWidthsUntilPointerLeaves(TLThemePalette *palette) {
   TLTabPointerWindow *window = [[TLTabPointerWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, palette.tabHeight)
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
@@ -491,6 +549,22 @@ static void TestClosePreservesWidthsUntilPointerLeaves(TLThemePalette *palette) 
   NSPoint nextClosePoint = [nextClose convertPoint:NSMakePoint(NSMidX(nextClose.bounds), NSMidY(nextClose.bounds)) toView:nil];
   AssertClose(nextClosePoint.x, closePoint.x, @"next close button arrives under the unchanged pointer");
   NSTrackingArea *area = [controller valueForKey:@"widthPreservationTrackingArea"];
+  if (!area || area.owner != controller || !(area.options & NSTrackingMouseEnteredAndExited)) {
+    NSLog(@"FAIL width preservation must register its hover tracking owner"); exit(1);
+  }
+  // AssumeInside does not suppress subsequent mouse-enter delivery. AppKit can
+  // dispatch either event while the closing animation keeps this area alive.
+  NSEvent *enterEvent = [NSEvent enterExitEventWithType:NSEventTypeMouseEntered location:window.testPointer
+    modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 trackingNumber:0 userData:NULL];
+  @try {
+    [area.owner mouseEntered:enterEvent];
+  } @catch (NSException *exception) {
+    NSLog(@"FAIL hover tracking owner must handle mouse-enter: %@", exception); exit(1);
+  }
+  AssertClose(NSWidth(views[2].frame), width, @"mouse-enter keeps tab widths preserved");
+  if (area != [controller valueForKey:@"widthPreservationTrackingArea"]) {
+    NSLog(@"FAIL mouse-enter must retain the width preservation area"); exit(1);
+  }
   harness.tabs = @[models[0], models[3]];
   [controller reloadTabs];
   [controller updateTabWidthsForAvailableWidth:400];
@@ -1119,7 +1193,7 @@ static void TestDropSettlesFromVisiblePosition(TLThemePalette *palette) {
   [window close];
 }
 
-static void TestMetadataReusesTabAndAnimatesInPlace(TLThemePalette *palette) {
+static void TestMetadataReusesTabAndUpdatesImmediately(TLThemePalette *palette) {
   TLTabPointerWindow *window = [[TLTabPointerWindow alloc] initWithContentRect:NSMakeRect(0, 0, 300, 80)
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
@@ -1135,10 +1209,6 @@ static void TestMetadataReusesTabAndAnimatesInPlace(TLThemePalette *palette) {
   [controller reloadTabs];
   [stack layoutSubtreeIfNeeded];
   TLChromeTabView *view = ((NSArray *)[controller valueForKey:@"tabViews"]).firstObject;
-  __block NSTimeInterval now = 0;
-  TLTransitionCoordinator *metadata = [[TLTransitionCoordinator alloc]
-    initWithClock:^NSTimeInterval { return now; } automaticallyAdvances:NO];
-  [view setValue:metadata forKey:@"metadataTransitions"];
   TLWorkspaceTab *saved = [draft copy]; saved.tabID = 42; saved.presentationIdentity = @"0:-1";
   saved.title = @"Conversation";
   harness.tabs = @[saved]; harness.activeTabID = 42;
@@ -1148,24 +1218,16 @@ static void TestMetadataReusesTabAndAnimatesInPlace(TLThemePalette *palette) {
       [controller.transitionCoordinator hasTransitionForKey:@"selection"]) {
     NSLog(@"FAIL saving a draft must reuse the view without tab lifecycle or movement"); exit(1);
   }
-  [view updateTitle:@"Conversation" image:nil icon:@"🐟" systemIconName:@"" animated:YES];
+  [view updateTitle:@"Conversation" image:nil icon:@"🐟" systemIconName:@""];
   NSTextField *label = [view valueForKey:@"titleLabel"];
   NSView *icon = [view valueForKey:@"tabIconView"];
-  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
-    if (![label.stringValue isEqual:@"New chat"]) { NSLog(@"FAIL old title must remain at transition start"); exit(1); }
-    now = palette.tabMetadataTransitionDuration * 0.5;
-    [metadata advance];
-    if (label.stringValue.length) { NSLog(@"FAIL old title must be untyped before typing its replacement"); exit(1); }
-    AssertClose(icon.alphaValue, 0.5, @"new icon fades in while old icon fades out");
-    now = palette.tabMetadataTransitionDuration * 0.75;
-    [metadata advance];
-    if (!label.stringValue.length || ![@"Conversation" hasPrefix:label.stringValue]) {
-      NSLog(@"FAIL new title must type in as a prefix"); exit(1);
-    }
+  if (![label.stringValue isEqual:@"Conversation"] || ![[icon valueForKey:@"icon"] isEqual:@"🐟"]) {
+    NSLog(@"FAIL tab title and icon must be replaced immediately"); exit(1);
   }
-  [metadata finishAllTransitions];
-  if (![label.stringValue isEqual:@"Conversation"]) { NSLog(@"FAIL metadata transition must finish with the new title"); exit(1); }
-  AssertClose(icon.alphaValue, 1, @"new icon finishes fully visible");
+  AssertClose(icon.alphaValue, 1, @"replacement icon is immediately fully visible");
+  if (!CATransform3DIsIdentity(icon.layer.sublayerTransform)) {
+    NSLog(@"FAIL replacement icon must stay at its normal size"); exit(1);
+  }
   [window close];
 }
 
@@ -1600,6 +1662,68 @@ static void TestLongSelectionJumpStartsNearDestination(TLThemePalette *palette) 
   [window close];
 }
 
+static void AssertTrue(BOOL condition, NSString *message) {
+  if(!condition){NSLog(@"FAIL %@",message);exit(1);}
+}
+static void TestContentWidthScalesTabHeaders(TLThemePalette *palette) {
+  TLTabContextMenuHarness *delegate=[TLTabContextMenuHarness new];
+  delegate.tabs=@[[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:1 title:@"Browser" toolTip:@"" URL:nil closeable:YES]];
+  delegate.activeTabID=1;
+  TLWorkspaceTabsController *controller=[[TLWorkspaceTabsController alloc] initWithTabStack:[NSStackView new] target:delegate delegate:(id)delegate palette:palette];
+  [controller reloadTabs];
+  for(NSArray<NSNumber *> *example in @[@[@600,@1],@[@800,@1],@[@1200,@1.15],@[@1600,@1.3],@[@2400,@1.6],@[@800,@1]]) {
+    CGFloat content=example[0].doubleValue;
+    [controller updateTabWidthsForAvailableWidth:content-50 contentWidth:content];
+    NSArray<NSLayoutConstraint *> *widths=[controller valueForKey:@"tabWidthConstraints"];
+    AssertClose(widths.firstObject.constant,palette.tabMaxWidth*example[1].doubleValue,@"preferred header width tracks content pane, excluding tab-strip button reservations");
+  }
+  [controller updateTabWidthsForAvailableWidth:100 contentWidth:1600];
+  NSArray<NSLayoutConstraint *> *widths=[controller valueForKey:@"tabWidthConstraints"];
+  AssertClose(widths.firstObject.constant,100,@"larger preferred headers still compress to the available strip width");
+}
+
+static void TestActiveTabContentColor(TLThemePalette *palette) {
+  TLTabContextMenuHarness *delegate=[TLTabContextMenuHarness new];
+  delegate.tabs=@[[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:1 title:@"Browser" toolTip:@"" URL:nil closeable:YES],
+    [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:2 title:@"Chat" toolTip:@"" URL:nil closeable:YES]];
+  delegate.activeTabID=1;delegate.contentColors=@{@1:palette.blue500};
+  TLWorkspaceTabsController *controller=[[TLWorkspaceTabsController alloc] initWithTabStack:[NSStackView new] target:delegate delegate:(id)delegate palette:palette];
+  [controller reloadTabs];[controller refreshContentColorsAnimated:NO];
+  NSArray<TLChromeTabView *> *tabs=[controller valueForKey:@"tabViews"];
+  AssertTrue([controller.selectionView.displayedBackgroundColor isEqual:palette.blue500],@"active browser color reaches shared selection slab");
+  AssertTrue([tabs[0].activeBackgroundColor isEqual:palette.blue500] && !tabs[1].activeBackgroundColor,@"content tint is restricted to active tab");
+  delegate.activeTabID=2;[controller reloadTabs];[controller refreshContentColorsAnimated:NO];
+  AssertTrue([controller.selectionView.displayedBackgroundColor isEqual:palette.tabBackground] && !tabs[0].activeBackgroundColor,@"switching to a chat restores theme and clears former active tint");
+}
+
+static void TestContentBackgroundContrast(TLThemePalette *palette) {
+  __block NSTimeInterval now=0;
+  TLTransitionCoordinator *clock=[[TLTransitionCoordinator alloc] initWithClock:^NSTimeInterval{return now;} automaticallyAdvances:NO];
+  TLChromeTabSelectionView *selection=[TLChromeTabSelectionView new];selection.palette=palette;
+  [selection setValue:clock forKey:@"colorTransition"];
+  TLChromeTabView *tab=[TLChromeTabView new];tab.palette=palette;tab.active=YES;tab.title=@"Readable page";
+  selection.backgroundColorChanged=^(NSColor *color){tab.activeBackgroundColor=color;};
+  [selection setContentBackgroundColor:palette.black animated:NO];
+  AssertTrue([((NSTextField *)[tab valueForKey:@"titleLabel"]).textColor isEqual:palette.white],@"black content background gets white label");
+  [selection setContentBackgroundColor:palette.white animated:YES];
+  for(NSUInteger step=0;step<=10;step++) {
+    now=palette.browserFooterColorTransitionDuration*step/10;[clock advance];
+    NSColor *background=[selection.displayedBackgroundColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    NSColor *ink=[((NSTextField *)[tab valueForKey:@"titleLabel"]).textColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    double (^linear)(double)=^double(double v){return v<=0.04045?v/12.92:pow((v+0.055)/1.055,2.4);};
+    double l=0.2126*linear(background.redComponent)+0.7152*linear(background.greenComponent)+0.0722*linear(background.blueComponent);
+    double text=ink.redComponent>0.5?1:0;
+    AssertTrue((MAX(l,text)+0.05)/(MIN(l,text)+0.05)>=4.5,@"label remains readable throughout the background fade");
+  }
+  AssertTrue([((NSTextField *)[tab valueForKey:@"titleLabel"]).textColor isEqual:palette.black],@"white content background gets black label");
+  [selection setContentBackgroundColor:palette.black animated:YES];now+=palette.browserFooterColorTransitionDuration*0.5;[clock advance];
+  NSColor *interrupted=selection.displayedBackgroundColor;
+  [selection setContentBackgroundColor:palette.white animated:YES];
+  AssertTrue([selection.displayedBackgroundColor isEqual:interrupted],@"color reversals begin at the currently visible color");
+  [selection setContentBackgroundColor:nil animated:NO];
+  AssertTrue([selection.displayedBackgroundColor isEqual:palette.tabBackground],@"clearing a content color restores the theme background");
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -1652,12 +1776,16 @@ int main(void) {
       TestNewTabButtonMovesWithInsertion(tab.palette);
       TestClosePreservesWidthsUntilPointerLeaves(tab.palette);
       TestManyTabsFitWithoutExpandingWindow(tab.palette);
+      TestCrowdedTabsYieldToWindowResize(tab.palette);
       TestClosedSidebarDragBoundary(tab.palette);
       TestDraggedTabOpensInsertionGap(tab.palette);
       TestDropSettlesFromVisiblePosition(tab.palette);
       TestInactiveFirstTabPadding(tab.palette);
       TestHoverContentMaskRestores(tab.palette);
-      TestMetadataReusesTabAndAnimatesInPlace(tab.palette);
+      TestMetadataReusesTabAndUpdatesImmediately(tab.palette);
+      TestContentBackgroundContrast(tab.palette);
+      TestActiveTabContentColor(tab.palette);
+      TestContentWidthScalesTabHeaders(tab.palette);
       TestInactiveSeparatorCentering(tab.palette);
       TestInactiveDecorationFades(tab.palette);
       TestSelectionSlabSlidesBetweenTabs(tab.palette);

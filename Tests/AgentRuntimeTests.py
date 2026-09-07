@@ -65,7 +65,7 @@ class HermesStreamingTests(unittest.TestCase):
         output = FlushedOutput()
         chunks = ["Hello", " 🦊", "\n```swift\n", 'print("hi")']
         gateway = Mock()
-        def run(session, model, prompt, delta, cancellation=None):
+        def run(session, model, prompt, delta, cancellation=None, approval_response=None):
             for index, chunk in enumerate(chunks):
                 delta("content", chunk)
                 self.assertEqual([json.loads(line)["text"] for line in output.flushed.splitlines()], chunks[:index + 1])
@@ -76,6 +76,15 @@ class HermesStreamingTests(unittest.TestCase):
         events = [json.loads(line) for line in output.flushed.splitlines()]
         self.assertEqual(events[-1], {"type": "complete"})
         self.assertEqual(len(events), len(chunks) + 1)
+
+    def test_worker_forwards_structured_approval_response(self):
+        gateway = Mock()
+        response = {"request_id": "exact-approval", "choice": "deny"}
+        with patch.object(runtime, "tui_gateway", return_value=gateway), patch.object(runtime, "save_agent_soul"):
+            runtime.stream_hermes_session({"request_id": "r", "session_id": "chat", "token": "test",
+                "model": "test", "prompt": "Deny", "approval_response": response}, io.BytesIO())
+        self.assertEqual(gateway.run.call_args.kwargs["approval_response"], response)
+        self.assertEqual(gateway.run.call_args.args[:3], ("chat", "test", "Deny"))
 
 
 class HermesCancellationTests(unittest.TestCase):

@@ -337,12 +337,14 @@ class HermesGateway:
             return self.command(chat_id, sid, target + (" " + arg if arg else ""), model, depth + 1)
         return result
 
-    def run(self, chat_id, model, text, delta, cancellation=None):
+    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None):
         if cancellation and cancellation.cancelled():
             return
         with self.lock:
             session_lock = self.session_locks.setdefault(chat_id, threading.Lock())
         if not session_lock.acquire(blocking=False):
+            if approval_response is not None:
+                raise RuntimeError("This approval is already being submitted. Wait for the current request.")
             name = text.split(maxsplit=1)[0].lower()
             if name not in {"/stop", "/interrupt", "/steer"} or chat_id not in self.sessions:
                 raise RuntimeError("Hermes is busy. Use /stop or /steer, or wait for the current turn.")
@@ -354,11 +356,18 @@ class HermesGateway:
             if cancellation and cancellation.cancelled():
                 return
             waiting = self.waiting.get(chat_id)
+            if approval_response is not None and (not waiting or waiting[2] != "approval.request"):
+                raise RuntimeError("This approval is no longer pending. Send your request again.")
             if waiting:
                 sid, events, kind, payload = waiting
                 if kind == "approval.request":
-                    choice = {"/approve": "once", "/approve once": "once", "/approve session": "session",
-                              "/approve always": "always", "/deny": "deny"}.get(text.strip().lower())
+                    if approval_response is not None:
+                        if not isinstance(approval_response, dict) or approval_response.get("request_id") != payload.get("request_id"):
+                            raise RuntimeError("This approval has expired or was replaced. Use the current approval card.")
+                        choice = approval_response.get("choice")
+                    else:
+                        choice = {"/approve": "once", "/approve once": "once", "/approve session": "session",
+                                  "/approve always": "always", "/deny": "deny"}.get(text.strip().lower())
                     if choice not in payload.get("choices", ["once", "deny"]):
                         raise RuntimeError("Reply /approve or /deny to the pending Hermes command.")
                     result = self.call("approval.respond", {"session_id": sid, "request_id": payload.get("request_id"), "choice": choice})
@@ -411,8 +420,12 @@ class HermesGateway:
                         chunk = payload.get("text", "")
                         streamed += chunk
                         delta("content", chunk)
-                    elif kind in {"reasoning.delta", "thinking.delta"}:
+                    elif kind == "reasoning.delta":
                         delta("thinking", payload.get("text", ""))
+                    elif kind == "thinking.delta":
+                        # Hermes's thinking callback replaces its spinner text;
+                        # it is not a reasoning token stream. Empty text clears it.
+                        delta("status", payload.get("text", ""))
                     elif kind == "message.complete":
                         if payload.get("status") == "error":
                             raise RuntimeError(payload.get("text") or "Hermes turn failed.")
@@ -428,6 +441,9 @@ class HermesGateway:
                         raise RuntimeError(payload.get("message") or "Hermes turn failed.")
                     elif kind in {"approval.request", "clarify.request"}:
                         self.waiting[chat_id] = (sid, events, kind, payload)
+                        if kind == "approval.request":
+                            delta("approval", json.dumps(payload, ensure_ascii=False))
+                            return
                         question = payload.get("question") or payload.get("command") or json.dumps(payload.get("questions", []), ensure_ascii=False)
                         suffix = "\nReply /approve or /deny." if kind == "approval.request" else "\nReply with your answer."
                         delta("content", "\n" + question + suffix)

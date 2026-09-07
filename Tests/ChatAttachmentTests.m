@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "ChatAttachmentStore.h"
 #import "Database.h"
+#import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 #import "PromptMessages.h"
 #import "design_system/TLMessageInput.h"
@@ -127,6 +128,43 @@ static void TestProfileSchemaCompatibility(void) {
   fixture = nil;
   error = nil;
   Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"rejects unrecognized version-6 columns");
+  [NSFileManager.defaultManager removeItemAtURL:base error:nil];
+}
+
+static void TestVersion8Compatibility(void) {
+  NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+  NSURL *URL = [base URLByAppendingPathComponent:@"version8.sqlite"];
+  NSError *error = nil;
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:URL error:&error];
+  TLChatRecord *chat = [database createChatWithModel:@"test" error:&error];
+  [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Preserved history" thinking:nil] chatID:chat.chatID error:&error];
+  database = nil;
+  TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
+  Check([fixture executeSQL:"UPDATE chats SET supporting_model = 'test/saved-model'" error:&error], @"populates the version-8 supporting model");
+  Check(TLDatabaseMigrate(fixture, 7, &error), @"version-7 clients accept the known additive version-8 schema");
+  fixture = nil;
+  database = [[TLDatabase alloc] initWithURL:URL error:&error];
+  Check(database != nil, [NSString stringWithFormat:@"opens compatible version 8: %@", error]);
+  Check([[[database chatWithID:chat.chatID error:&error].messages.firstObject content] isEqual:@"Preserved history"], @"preserves newer database history");
+  Check([database createChatWithModel:@"another" error:&error] != nil, @"older inserts respect the new column default");
+  Check([database saveMessage:[TLChatMessage messageWithRole:TLRoleAssistant content:@"New message" thinking:nil] chatID:chat.chatID error:&error] != nil, @"normal writes work on version 8");
+  database = nil;
+  fixture = [TLSQLiteConnection openURL:URL error:&error];
+  TLSQLiteStatement *version = [fixture prepareSQL:"PRAGMA user_version" error:&error];
+  Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 8, @"never downgrades the database version");
+  version = nil;
+  TLSQLiteStatement *model = [fixture prepareSQL:"SELECT supporting_model FROM chats ORDER BY id" error:&error];
+  Check([model step] == SQLITE_ROW && [[model stringAtColumn:0] isEqual:@"test/saved-model"], @"preserves model data owned by the newer build");
+  Check([model step] == SQLITE_ROW && [[model stringAtColumn:0] isEqual:@"openrouter/auto"], @"new column default is retained");
+  model = nil;
+  Check([fixture executeSQL:"PRAGMA user_version = 9" error:&error], @"prepares an unknown future version");
+  fixture = nil; error = nil;
+  Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"unknown future versions still fail closed");
+  fixture = [TLSQLiteConnection openURL:URL error:&error];
+  Check([fixture executeSQL:"PRAGMA user_version = 8; ALTER TABLE chats ADD COLUMN unknown_field TEXT" error:&error], @"prepares unknown version-8 additions");
+  error = nil;
+  Check(!TLDatabaseMigrate(fixture, 7, &error) && error != nil, @"version-7 clients reject unrecognized version-8 layouts");
+  fixture = nil;
   [NSFileManager.defaultManager removeItemAtURL:base error:nil];
 }
 
@@ -439,6 +477,6 @@ static void TestSystemAttachmentThumbnails(void) {
 }
 
 int main(void) {
-  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestStorageAndPersistence(); TestComposer(); TestAttachmentReconciliationAndAnimation(); TestAttachmentPickerAppearance(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
+  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestVersion8Compatibility(); TestStorageAndPersistence(); TestComposer(); TestAttachmentReconciliationAndAnimation(); TestAttachmentPickerAppearance(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
   return 0;
 }

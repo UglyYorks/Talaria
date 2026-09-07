@@ -25,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller firstTabEdgeCornerRadiusDidChange:(CGFloat)cornerRadius;
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index;
 @optional
+- (nullable NSColor *)workspaceTabsController:(TLWorkspaceTabsController *)controller backgroundColorForTab:(TLWorkspaceTab *)tab;
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller isTabSplitCompanion:(TLWorkspaceTab *)tab;
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller willSelectTab:(TLWorkspaceTab *)tab;
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller dragTab:(TLWorkspaceTab *)tab atWindowPoint:(NSPoint)point;
@@ -54,8 +55,10 @@ NS_ASSUME_NONNULL_BEGIN
                          palette:(TLThemePalette *)palette
            transitionCoordinator:(TLTransitionCoordinator *)transitionCoordinator;
 - (void)reloadTabs;
+- (void)refreshContentColorsAnimated:(BOOL)animated;
 - (void)setNewTabButtonHovered:(BOOL)hovered;
 - (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth;
+- (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth contentWidth:(CGFloat)contentWidth;
 - (void)updateEdgeAttachmentState;
 - (void)setControlsEnabled:(BOOL)enabled disabledOpacity:(CGFloat)disabledOpacity;
 

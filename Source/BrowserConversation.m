@@ -25,7 +25,34 @@
 - (void)changed { if (self.changeHandler) self.changeHandler(); }
 - (NSString *)title { return self.chat.title ?: @"New chat"; }
 - (BOOL)loading {
-  return self.busy && (self.messages.count <= self.turnStart || !self.messages.lastObject.content.length);
+  return self.busy && !self.pendingApproval && (self.messages.count <= self.turnStart || !self.messages.lastObject.content.length);
+}
+- (NSDictionary *)pendingApproval {
+  for (TLChatMessage *message in self.messages.reverseObjectEnumerator) {
+    if (message.approvalRequest && ![message.approvalRequest[@"submitted"] boolValue]) return message.approvalRequest;
+  }
+  return nil;
+}
+- (BOOL)respondToApproval:(NSString *)requestID choice:(NSString *)choice token:(NSString *)token model:(NSString *)model {
+  NSDictionary *pending = self.pendingApproval;
+  NSArray *choices = [pending[@"choices"] isKindOfClass:NSArray.class] ? pending[@"choices"] : @[@"once", @"deny"];
+  NSString *title = @{@"once":@"Allow once", @"session":@"Allow this session", @"always":@"Always allow", @"deny":@"Deny"}[choice];
+  if (self.busy || ![pending[@"request_id"] isEqual:requestID] || ![choices containsObject:choice] || !title) return NO;
+  TLChatMessage *origin = nil;
+  for (TLChatMessage *message in self.messages) if (message.approvalRequest == pending) origin = message;
+  NSMutableDictionary *submitted = [pending mutableCopy];
+  submitted[@"submitted"] = @YES;
+  origin.approvalRequest = submitted;
+  self.runner.approvalResponse = @{@"request_id":requestID, @"choice":choice};
+  BOOL started = [self sendPrompt:title token:token model:model pageReader:^(void (^completion)(NSDictionary *, NSError *)) { completion(@{}, nil); }];
+  self.runner.approvalResponse = nil;
+  if (!started || (!self.busy && !self.lastTurnResult) ||
+      (self.lastTurnResult && self.lastTurnResult.generationStatus == TLAssistantTurnGenerationStatusNotStarted)) {
+    origin.approvalRequest = pending;
+    [self changed];
+    return NO;
+  }
+  return YES;
 }
 - (NSString *)markdown {
   NSMutableArray *responses = [NSMutableArray array];

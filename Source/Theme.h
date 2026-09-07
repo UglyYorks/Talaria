@@ -20,6 +20,8 @@ CGColorRef TLCGColor(NSColor *color);
 @interface TLThemePalette : NSObject
 
 @property (nonatomic) BOOL dark;
+// Higher-contrast theme ink for a content-derived opaque background.
+- (NSColor *)textColorForContentBackground:(NSColor *)background;
 
 @property (nonatomic, strong) NSColor *black;
 @property (nonatomic, strong) NSColor *white;
@@ -197,6 +199,8 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat tabContentVerticalOffset;
 @property (nonatomic) CGFloat tabMinWidth;
 @property (nonatomic) CGFloat tabMaxWidth;
+@property (nonatomic) CGFloat tabWidthScalingThreshold;
+@property (nonatomic) CGFloat tabWidthGrowthFactor;
 @property (nonatomic) CGFloat tabIconSize;
 @property (nonatomic) CGFloat tabIconGlyphSize;
 @property (nonatomic) CGFloat tabEmojiVerticalOffset;
@@ -241,6 +245,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat browserToolbarIconSize;
 @property (nonatomic) CGFloat browserReducedHeightSpacing;
 @property (nonatomic) CGFloat browserHeightTransitionDuration;
+@property (nonatomic) CGFloat browserFooterColorTransitionDuration;
 @property (nonatomic) CGFloat browserHeightTransitionOvershoot;
 @property (nonatomic) CGFloat browserChatPaneHeightFraction;
 @property (nonatomic) CGFloat browserChatPaneTransitionDuration;

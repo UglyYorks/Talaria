@@ -362,6 +362,16 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
       [self completeStreamWithError:TLAgentOrchestratorError(@"The Hermes TUI gateway is required. Update the agent runtime.") completion:finish];
       return;
     }
+    NSDictionary *approvalResponse = messages.lastObject.approvalResponse;
+    if (approvalResponse) {
+      if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:approvalResponse:delta:completion:)]) {
+        finish(TLAgentOrchestratorError(@"Update the agent runtime to respond to this approval."));
+        return;
+      }
+      [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID token:token model:model
+        prompt:TLHermesInputFromMessages(messages) approvalResponse:approvalResponse delta:delta completion:finish];
+      return;
+    }
     [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
                                              token:token model:model prompt:TLHermesInputFromMessages(messages)
                                              delta:delta completion:finish];

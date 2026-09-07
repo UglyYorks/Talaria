@@ -181,13 +181,17 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   NSString *requestID = [event[@"request_id"] isKindOfClass:NSString.class] ? event[@"request_id"] : @"";
   NSString *kindString = [event[@"kind"] isKindOfClass:NSString.class] ? event[@"kind"] : @"";
   NSString *text = [event[@"text"] isKindOfClass:NSString.class] ? event[@"text"] : @"";
-  if (requestID.length == 0 || text.length == 0 || !self.deltaHandler) {
+  if (requestID.length == 0 || !self.deltaHandler) {
     return;
   }
 
-  TLAgentStreamDeltaKind kind = [kindString isEqualToString:@"thinking"]
-    ? TLAgentStreamDeltaKindThinking
-    : TLAgentStreamDeltaKindContent;
+  TLAgentStreamDeltaKind kind;
+  if ([kindString isEqualToString:@"thinking"]) kind = TLAgentStreamDeltaKindThinking;
+  else if ([kindString isEqualToString:@"status"]) kind = TLAgentStreamDeltaKindStatus;
+  else if ([kindString isEqualToString:@"approval"]) kind = TLAgentStreamDeltaKindApproval;
+  else if ([kindString isEqualToString:@"content"]) kind = TLAgentStreamDeltaKindContent;
+  else return;
+  if (text.length == 0 && kind != TLAgentStreamDeltaKindStatus) return;
   dispatch_async(dispatch_get_main_queue(), ^{
     self.deltaHandler(requestID, kind, text);
   });
@@ -311,7 +315,15 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                               prompt:(NSString *)prompt
                                delta:(TLAgentStreamDeltaHandler)delta
                           completion:(TLAgentStreamCompletionHandler)completion {
-  NSDictionary *payload = @{
+  [self streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID token:token model:model
+                            prompt:prompt approvalResponse:nil delta:delta completion:completion];
+}
+
+- (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent requestID:(NSString *)requestID
+                          sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model
+                             prompt:(NSString *)prompt approvalResponse:(NSDictionary *)approvalResponse
+                              delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
+  NSMutableDictionary *payload = [@{
     @"operation": @"hermes_session_chat",
     @"request_id": requestID ?: @"",
     @"session_id": sessionID ?: @"",
@@ -319,7 +331,8 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     @"model": model ?: @"",
     @"prompt": prompt ?: @"",
     @"soul": agent.soul ?: @"",
-  };
+  } mutableCopy];
+  if (approvalResponse) payload[@"approval_response"] = approvalResponse;
   [self startWorkerWithAgent:agent payload:payload operation:@"hermes_session_chat"
                        delta:delta streamCompletion:completion modelCompletion:nil];
 }

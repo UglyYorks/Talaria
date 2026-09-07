@@ -5,6 +5,7 @@
 
 @interface TLComposerTextView : NSTextView
 @property (nonatomic) BOOL selectsAllOnFocus;
+@property (nonatomic, copy) void (^focusChangeHandler)(BOOL focused);
 @property (nonatomic, copy) BOOL (^filePasteHandler)(NSPasteboard *pasteboard);
 @property (nonatomic, copy) BOOL (^fileDropEnabled)(void);
 @property (nonatomic, strong) NSEvent *focusMouseDownEvent;
@@ -33,6 +34,7 @@
 }
 - (BOOL)becomeFirstResponder {
   BOOL accepted = [super becomeFirstResponder];
+  if (accepted && self.focusChangeHandler) self.focusChangeHandler(YES);
   if (accepted && self.selectsAllOnFocus) {
     [self selectAll:nil];
     NSEvent *event = NSApp.currentEvent;
@@ -44,6 +46,7 @@
 - (BOOL)resignFirstResponder {
   BOOL resigned = [super resignFirstResponder];
   if (resigned) self.focusMouseDownEvent = nil;
+  if (resigned && self.focusChangeHandler) self.focusChangeHandler(NO);
   return resigned;
 }
 
@@ -489,6 +492,25 @@
   ((TLComposerTextView *)self.textView).selectsAllOnFocus = selectsAllOnFocus;
 }
 
+- (void)setFocusChangeHandler:(void (^)(BOOL))handler {
+  _focusChangeHandler = [handler copy];
+  ((TLComposerTextView *)self.textView).focusChangeHandler = handler;
+}
+
+- (void)setSingleLine:(BOOL)singleLine {
+  if (_singleLine == singleLine) return;
+  _singleLine = singleLine;
+  self.textView.horizontallyResizable = singleLine;
+  self.textView.autoresizingMask = singleLine ? NSViewNotSizable : NSViewWidthSizable;
+  self.textView.maxSize = NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
+  self.textView.textContainer.widthTracksTextView = !singleLine;
+  self.textView.textContainer.maximumNumberOfLines = singleLine ? 1 : 0;
+  self.textView.textContainer.lineBreakMode = singleLine ? NSLineBreakByClipping : NSLineBreakByWordWrapping;
+  self.textView.textContainer.containerSize = NSMakeSize(singleLine ? CGFLOAT_MAX : self.textScrollView.contentSize.width, CGFLOAT_MAX);
+  if (!singleLine) [self.textView setFrameSize:NSMakeSize(self.textScrollView.contentSize.width, NSHeight(self.textView.frame))];
+  [self recalculateHeight];
+}
+
 - (void)setLeadingAccessoryView:(NSView *)leadingView trailingAccessoryView:(NSView *)trailingView {
   self.textLeadingConstraint.active = NO;
   self.textTrailingConstraint.active = NO;
@@ -548,7 +570,7 @@
   NSLayoutManager *layoutManager = self.textView.layoutManager;
   NSTextContainer *textContainer = self.textView.textContainer;
   [layoutManager ensureLayoutForTextContainer:textContainer];
-  CGFloat usedHeight = NSHeight([layoutManager usedRectForTextContainer:textContainer]);
+  CGFloat usedHeight = self.singleLine ? 0 : NSHeight([layoutManager usedRectForTextContainer:textContainer]);
   CGFloat chrome = self.palette.space3 * 2.0;
   CGFloat textHeight = MAX(usedHeight, self.palette.bodyFont.ascender - self.palette.bodyFont.descender);
   CGFloat textInset = textHeight <= (self.palette.bodyFont.ascender - self.palette.bodyFont.descender) + 1.0 ? self.palette.space3 : self.palette.space5;
