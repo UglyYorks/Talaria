@@ -1,3 +1,4 @@
+#import "TLBrowserImageActions.h"
 #import "TLAutomationsTabController.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
@@ -5132,8 +5133,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (BOOL)isBrowserURL:(NSURL *)URL {
-  NSString *scheme = URL.scheme.lowercaseString;
-  return [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"];
+  return TLBrowserImageURLIsSupported(URL);
 }
 
 - (NSString *)browserTabTitleForURL:(NSURL *)URL {

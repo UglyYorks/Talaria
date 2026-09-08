@@ -1,5 +1,6 @@
 #import "ChromiumContextMenu.h"
 #import "ChromiumRunLoop.h"
+#import "ChromiumImageActions.h"
 
 @interface TLChromiumContextMenuSelection : NSObject
 @property(nonatomic) NSInteger command;
@@ -39,6 +40,7 @@ static NSMenu *TLChromiumNativeMenu(CefRefPtr<CefMenuModel> model, TLChromiumCon
     item.enabled=model->IsEnabledAt(index);item.hidden=!model->IsVisibleAt(index);
     item.state=model->IsCheckedAt(index) ? NSControlStateValueOn : NSControlStateValueOff;
     if(item.tag==MENU_ID_PRINT)item.image=[NSImage imageWithSystemSymbolName:@"printer" accessibilityDescription:nil];
+    if(item.tag==TLChromiumImageCommandFirst+TLBrowserImageShare)item.image=[NSImage imageWithSystemSymbolName:@"square.and.arrow.up" accessibilityDescription:nil];
     if(auto submenu=model->GetSubMenuAt(index)) { item.submenu=TLChromiumNativeMenu(submenu,selection);item.action=nil; }
     [menu addItem:item];
   }

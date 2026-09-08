@@ -1,6 +1,7 @@
 #import "ChromiumBrowserController.h"
 #import "ChromiumRunLoop.h"
 #import "ChromiumContextMenu.h"
+#import "ChromiumImageActions.h"
 #import "ChromiumPageArchive.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "ChromiumOverlayProbe.h"
@@ -180,6 +181,7 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 - (void)openBrowserURLString:(NSString *)urlString;
 - (void)openExternalURLString:(NSString *)urlString;
 - (BOOL)handleBrowserLinkURLString:(NSString *)urlString fromBrowser:(CefRefPtr<CefBrowser>)browser userGesture:(BOOL)userGesture;
+- (void)openImageURL:(NSURL *)URL fromBrowser:(CefRefPtr<CefBrowser>)browser inNewWindow:(BOOL)newWindow;
 - (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
 - (nullable NSWindow *)windowForBrowser:(CefRefPtr<CefBrowser>)browser;
 - (void)attachBrowserViewForBrowser:(CefRefPtr<CefBrowser>)browser toContainerView:(NSView *)containerView;
@@ -357,6 +359,10 @@ class TLChromiumClient : public CefClient,
                            CefRefPtr<CefContextMenuParams> params,
                            CefRefPtr<CefMenuModel> model) override {
     CEF_REQUIRE_UI_THREAD();
+    if (params && params->GetMediaType() == CM_MEDIATYPE_IMAGE) {
+      TLChromiumPopulateImageMenu(model, [NSString stringWithUTF8String:params->GetSourceUrl().ToString().c_str()], params->HasImageContents());
+      return;
+    }
     // Keep editing, selection and link-specific actions, then add the page menu.
     for (int command : {MENU_ID_BACK, MENU_ID_FORWARD, MENU_ID_RELOAD, MENU_ID_RELOAD_NOCACHE,
                         MENU_ID_STOPLOAD, MENU_ID_PRINT, MENU_ID_VIEW_SOURCE}) model->Remove(command);
@@ -388,6 +394,33 @@ class TLChromiumClient : public CefClient,
                             CefRefPtr<CefContextMenuParams> params, int command_id,
                             cef_event_flags_t event_flags) override {
     CEF_REQUIRE_UI_THREAD();
+    if (command_id >= TLChromiumImageCommandFirst && command_id <= TLChromiumImageCommandFirst + TLBrowserImageShare) {
+      if (!params || params->GetMediaType() != CM_MEDIATYPE_IMAGE) return true;
+      TLBrowserImageAction action = (TLBrowserImageAction)(command_id - TLChromiumImageCommandFirst);
+      NSURL *URL = [NSURL URLWithString:[NSString stringWithUTF8String:params->GetSourceUrl().ToString().c_str()]];
+      if (!TLBrowserImageURLIsSupported(URL) || action == TLBrowserImageLookUp) return true;
+      NSString *frameURL = [NSString stringWithUTF8String:params->GetFrameUrl().ToString().c_str()];
+      NSView *view = (__bridge NSView *)browser->GetHost()->GetWindowHandle();
+      NSPoint point = NSMakePoint(params->GetXCoord(), view.isFlipped ? params->GetYCoord() : NSHeight(view.bounds) - params->GetYCoord());
+      TLChromiumBrowserController *controller = browserController_;
+      // Snapshot context params before returning to Chromium; native panels must run outside its callback.
+      TLChromiumDeferToMainRunLoop(^{
+        if (!browser->IsValid()) return;
+        if (action == TLBrowserImageOpenTab || action == TLBrowserImageOpenWindow) {
+          [controller openImageURL:URL fromBrowser:browser inNewWindow:action == TLBrowserImageOpenWindow];
+        } else if (action == TLBrowserImageCopyAddress) {
+          [NSPasteboard.generalPasteboard clearContents];
+          [NSPasteboard.generalPasteboard setString:URL.absoluteString forType:NSPasteboardTypeString];
+        } else {
+          TLChromiumReadImage(browser, URL, frameURL, ^(TLBrowserImageResource *resource, NSError *error) {
+            if (!view.window.isVisible) return;
+            if (error) [controller presentCEFError:error.localizedDescription fromWindow:view.window];
+            else [TLBrowserImageActions performAction:action resource:resource URL:URL fromView:view atPoint:point];
+          });
+        }
+      });
+      return true;
+    }
     switch (command_id) {
       case MENU_ID_RELOAD: browser->Reload();return true;
       case MENU_ID_VIEW_SOURCE: [browserController_ showPageSourceForBrowser:browser];return true;
@@ -1798,6 +1831,15 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   }
 }
 
+- (void)openImageURL:(NSURL *)URL fromBrowser:(CefRefPtr<CefBrowser>)browser inNewWindow:(BOOL)newWindow {
+  if (!TLBrowserImageURLIsSupported(URL)) return;
+  NSValue *key = _containersByBrowserIdentifier[@(browser->GetIdentifier())];
+  TLChromiumBrowserLinkHandler handler = nil;
+  if (key) handler = _linkHandlersByContainer[key];
+  if (!newWindow && handler) handler(URL, 0);
+  else [self createBrowserWithURLString:URL.absoluteString parentView:nil];
+}
+
 - (BOOL)handleBrowserLinkURLString:(NSString *)urlString fromBrowser:(CefRefPtr<CefBrowser>)browser userGesture:(BOOL)userGesture {
   NSURL *url = [NSURL URLWithString:urlString];
   NSURL *browserURL = url ? [self browserURLFromURL:url] : nil;
@@ -2005,12 +2047,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
 }
 
 - (NSURL *)browserURLFromURL:(NSURL *)url {
-  NSString *scheme = url.scheme.lowercaseString;
-  if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
-    return url;
-  }
-
-  return nil;
+  return TLBrowserImageURLIsSupported(url) ? url : nil;
 }
 
 - (NSString *)chromiumCachePath {
