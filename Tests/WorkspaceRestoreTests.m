@@ -4,6 +4,7 @@
 #import "TLBrowserTabController.h"
 #import "TLBrowserPreferences.h"
 #import "TLWorkspaceSessionStore.h"
+#import "TLDownloadsTabController.h"
 #import "WorkspaceTabRuntime.h"
 
 static void Check(BOOL condition, NSString *message) {
@@ -71,7 +72,7 @@ static TLAppStateManager *Seed(void) {
   TLAppStateManager *state = [TLAppStateManager new];
   NSArray *entries = @[@[@(TLWorkspaceTabKindChat),@42], @[@(TLWorkspaceTabKindBrowser),@8],
     @[@(TLWorkspaceTabKindChat),@(-6)], @[@(TLWorkspaceTabKindSettings),@0],
-    @[@(TLWorkspaceTabKindAgents),@0], @[@(TLWorkspaceTabKindDebug),@0], @[@(TLWorkspaceTabKindAutomations),@0]];
+    @[@(TLWorkspaceTabKindAgents),@0], @[@(TLWorkspaceTabKindDebug),@0], @[@(TLWorkspaceTabKindAutomations),@0], @[@(TLWorkspaceTabKindDownloads),@0]];
   for (NSArray *entry in entries) [state addWorkspaceTab:[TLWorkspaceTab tabWithKind:[entry[0] integerValue]
     tabID:[entry[1] integerValue] title:@"Restored tab" toolTip:nil
     URL:[entry[0] integerValue] == TLWorkspaceTabKindBrowser ? [NSURL URLWithString:@"https://example.com/restore"] : nil
@@ -109,12 +110,15 @@ int main(void) {
     [store restoreStateManager:state];
     TLRestoreTestController *owner = Load(state);
     [store observeStateManager:state];
-    Check(state.snapshot.workspaceTabs.count == 7 && state.snapshot.activeTabKind == TLWorkspaceTabKindBrowser &&
+    Check(state.snapshot.workspaceTabs.count == 8 && state.snapshot.activeTabKind == TLWorkspaceTabKindBrowser &&
       state.snapshot.activeTabID == 8, @"startup restores all tabs with the browser selected");
     TLWorkspaceTab *browser = [state workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:8];
     TLWorkspaceTabRuntime *runtime = [owner runtimeForTab:browser];
     Check(runtime.contentView && [runtime.featureController isKindOfClass:TLBrowserTabController.class] && browserStarts == 1,
       @"startup rebuilds and starts a browser view for the restored URL");
+    TLWorkspaceTab *downloads = [state workspaceTabWithKind:TLWorkspaceTabKindDownloads tabID:0];
+    Check([[owner runtimeForTab:downloads].featureController isKindOfClass:TLDownloadsTabController.class],
+      @"restored downloads tab rebuilds its native feature controller");
     [owner hydrateWorkspaceTabsFromAppState];
     Check(browserStarts == 1, @"repeated hydration does not start duplicate browsers");
     TLBrowserTabController *controller = (id)runtime.featureController;
@@ -125,16 +129,16 @@ int main(void) {
     Check([[navigated workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:8].URL isEqual:navigatedURL],
       @"restored browser navigation is wired to session persistence");
     [owner startNewChatWithModel:@"test-model" focus:NO];
-    Check(state.snapshot.activeTabID == -7 && state.snapshot.workspaceTabs.count == 8,
+    Check(state.snapshot.activeTabID == -7 && state.snapshot.workspaceTabs.count == 9,
       @"a new draft cannot overwrite a restored draft");
     [owner openBrowserTabWithURL:[NSURL URLWithString:@"https://example.com/new"]];
-    Check(state.snapshot.activeTabID == 9 && state.snapshot.workspaceTabs.count == 9 && browserStarts == 2,
+    Check(state.snapshot.activeTabID == 9 && state.snapshot.workspaceTabs.count == 10 && browserStarts == 2,
       @"a new browser cannot overwrite a restored browser");
     [owner loadChatWithID:42];
     Check([[owner valueForKey:@"activeChat"] chatID] == 42 && state.snapshot.activeTabKind == TLWorkspaceTabKindChat,
       @"restored saved chat loads its database record when selected");
     [owner windowShouldClose:nil];
-    Check(state.snapshot.workspaceTabs.count == 9 && state.snapshot.activeTabID == 42,
+    Check(state.snapshot.workspaceTabs.count == 10 && state.snapshot.activeTabID == 42,
       @"closing the app window retains tabs and selection");
     TLAppStateManager *reopened = [TLAppStateManager new];
     [store restoreStateManager:reopened];
@@ -145,7 +149,7 @@ int main(void) {
     [missing addWorkspaceTab:[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:999 title:@"Deleted chat"
       toolTip:nil URL:nil closeable:YES] activate:YES];
     TLRestoreTestController *missingOwner = Load(missing);
-    Check(![missing hasWorkspaceTabWithKind:TLWorkspaceTabKindChat tabID:999] && missing.snapshot.workspaceTabs.count == 7 &&
+    Check(![missing hasWorkspaceTabWithKind:TLWorkspaceTabKindChat tabID:999] && missing.snapshot.workspaceTabs.count == 8 &&
       [missing hasWorkspaceTabWithKind:missing.snapshot.activeTabKind tabID:missing.snapshot.activeTabID],
       @"deleted active chats are removed and a surviving tab is selected");
     Check([[missingOwner valueForKey:@"errorMessage"] length] == 0, @"deleted chat does not break startup");
@@ -154,7 +158,7 @@ int main(void) {
     Check([preferences saveValue:@"empty" forSetting:[TLBrowserPreferences settingWithID:@"startup"] error:nil], @"set browser startup preference");
     TLAppStateManager *noBrowser = Seed();
     TLRestoreTestController *noBrowserOwner = Load(noBrowser);
-    Check(![noBrowser hasWorkspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:8] && noBrowser.snapshot.workspaceTabs.count == 6 &&
+    Check(![noBrowser hasWorkspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:8] && noBrowser.snapshot.workspaceTabs.count == 7 &&
       noBrowser.snapshot.activeTabKind == TLWorkspaceTabKindChat && [[noBrowserOwner valueForKey:@"activeChat"] chatID] == -6,
       @"explicit no-browser preference is honored with a valid fallback selection");
     method_exchangeImplementations(start, testStart);

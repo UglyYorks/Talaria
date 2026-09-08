@@ -1,5 +1,7 @@
 #import "ChromiumContextMenu.h"
+#include "include/cef_client.h"
 #import "ChromiumRunLoop.h"
+#import "ChromiumImageActions.h"
 
 @interface TLChromiumContextMenuSelection : NSObject
 @property(nonatomic) NSInteger command;
@@ -39,6 +41,7 @@ static NSMenu *TLChromiumNativeMenu(CefRefPtr<CefMenuModel> model, TLChromiumCon
     item.enabled=model->IsEnabledAt(index);item.hidden=!model->IsVisibleAt(index);
     item.state=model->IsCheckedAt(index) ? NSControlStateValueOn : NSControlStateValueOff;
     if(item.tag==MENU_ID_PRINT)item.image=[NSImage imageWithSystemSymbolName:@"printer" accessibilityDescription:nil];
+    if(item.tag==TLChromiumImageCommandFirst+TLBrowserImageShare)item.image=[NSImage imageWithSystemSymbolName:@"square.and.arrow.up" accessibilityDescription:nil];
     if(auto submenu=model->GetSubMenuAt(index)) { item.submenu=TLChromiumNativeMenu(submenu,selection);item.action=nil; }
     [menu addItem:item];
   }
@@ -56,6 +59,28 @@ void TLChromiumShowContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefMenuM
     NSPoint point=NSMakePoint(location.x,view.isFlipped ? location.y : NSHeight(view.bounds)-location.y);
     [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
     if(selection.command>=0 && browser->IsValid())callback->Continue((int)selection.command,selection.flags);
+    else callback->Cancel();
+  });
+}
+
+void TLChromiumShowLinkContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefMenuModel> imageModel,
+  NSURL *URL, BOOL canSplit, CefPoint location, CefRefPtr<CefRunContextMenuCallback> callback,
+  TLBrowserLinkOpenHandler open) {
+  TLChromiumContextMenuSelection *selection = [TLChromiumContextMenuSelection new];
+  NSMenu *imageMenu = imageModel ? TLChromiumNativeMenu(imageModel, selection) : nil;
+  TLChromiumDeferToMainRunLoop(^{
+    if (!browser->IsValid()) { callback->Cancel(); return; }
+    NSView *view = (__bridge NSView *)browser->GetHost()->GetWindowHandle();
+    NSWindow *window = view.window;
+    if (!window.isVisible) { callback->Cancel(); return; }
+    NSPoint point = NSMakePoint(location.x, view.isFlipped ? location.y : NSHeight(view.bounds) - location.y);
+    NSMenu *menu = [TLBrowserLinkActions menuForURL:URL canSplit:canSplit view:view point:point open:open inspect:^{
+      if (!browser->IsValid()) return;
+      CefWindowInfo info; CefBrowserSettings settings;
+      browser->GetHost()->ShowDevTools(info, nullptr, settings, location);
+    } imageMenu:imageMenu];
+    [TLBrowserLinkActions popUpMenu:menu forURL:URL inView:view atPoint:point];
+    if (selection.command >= 0 && browser->IsValid()) callback->Continue((int)selection.command, selection.flags);
     else callback->Cancel();
   });
 }

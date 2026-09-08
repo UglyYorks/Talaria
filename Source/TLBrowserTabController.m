@@ -103,6 +103,7 @@
   [self.heightTransition cancel];
   self.browserConversation.changeHandler = nil;
   self.browserChatPane.linkHandler = nil;
+  self.browserChatPane.linkContextMenuHandler = nil;
   self.browserChatPane.minimizeButton.target = nil;
   self.browserAddressInput.heightChangeHandler = nil;
   self.browserAddressInput.sendButton.target = nil;
@@ -113,6 +114,7 @@
                              self.browserAddressInput.chatButton]) {
     button.target = nil;
   }
+  self.browserSession.contextLinkHandler = nil;
   self.browserSession.devToolsVisibilityChangedHandler = nil;
   [self.browserService closeSession:self.browserSession];
   self.browserSession = nil;
@@ -120,6 +122,7 @@
   self.faviconChangedHandler = nil;
   self.headerColorChangedHandler = nil;
   self.linkHandler = nil;
+  self.contextLinkHandler = nil;
   self.settingsProvider = nil;
   self.settingsRequiredHandler = nil;
 }
@@ -346,6 +349,10 @@
       controller.browserAddressInput.forwardButton.enabled = canGoForward;
       controller.browserAddressInput.reloadButton.enabled = YES;
     }];
+  self.browserSession.contextLinkHandler = ^(NSURL *URL, TLBrowserLinkDestination destination) {
+    TLBrowserTabController *controller = weakSelf;
+    if (!controller.isClosed && controller.contextLinkHandler) controller.contextLinkHandler(URL, destination);
+  };
   if (self.browserSession) {
     self.browserSession.findResultsChangedHandler = ^(NSInteger count, NSInteger activeMatch, BOOL finalUpdate) {
       TLBrowserTabController *controller = weakSelf;
@@ -707,6 +714,15 @@
     ]];
     __weak typeof(self) weakSelf = self;
     self.browserConversation.changeHandler = ^{ [weakSelf updateBrowserChat]; };
+    pane.linkContextMenuHandler = ^dispatch_block_t(NSURL *URL, NSMenu *menu, NSView *view, NSPoint point) {
+      TLBrowserTabController *controller = weakSelf;
+      if (controller.isClosed || !controller.contextLinkHandler) return nil;
+      return [TLBrowserLinkActions configureNativeMenu:menu forURL:URL inView:view atPoint:point
+        open:^(NSURL *link, TLBrowserLinkDestination destination) {
+          TLBrowserTabController *current = weakSelf;
+          if (!current.isClosed && current.contextLinkHandler) current.contextLinkHandler(link, destination);
+        }];
+    };
     pane.linkHandler = ^(NSURL *URL, NSEventModifierFlags flags) {
       TLBrowserTabController *controller = weakSelf;
       if (!controller.isClosed && controller.linkHandler) controller.linkHandler(URL, flags);

@@ -8,6 +8,7 @@
 #import "design_system/TLChromeTabView.h"
 #import "WorkspaceTabRuntime.h"
 #import "AppStateManager.h"
+#import "TLBrowserLinkActions.h"
 
 static void Check(BOOL value, NSString *message) { if (!value) { NSLog(@"FAIL: %@", message); exit(1); } }
 static void Drain(void) { [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.06]]; }
@@ -35,6 +36,9 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 - (void)updateMessageScrollInsets;
 - (void)restoreAttachmentDraft:(NSArray<NSURL *> *)URLs prompt:(NSString *)prompt chatID:(NSInteger)chatID;
 - (void)openBrowserTab:(id)sender;
+- (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab;
+- (void)openLinkURL:(NSURL *)URL inSplitBesideBrowserTabID:(NSInteger)tabID;
+- (void)handleContextLinkURL:(NSURL *)URL destination:(TLBrowserLinkDestination)destination sourceIdentity:(NSString *)identity;
 - (void)closeBrowserTab:(id)sender;
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller willSelectTab:(TLWorkspaceTab *)tab;
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller dragTab:(TLWorkspaceTab *)tab atWindowPoint:(NSPoint)point;
@@ -46,6 +50,12 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 @property (nonatomic, strong) TLChatPresentation *lastScrollPresentation;
 @end
 @implementation TLSplitTestController
+- (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab {
+  NSMutableDictionary *runtimes = [self valueForKey:@"workspaceTabRuntimes"];
+  NSString *key = TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID);
+  if (!runtimes[key]) runtimes[key] = [TLWorkspaceTabRuntime runtimeWithContentView:[NSView new]
+    openAction:@selector(openBrowserTab:) closeAction:@selector(closeBrowserTab:)];
+}
 - (void)refreshHermesHistory {}
 - (void)generateChatIconIfNeededForChatID:(NSInteger)chatID messages:(NSArray *)messages {}
 - (void)updateMessageScrollInsets {
@@ -249,6 +259,23 @@ static void TestRealWorkspace(void) {
   NSPoint editorPoint = [chat.promptTextView convertPoint:NSMakePoint(NSMidX(chat.promptTextView.bounds),NSMidY(chat.promptTextView.bounds)) toView:window.contentView.superview];
   NSView *hit = [window.contentView hitTest:editorPoint];
   Check(hit == chat.promptTextView || [hit isDescendantOf:chat.promptTextView], [NSString stringWithFormat:@"pane editor receives pointer hit (got %@)",hit.class]);
+  NSUInteger beforeSplitLink = state.snapshot.workspaceTabs.count;
+  NSURL *linkedURL = [NSURL URLWithString:@"https://example.com/linked-page"];
+  [owner openLinkURL:linkedURL inSplitBesideBrowserTabID:browser.tabID]; Drain();
+  TLWorkspaceTab *linked = state.snapshot.workspaceTabs.lastObject;
+  TLWorkspaceSplitGroup *linkedGroup = [splits groupForTab:browser];
+  Check(state.snapshot.workspaceTabs.count == beforeSplitLink + 1 && [linked.URL isEqual:linkedURL], @"split link creates a browser tab for the clicked URL");
+  Check([linkedGroup.leftIdentity isEqual:TLWorkspaceTabIdentity(browser)] &&
+    [linkedGroup.rightIdentity isEqual:TLWorkspaceTabIdentity(linked)], @"split link uses its source browser even when the other pane was focused");
+  Check(state.snapshot.activeTabID == linked.tabID && workspace.rightFocused, @"split link focuses the new right pane");
+  Check(![splits groupForTab:c] && [[state.snapshot.workspaceTabs valueForKey:@"tabID"] containsObject:@(c.tabID)], @"replacing a split retains the previous companion tab");
+  [owner openLinkURL:linkedURL inSplitBesideBrowserTabID:99999];
+  [owner openLinkURL:[NSURL URLWithString:@"javascript:alert(1)"] inSplitBesideBrowserTabID:browser.tabID];
+  Check(state.snapshot.workspaceTabs.count == beforeSplitLink + 1, @"closed sources and unsupported URLs cannot create split tabs");
+  [owner handleContextLinkURL:linkedURL destination:TLBrowserLinkSplitView sourceIdentity:TLWorkspaceTabIdentity(c)]; Drain();
+  TLWorkspaceTab *chatLink = state.snapshot.workspaceTabs.lastObject;
+  Check([[splits groupForTab:c].rightIdentity isEqual:TLWorkspaceTabIdentity(chatLink)] &&
+    [[splits groupForTab:c].leftIdentity isEqual:TLWorkspaceTabIdentity(c)], @"chat answers use the same split routing beside their originating chat");
   [window close];
 }
 int main(void) { @autoreleasepool {

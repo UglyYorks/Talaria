@@ -2,6 +2,7 @@
 #import <AppKit/AppKit.h>
 #import "ChromiumBrowserController.h"
 #import "TLBrowserPreferences.h"
+#import "TLBrowserDownloadManager.h"
 #include "include/cef_application_mac.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
@@ -48,6 +49,9 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
 @property TLChromiumBrowserSession *session;
 @property NSInteger stage;
 @property NSString *baseURL;
+@property NSInteger downloadStage;
+@property TLBrowserDownload *firstDownload;
+@property TLBrowserDownload *secondDownload;
 @end
 @implementation TLProbeDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -75,6 +79,9 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   if (secondRun) {
     Check([[[TLBrowserPreferences.sharedPreferences stateForSetting:[TLBrowserPreferences settingWithID:@"doNotTrack"]] objectForKey:@"value"] boolValue], @"Chromium preference persists across desktop launches");
     Check([[TLBrowserPreferences.sharedPreferences localValue:@"zoom"] intValue] == 150, @"Talaria preference persists across desktop launches");
+    NSArray *downloads = TLBrowserDownloadManager.sharedManager.downloads;
+    Check(downloads.count == 4, @"download history persists across desktop launches");
+    for (TLBrowserDownload *download in downloads) Check(!download.active, @"restored history contains no phantom active transfers");
     [NSApp terminate:nil]; return;
   }
   [self set:@"doNotTrack" value:@YES];
@@ -179,10 +186,54 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   NSString *data = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
   if ([data isEqual:@"talaria download fixture"]) {
     Check(YES,@"embedded browser downloads to the configured folder");
-    [NSApp terminate:nil]; return;
+    TLBrowserDownload *download = TLBrowserDownloadManager.sharedManager.downloads.firstObject;
+    if (download.state != TLBrowserDownloadStateComplete) {
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{ [self checkDownload:attempt+1]; });
+      return;
+    }
+    Check(download.fileAvailable && [download.path isEqual:path], @"manager receives the completed Chromium download and its actual destination");
+    auto browser = [TLChromiumBrowserController.sharedController browserWithIdentifier:(int)self.session.browserIdentifier];
+    browser->GetHost()->StartDownload(std::string([self.baseURL stringByAppendingString:@"/slow?one"].UTF8String));
+    browser->GetHost()->StartDownload(std::string([self.baseURL stringByAppendingString:@"/slow?two"].UTF8String));
+    self.downloadStage = 0;
+    [self checkDownloadControls:0];
+    return;
   }
   if (attempt >= 100) Check(NO,@"download finishes");
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{ [self checkDownload:attempt+1]; });
+}
+- (void)checkDownloadControls:(NSUInteger)attempt {
+  TLBrowserDownloadManager *manager = TLBrowserDownloadManager.sharedManager;
+  if (self.downloadStage == 0) {
+    for (TLBrowserDownload *download in manager.downloads) {
+      if ([download.URLString hasSuffix:@"/slow?one"]) self.firstDownload = download;
+      if ([download.URLString hasSuffix:@"/slow?two"]) self.secondDownload = download;
+    }
+    if (self.firstDownload.receivedBytes > 0 && self.secondDownload.receivedBytes > 0) {
+      Check(![self.firstDownload.path isEqual:self.secondDownload.path], @"concurrent same-name downloads have separate destinations");
+      [manager performAction:TLBrowserDownloadActionPause forDownload:self.firstDownload];
+      self.downloadStage = 1;
+    }
+  } else if (self.downloadStage == 1 && self.firstDownload.state == TLBrowserDownloadStatePaused) {
+    Check(YES, @"Chromium confirms pause in the download manager");
+    [manager performAction:TLBrowserDownloadActionCancel forDownload:self.secondDownload];
+    [manager performAction:TLBrowserDownloadActionResume forDownload:self.firstDownload];
+    [TLChromiumBrowserController.sharedController closeSession:self.session];
+    self.downloadStage = 2;
+  } else if (self.downloadStage == 2 && self.firstDownload.state == TLBrowserDownloadStateComplete && self.secondDownload.state == TLBrowserDownloadStateCancelled) {
+    Check(self.firstDownload.fileAvailable, @"resumed download finishes after its browser tab closes");
+    Check(self.secondDownload.canRetry, @"cancelled Chromium download offers retry");
+    [TLChromiumBrowserController.sharedController startDownloadURL:[NSURL URLWithString:self.secondDownload.URLString] fromWindow:self.window];
+    self.downloadStage = 3;
+  } else if (self.downloadStage == 3) {
+    TLBrowserDownload *retry = manager.downloads.firstObject;
+    if (retry != self.secondDownload && [retry.URLString isEqual:self.secondDownload.URLString] && retry.state == TLBrowserDownloadStateComplete) {
+      Check(retry.fileAvailable && manager.downloads.count == 4, @"retry finishes through Chromium with the original browser tab closed");
+      [NSApp terminate:nil]; return;
+    }
+  }
+  if (attempt >= 200) Check(NO, [NSString stringWithFormat:@"download controls finish (stage %ld, states %ld/%ld)", (long)self.downloadStage, (long)self.firstDownload.state, (long)self.secondDownload.state]);
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{ [self checkDownloadControls:attempt+1]; });
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
   return [TLChromiumBrowserController.sharedController prepareForApplicationTermination] ? NSTerminateNow : NSTerminateLater;

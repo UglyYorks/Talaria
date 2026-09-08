@@ -6,9 +6,24 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 
 class Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith('/slow?'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Disposition', 'attachment; filename="slow.bin"')
+            self.send_header('Content-Length', str(64 * 65536))
+            self.end_headers()
+            try:
+                for _ in range(64):
+                    self.wfile.write(b'x' * 65536)
+                    self.wfile.flush()
+                    time.sleep(0.05)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # Cancelling a download is part of the integration test.
+            return
         download = self.path == '/download'
         body = (b'talaria download fixture' if download else b'''<!doctype html><title>scripts off</title><body>Browser settings fixture<script>
         document.title='scripts on:'+getComputedStyle(document.body).fontSize+':'+navigator.doNotTrack;

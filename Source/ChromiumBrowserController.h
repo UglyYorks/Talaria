@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import "TLBrowserLinkActions.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -17,6 +18,7 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 @property (nonatomic, readonly, getter=isFullscreen) BOOL fullscreen;
 @property (nonatomic, readonly) BOOL devToolsVisible;
 @property (nonatomic, copy, nullable) dispatch_block_t devToolsVisibilityChangedHandler;
+@property (nonatomic, copy, nullable) TLBrowserLinkOpenHandler contextLinkHandler;
 @property (nonatomic, copy, nullable) void (^findResultsChangedHandler)(NSInteger count, NSInteger activeMatch, BOOL finalUpdate);
 @property (nonatomic, copy, nullable) dispatch_block_t documentStartedHandler;
 
@@ -36,6 +38,7 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
                                     URLHandler:(nullable TLChromiumBrowserURLHandler)URLHandler
                                 faviconHandler:(nullable TLChromiumBrowserFaviconHandler)faviconHandler
                              navigationHandler:(nullable TLChromiumBrowserNavigationHandler)navigationHandler;
+- (void)startDownloadURL:(NSURL *)URL fromWindow:(nullable NSWindow *)window;
 - (void)navigateSession:(nullable TLChromiumBrowserSession *)session toURL:(NSURL *)URL;
 - (void)prepareBrowserSettingsInWindow:(nullable NSWindow *)window completion:(void (^)(NSError * _Nullable))completion;
 - (NSDictionary *)browserSettingState:(NSDictionary *)setting;

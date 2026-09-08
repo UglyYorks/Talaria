@@ -1,9 +1,12 @@
+#import "TLBrowserImageActions.h"
+#import "TLBrowserLinkActions.h"
 #import "TLAutomationsTabController.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
 #import "TLBrowserPreferences.h"
+#import "TLDownloadsTabController.h"
 #import "TLApplicationPreferences.h"
 #import "PromptBuilder.h"
 #import "AgentOrchestrator.h"
@@ -69,6 +72,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 @property (nonatomic, strong) TLChatPresentation *chatPresentation;
 @property (nonatomic, strong) TLAttachmentViewerWindowController *attachmentViewer;
+@property (nonatomic, strong) TLDownloadsTabController *downloadsController;
+@property (nonatomic, strong) TLWorkspaceTab *downloadsTab;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLChatPresentation *> *chatPresentations;
 @property (nonatomic, strong) TLWorkspaceSplitState *splitState;
 @property (nonatomic, strong) TLSplitWorkspaceView *splitWorkspace;
@@ -683,6 +688,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     case TLWorkspaceTabKindSettings: [self showSettings:self]; break;
     case TLWorkspaceTabKindAgents: [self showAgents:self]; break;
     case TLWorkspaceTabKindDebug: [self showDebug:self]; break;
+    case TLWorkspaceTabKindDownloads: [self showDownloads:self]; break;
     case TLWorkspaceTabKindAutomations: [self showAutomations:self]; break;
   }
   if (tab && [self.appStateManager hasWorkspaceTabWithKind:tab.kind tabID:tab.tabID]) {
@@ -1798,6 +1804,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
           [self addWorkspaceContentView:runtime.contentView];
         }
         break;
+      case TLWorkspaceTabKindDownloads:
+        self.downloadsTab = tab;
+        if (!runtime) {
+          runtime = [TLWorkspaceTabRuntime runtimeWithContentView:[self buildDownloadsContent]
+            openAction:@selector(showDownloads:) closeAction:@selector(closeDownloadsTab:)];
+          [self setRuntime:runtime forTab:tab];
+        }
+        if (runtime.contentView) [self addWorkspaceContentView:runtime.contentView];
+        break;
       case TLWorkspaceTabKindAutomations:
         self.automationsTab = tab;
         if (!runtime) {
@@ -1845,6 +1860,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self showSettings:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindAgents) {
     [self showAgents:self];
+  } else if (snapshot.activeTabKind == TLWorkspaceTabKindDownloads) {
+    [self showDownloads:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindAutomations) {
     [self showAutomations:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindDebug) {
@@ -2004,6 +2021,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   historyItem.image = [self symbolImageNamed:@"clock" accessibilityDescription:@"History"];
   [menu addItem:historyItem];
 
+  NSMenuItem *downloadsItem = [[NSMenuItem alloc] initWithTitle:@"Downloads" action:@selector(showDownloads:) keyEquivalent:@""];
+  downloadsItem.target = self;
+  downloadsItem.image = [self symbolImageNamed:@"arrow.down.circle" accessibilityDescription:@"Downloads"];
+  [menu addItem:downloadsItem];
+
   NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:@"Debug"
                                                      action:@selector(showDebug:)
                                               keyEquivalent:@""];
@@ -2028,6 +2050,39 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [menu popUpMenuPositioningItem:nil
                        atLocation:NSMakePoint(self.palette.space0, -self.palette.space2)
                            inView:sourceView];
+}
+
+- (NSView *)buildDownloadsContent {
+  self.downloadsController = [[TLDownloadsTabController alloc]
+    initWithManager:TLBrowserDownloadManager.sharedManager palette:self.palette];
+  return self.downloadsController.view;
+}
+
+- (void)showDownloads:(id)sender {
+  if (self.widgetbookMode) return;
+  if (!self.downloadsTab) {
+    NSView *content = [self buildDownloadsContent];
+    self.downloadsTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindDownloads tabID:0
+      title:@"Downloads" toolTip:@"Browser downloads" URL:nil closeable:YES];
+    [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:content
+      openAction:@selector(showDownloads:) closeAction:@selector(closeDownloadsTab:)] forTab:self.downloadsTab];
+    [self addWorkspaceContentView:content];
+    [self.appStateManager addWorkspaceTab:self.downloadsTab activate:NO];
+  }
+  [self activateTabKind:TLWorkspaceTabKindDownloads tabID:self.downloadsTab.tabID];
+  [self.downloadsController refresh];
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
+}
+
+- (void)closeDownloadsTab:(id)sender {
+  if (!self.downloadsTab || [self closeWindowIfOnlyWorkspaceTab:self.downloadsTab]) return;
+  [self rememberClosedWorkspaceTab:self.downloadsTab];
+  [self.downloadsController close];
+  [self.appStateManager removeWorkspaceTabWithKind:self.downloadsTab.kind tabID:self.downloadsTab.tabID];
+  [[self contentViewForTab:self.downloadsTab] removeFromSuperview];
+  [self removeRuntimeForKind:self.downloadsTab.kind tabID:self.downloadsTab.tabID];
+  self.downloadsTab = nil; self.downloadsController = nil;
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
 }
 
 - (void)showChatWorkspace {
@@ -2150,6 +2205,21 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self updateControlStates];
 }
 
+- (void)handleContextLinkURL:(NSURL *)URL destination:(TLBrowserLinkDestination)destination sourceIdentity:(NSString *)identity {
+  TLWorkspaceTab *source = [self tabWithPresentationIdentity:identity];
+  if (!source || ![self isBrowserURL:URL]) return;
+  if (destination == TLBrowserLinkNewWindow) {
+    [TLChromiumBrowserController.sharedController openURL:URL fromWindow:self.window modifierFlags:0];
+    return;
+  }
+  [self openBrowserTabWithURL:URL];
+  if (destination == TLBrowserLinkSplitView) [self splitTab:[self activeWorkspaceTab] besideTab:source onLeft:NO];
+}
+- (void)openLinkURL:(NSURL *)URL inSplitBesideBrowserTabID:(NSInteger)tabID {
+  TLWorkspaceTab *source = [self browserTabWithID:tabID];
+  if (source) [self handleContextLinkURL:URL destination:TLBrowserLinkSplitView sourceIdentity:TLWorkspaceTabIdentity(source)];
+}
+
 - (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab {
   TLWorkspaceTabRuntime *existing = [self runtimeForTab:tab];
   if (existing) {
@@ -2181,6 +2251,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   controller.headerColorChangedHandler = ^{ [weakSelf.workspaceTabsController refreshContentColorsAnimated:YES]; };
   controller.linkHandler = ^(NSURL *linkedURL, NSEventModifierFlags flags) {
     [weakSelf handleBrowserTabRequestURL:linkedURL modifierFlags:flags];
+  };
+  NSString *sourceIdentity = TLWorkspaceTabIdentity(tab);
+  controller.contextLinkHandler = ^(NSURL *linkedURL, TLBrowserLinkDestination destination) {
+    [weakSelf handleContextLinkURL:linkedURL destination:destination sourceIdentity:sourceIdentity];
   };
   controller.settingsProvider = ^{ return weakSelf.settings; };
   controller.settingsRequiredHandler = ^{ [weakSelf showSettings:weakSelf]; };
@@ -4659,6 +4733,17 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [weakSelf handleLinkURL:URL modifierFlags:modifierFlags];
   };
   __weak TLChatPresentation *origin = self.chatPresentation;
+  renderer.linkContextMenuHandler = ^dispatch_block_t(NSURL *URL, NSMenu *menu, NSView *view, NSPoint point) {
+    TalariaWindowController *controller = weakSelf;
+    if (!controller || !origin) return nil;
+    TLWorkspaceTab *source = [controller.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:origin.chat.chatID];
+    NSString *identity = TLWorkspaceTabIdentity(source);
+    if (!source) return nil;
+    return [TLBrowserLinkActions configureNativeMenu:menu forURL:URL inView:view atPoint:point
+      open:^(NSURL *link, TLBrowserLinkDestination destination) {
+        [weakSelf handleContextLinkURL:link destination:destination sourceIdentity:identity];
+      }];
+  };
   __block __weak NSView *weakView = nil;
   renderer.heightChangeHandler = ^{
     TalariaWindowController *controller = weakSelf;
@@ -5060,6 +5145,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     return;
   }
   if (tab.kind == TLWorkspaceTabKindSettings) runtime.featureController = self.settingsTabController;
+  if (tab.kind == TLWorkspaceTabKindDownloads) runtime.featureController = self.downloadsController;
   if (tab.kind == TLWorkspaceTabKindAutomations) runtime.featureController = self.automationsController;
   self.workspaceTabRuntimes[TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID)] = runtime;
 }
@@ -5122,8 +5208,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (BOOL)isBrowserURL:(NSURL *)URL {
-  NSString *scheme = URL.scheme.lowercaseString;
-  return [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"];
+  return TLBrowserImageURLIsSupported(URL);
 }
 
 - (NSString *)browserTabTitleForURL:(NSURL *)URL {
@@ -5218,6 +5303,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       return @"gearshape";
     case TLWorkspaceTabKindAgents:
       return @"cpu";
+    case TLWorkspaceTabKindDownloads:
+      return @"arrow.down.circle";
     case TLWorkspaceTabKindAutomations:
       return @"clock.arrow.circlepath";
     case TLWorkspaceTabKindDebug:
@@ -5331,6 +5418,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindAgents &&
         self.agentsTab &&
         self.appStateManager.snapshot.activeTabID == self.agentsTab.tabID;
+    case TLWorkspaceTabKindDownloads:
+      return self.downloadsTab && self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindDownloads &&
+        self.appStateManager.snapshot.activeTabID == self.downloadsTab.tabID;
     case TLWorkspaceTabKindAutomations:
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindAutomations &&
         self.automationsTab && self.appStateManager.snapshot.activeTabID == self.automationsTab.tabID;
@@ -5573,6 +5663,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self mountWorkspaceView:leftView inHost:self.splitWorkspace.leftHost];
   [self mountWorkspaceView:rightView inHost:self.splitWorkspace.rightHost];
   leftView.hidden = NO; rightView.hidden = NO;
+  if (left.kind == TLWorkspaceTabKindDownloads || (right && right.kind == TLWorkspaceTabKindDownloads)) [self.downloadsController refresh];
   BOOL historyVisible = left.kind == TLWorkspaceTabKindHistory || (right && right.kind == TLWorkspaceTabKindHistory);
   BOOL refreshHistory = historyVisible && (!self.historyWasVisible || self.historyAgentID != self.database.currentAgentID);
   self.historyWasVisible = historyVisible;

@@ -15,6 +15,7 @@ static BOOL TLSessionTabKind(id value) {
     case TLWorkspaceTabKindSettings:
     case TLWorkspaceTabKindAgents:
     case TLWorkspaceTabKindDebug:
+    case TLWorkspaceTabKindDownloads:
     case TLWorkspaceTabKindAutomations:
       return YES;
     default:
