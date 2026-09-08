@@ -15,6 +15,7 @@ typedef NS_ENUM(NSInteger, TLBrowserImageAction) {
 FOUNDATION_EXPORT BOOL TLBrowserImageURLIsSupported(NSURL * _Nullable URL);
 FOUNDATION_EXPORT NSArray<NSString *> *TLBrowserImageMenuTitles(void);
 @interface TLBrowserImageActions : NSObject
++ (void)shareURL:(NSURL *)URL fromView:(NSView *)view atPoint:(NSPoint)point;
 + (void)performAction:(TLBrowserImageAction)action resource:(TLBrowserImageResource *)resource
                  URL:(NSURL *)URL fromView:(NSView *)view atPoint:(NSPoint)point;
 + (void)saveResource:(TLBrowserImageResource *)resource URL:(NSURL *)URL destination:(NSURL *)destination

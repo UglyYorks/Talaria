@@ -1,6 +1,8 @@
 #import "ChromiumContextMenu.h"
+#include "include/cef_client.h"
 #import "ChromiumRunLoop.h"
 #import "ChromiumImageActions.h"
+#import "design_system/TLLinkServicesView.h"
 
 @interface TLChromiumContextMenuSelection : NSObject
 @property(nonatomic) NSInteger command;
@@ -58,6 +60,44 @@ void TLChromiumShowContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefMenuM
     NSPoint point=NSMakePoint(location.x,view.isFlipped ? location.y : NSHeight(view.bounds)-location.y);
     [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
     if(selection.command>=0 && browser->IsValid())callback->Continue((int)selection.command,selection.flags);
+    else callback->Cancel();
+  });
+}
+
+void TLChromiumShowLinkContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefMenuModel> imageModel,
+  NSURL *URL, NSString *title, CefPoint location, CefRefPtr<CefRunContextMenuCallback> callback,
+  TLBrowserLinkOpenHandler open, void (^download)(BOOL)) {
+  TLChromiumContextMenuSelection *selection = [TLChromiumContextMenuSelection new];
+  NSMenu *imageMenu = imageModel ? TLChromiumNativeMenu(imageModel, selection) : nil;
+  TLChromiumDeferToMainRunLoop(^{
+    if (!browser->IsValid()) { callback->Cancel(); return; }
+    NSView *view = (__bridge NSView *)browser->GetHost()->GetWindowHandle();
+    NSWindow *window = view.window;
+    if (!window.isVisible) { callback->Cancel(); return; }
+    NSPoint point = NSMakePoint(location.x, view.isFlipped ? location.y : NSHeight(view.bounds) - location.y);
+    NSMenu *menu = [TLBrowserLinkActions menuForURL:URL title:title view:view point:point open:open download:download inspect:^{
+      if (!browser->IsValid()) return;
+      CefWindowInfo info; CefBrowserSettings settings;
+      browser->GetHost()->ShowDevTools(info, nullptr, settings, location);
+    }];
+    if (imageMenu) {
+      NSMenuItem *imageItem = [[NSMenuItem alloc] initWithTitle:@"Image" action:nil keyEquivalent:@""];
+      imageItem.submenu = imageMenu; [menu insertItem:imageItem atIndex:0]; [menu insertItem:NSMenuItem.separatorItem atIndex:1];
+    }
+    // Services reads this specific link from a temporary requestor, even when
+    // different text is selected on the web page. The general clipboard is untouched.
+    TLLinkServicesView *requestor = [[TLLinkServicesView alloc] initWithFrame:NSZeroRect]; requestor.URL = URL;
+    NSResponder *previousResponder = window.firstResponder;
+    NSMenu *previousServices = NSApp.servicesMenu;
+    [view addSubview:requestor]; [window makeFirstResponder:requestor];
+    [NSApp registerServicesMenuSendTypes:@[NSPasteboardTypeString, NSPasteboardTypeURL] returnTypes:@[]];
+    NSApp.servicesMenu = menu.itemArray.lastObject.submenu;
+    NSUpdateDynamicServices();
+    [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
+    NSApp.servicesMenu = previousServices;
+    if (window.firstResponder == requestor) [window makeFirstResponder:previousResponder];
+    [requestor removeFromSuperview];
+    if (selection.command >= 0 && browser->IsValid()) callback->Continue((int)selection.command, selection.flags);
     else callback->Cancel();
   });
 }

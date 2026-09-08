@@ -1,4 +1,5 @@
 #import "TLBrowserImageActions.h"
+#import "TLBrowserLinkActions.h"
 #import "TLAutomationsTabController.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
@@ -1997,6 +1998,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   downloadsItem.target = self;
   downloadsItem.image = [self symbolImageNamed:@"arrow.down.circle" accessibilityDescription:@"Downloads"];
   [menu addItem:downloadsItem];
+  __weak typeof(self) weakSelf = self;
+  [TLBrowserLinkActions appendLibraryMenusToMenu:menu window:self.window open:^(NSURL *URL, TLBrowserLinkDestination destination, NSString *groupID) {
+    if (destination == TLBrowserLinkTabGroup) [TLChromiumBrowserController.sharedController openURL:URL inTabGroup:groupID fromWindow:weakSelf.window];
+    else [weakSelf openBrowserTabWithURL:URL];
+  }];
 
   NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:@"Debug"
                                                      action:@selector(showDebug:)

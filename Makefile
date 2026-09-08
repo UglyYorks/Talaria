@@ -444,3 +444,12 @@ test-browser-images: build
 	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserImageIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserImageProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserImageProbe.app"
 	python3 Scripts/test-browser-images.py
+
+.PHONY: test-browser-links
+test-browser-links: build
+	mkdir -p "$(BUILD_DIR)/BrowserLinkProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/BrowserLinkProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserLinkProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserLinkIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserLinkProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserLinkProbe.app"
+	python3 Scripts/test-browser-links.py

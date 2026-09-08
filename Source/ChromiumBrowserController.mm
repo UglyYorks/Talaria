@@ -181,6 +181,8 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 - (void)openBrowserURLString:(NSString *)urlString;
 - (void)openExternalURLString:(NSString *)urlString;
 - (BOOL)handleBrowserLinkURLString:(NSString *)urlString fromBrowser:(CefRefPtr<CefBrowser>)browser userGesture:(BOOL)userGesture;
+- (void)attachBrowser:(CefRefPtr<CefBrowser>)browser toTabGroup:(NSString *)groupID;
+- (void)chooseLinkedDownloadPath:(NSString *)path fromWindow:(NSWindow *)window completion:(void (^)(NSURL *))completion;
 - (void)openImageURL:(NSURL *)URL fromBrowser:(CefRefPtr<CefBrowser>)browser inNewWindow:(BOOL)newWindow;
 - (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
 - (nullable NSWindow *)windowForBrowser:(CefRefPtr<CefBrowser>)browser;
@@ -346,10 +348,12 @@ class TLChromiumClient : public CefClient,
   explicit TLChromiumClient(TLChromiumBrowserController *browserController,
                             NSView *parentView = nil,
                             int inspectedBrowserIdentifier = -1,
-                            NSString *downloadURL = nil)
+                            NSString *downloadURL = nil,
+                            int downloadPrompt = -1, NSString *groupID = nil, NSWindow *downloadWindow = nil)
       : browserController_(browserController),
         parentView_(parentView),
-        inspectedBrowserIdentifier_(inspectedBrowserIdentifier), downloadURL_([downloadURL copy]) {}
+        inspectedBrowserIdentifier_(inspectedBrowserIdentifier), downloadURL_([downloadURL copy]),
+        downloadPrompt_(downloadPrompt), groupID_([groupID copy]), downloadWindow_(downloadWindow) {}
 
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override {
     return inspectedBrowserIdentifier_ < 0 ? this : nullptr;
@@ -386,6 +390,20 @@ class TLChromiumClient : public CefClient,
                       CefRefPtr<CefContextMenuParams> params, CefRefPtr<CefMenuModel> model,
                       CefRefPtr<CefRunContextMenuCallback> callback) override {
     CEF_REQUIRE_UI_THREAD();
+    if (!params->GetLinkUrl().empty()) {
+      NSURL *URL = [NSURL URLWithString:TLNSStringFromCefString(params->GetLinkUrl())];
+      if (URL) {
+        TLChromiumBrowserController *controller = browserController_;
+        NSWindow *window = [controller windowForBrowser:browser];
+        TLChromiumShowLinkContextMenu(browser, params->GetMediaType() == CM_MEDIATYPE_IMAGE ? model : nullptr,
+          URL, URL.absoluteString, CefPoint(params->GetXCoord(), params->GetYCoord()), callback,
+          ^(NSURL *linkedURL, TLBrowserLinkDestination destination, NSString *groupID) {
+            if (destination == TLBrowserLinkTabGroup) [controller openURL:linkedURL inTabGroup:groupID fromWindow:window];
+            else if (browser->IsValid()) [controller openImageURL:linkedURL fromBrowser:browser inNewWindow:destination == TLBrowserLinkNewWindow];
+          }, ^(BOOL saveAs) { [controller downloadLinkedURL:URL fromWindow:window askForDestination:saveAs]; });
+        return true;
+      }
+    }
     TLChromiumShowContextMenu(browser, model, CefPoint(params->GetXCoord(),params->GetYCoord()), callback);
     return true;
   }
@@ -518,7 +536,28 @@ class TLChromiumClient : public CefClient,
     if (!directory.isAbsolutePath) directory = [NSSearchPathForDirectoriesInDomains(NSDownloadsDirectory, NSUserDomainMask, YES) firstObject];
     NSString *path = [TLBrowserDownloadManager.sharedManager reserveDestinationForDownloadID:item->GetId()
       directory:directory fileName:TLNSStringFromCefString(suggested_name)];
-    callback->Continue(TLStringFromNSString(path), !askPref || askPref->GetBool());
+    if (downloadPrompt_ == 1) {
+      TLChromiumBrowserController *controller = browserController_;
+      NSWindow *window = downloadWindow_;
+      NSUInteger downloadID = item->GetId();
+      NSString *URLString = TLNSStringFromCefString(item->GetOriginalUrl());
+      NSString *name = TLNSStringFromCefString(suggested_name);
+      TLChromiumDeferToMainRunLoop(^{
+        if (!browser->IsValid()) return;
+        [controller chooseLinkedDownloadPath:path fromWindow:window completion:^(NSURL *destination) {
+          if (!browser->IsValid()) return;
+          if (destination) callback->Continue(TLStringFromNSString(destination.path), false);
+          else {
+            [TLBrowserDownloadManager.sharedManager updateDownloadWithID:downloadID browserIdentifier:browser->GetIdentifier()
+              URLString:URLString fileName:name path:@"" receivedBytes:0 totalBytes:0 bytesPerSecond:0
+              state:TLBrowserDownloadStateCancelled failureReason:@"" control:nil];
+            // This hidden browser belongs only to this download. Closing it cancels
+            // the pending request without creating a file or leaving an active row.
+            browser->GetHost()->CloseBrowser(true);
+          }
+        }];
+      });
+    } else callback->Continue(TLStringFromNSString(path), downloadPrompt_ == 0 ? false : (!askPref || askPref->GetBool()));
     return true;
   }
 
@@ -686,6 +725,7 @@ class TLChromiumClient : public CefClient,
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     CEF_REQUIRE_UI_THREAD();
     [browserController_ browserCreated:browser parentView:parentView_];
+    if (groupID_.length) [browserController_ attachBrowser:browser toTabGroup:groupID_];
     if (downloadURL_.length) browser->GetHost()->StartDownload(TLStringFromNSString(downloadURL_));
     if (inspectedBrowserIdentifier_ >= 0)
       [browserController_ devToolsVisibilityChanged:YES forBrowserIdentifier:inspectedBrowserIdentifier_];
@@ -693,6 +733,23 @@ class TLChromiumClient : public CefClient,
 
   bool DoClose(CefRefPtr<CefBrowser> browser) override {
     CEF_REQUIRE_UI_THREAD();
+    if (groupID_.length) {
+      // AppKit's tab group retains each native window. Detach the browser view
+      // explicitly so Chromium receives destruction before waiting for app exit.
+      TLChromiumDeferToMainRunLoop(^{
+        @autoreleasepool {
+          if (!browser->IsValid()) return;
+          NSView *view = (__bridge NSView *)browser->GetHost()->GetWindowHandle();
+          NSWindow *window = view.window;
+          [window.tabGroup removeWindow:window];
+          [window orderOut:nil];
+          if (window.contentView == view) window.contentView = nil;
+          else [view removeFromSuperview];
+          [window close];
+        }
+      });
+      return true;
+    }
     if (!parentView_) {
       return false;
     }
@@ -768,6 +825,9 @@ class TLChromiumClient : public CefClient,
 
   int inspectedBrowserIdentifier_;
   NSString *downloadURL_;
+  int downloadPrompt_;
+  NSString *groupID_;
+  __weak NSWindow *downloadWindow_;
 
   IMPLEMENT_REFCOUNTING(TLChromiumClient);
 };
@@ -1034,6 +1094,13 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
 }
 
 - (void)startDownloadURL:(NSURL *)URL fromWindow:(NSWindow *)window {
+  [self startDownloadURL:URL fromWindow:window prompt:-1];
+}
+- (void)downloadLinkedURL:(NSURL *)URL fromWindow:(NSWindow *)window askForDestination:(BOOL)ask {
+  if (!TLBrowserLinkURLIsNavigable(URL)) return;
+  [self startDownloadURL:URL fromWindow:window prompt:ask ? 1 : 0];
+}
+- (void)startDownloadURL:(NSURL *)URL fromWindow:(NSWindow *)window prompt:(int)prompt {
   if (![self browserURLFromURL:URL]) return;
   if (![self initializeCEFIfNeededFromWindow:window]) return;
   // A retry uses the same Chromium profile even when its original tab is closed.
@@ -1041,10 +1108,46 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   info.hidden = true;
   info.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
   CefBrowserSettings settings;
-  if (!CefBrowserHost::CreateBrowser(info, new TLChromiumClient(self, nil, -1, URL.absoluteString),
+  if (!CefBrowserHost::CreateBrowser(info, new TLChromiumClient(self, nil, -1, URL.absoluteString, prompt, nil, window),
       "about:blank", settings, nullptr, nullptr)) {
     [self presentCEFError:@"The download could not be started. Please try again." fromWindow:window];
   }
+}
+
+- (void)chooseLinkedDownloadPath:(NSString *)path fromWindow:(NSWindow *)window completion:(void (^)(NSURL *))completion {
+  NSSavePanel *panel = [NSSavePanel savePanel]; panel.nameFieldStringValue = path.lastPathComponent;
+  panel.directoryURL = [NSURL fileURLWithPath:path.stringByDeletingLastPathComponent]; panel.canCreateDirectories = YES;
+  void (^chosen)(NSModalResponse) = ^(NSModalResponse response) { completion(response == NSModalResponseOK ? panel.URL : nil); };
+  if (window.isVisible) [panel beginSheetModalForWindow:window completionHandler:chosen]; else [panel beginWithCompletionHandler:chosen];
+}
+
+- (void)openURL:(NSURL *)URL inTabGroup:(NSString *)groupID fromWindow:(NSWindow *)window {
+  if (!TLBrowserLinkURLIsNavigable(URL) || ![[TLBrowserLinkStore.sharedStore.groups valueForKey:@"id"] containsObject:groupID]) return;
+  if (![self initializeCEFIfNeededFromWindow:window]) return;
+  NSString *identifier = [@"Talaria.BrowserGroup." stringByAppendingString:groupID];
+  for (const auto &browser : _browsers) {
+    NSWindow *existing = [self windowForBrowser:browser];
+    if ([existing.tabbingIdentifier isEqual:identifier] && browser->GetMainFrame()->GetURL().ToString() == TLStringFromNSString(URL.absoluteString)) {
+      [existing makeKeyAndOrderFront:nil]; return;
+    }
+  }
+  CefWindowInfo info; info.runtime_style = CEF_RUNTIME_STYLE_ALLOY; info.bounds = CefRect(80,80,1120,760);
+  CefBrowserSettings settings;
+  if (!CefBrowserHost::CreateBrowser(info, new TLChromiumClient(self, nil, -1, nil, -1, groupID), TLStringFromNSString(URL.absoluteString), settings, nullptr, nullptr))
+    [self presentCEFError:@"The link could not be opened in this tab group." fromWindow:window];
+}
+- (void)attachBrowser:(CefRefPtr<CefBrowser>)browser toTabGroup:(NSString *)groupID {
+  NSString *identifier = [@"Talaria.BrowserGroup." stringByAppendingString:groupID];
+  NSWindow *window = [self windowForBrowser:browser];
+  window.tabbingIdentifier = identifier; window.tabbingMode = NSWindowTabbingModePreferred;
+  for (NSDictionary *group in TLBrowserLinkStore.sharedStore.groups) if ([group[@"id"] isEqual:groupID]) window.subtitle = group[@"title"];
+  for (const auto &other : _browsers) {
+    if (other->GetIdentifier() == browser->GetIdentifier()) continue;
+    NSWindow *anchor = [self windowForBrowser:other];
+    if ([anchor.tabbingIdentifier isEqual:identifier]) { [anchor addTabbedWindow:window ordered:NSWindowAbove]; break; }
+  }
+  if (!window.tabGroup.isTabBarVisible) [window toggleTabBar:nil];
+  [window makeKeyAndOrderFront:nil];
 }
 
 - (void)closeBrowserOrKeepDownload:(CefRefPtr<CefBrowser>)browser {

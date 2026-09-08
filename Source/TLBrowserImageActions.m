@@ -65,6 +65,12 @@ static NSMutableSet<TLImageSharingOperation *> *TLImageSharingOperations(void) {
 @end
 
 @implementation TLBrowserImageActions
++ (void)shareURL:(NSURL *)URL fromView:(NSView *)view atPoint:(NSPoint)point {
+  TLImageSharingOperation *operation = [TLImageSharingOperation new]; operation.window = view.window;
+  operation.picker = [[NSSharingServicePicker alloc] initWithItems:@[URL]]; operation.picker.delegate = operation;
+  [TLImageSharingOperations() addObject:operation];
+  [operation.picker showRelativeToRect:NSMakeRect(point.x, point.y, 1, 1) ofView:view preferredEdge:NSRectEdgeMinY];
+}
 + (BOOL)copyImage:(NSImage *)image toPasteboard:(NSPasteboard *)pasteboard {
   if (!image) return NO;
   [pasteboard clearContents]; return [pasteboard writeObjects:@[image]];
