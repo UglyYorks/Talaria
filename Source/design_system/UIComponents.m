@@ -161,18 +161,20 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   CGFloat tipX = maxX - radius / 3.0;
   CGFloat tipY = NSMinY(bounds);
   CGFloat tipRadius = MIN(radius, tailHeight) * 0.1;
+  CGFloat tailBaseX = MAX(minX + radius, maxX - radius * 1.4);
+  CGFloat tailBaseWidth = tipX - tailBaseX;
   CGFloat diagonal = sqrt(0.5);
   CGFloat arcControl = (4.0 / 3.0) * tan(M_PI / 16.0);
   NSPoint cornerJoin = NSMakePoint(maxX - radius * (1.0 - diagonal),
                                   minY + radius * (1.0 - diagonal));
 
-  // The bottom edge, rounded tip and concave return form one continuous contour.
-  // Keeping the tail inside the body's width also keeps short replies aligned.
+  // A broad base sweeps from the bottom edge into the slim, rounded tip.
+  // Clamp it to the bottom-left corner so short replies keep a smooth outline.
   [path moveToPoint:NSMakePoint(minX + radius, minY)];
-  [path lineToPoint:NSMakePoint(maxX - radius, minY)];
+  [path lineToPoint:NSMakePoint(tailBaseX, minY)];
   [path curveToPoint:NSMakePoint(tipX - tipRadius, tipY + tipRadius * 0.2)
-       controlPoint1:NSMakePoint(maxX - radius * 0.7, minY)
-       controlPoint2:NSMakePoint(tipX - radius * 0.4, tipY)];
+       controlPoint1:NSMakePoint(tailBaseX + tailBaseWidth * 0.3, minY)
+       controlPoint2:NSMakePoint(tipX - tailBaseWidth * 0.34, tipY)];
   [path curveToPoint:NSMakePoint(tipX, tipY + tipRadius)
        controlPoint1:NSMakePoint(tipX + tipRadius * 0.3, tipY)
        controlPoint2:NSMakePoint(tipX + tipRadius * 0.5, tipY + tipRadius * 0.5)];
