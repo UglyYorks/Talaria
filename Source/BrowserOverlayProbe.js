@@ -307,7 +307,14 @@
         if (anchored(el) && !shell(el.getBoundingClientRect(),el.ownerDocument.defaultView)) return {obstructed:true,banner:bannerColor(el,y)};
         return {obstructed:null, frame};
       }
-      const obstructed=anchored(el) && painted(el);
+      // A hit on transparent padding still covers the painted fixed panel
+      // behind it. Stop at the anchor boundary so an empty transparent overlay
+      // cannot borrow the ordinary document's background (or a fullscreen shell).
+      let obstructed=false, count=0;
+      for(let p=el;p && anchored(p);p=parent(p)) {
+        if(++count>32 || performance.now()-sliceStart>3){incomplete=true;break;}
+        if(style(p).visibility==='visible' && painted(p)){obstructed=true;break;}
+      }
       // A real banner above the application still owns the continuation color.
       if(obstructed)return {obstructed:true,banner:bannerColor(el,y)};
       if(viewportApp(el))return {obstructed:true,reason:'viewport-app'};

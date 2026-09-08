@@ -112,6 +112,14 @@ try {
   await check('scrolled closed shadow banner','<div id=host></div>',true,{setup:`document.querySelector('#host').attachShadow({mode:'closed'}).innerHTML='<div class=fixed style="position:fixed;bottom:0;height:90px;width:100%;background:#eee">Cookies</div>';scrollTo(0,2000)`});
   await check('scrolled zoomed ordinary page','<main>Article</main>',false,{height:350,width:500,input:{currentWidth:1000,currentHeight:700},setup:'scrollTo(0,2000)'});
   await check('fixed cookie banner','<div class="fixed">Cookies</div>',true);
+  const paddedBanner='<section class="fixed" style="height:350px;background:rgb(255,255,255)"><div style="position:relative;height:100%;padding:60px;box-sizing:border-box"><h2>Can we save cookies on your device?</h2><button>Reject all</button></div></section>';
+  await check('quick scan sees painted banner through transparent padding',paddedBanner,true,{input:{quick:true},verify:async r=>{
+    assert.equal(r.samples,1);assert.deepEqual(r.banner.rgb,[255,255,255]);
+    for(const cursor of [1,20,60])assert.equal((await inspect({quick:true,cursor})).obstructed,true,'confirmation must not depend on hitting a button');
+    await evaluate('document.querySelector("section").remove()');
+    assert.equal((await inspect({quick:true})).obstructed,false,'dismissal clears the obstruction');
+  }});
+  await check('transparent padding remains detected with footer raised',paddedBanner,true,{height:614,input:{currentHeight:614,quick:true}});
   await check('banner background wins over page gap and white button','<style>html,body{background:white}</style><div class="fixed" style="bottom:12px;background:rgb(20,10,180)"><button style="width:90%;height:70px;background:white">Accept</button></div>',true,{verify:r=>{assert.deepEqual(r.banner.rgb,[20,10,180]);assert.equal(r.banner.capture,false);assert.equal(r.point.y+r.banner.edgeDelta,684);}});
   await check('gradient banner requests its own rendered edge','<div class="fixed" style="bottom:12px;background:linear-gradient(red,blue)">Cookies</div>',true,{verify:r=>{assert.equal(r.banner.capture,true);assert.equal(r.banner.rgb,undefined);}});
   await check('transparent banner composites over page','<style>html,body{background:white}</style><div class="fixed" style="background:rgba(0,0,200,0.5)">Cookies</div>',true,{verify:r=>assert.deepEqual(r.banner.rgb,[128,128,228])});
@@ -316,6 +324,16 @@ try {
   await evaluate('document.querySelector("header:last-child").style.background="linear-gradient(red,blue)"');
   assert.equal((await topRead()).fallback,true,'complex top edge uses existing screenshot fallback');
   console.log('PASS visible top edge: distinct colors, scrolling, fixed header, extension cache and gradient');count++;
+  await load('<style>body{background:rgb(248,247,242)}</style><header style="position:absolute;top:0;width:100%;height:100px;z-index:2"><div style="height:100%"></div></header><section style="height:400px;background:linear-gradient(rgb(70,70,70),rgb(150,150,150))"></section>');
+  let layeredTop=await topRead();
+  assert.equal(layeredTop.rgb,undefined,'transparent positioned header must not report the ancestor background behind a sibling hero');
+  assert.equal(layeredTop.fallback,true);assert.equal(layeredTop.captureReady,true);
+  assert.equal(layeredTop.captureKey,undefined,'uninspected sibling content can change without changing the header');
+  await evaluate('document.querySelector("section").style.background="rgb(150,20,30)"');
+  layeredTop=await topRead();assert.equal(layeredTop.fallback,true);assert.equal(layeredTop.captureKey,undefined);
+  await evaluate('document.querySelector("header").style.background="rgb(30,40,50)"');
+  assert.deepEqual((await topRead()).rgb,[30,40,50],'opaque header keeps the CSS fast path');count++;
+  console.log('PASS visible top edge: transparent header over independent hero layer');
   await colorCheck('white page','<style>html,body{background:white}</style>',[255,255,255]);
   await colorCheck('dark page','<style>html,body{background:rgb(18,20,24)}</style>',[18,20,24]);
   await colorCheck('banner overrides page','<style>html,body{background:black}</style><div class="fixed" style="background:rgb(220,230,240)">Cookies</div>',[220,230,240]);
