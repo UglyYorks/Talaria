@@ -1685,6 +1685,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.agents = [loadedAgents mutableCopy];
   [self rebuildSidebarAgents];
 
+  // A chat can have been deleted since this session was last saved.
+  NSMutableSet<NSNumber *> *chatIDs = [NSMutableSet set];
+  for (TLChatSummary *chat in self.chats) [chatIDs addObject:@(chat.chatID)];
+  for (TLWorkspaceTab *tab in self.appStateManager.snapshot.workspaceTabs) {
+    if (tab.kind == TLWorkspaceTabKindChat && tab.tabID > 0 && ![chatIDs containsObject:@(tab.tabID)]) {
+      [self.appStateManager removeWorkspaceTabWithKind:tab.kind tabID:tab.tabID];
+    }
+  }
+
   TLBrowserPreferences *browserPreferences = TLBrowserPreferences.sharedPreferences;
   if (![[browserPreferences localValue:@"startup"] isEqual:@"restore"]) {
     for (TLWorkspaceTab *tab in self.appStateManager.snapshot.workspaceTabs.copy) {
@@ -1718,6 +1727,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
     switch (tab.kind) {
       case TLWorkspaceTabKindChat:
+        self.nextDraftChatID = MIN(self.nextDraftChatID, tab.tabID - 1);
         if (!runtime) {
           runtime = [TLWorkspaceTabRuntime runtimeWithContentView:self.chatWorkspace
                                                        openAction:@selector(openChatTab:)
@@ -1780,9 +1790,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
         }
         break;
       case TLWorkspaceTabKindBrowser:
-        if (runtime.contentView) {
-          [self addWorkspaceContentView:runtime.contentView];
-        }
+        self.nextBrowserTabID = MAX(self.nextBrowserTabID, tab.tabID + 1);
+        [self ensureBrowserRuntimeForTab:tab];
         break;
     }
   }
@@ -2104,6 +2113,21 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser
     tabID:self.nextBrowserTabID++ title:[self browserTabTitleForURL:URL]
     toolTip:URL.absoluteString URL:URL closeable:YES];
+  [self.appStateManager addWorkspaceTab:tab activate:YES];
+  [self ensureBrowserRuntimeForTab:tab];
+  [self updateWorkspaceMode];
+  [self reloadWorkspaceTabs];
+  [self updateControlStates];
+}
+
+- (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab {
+  TLWorkspaceTabRuntime *existing = [self runtimeForTab:tab];
+  if (existing) {
+    if (existing.contentView) [self addWorkspaceContentView:existing.contentView];
+    return;
+  }
+  NSURL *URL = tab.URL;
+  if (![self isBrowserURL:URL]) return;
   CGFloat inputWidth = [self messageInputWidthForWindowWidth:NSWidth(self.window.frame)
     sidebarWidth:[self currentSidebarWidth] contentLeadingPadding:[self contentLeadingPadding]];
   TLBrowserTabController *controller = [[TLBrowserTabController alloc] initWithURL:URL palette:self.palette
@@ -2130,11 +2154,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   };
   controller.settingsProvider = ^{ return weakSelf.settings; };
   controller.settingsRequiredHandler = ^{ [weakSelf showSettings:weakSelf]; };
-  [self.appStateManager addWorkspaceTab:tab activate:YES];
   [self addWorkspaceContentView:controller.view];
-  [self updateWorkspaceMode];
-  [self reloadWorkspaceTabs];
-  [self updateControlStates];
   [controller startInWindow:self.window];
 }
 
