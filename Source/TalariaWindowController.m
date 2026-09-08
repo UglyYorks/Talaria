@@ -4449,6 +4449,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                                            color:textColor];
     contentLabel.selectable = YES;
     contentLabel.preferredMaxLayoutWidth = userTextMaxWidth;
+    // Grow the padding symmetrically for tiny messages, keeping the label at
+    // its natural width so punctuation stays centred in the rounded body.
+    CGFloat minimumBubbleWidth = MIN(self.palette.userMessageMinWidth, availableMessageWidth * widthMultiplier);
+    CGFloat minimumInset = (minimumBubbleWidth - contentLabel.intrinsicContentSize.width) * 0.5;
+    userLeadingInset = MAX(userLeadingInset, minimumInset);
+    userTrailingInset = MAX(userTrailingInset, minimumInset);
+    userTextMaxWidth = MAX(1.0, availableMessageWidth * widthMultiplier - userLeadingInset - userTrailingInset);
+    contentLabel.preferredMaxLayoutWidth = userTextMaxWidth;
     [contentLabel setContentHuggingPriority:NSLayoutPriorityDefaultHigh
                              forOrientation:NSLayoutConstraintOrientationHorizontal];
     [contentLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
