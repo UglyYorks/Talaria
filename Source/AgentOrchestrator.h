@@ -57,6 +57,7 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 - (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID
                   completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *_Nullable attachments, NSError *_Nullable error))completion;
 - (BOOL)removeAttachmentsForSessionID:(NSString *)sessionID error:(NSError **)error;
+- (nullable NSURL *)fileURLForAttachment:(NSDictionary *)attachment sessionID:(NSString *)sessionID;
 - (void)generateTextWithDefaultAgentRequestID:(NSString *)requestID
                                        token:(NSString *)token
                                        model:(NSString *)model

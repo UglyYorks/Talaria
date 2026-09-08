@@ -33,6 +33,8 @@
 #import "design_system/TLChromeTabView.h"
 #import "WorkspaceState.h"
 #import "TLChatPresentation.h"
+#import "TLAttachmentViewerWindowController.h"
+#import "design_system/TLAttachmentCard.h"
 #import "TLWorkspaceSplitState.h"
 #import "design_system/TLSplitWorkspaceView.h"
 #import "WorkspaceTabRuntime.h"
@@ -129,6 +131,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 @interface TalariaWindowController () <NSWindowDelegate, NSTextViewDelegate, NSTableViewDataSource, NSTableViewDelegate, TLHistoryPanelControllerDelegate, TLWorkspaceTabsControllerDelegate>
 
 @property (nonatomic, strong) TLChatPresentation *chatPresentation;
+@property (nonatomic, strong) TLAttachmentViewerWindowController *attachmentViewer;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLChatPresentation *> *chatPresentations;
 @property (nonatomic, strong) TLWorkspaceSplitState *splitState;
 @property (nonatomic, strong) TLSplitWorkspaceView *splitWorkspace;
@@ -4381,7 +4384,6 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   NSString *displayText = showThinking
     ? (message.thinking ?: @"")
     : (hasResponseContent ? message.content : ([message.role isEqualToString:TLRoleAssistant] ? @"..." : @""));
-  if (user && message.attachments.count) displayText = [displayText stringByAppendingFormat:@"\n%@", message.attachments];
   if ([self messageShowsAWSOutageIntent:message]) {
     displayText = TLAWSOutageAgentMessage;
   }
@@ -4398,7 +4400,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   return [NSString stringWithFormat:@"%@\n--TLROW--\n%@\n--TLROW--\n%.0f\n--TLROW--\n%@\n--TLROW--\n%@",
                                     message.role ?: @"",
-                                    mode,
+                                    [mode stringByAppendingFormat:@"\n%@", message.attachments ?: @[]],
                                     layoutWidth,
                                     showsOutgoingTail ? @"tail" : @"body",
                                     user ? [self displayTextForMessage:message] : ([self messageShowsAWSOutageIntent:message] ? @"intent" : @"answer")];
@@ -4502,10 +4504,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [stack addArrangedSubview:markdown];
     [self.messageMarkdownViews setObject:markdown forKey:message];
   } else if (user) {
-    NSMutableString *content = [NSMutableString stringWithString:hasResponseContent ? message.content : @""];
-    for (NSDictionary *attachment in message.attachments) {
-      [content appendFormat:@"\n%@ %@", [attachment[@"directory"] boolValue] ? @"▸" : @"↳", attachment[@"name"]];
-    }
+    NSString *content = hasResponseContent ? message.content : @"";
     TLUserMessageBubbleLayout userLayout = TLUserMessageBubbleLayoutForContent(content,
                                                                                self.palette,
                                                                                availableMessageWidth,
@@ -4515,8 +4514,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     userTrailingInset = userLayout.trailingInset;
     userTopInset = userLayout.topInset;
     userBottomInset = userLayout.bottomInset;
-    userTextMaxWidth = userLayout.textMaxWidth;
-    bubble.rendersAsPill = userLayout.rendersAsPill;
+    userTextMaxWidth = message.attachments.count ? MIN(userLayout.textMaxWidth, self.palette.attachmentCardWidth) : userLayout.textMaxWidth;
+    bubble.rendersAsPill = userLayout.rendersAsPill && !message.attachments.count;
     bubble.outgoingTailHorizontalOffset = userLayout.tailHorizontalOffset;
     contentLabel = [self wrappingLabelWithString:content
                                             font:self.palette.messageBodyFont
@@ -4527,8 +4526,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
                              forOrientation:NSLayoutConstraintOrientationHorizontal];
     [contentLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                            forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [stack addArrangedSubview:contentLabel];
-  } else if (hasResponseContent || !message.approvalRequest) {
+    if (hasResponseContent) [stack addArrangedSubview:contentLabel];
+    else contentLabel = nil;
+  } else if (hasResponseContent || (!message.approvalRequest && !message.attachments.count)) {
     NSString *content = hasResponseContent ? message.content : @"...";
     if ([self messageShowsAWSOutageIntent:message]) {
       content = TLAWSOutageAgentMessage;
@@ -4543,6 +4543,22 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     NSView *markdown = [self markdownViewWithString:content textColor:textColor baseFont:self.palette.messageBodyFont];
     [stack addArrangedSubview:markdown];
     [self.messageMarkdownViews setObject:markdown forKey:message];
+  }
+
+  if (message.attachments.count) {
+    // Capture the originating presentation: split-pane focus may change before a click.
+    __weak TLChatPresentation *origin = self.chatPresentation;
+    __weak typeof(self) weakSelf = self;
+    [message.attachments enumerateObjectsUsingBlock:^(NSDictionary *attachment, NSUInteger index, BOOL *stop) {
+      TLAttachmentPreviewItem *item = [self previewItemForAttachment:attachment sessionID:origin.chat.hermesSessionID];
+      TLAttachmentCard *card = [[TLAttachmentCard alloc] init];
+      card.translatesAutoresizingMaskIntoConstraints = NO; card.palette = self.palette;
+      card.title = item.name; card.directory = item.directory; card.subtitle = item.detail; card.fileURL = item.previewItemURL;
+      card.activationHandler = ^{ [weakSelf previewAttachmentsForPresentation:origin message:message index:index]; };
+      [card setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [stack addArrangedSubview:card];
+      [card.heightAnchor constraintEqualToConstant:self.palette.attachmentCardHeight].active = YES;
+    }];
   }
 
   if (!user && message.approvalRequest) {
@@ -4572,6 +4588,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   if (!user) {
     [constraints addObject:assistantWidth];
+  } else if (message.attachments.count) {
+    NSLayoutConstraint *attachmentWidth = [bubble.widthAnchor constraintEqualToConstant:MIN(self.palette.attachmentCardWidth + userLeadingInset + userTrailingInset, availableMessageWidth * widthMultiplier)];
+    attachmentWidth.priority = NSLayoutPriorityDefaultHigh;
+    [constraints addObject:attachmentWidth];
   }
 
   if (user) {
@@ -4584,6 +4604,32 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
 
   [NSLayoutConstraint activateConstraints:constraints];
   return row;
+}
+
+- (TLAttachmentPreviewItem *)previewItemForAttachment:(NSDictionary *)attachment sessionID:(NSString *)sessionID {
+  TLAttachmentPreviewItem *item = [[TLAttachmentPreviewItem alloc] init];
+  NSString *name = attachment[@"name"];
+  item.name = [name isKindOfClass:NSString.class] && name.length ? name : @"Attachment";
+  item.directory = [attachment[@"directory"] boolValue];
+  TLAgentOrchestrator *orchestrator = self.agentOrchestrator;
+  item.URLResolver = ^NSURL *{ return [orchestrator fileURLForAttachment:attachment sessionID:sessionID]; };
+  return item;
+}
+
+- (void)previewAttachmentsForPresentation:(TLChatPresentation *)presentation message:(TLChatMessage *)selectedMessage index:(NSUInteger)index {
+  NSMutableArray *items = [NSMutableArray array];
+  NSUInteger selectedIndex = NSNotFound;
+  for (TLChatMessage *message in presentation.messages) {
+    if (message == selectedMessage && index < message.attachments.count) selectedIndex = items.count + index;
+    for (NSDictionary *attachment in message.attachments) {
+      [items addObject:[self previewItemForAttachment:attachment sessionID:presentation.chat.hermesSessionID]];
+    }
+  }
+  if (selectedIndex == NSNotFound || !items.count) return;
+  [self.attachmentViewer close];
+  self.attachmentViewer = [[TLAttachmentViewerWindowController alloc] initWithItems:items
+    conversationTitle:presentation.chat.title selectedIndex:selectedIndex palette:self.palette];
+  [self.attachmentViewer showWindow:self];
 }
 
 - (NSView *)markdownViewWithString:(NSString *)string textColor:(NSColor *)textColor baseFont:(NSFont *)baseFont {
@@ -5606,6 +5652,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self applySidebarTilePalette];
   [self applySidebarInboxPalette];
   [self.historyPanelController applyPalette:self.palette];
+  [self.attachmentViewer applyPalette:self.palette];
   self.topbar.fillColor = self.palette.appBackground;
   self.topbar.borderColor = self.palette.topbarBorder;
   self.topbar.borderEdges = TLBorderEdgeNone;

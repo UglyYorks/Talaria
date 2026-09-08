@@ -202,6 +202,15 @@ CGColorRef TLCGColor(NSColor *color) {
   self.space11 = 22.0;
   self.space12 = 24.0;
   self.space16 = 52.0;
+  self.attachmentCardHeight = 72.0;
+  self.attachmentThumbnailSize = 44.0;
+  self.attachmentCardWidth = 300.0;
+  self.attachmentViewerWidth = 980.0;
+  self.attachmentViewerHeight = 680.0;
+  self.attachmentViewerMinimumWidth = 520.0;
+  self.attachmentViewerMinimumHeight = 400.0;
+  self.attachmentViewerSidebarWidth = 248.0;
+  self.attachmentViewerHeaderHeight = 76.0;
   self.sidebarActionIconSize = self.space9;
   self.sidebarActionStackHorizontalInset = self.space6 * 0.5;
   self.sidebarContentLeadingInset = self.space6 + self.space3;
