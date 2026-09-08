@@ -159,21 +159,34 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   CGFloat minY = NSMinY(body), maxY = NSMaxY(body);
   CGFloat kappa = 0.5522847498307936;
   CGFloat diagonal = sqrt(0.5);
-  CGFloat tailOffset = MIN(MAX(0.0, palette.userMessageTailHorizontalOffset), radius * (1.0 - diagonal));
+  if (radius <= 0.0) return TLCreateMessageBubbleBezierPath(body, requestedRadius, rendersAsPill);
+  CGFloat tailOffset = MIN(MAX(0.0, palette.userMessageTailHorizontalOffset), radius * (1.0 - diagonal) * 0.9);
   CGFloat tipX = maxX - radius / 3.0 + tailOffset;
   CGFloat tipY = NSMinY(bounds);
   CGFloat tipRadius = MIN(radius, tailHeight) * 0.1;
   CGFloat tailBaseX = MAX(minX + radius, maxX - radius * 1.25) + tailOffset;
   CGFloat tailBaseWidth = tipX - tailBaseX;
-  CGFloat arcControl = (4.0 / 3.0) * tan(M_PI / 16.0);
   NSPoint cornerJoin = NSMakePoint(maxX - radius * (1.0 - diagonal) + tailOffset,
                                   minY + radius * (1.0 - diagonal));
-  CGFloat returnHandle = radius / 3.0;
   CGFloat cornerInset = maxX - cornerJoin.x;
-  CGFloat cornerHandle = MIN(radius * arcControl * diagonal, cornerInset);
-  CGFloat verticalHandle = radius > 0.0
-    ? MAX(0.0, radius * diagonal - cornerInset - 3.0 * sqrt(2.0) * cornerHandle * cornerHandle / radius)
-    : 0.0;
+  CGFloat cornerRise = minY + radius - cornerJoin.y;
+
+  // Fit a circular shoulder through the existing attachment and side. Its
+  // tangent adapts to the offset instead of forcing a tight 45-degree bend.
+  CGFloat shoulderRadius = (cornerInset * cornerInset + cornerRise * cornerRise) / (2.0 * cornerInset);
+  CGFloat tangentX = cornerRise / shoulderRadius;
+  CGFloat tangentY = (shoulderRadius - cornerInset) / shoulderRadius;
+  CGFloat shoulderAngle = atan2(tangentX, tangentY);
+  CGFloat shoulderHandle = (4.0 / 3.0) * shoulderRadius * tan(shoulderAngle * 0.25);
+
+  // Match both slope and curvature where the concave tail meets the shoulder.
+  // The attachment points and tip stay fixed while only the handles change.
+  CGFloat returnReach = (tangentX * (cornerJoin.y - tipY - tipRadius) -
+                         tangentY * (cornerJoin.x - tipX)) / (tangentX + tangentY) + radius * 0.07;
+  NSPoint returnControl = NSMakePoint(tipX - returnReach, tipY + tipRadius + returnReach);
+  CGFloat shoulderBend = tangentX * (cornerRise - shoulderHandle) - tangentY * cornerInset;
+  CGFloat returnBend = tangentX * (returnControl.y - cornerJoin.y) - tangentY * (returnControl.x - cornerJoin.x);
+  CGFloat returnJoinHandle = shoulderHandle * sqrt(MAX(0.0, returnBend) / shoulderBend);
 
   // A broad base sweeps from the bottom edge into the slim, rounded tip.
   // Clamp it to the bottom-left corner so short replies keep a smooth outline.
@@ -186,13 +199,13 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
        controlPoint1:NSMakePoint(tipX + tipRadius * 0.3, tipY)
        controlPoint2:NSMakePoint(tipX + tipRadius * 0.5, tipY + tipRadius * 0.5)];
   [path curveToPoint:cornerJoin
-       controlPoint1:NSMakePoint(tipX - returnHandle, tipY + tipRadius + returnHandle)
-       controlPoint2:NSMakePoint(cornerJoin.x - radius * 0.16, cornerJoin.y - radius * 0.16)];
-  // Both attachment points and every tail control point move together.
-  // Rejoin the stationary side with matching tangent and corner curvature.
+       controlPoint1:returnControl
+       controlPoint2:NSMakePoint(cornerJoin.x - returnJoinHandle * tangentX,
+                                cornerJoin.y - returnJoinHandle * tangentY)];
   [path curveToPoint:NSMakePoint(maxX, minY + radius)
-       controlPoint1:NSMakePoint(cornerJoin.x + cornerHandle, cornerJoin.y + cornerHandle)
-       controlPoint2:NSMakePoint(maxX, minY + radius - verticalHandle)];
+       controlPoint1:NSMakePoint(cornerJoin.x + shoulderHandle * tangentX,
+                                cornerJoin.y + shoulderHandle * tangentY)
+       controlPoint2:NSMakePoint(maxX, minY + radius - shoulderHandle)];
 
   [path lineToPoint:NSMakePoint(maxX, maxY - radius)];
   [path curveToPoint:NSMakePoint(maxX - radius, maxY)
