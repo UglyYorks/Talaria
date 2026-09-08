@@ -4,6 +4,7 @@
 #import "TLBrowserPreferences.h"
 #include "include/cef_application_mac.h"
 #include "include/cef_browser.h"
+#include "include/cef_client.h"
 #include "include/cef_request_context.h"
 #include "include/cef_devtools_message_observer.h"
 @interface TLProbeApplication : NSApplication <CefAppProtocol>
@@ -100,12 +101,43 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   } else if (self.stage == 1 && [title hasPrefix:@"scripts on"]) {
     self.stage = 2;
     Check([title isEqual:@"scripts on:24px:1"],@"font size and Do Not Track apply to real web content");
-    [self testBackgroundTabs];
+    [self testUnchangedZoom];
   }
 }
 - (void)evaluate:(const char *)expression completion:(void (^)(id))completion {
   auto browser = [TLChromiumBrowserController.sharedController browserWithIdentifier:(int)self.session.browserIdentifier];
   CefRefPtr<TLProbeEvaluation> evaluation = new TLProbeEvaluation(completion); evaluation->Start(browser,expression);
+}
+- (void)testUnchangedZoom {
+  [self set:@"zoom" value:@100];
+  auto browser = [TLChromiumBrowserController.sharedController browserWithIdentifier:(int)self.session.browserIdentifier];
+  auto parameters = CefDictionaryValue::Create();
+  parameters->SetDouble("pageScaleFactor", 2);
+  browser->GetHost()->ExecuteDevToolsMethod(0, "Emulation.setPageScaleFactor", parameters);
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
+    [self evaluate:"visualViewport.scale" completion:^(NSNumber *before) {
+      Check(fabs(before.doubleValue-2)<0.01,@"fixture has a visible page-scale change");
+      [self set:@"pauseDelay" value:@60];
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
+        [self evaluate:"visualViewport.scale" completion:^(NSNumber *after) {
+          Check(fabs(after.doubleValue-before.doubleValue)<0.01,@"unchanged zoom does not reset the rendered page when preferences are applied");
+          auto browser = [TLChromiumBrowserController.sharedController browserWithIdentifier:(int)self.session.browserIdentifier];
+          // Exercise the real main-document callback independently of the
+          // renderer's own page-scale reset when it replaces a document.
+          browser->GetHost()->GetClient()->GetLoadHandler()->OnLoadStart(browser, browser->GetMainFrame(), TT_LINK);
+          dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
+            [self evaluate:"visualViewport.scale" completion:^(NSNumber *afterLoadStart) {
+              Check(fabs(afterLoadStart.doubleValue-before.doubleValue)<0.01,@"main-document navigation callback does not issue a redundant visual reset");
+              [self set:@"zoom" value:@150];
+              auto browser = [TLChromiumBrowserController.sharedController browserWithIdentifier:(int)self.session.browserIdentifier];
+              Check(fabs(browser->GetHost()->GetZoomLevel()-log(1.5)/log(1.2))<0.001,@"an actual zoom change still updates the browser");
+              [self testBackgroundTabs];
+            }];
+          });
+        }];
+      });
+    }];
+  });
 }
 - (void)testBackgroundTabs {
   [self set:@"pauseBackground" value:@YES];

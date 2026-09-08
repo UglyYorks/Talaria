@@ -73,6 +73,13 @@ static NSValue *TLChromiumContainerKey(NSView *view) {
   return view ? [NSValue valueWithNonretainedObject:view] : nil;
 }
 
+static void TLChromiumApplyZoom(CefRefPtr<CefBrowser> browser, double zoom) {
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  // SetZoomLevel(0) also resets Chromium's page scale. Avoid sending a visual
+  // reset on every navigation (or unrelated preference change) at the same zoom.
+  if (std::abs(host->GetZoomLevel() - zoom) > 0.000001) host->SetZoomLevel(zoom);
+}
+
 static NSEventModifierFlags TLChromiumCurrentModifierFlags(void) {
   NSEventModifierFlags flags = NSApp.currentEvent ? NSApp.currentEvent.modifierFlags : 0;
   NSEventModifierFlags linkModifierFlags = NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagShift | NSEventModifierFlagOption;
@@ -540,7 +547,7 @@ class TLChromiumClient : public CefClient,
     CEF_REQUIRE_UI_THREAD();
     if (frame && frame->IsMain()) {
       double zoom = log([[TLBrowserPreferences.sharedPreferences localValue:@"zoom"] doubleValue] / 100.0) / log(1.2);
-      browser->GetHost()->SetZoomLevel(zoom);
+      TLChromiumApplyZoom(browser, zoom);
       [browserController_ browserDocumentStarted:browser];
     }
   }
@@ -1861,7 +1868,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   double zoom = log([[preferences localValue:@"zoom"] doubleValue] / 100.0) / log(1.2);
   for (auto browser : _browsers) {
     if (!browser->IsValid()) continue;
-    browser->GetHost()->SetZoomLevel(zoom);
+    TLChromiumApplyZoom(browser, zoom);
     browser->GetHost()->SetAccessibilityState([[preferences localValue:@"screenReader"] boolValue] ? STATE_ENABLED : STATE_DEFAULT);
   }
   [self checkBackgroundBrowsers];
