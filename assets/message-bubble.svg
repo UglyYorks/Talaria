@@ -1,5 +1,5 @@
-<svg width="352" height="121" viewBox="0 0 352 121" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="352" height="118" viewBox="0 0 352 118" fill="none" xmlns="http://www.w3.org/2000/svg">
   <title>Outgoing message bubble</title>
   <desc>Combined body and tail outline, with the overlap at their junction removed. The native bubble scales these curves using its theme corner radius and fills them with the current message color.</desc>
-  <path d="M317 0C336.33 0 352 15.67 352 35V73C352 83.6282 347.261 93.1484 339.783 99.5674C338.877 100.34 338.012 101.013 337.115 101.644C334.273 105.105 334.506 111.216 340.293 116.688C341.721 118.04 340.997 120.626 339.043 120.411C329.608 119.374 322.313 114.367 315.07 108H35C15.67 108 0 92.33 0 73V35C0 15.67 15.67 0 35 0H317Z" fill="currentColor"/>
+  <path d="M317 0C336.33 0 352 15.67 352 35V73C352 83.6444 347.247 93.1774 339.749 99.5967C338.882 100.323 338.346 100.745 337.797 101.151C334.189 104.438 332.678 109.305 336.4 113.755C338.099 115.786 337.585 118.294 335.051 117.525C329.004 115.69 321.817 111.123 318 108H35C15.67 108 0 92.33 0 73V35C0 15.67 15.67 0 35 0H317Z" fill="currentColor"/>
 </svg>
