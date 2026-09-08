@@ -161,7 +161,7 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   CGFloat tipX = maxX - radius / 3.0;
   CGFloat tipY = NSMinY(bounds);
   CGFloat tipRadius = MIN(radius, tailHeight) * 0.1;
-  CGFloat tailBaseX = MAX(minX + radius, maxX - radius * 1.4);
+  CGFloat tailBaseX = MAX(minX + radius, maxX - radius * 1.25);
   CGFloat tailBaseWidth = tipX - tailBaseX;
   CGFloat diagonal = sqrt(0.5);
   CGFloat arcControl = (4.0 / 3.0) * tan(M_PI / 16.0);
