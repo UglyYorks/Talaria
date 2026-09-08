@@ -4583,7 +4583,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       [attachmentRow.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
       [attachmentRow.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:widthMultiplier],
     ]];
-    NSLayoutConstraint *preferredWidth = [attachmentRow.widthAnchor constraintEqualToConstant:MIN(attachmentRow.preferredWidth, availableMessageWidth * widthMultiplier)];
+    // Reserve the available row width; thumbnails can change chip widths after loading.
+    NSLayoutConstraint *preferredWidth = [attachmentRow.widthAnchor constraintEqualToConstant:availableMessageWidth * widthMultiplier];
     preferredWidth.priority = NSLayoutPriorityDefaultHigh;
     [constraints addObject:preferredWidth];
     if (user) {
