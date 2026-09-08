@@ -6,6 +6,7 @@
 #import "TLChatPresentation.h"
 #import "design_system/TLAttachmentChipView.h"
 #import "design_system/TLGlassButton.h"
+#import "design_system/TLAttachmentPreviewPanel.h"
 #import "design_system/UIComponents.h"
 
 static void Check(BOOL value, NSString *message) { if (!value) { NSLog(@"FAIL: %@", message); exit(1); } }
@@ -48,6 +49,42 @@ static CGFloat Luminance(NSColor *color) {
   CGFloat channels[3] = {rgb.redComponent,rgb.greenComponent,rgb.blueComponent};
   for (NSUInteger i = 0; i < 3; i++) channels[i] = channels[i] <= 0.04045 ? channels[i] / 12.92 : pow((channels[i] + 0.055) / 1.055,2.4);
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}
+static void ClickPreview(NSWindow *window, NSPoint point) {
+  NSPoint location = [window.contentView convertPoint:point toView:nil];
+  NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:location modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1];
+  NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:location modifierFlags:0 timestamp:down.timestamp + 0.01 windowNumber:window.windowNumber context:nil eventNumber:2 clickCount:1 pressure:0];
+  [NSApp postEvent:up atStart:YES]; [NSApp sendEvent:down]; Drain();
+}
+static void TestViewerControlAppearance(TLAttachmentViewerWindowController *viewer, NSNumber *theme) {
+  TLThemePalette *palette = [viewer valueForKey:@"palette"];
+  NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:viewer.window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
+  for (NSString *key in @[@"finderButton",@"saveButton",@"closeButton"]) {
+    TLHoverIconButton *button = [viewer valueForKey:key];
+    CGFloat idleBrightness = 0;
+    for (NSString *state in @[@"normal",@"hovered",@"pressed",@"focused",@"inactive",@"disabled"]) {
+      [button mouseExited:event]; [button setValue:@NO forKey:@"pressed"]; button.enabled = YES;
+      [viewer.window makeFirstResponder:nil];
+      if ([state isEqual:@"hovered"]) [button mouseEntered:event];
+      if ([state isEqual:@"pressed"]) [button setValue:@YES forKey:@"pressed"];
+      if ([state isEqual:@"focused"]) [viewer.window makeFirstResponder:button];
+      if ([state isEqual:@"inactive"]) [viewer.window resignKeyWindow];
+      if ([state isEqual:@"disabled"]) button.enabled = NO;
+      [button layout];
+      NSBitmapImageRep *bitmap = Snapshot(button,[NSString stringWithFormat:@"attachment-%@-%@-%@.png",key,theme,state]);
+      BOOL highlighted = [state isEqual:@"hovered"] || [state isEqual:@"pressed"];
+      NSColor *ink = [(highlighted ? palette.statusItemIcon : palette.labelText) colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+      CGFloat foreground[3] = {ink.redComponent,ink.greenComponent,ink.blueComponent};
+      if (button.enabled) Check(PixelsMatching(bitmap,foreground) > 10,@"preview icons render their explicit light tint, including white on hover and press, in both themes and inactive windows");
+      CGFloat scale = bitmap.pixelsWide / NSWidth(button.bounds);
+      NSColor *surface = [bitmap colorAtX:(NSInteger)(7 * scale) y:bitmap.pixelsHigh / 2];
+      if ([state isEqual:@"normal"]) idleBrightness = Luminance(surface);
+      if (highlighted) Check(Luminance(surface) > idleBrightness,@"hovered and pressed preview button backgrounds render lighter than idle");
+      if (button.enabled) Check((Luminance(ink) + 0.05) / (Luminance(surface) + 0.05) >= 4.5,@"preview icon and surface retain readable rendered contrast");
+    }
+    button.enabled = YES; [button mouseExited:event]; [button setValue:@NO forKey:@"pressed"];
+  }
+  [viewer.window makeKeyWindow];
 }
 static void TestSharedChipAppearance(void) {
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,220,52) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO]; window.releasedWhenClosed = NO;
@@ -187,12 +224,20 @@ static void TestViewer(NSURL *base) {
     Check(!viewer.window.opaque && viewer.window.styleMask == (NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel), @"viewer is a transparent borderless fullscreen panel");
     Check(NSEqualRects(viewer.window.frame, viewer.window.screen.frame), @"viewer covers the full screen, including menu bar and dock areas");
     TLTokenView *root = (id)viewer.window.contentView;
-    Check(root.fillColor.alphaComponent > 0 && root.fillColor.alphaComponent < 1 && [[viewer valueForKey:@"palette"] dark], @"both app themes use a dark semitransparent backdrop");
+    Check(root.fillColor.alphaComponent >= 0.8 && root.fillColor.alphaComponent < 1 && [[viewer valueForKey:@"palette"] dark], @"both app themes use a darker semitransparent backdrop");
     Check(FindChips(root).count == 0, @"carousel has no attachment list or sidebar");
     NSView *preview = [viewer valueForKey:@"previewHost"];
     Check(fabs(NSMidX(preview.frame) - NSMidX(root.bounds)) < 1, @"the file is centered across the full screen");
     Snapshot(root,[NSString stringWithFormat:@"attachment-carousel-%@.png",theme]);
     Check([[viewer valueForKey:@"closeButton"] isKindOfClass:TLHoverIconButton.class], @"fullscreen carousel has an accessible close control");
+    TestViewerControlAppearance(viewer,theme);
+  }
+  TLAttachmentPreviewPanel *panel = (id)viewer.window;
+  NSView *textContent = [viewer valueForKey:@"textScroll"];
+  Check(!panel.isBackdropPoint([textContent convertPoint:NSMakePoint(30,30) toView:panel.contentView]),@"text selection does not dismiss the preview");
+  for (NSString *key in @[@"previousButton",@"nextButton",@"closeButton",@"saveButton",@"finderButton"]) {
+    NSView *button = [viewer valueForKey:key];
+    Check(!panel.isBackdropPoint([button convertPoint:NSMakePoint(NSMidX(button.bounds),NSMidY(button.bounds)) toView:panel.contentView]),@"preview controls are excluded from backdrop dismissal");
   }
   // Plain arrow keys work even while the native text preview owns focus.
   [viewer.window makeFirstResponder:[viewer valueForKey:@"textView"]];
@@ -205,6 +250,20 @@ static void TestViewer(NSURL *base) {
   while (![viewer valueForKey:@"imageView"] && deadline.timeIntervalSinceNow > 0) Drain();
   Check([(NSImageView *)[viewer valueForKey:@"imageView"] image] != nil, @"images fill the transparent stage without an opaque Quick Look canvas");
   Snapshot(viewer.window.contentView,@"attachment-carousel-image.png");
+  NSImageView *imageView = [viewer valueForKey:@"imageView"];
+  NSPoint imageCenter = [imageView convertPoint:NSMakePoint(NSMidX(imageView.bounds),NSMidY(imageView.bounds)) toView:panel.contentView];
+  ClickPreview(panel,imageCenter); Check(panel.visible,@"clicking the displayed image keeps the preview open");
+  NSImage *originalImage = imageView.image;
+  for (NSValue *size in @[[NSValue valueWithSize:NSMakeSize(300,1600)],[NSValue valueWithSize:NSMakeSize(1600,300)]]) {
+    imageView.image = [[NSImage alloc] initWithSize:size.sizeValue];
+    NSPoint margin = size.sizeValue.width < size.sizeValue.height ? NSMakePoint(1,NSMidY(imageView.bounds)) : NSMakePoint(NSMidX(imageView.bounds),1);
+    Check(panel.isBackdropPoint([imageView convertPoint:margin toView:panel.contentView]),@"portrait and landscape letterboxing dismisses, even inside the full-size image view");
+    Check(!panel.isBackdropPoint(imageCenter),@"the displayed image stays interactive at either aspect ratio");
+  }
+  imageView.image = originalImage;
+  NSView *nextButton = [viewer valueForKey:@"nextButton"];
+  ClickPreview(panel,[nextButton convertPoint:NSMakePoint(NSMidX(nextButton.bounds),NSMidY(nextButton.bounds)) toView:panel.contentView]);
+  Check(panel.visible && viewer.selectedIndex == 1,@"clicking a carousel button navigates without dismissing");
   [viewer selectItemAtIndex:1]; [viewer selectItemAtIndex:3]; Drain();
   Check(![viewer valueForKey:@"textView"] && ![viewer valueForKey:@"preview"], @"late text loads cannot overwrite a new selection");
   Check(![(NSButton *)[viewer valueForKey:@"saveButton"] isEnabled], @"missing files cannot be saved");
@@ -216,6 +275,14 @@ static void TestViewer(NSURL *base) {
   [viewer selectItemAtIndex:3]; Check(![(NSButton *)[viewer valueForKey:@"nextButton"] isEnabled], @"navigation stops at last file");
   [(NSButton *)[viewer valueForKey:@"closeButton"] performClick:nil]; Check(!viewer.window.visible, @"close button dismisses the fullscreen viewer");
   Check(![viewer valueForKey:@"keyMonitor"] && ![viewer valueForKey:@"preview"], @"closing releases keyboard and native preview resources");
+  [viewer selectItemAtIndex:0]; [viewer showWindow:nil];
+  deadline = [NSDate dateWithTimeIntervalSinceNow:3]; while (![viewer valueForKey:@"imageView"] && deadline.timeIntervalSinceNow > 0) Drain();
+  imageView = [viewer valueForKey:@"imageView"];
+  NSPoint margin = [imageView convertPoint:NSMakePoint(1,1) toView:panel.contentView];
+  ClickPreview(panel,margin);
+  Check(!panel.visible && ![viewer valueForKey:@"keyMonitor"] && ![viewer valueForKey:@"imageView"],@"clicking a letterboxed margin closes the panel and releases preview resources");
+  [viewer selectItemAtIndex:2]; [viewer showWindow:nil];
+  ClickPreview(panel,NSMakePoint(5,5)); Check(!panel.visible,@"clicking the outer backdrop also dismisses empty and folder previews");
   NSMutableData *large = [NSMutableData dataWithLength:3 * 1024 * 1024]; memset(large.mutableBytes, 'a', large.length); [large writeToURL:textURL atomically:YES];
   viewer = [[TLAttachmentViewerWindowController alloc] initWithItems:@[items[1]] conversationTitle:@"Large log" selectedIndex:0 palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
   deadline = [NSDate dateWithTimeIntervalSinceNow:3]; while (![viewer valueForKey:@"textView"] && deadline.timeIntervalSinceNow > 0) Drain();

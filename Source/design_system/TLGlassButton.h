@@ -7,6 +7,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic) BOOL hoverSurfaceOnly;
 @property (nonatomic, strong, nullable) NSColor *idleSurfaceColor;
+@property (nonatomic, strong, nullable) NSColor *hoverSurfaceColor;
+@property (nonatomic, strong, nullable) NSColor *pressedSurfaceColor;
+// Explicit symbol colors bypass AppKit's inactive-window template tint.
+@property (nonatomic, strong, nullable) NSColor *idleContentTintColor;
+@property (nonatomic, strong, nullable) NSColor *hoverContentTintColor;
 @end
 
 @interface TLGlassButton : NSView

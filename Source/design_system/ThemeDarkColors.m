@@ -37,7 +37,7 @@ void TLApplyDarkThemeColors(TLThemePalette *palette) {
   palette.tabBorder = palette.controlBorder;
   palette.tabActiveBorder = palette.controlFocus;
   palette.historyRowActiveSurface = palette.sidebarActiveSurface;
-  palette.modalBackdrop = TLColorWithAlpha(palette.black, 0.58);
+  palette.modalBackdrop = TLColorWithAlpha(palette.black, 0.82);
   palette.messagesSurface = TLColorWithAlpha(palette.gray900, 0.78);
   palette.emptyText = palette.gray400;
   palette.chipBorder = TLColorWithAlpha(palette.gray400, 0.22);

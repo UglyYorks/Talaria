@@ -57,6 +57,7 @@
     window.tabbingMode = NSWindowTabbingModeDisallowed;
     __weak typeof(self) weakSelf = self;
     window.dismissHandler = ^{ [weakSelf close]; };
+    window.isBackdropPoint = ^BOOL(NSPoint point) { return [weakSelf isBackdropPoint:point]; };
     [self buildInterface]; [self applyPalette:palette];
     [self selectItemAtIndex:MIN(index, items.count ? items.count - 1 : 0)];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(screenParametersChanged:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
@@ -125,7 +126,10 @@
   for (NSTextField *label in @[self.detailLabel,self.hintLabel,self.emptyDetail]) { label.textColor = p.textMuted; label.font = p.smallFont; }
   self.emptyDetail.font = p.bodyFont;
   for (TLHoverIconButton *button in @[self.previousButton,self.nextButton,self.closeButton,self.saveButton,self.finderButton]) {
-    button.palette = p; button.idleSurfaceColor = p.secondaryActionSurface; button.layer.cornerRadius = p.attachmentViewerControlSize / 2;
+    button.palette = p; button.idleSurfaceColor = p.controlSurface;
+    button.hoverSurfaceColor = p.secondaryActionSurface; button.pressedSurfaceColor = p.secondaryActionSurface;
+    button.idleContentTintColor = p.labelText; button.hoverContentTintColor = p.statusItemIcon;
+    button.layer.cornerRadius = p.attachmentViewerControlSize / 2;
   }
   self.textView.backgroundColor = p.controlSurface; self.textView.textColor = p.controlText; self.textView.insertionPointColor = p.controlText; self.textView.font = p.markdownCodeFont;
   if (self.preview) [self.preview refreshPreviewItem];
@@ -140,6 +144,26 @@
 }
 - (void)screenParametersChanged:(NSNotification *)notification { if (self.window.isVisible) [self fitToScreen]; }
 - (void)closePreview:(id)sender { [self close]; }
+- (BOOL)isBackdropPoint:(NSPoint)point {
+  NSView *hit = [self.root hitTest:point];
+  for (NSView *view = hit; view; view = view.superview) {
+    if ([view isKindOfClass:NSButton.class]) return NO;
+  }
+  if (self.imageView.image) {
+    // The image view fills the stage; its letterboxed margins are still backdrop.
+    NSSize size = self.imageView.image.size;
+    if (size.width > 0 && size.height > 0) {
+      NSRect bounds = self.imageView.bounds;
+      CGFloat scale = MIN(NSWidth(bounds) / size.width, NSHeight(bounds) / size.height);
+      NSRect imageRect = NSMakeRect(NSMidX(bounds) - size.width * scale / 2, NSMidY(bounds) - size.height * scale / 2, size.width * scale, size.height * scale);
+      if (NSPointInRect([self.imageView convertPoint:point fromView:self.root], imageRect)) return NO;
+    }
+  }
+  // Preserve text selection and native document/media controls inside the preview.
+  if (self.textScroll && NSPointInRect([self.textScroll convertPoint:point fromView:self.root], self.textScroll.bounds)) return NO;
+  if (self.preview && NSPointInRect([self.preview convertPoint:point fromView:self.root], self.preview.bounds)) return NO;
+  return YES;
+}
 - (void)embedPreview:(NSView *)view {
   view.translatesAutoresizingMaskIntoConstraints = NO; [self.previewHost addSubview:view];
   CGFloat inset = self.palette.space2;
