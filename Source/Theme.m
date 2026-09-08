@@ -163,6 +163,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.messageBottomSpacing = 100.0;
   self.userMessageMaxWidthMultiplier = 0.70;
   self.userMessageCornerRadius = 18.0;
+  self.userMessageTailCornerRadius = 24.0;
   self.userMessageMinWidth = 40.0;
   self.userMessageHorizontalPadding = 12.0;
   self.userMessageVerticalPadding = 8.0;
