@@ -265,6 +265,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat userMessageHorizontalPadding;
 @property (nonatomic) CGFloat userMessageVerticalPadding;
 @property (nonatomic) CGFloat userMessageTailHeight;
+@property (nonatomic) CGFloat userMessageTailHorizontalOffset;
 @property (nonatomic) CGFloat assistantMessageMaxWidthMultiplier;
 @property (nonatomic) CGFloat controlMinWidth;
 @property (nonatomic) CGFloat fieldHeight;

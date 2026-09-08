@@ -167,6 +167,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.userMessageHorizontalPadding = 12.0;
   self.userMessageVerticalPadding = 8.0;
   self.userMessageTailHeight = 6.0;
+  self.userMessageTailHorizontalOffset = 3.0;
   self.assistantMessageMaxWidthMultiplier = 0.90;
   self.controlMinWidth = 78.0;
   self.fieldHeight = 32.0;

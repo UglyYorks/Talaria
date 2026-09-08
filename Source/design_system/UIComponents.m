@@ -158,15 +158,17 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   CGFloat minX = NSMinX(body), maxX = NSMaxX(body);
   CGFloat minY = NSMinY(body), maxY = NSMaxY(body);
   CGFloat kappa = 0.5522847498307936;
-  CGFloat tipX = maxX - radius / 3.0;
+  CGFloat diagonal = sqrt(0.5);
+  CGFloat tailOffset = MIN(MAX(0.0, palette.userMessageTailHorizontalOffset), radius * (1.0 - diagonal));
+  CGFloat tipX = maxX - radius / 3.0 + tailOffset;
   CGFloat tipY = NSMinY(bounds);
   CGFloat tipRadius = MIN(radius, tailHeight) * 0.1;
-  CGFloat tailBaseX = MAX(minX + radius, maxX - radius * 1.25);
+  CGFloat tailBaseX = MAX(minX + radius, maxX - radius * 1.25) + tailOffset;
   CGFloat tailBaseWidth = tipX - tailBaseX;
-  CGFloat diagonal = sqrt(0.5);
   CGFloat arcControl = (4.0 / 3.0) * tan(M_PI / 16.0);
   NSPoint cornerJoin = NSMakePoint(maxX - radius * (1.0 - diagonal),
                                   minY + radius * (1.0 - diagonal));
+  CGFloat returnHandle = radius / 3.0 + tailOffset * 0.5;
 
   // A broad base sweeps from the bottom edge into the slim, rounded tip.
   // Clamp it to the bottom-left corner so short replies keep a smooth outline.
@@ -179,10 +181,10 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
        controlPoint1:NSMakePoint(tipX + tipRadius * 0.3, tipY)
        controlPoint2:NSMakePoint(tipX + tipRadius * 0.5, tipY + tipRadius * 0.5)];
   [path curveToPoint:cornerJoin
-       controlPoint1:NSMakePoint(tipX - radius / 3.0, tipY + tipRadius + radius / 3.0)
+       controlPoint1:NSMakePoint(tipX - returnHandle, tipY + tipRadius + returnHandle)
        controlPoint2:NSMakePoint(cornerJoin.x - radius * 0.16, cornerJoin.y - radius * 0.16)];
-  // Preserve the round corner through its upper 45 degrees, then meet the
-  // tail's concave return at the same tangent instead of pinching the side.
+  // Keep the body's rounded corner fixed as the base and tip move together.
+  // The concave return retains the same tangent at both ends.
   [path curveToPoint:NSMakePoint(maxX, minY + radius)
        controlPoint1:NSMakePoint(cornerJoin.x + radius * arcControl * diagonal,
                                 cornerJoin.y + radius * arcControl * diagonal)
