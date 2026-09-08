@@ -68,6 +68,13 @@
       }
       complex ||= complexNodes.has(p);
       const c=checked.get(p);if(!c){cacheable=false;return null;}
+      // Transparent positioned chrome can reveal a sibling hero, image or
+      // video before its ancestor background. An ancestor walk cannot resolve
+      // that paint order. Read the rendered edge and avoid caching a signature
+      // that omits the underlying layer (which may animate independently).
+      if(alpha<0.999 && c[3]<1 && css.position!=='static') {
+        complex=true;cacheable=false;
+      }
       const weight=(1-alpha)*c[3];
       rgb=rgb.map((v,i)=>v+c[i]*weight);alpha+=weight;
     }
