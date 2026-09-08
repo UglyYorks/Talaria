@@ -8,12 +8,15 @@
 #import "TalariaWindowController.h"
 #import "Theme.h"
 #import "TLAppReset.h"
+#import "TLWorkspaceSessionStore.h"
+#import "Widgetbook.h"
 
 @interface TLAppDelegate ()
 
 @property (nonatomic, strong) TLDatabase *database;
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
 @property (nonatomic, strong) TLAppStateManager *appStateManager;
+@property (nonatomic, strong) TLWorkspaceSessionStore *workspaceSessionStore;
 @property (nonatomic, strong) TalariaWindowController *windowController;
 @property (nonatomic, strong) NSStatusItem *statusItem;
 @property (nonatomic) BOOL resetInProgress;
@@ -55,9 +58,16 @@
                                                              agentClient:agentClient
                                                                vmService:vmService];
   self.appStateManager = [[TLAppStateManager alloc] init];
+  if (!TLWidgetbookModeEnabled()) {
+    NSURL *sessionURL = [TLDatabase.defaultDatabaseURL.URLByDeletingLastPathComponent
+      URLByAppendingPathComponent:@"workspace-session.json"];
+    self.workspaceSessionStore = [[TLWorkspaceSessionStore alloc] initWithURL:sessionURL];
+    [self.workspaceSessionStore restoreStateManager:self.appStateManager];
+  }
   self.windowController = [[TalariaWindowController alloc] initWithDatabase:self.database
                                                             agentOrchestrator:self.agentOrchestrator
                                                               appStateManager:self.appStateManager];
+  [self.workspaceSessionStore observeStateManager:self.appStateManager];
   [self installStatusItem];
   [self presentMainWindow:self];
   dispatch_async(dispatch_get_main_queue(), ^{

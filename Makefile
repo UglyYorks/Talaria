@@ -272,6 +272,8 @@ test: test-browser-overlay $(BUILD_DIR)/BrowserOverlayPolicyTests $(BUILD_DIR)/S
 	"$(BUILD_DIR)/CredentialStoreTests"
 	"$(BUILD_DIR)/AssistantTurnResultTests"
 	"$(BUILD_DIR)/AppStateManagerTests"
+	"$(BUILD_DIR)/WorkspaceSessionTests"
+	"$(BUILD_DIR)/WorkspaceRestoreTests"
 	"$(BUILD_DIR)/TransitionCoordinatorTests"
 	"$(BUILD_DIR)/FeatureControllerTests"
 	"$(BUILD_DIR)/TabShortcutTests"
@@ -285,6 +287,7 @@ test: $(BUILD_DIR)/MarkdownMathTests $(BUILD_DIR)/MarkdownCodeTests $(BUILD_DIR)
 test: $(BUILD_DIR)/QuickInputTests
 
 test: $(BUILD_DIR)/AutomationsTests
+test: $(BUILD_DIR)/WorkspaceSessionTests $(BUILD_DIR)/WorkspaceRestoreTests
 test-automations: $(BUILD_DIR)/AutomationsTests
 	"$(BUILD_DIR)/AutomationsTests"
 
@@ -366,6 +369,13 @@ $(BUILD_DIR)/AssistantTurnResultTests: Source/TalariaModels.m Source/PromptMessa
 $(BUILD_DIR)/AppStateManagerTests: Source/WorkspaceState.m Source/AppStateManager.m Tests/AppStateManagerTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
+
+$(BUILD_DIR)/WorkspaceSessionTests: Source/WorkspaceState.m Source/AppStateManager.m Source/TLWorkspaceSessionStore.m Tests/WorkspaceSessionTests.m
+	mkdir -p "$(BUILD_DIR)"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
+
+$(BUILD_DIR)/WorkspaceRestoreTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/WorkspaceRestoreTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 $(BUILD_DIR)/TransitionCoordinatorTests: Source/design_system/TLTransitionCoordinator.m Tests/TransitionCoordinatorTests.m
 	mkdir -p "$(BUILD_DIR)"
