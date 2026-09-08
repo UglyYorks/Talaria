@@ -34,6 +34,7 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
                                     URLHandler:(nullable TLChromiumBrowserURLHandler)URLHandler
                                 faviconHandler:(nullable TLChromiumBrowserFaviconHandler)faviconHandler
                              navigationHandler:(nullable TLChromiumBrowserNavigationHandler)navigationHandler;
+- (void)startDownloadURL:(NSURL *)URL fromWindow:(nullable NSWindow *)window;
 - (void)navigateSession:(nullable TLChromiumBrowserSession *)session toURL:(NSURL *)URL;
 - (void)prepareBrowserSettingsInWindow:(nullable NSWindow *)window completion:(void (^)(NSError * _Nullable))completion;
 - (NSDictionary *)browserSettingState:(NSDictionary *)setting;

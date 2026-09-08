@@ -4,6 +4,7 @@
 #import "design_system/TLInputSuggestionListView.h"
 #import "TalariaWindowController.h"
 #import "TLBrowserPreferences.h"
+#import "TLDownloadsWindowController.h"
 #import "TLApplicationPreferences.h"
 #import "PromptBuilder.h"
 #import "AgentOrchestrator.h"
@@ -68,6 +69,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 @property (nonatomic, strong) TLChatPresentation *chatPresentation;
 @property (nonatomic, strong) TLAttachmentViewerWindowController *attachmentViewer;
+@property (nonatomic, strong) TLDownloadsWindowController *downloadsWindowController;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLChatPresentation *> *chatPresentations;
 @property (nonatomic, strong) TLWorkspaceSplitState *splitState;
 @property (nonatomic, strong) TLSplitWorkspaceView *splitWorkspace;
@@ -1977,6 +1979,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   historyItem.image = [self symbolImageNamed:@"clock" accessibilityDescription:@"History"];
   [menu addItem:historyItem];
 
+  NSMenuItem *downloadsItem = [[NSMenuItem alloc] initWithTitle:@"Downloads" action:@selector(showDownloads:) keyEquivalent:@""];
+  downloadsItem.target = self;
+  downloadsItem.image = [self symbolImageNamed:@"arrow.down.circle" accessibilityDescription:@"Downloads"];
+  [menu addItem:downloadsItem];
+
   NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:@"Debug"
                                                      action:@selector(showDebug:)
                                               keyEquivalent:@""];
@@ -2001,6 +2008,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [menu popUpMenuPositioningItem:nil
                        atLocation:NSMakePoint(self.palette.space0, -self.palette.space2)
                            inView:sourceView];
+}
+
+- (void)showDownloads:(id)sender {
+  if (!self.downloadsWindowController) self.downloadsWindowController = [[TLDownloadsWindowController alloc]
+    initWithManager:TLBrowserDownloadManager.sharedManager palette:self.palette];
+  [self.downloadsWindowController applyPalette:self.palette];
+  [self.downloadsWindowController showWindow:sender];
 }
 
 - (void)showChatWorkspace {
@@ -5629,6 +5643,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self applySidebarInboxPalette];
   [self.historyPanelController applyPalette:self.palette];
   [self.attachmentViewer applyPalette:self.palette];
+  [self.downloadsWindowController applyPalette:self.palette];
   self.topbar.fillColor = self.palette.appBackground;
   self.topbar.borderColor = self.palette.topbarBorder;
   self.topbar.borderEdges = TLBorderEdgeNone;

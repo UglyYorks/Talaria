@@ -7,6 +7,7 @@
 #import "ChromiumDocumentFooter.h"
 #import "BrowserPageContext.h"
 #import "TLBrowserPreferences.h"
+#import "TLBrowserDownloadManager.h"
 
 #include <algorithm>
 #include <limits.h>
@@ -138,6 +139,8 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 
 @interface TLChromiumBrowserController ()
 - (void)browserContextReady;
+- (void)downloadUpdatedForBrowser:(CefRefPtr<CefBrowser>)browser;
+- (void)closeBrowserOrKeepDownload:(CefRefPtr<CefBrowser>)browser;
 - (void)trackPermissionAlert:(NSAlert *)alert browser:(int)browserID prompt:(uint64_t)promptID;
 - (void)dismissPermissionAlertForBrowser:(int)browserID prompt:(uint64_t)promptID;
 - (void)applyBrowserPreferences;
@@ -340,10 +343,11 @@ class TLChromiumClient : public CefClient,
  public:
   explicit TLChromiumClient(TLChromiumBrowserController *browserController,
                             NSView *parentView = nil,
-                            int inspectedBrowserIdentifier = -1)
+                            int inspectedBrowserIdentifier = -1,
+                            NSString *downloadURL = nil)
       : browserController_(browserController),
         parentView_(parentView),
-        inspectedBrowserIdentifier_(inspectedBrowserIdentifier) {}
+        inspectedBrowserIdentifier_(inspectedBrowserIdentifier), downloadURL_([downloadURL copy]) {}
 
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override {
     return inspectedBrowserIdentifier_ < 0 ? this : nullptr;
@@ -433,24 +437,67 @@ class TLChromiumClient : public CefClient,
   CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return this; }
   CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
 
+  void RecordDownload(CefRefPtr<CefBrowser> browser, CefRefPtr<CefDownloadItem> item,
+                      CefRefPtr<CefDownloadItemCallback> callback, NSString *suggestedName = @"") {
+    if (!item || !item->IsValid()) return;
+    TLBrowserDownloadState state = item->IsComplete() ? TLBrowserDownloadStateComplete :
+      item->IsCanceled() ? TLBrowserDownloadStateCancelled : item->IsInterrupted() ? TLBrowserDownloadStateFailed :
+      item->IsPaused() ? TLBrowserDownloadStatePaused : TLBrowserDownloadStateDownloading;
+    NSString *failure = @"";
+    if (state == TLBrowserDownloadStateFailed) {
+      switch (item->GetInterruptReason()) {
+        case CEF_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE: failure = @"Not enough disk space"; break;
+        case CEF_DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED: failure = @"Cannot write to the selected folder"; break;
+        case CEF_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED: failure = @"Network disconnected"; break;
+        case CEF_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT: failure = @"Connection timed out"; break;
+        case CEF_DOWNLOAD_INTERRUPT_REASON_SERVER_UNAUTHORIZED:
+        case CEF_DOWNLOAD_INTERRUPT_REASON_SERVER_FORBIDDEN: failure = @"The server denied access. Sign in and try again"; break;
+        case CEF_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED:
+        case CEF_DOWNLOAD_INTERRUPT_REASON_FILE_VIRUS_INFECTED:
+        case CEF_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED: failure = @"Blocked by a security check"; break;
+        default: failure = @"The transfer was interrupted. Try again"; break;
+      }
+    }
+    TLBrowserDownloadControl control = nil;
+    if (callback) control = ^(TLBrowserDownloadAction action) {
+      if (action == TLBrowserDownloadActionPause) callback->Pause();
+      else if (action == TLBrowserDownloadActionResume) callback->Resume();
+      else callback->Cancel();
+    };
+    NSString *name = suggestedName.length ? suggestedName : TLNSStringFromCefString(item->GetSuggestedFileName());
+    NSString *URL = TLNSStringFromCefString(item->GetOriginalUrl());
+    if (!URL.length) URL = TLNSStringFromCefString(item->GetURL());
+    [TLBrowserDownloadManager.sharedManager updateDownloadWithID:item->GetId() browserIdentifier:browser->GetIdentifier()
+      URLString:URL fileName:name path:TLNSStringFromCefString(item->GetFullPath())
+      receivedBytes:item->GetReceivedBytes() totalBytes:item->GetTotalBytes() bytesPerSecond:item->GetCurrentSpeed()
+      state:state failureReason:failure control:control];
+  }
+
   bool OnBeforeDownload(CefRefPtr<CefBrowser> browser, CefRefPtr<CefDownloadItem> item,
                         const CefString &suggested_name, CefRefPtr<CefBeforeDownloadCallback> callback) override {
+    CEF_REQUIRE_UI_THREAD();
+    if (!item || !item->IsValid()) return false;
+    RecordDownload(browser, item, nullptr, TLNSStringFromCefString(suggested_name));
     auto context = browser->GetHost()->GetRequestContext();
     auto pathPref = context->GetPreference("download.default_directory");
     auto askPref = context->GetPreference("download.prompt_for_download");
-    NSString *directory = pathPref ? TLNSStringFromCefString(pathPref->GetString()) : [NSSearchPathForDirectoriesInDomains(NSDownloadsDirectory, NSUserDomainMask, YES) firstObject];
-    NSString *name = TLNSStringFromCefString(suggested_name).lastPathComponent;
-    if (!name.length || [name isEqual:@"."] || [name isEqual:@".."]) name = @"Download";
-    NSString *path = [directory stringByAppendingPathComponent:name];
-    // Automatic downloads must never overwrite an existing file.
-    NSUInteger suffix = 1;
-    while ([NSFileManager.defaultManager fileExistsAtPath:path]) {
-      NSString *stem = name.stringByDeletingPathExtension, *ext = name.pathExtension;
-      NSString *candidate = [NSString stringWithFormat:@"%@ (%lu)%@%@",stem,(unsigned long)suffix++,ext.length ? @"." : @"",ext];
-      path = [directory stringByAppendingPathComponent:candidate];
-    }
+    NSString *directory = pathPref ? TLNSStringFromCefString(pathPref->GetString()) : @"";
+    if (!directory.isAbsolutePath) directory = [NSSearchPathForDirectoriesInDomains(NSDownloadsDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *path = [TLBrowserDownloadManager.sharedManager reserveDestinationForDownloadID:item->GetId()
+      directory:directory fileName:TLNSStringFromCefString(suggested_name)];
     callback->Continue(TLStringFromNSString(path), !askPref || askPref->GetBool());
     return true;
+  }
+
+  void OnDownloadUpdated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefDownloadItem> item,
+                         CefRefPtr<CefDownloadItemCallback> callback) override {
+    CEF_REQUIRE_UI_THREAD();
+    if (!item || !item->IsValid()) return;
+    RecordDownload(browser, item, callback);
+    [browserController_ downloadUpdatedForBrowser:browser];
+    if (downloadURL_.length && !item->IsInProgress()) {
+      TLChromiumDeferToMainRunLoop(^{ if (browser->IsValid()) browser->GetHost()->CloseBrowser(true); });
+    }
   }
 
   bool OnShowPermissionPrompt(CefRefPtr<CefBrowser> browser, uint64_t prompt_id,
@@ -606,6 +653,7 @@ class TLChromiumClient : public CefClient,
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     CEF_REQUIRE_UI_THREAD();
     [browserController_ browserCreated:browser parentView:parentView_];
+    if (downloadURL_.length) browser->GetHost()->StartDownload(TLStringFromNSString(downloadURL_));
     if (inspectedBrowserIdentifier_ >= 0)
       [browserController_ devToolsVisibilityChanged:YES forBrowserIdentifier:inspectedBrowserIdentifier_];
   }
@@ -686,6 +734,7 @@ class TLChromiumClient : public CefClient,
   __unsafe_unretained NSView *parentView_;
 
   int inspectedBrowserIdentifier_;
+  NSString *downloadURL_;
 
   IMPLEMENT_REFCOUNTING(TLChromiumClient);
 };
@@ -819,6 +868,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   BOOL _browserSettingsReady;
   BOOL _browserDarkAppearance;
   NSMutableDictionary<NSString *, NSAlert *> *_permissionAlerts;
+  NSMutableDictionary<NSNumber *, NSView *> *_detachedDownloadContainers;
   BOOL _initialized;
   BOOL _shuttingDown;
   BOOL _shutdownRequested;
@@ -856,6 +906,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
     _pausedBrowsers = [NSMutableSet set];
     _settingsReadyCallbacks = [NSMutableArray array];
     _permissionAlerts = [NSMutableDictionary dictionary];
+    _detachedDownloadContainers = [NSMutableDictionary dictionary];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(browserPreferencesChanged:) name:TLBrowserPreferencesDidChangeNotification object:nil];
   }
   return self;
@@ -947,6 +998,46 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
                                                       TLStringFromNSString(browserURL.absoluteString),
                                                       view));
   return session;
+}
+
+- (void)startDownloadURL:(NSURL *)URL fromWindow:(NSWindow *)window {
+  if (![self browserURLFromURL:URL]) return;
+  if (![self initializeCEFIfNeededFromWindow:window]) return;
+  // A retry uses the same Chromium profile even when its original tab is closed.
+  CefWindowInfo info;
+  info.hidden = true;
+  info.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
+  CefBrowserSettings settings;
+  if (!CefBrowserHost::CreateBrowser(info, new TLChromiumClient(self, nil, -1, URL.absoluteString),
+      "about:blank", settings, nullptr, nullptr)) {
+    [self presentCEFError:@"The download could not be started. Please try again." fromWindow:window];
+  }
+}
+
+- (void)closeBrowserOrKeepDownload:(CefRefPtr<CefBrowser>)browser {
+  browser->GetHost()->CloseDevTools();
+  if (!_terminating && [TLBrowserDownloadManager.sharedManager hasActiveDownloadsForBrowser:browser->GetIdentifier()]) {
+    NSView *view = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(browser->GetHost()->GetWindowHandle());
+    if (view) {
+      // Keep a parent alive, not the CEF view itself: DoClose must be able to
+      // release the native browser by removing it from its parent.
+      NSView *container = [[NSView alloc] initWithFrame:view.bounds];
+      _detachedDownloadContainers[@(browser->GetIdentifier())] = container;
+      [container addSubview:view];
+      return;
+    }
+  }
+  browser->GetHost()->CloseBrowser(true);
+}
+
+- (void)downloadUpdatedForBrowser:(CefRefPtr<CefBrowser>)browser {
+  NSInteger identifier = browser->GetIdentifier();
+  if (_detachedDownloadContainers[@(identifier)] && ![TLBrowserDownloadManager.sharedManager hasActiveDownloadsForBrowser:identifier]) {
+    TLChromiumDeferToMainRunLoop(^{
+      if (browser->IsValid() && ![TLBrowserDownloadManager.sharedManager hasActiveDownloadsForBrowser:identifier])
+        browser->GetHost()->CloseBrowser(true);
+    });
+  }
 }
 
 - (void)navigateSession:(TLChromiumBrowserSession *)session toURL:(NSURL *)URL {
@@ -1057,8 +1148,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   CefRefPtr<CefBrowser> browser = [self browserWithIdentifier:(int)session.browserIdentifier];
   session.browserIdentifier = -1;
   if (browser) {
-    browser->GetHost()->CloseDevTools();
-    browser->GetHost()->CloseBrowser(true);
+    [self closeBrowserOrKeepDownload:browser];
   }
 }
 
@@ -1094,8 +1184,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   session.browserIdentifier = -1;
   CefRefPtr<CefBrowser> browser = [self browserWithIdentifier:browserIdentifier.intValue];
   if (browser) {
-    browser->GetHost()->CloseDevTools();
-    browser->GetHost()->CloseBrowser(true);
+    [self closeBrowserOrKeepDownload:browser];
   }
 }
 
@@ -1152,6 +1241,8 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   _shutdownRequested = NO;
   [_messagePumpTimer invalidate];
   _messagePumpTimer = nil;
+  [TLBrowserDownloadManager.sharedManager finishSession];
+  [_detachedDownloadContainers removeAllObjects];
   _browsers.clear();
   CefShutdown();
   _cefApp = nullptr;
@@ -1426,6 +1517,8 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
 
 - (void)browserClosed:(CefRefPtr<CefBrowser>)browser {
   int identifier = browser ? browser->GetIdentifier() : -1;
+  [TLBrowserDownloadManager.sharedManager browserClosed:identifier];
+  [_detachedDownloadContainers removeObjectForKey:@(identifier)];
   if (identifier == _fullscreenBrowserIdentifier) [self restoreFullscreenBrowser];
   [self devToolsVisibilityChanged:NO forBrowserIdentifier:identifier];
   NSNumber *browserIdentifier = @(identifier);
