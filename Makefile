@@ -277,6 +277,7 @@ test: test-browser-overlay $(BUILD_DIR)/BrowserOverlayPolicyTests $(BUILD_DIR)/S
 	"$(BUILD_DIR)/TransitionCoordinatorTests"
 	"$(BUILD_DIR)/FeatureControllerTests"
 	"$(BUILD_DIR)/TabShortcutTests"
+	"$(BUILD_DIR)/BrowserFindTests"
 	python3 Tests/AgentRuntimeTests.py
 	"$(BUILD_DIR)/MarkdownMathTests"
 	"$(BUILD_DIR)/MarkdownCodeTests"
@@ -431,3 +432,20 @@ test: $(BUILD_DIR)/AttachmentViewerTests
 
 $(BUILD_DIR)/AttachmentViewerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/AttachmentViewerTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+
+test: $(BUILD_DIR)/BrowserFindTests
+
+test-browser-find: $(BUILD_DIR)/BrowserFindTests
+	"$(BUILD_DIR)/BrowserFindTests"
+
+$(BUILD_DIR)/BrowserFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/BrowserFindTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+
+.PHONY: test-browser-find test-browser-find-cef
+test-browser-find-cef: build
+	mkdir -p "$(BUILD_DIR)/BrowserFindProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/BrowserFindProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserFindProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserFindCEFTests.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserFindProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserFindProbe.app"
+	python3 Scripts/test-browser-find.py

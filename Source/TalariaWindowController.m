@@ -689,6 +689,30 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
 }
 
+- (TLBrowserTabController *)activeBrowserController {
+  TLWorkspaceTab *tab = [self activeWorkspaceTab];
+  if (self.widgetbookMode || tab.kind != TLWorkspaceTabKindBrowser) return nil;
+  id controller = [self runtimeForTab:tab].featureController;
+  return [controller isKindOfClass:TLBrowserTabController.class] && ![controller isClosed] ? controller : nil;
+}
+- (BOOL)canPerformBrowserFindAction:(NSTextFinderAction)action {
+  TLBrowserTabController *controller = [self activeBrowserController];
+  if (!controller) return NO;
+  if (action == NSTextFinderActionHideFindInterface) return controller.findBarVisible;
+  return action == NSTextFinderActionShowFindInterface || action == NSTextFinderActionNextMatch || action == NSTextFinderActionPreviousMatch;
+}
+- (void)performBrowserFindAction:(NSTextFinderAction)action {
+  if (![self canPerformBrowserFindAction:action]) return;
+  TLBrowserTabController *controller = [self activeBrowserController];
+  switch (action) {
+    case NSTextFinderActionShowFindInterface: [controller showFindBar]; break;
+    case NSTextFinderActionNextMatch: [controller findNext:YES]; break;
+    case NSTextFinderActionPreviousMatch: [controller findNext:NO]; break;
+    case NSTextFinderActionHideFindInterface: [controller hideFindBar]; break;
+    default: break;
+  }
+}
+
 - (void)closeActiveTabOrWindow:(id)sender {
   NSArray<TLWorkspaceTab *> *tabs = [self workspaceTabs];
   if (tabs.count <= 1) {
