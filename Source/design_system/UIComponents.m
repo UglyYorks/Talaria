@@ -143,6 +143,13 @@ static CGPathRef TLCreateMessageBubblePath(NSRect rect, CGFloat requestedRadius,
   return TLCreateRoundedRectPath(rect, radius, radius, radius, radius);
 }
 
+// Coordinates from assets/message-bubble.svg. Anchor the reference to the
+// body's lower-right corner; only the straight body edges stretch with content.
+static NSPoint TLMessageBubbleReferencePoint(CGFloat x, CGFloat y, NSRect body, CGFloat scale) {
+  return NSMakePoint(NSMaxX(body) + (x - 352.0) * scale,
+                     NSMinY(body) + (108.0 - y) * scale);
+}
+
 static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
                                                        TLThemePalette *palette,
                                                        CGFloat requestedRadius,
@@ -155,70 +162,50 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   body.origin.y += tailHeight;
   body.size.height -= tailHeight;
   CGFloat radius = TLMessageBubbleBodyRadius(requestedRadius, body, rendersAsPill);
+  // Leave room for both the left corner and the reference tail's lower base,
+  // even when the entire message is a single narrow character.
+  radius = MIN(radius, NSWidth(body) * 35.0 / (35.0 + 36.93));
+  if (radius <= 0.0 || tailHeight <= 0.0) {
+    return TLCreateMessageBubbleBezierPath(body, requestedRadius, rendersAsPill);
+  }
+  CGFloat scale = MIN(radius / 35.0, tailHeight / 13.0);
   CGFloat minX = NSMinX(body), maxX = NSMaxX(body);
   CGFloat minY = NSMinY(body), maxY = NSMaxY(body);
   CGFloat kappa = 0.5522847498307936;
-  CGFloat diagonal = sqrt(0.5);
-  if (radius <= 0.0) return TLCreateMessageBubbleBezierPath(body, requestedRadius, rendersAsPill);
-  CGFloat tailOffset = MIN(MAX(0.0, palette.userMessageTailHorizontalOffset), radius * (1.0 - diagonal) * 0.9);
-  CGFloat tipX = maxX - radius / 3.0 + tailOffset;
-  CGFloat tipY = NSMinY(bounds);
-  CGFloat tipRadius = MIN(radius, tailHeight) * 0.1;
-  CGFloat tailBaseX = MAX(minX + radius, maxX - radius * 1.25) + tailOffset;
-  CGFloat tailBaseWidth = tipX - tailBaseX;
-  // Start rounding earlier at the outgoing corner. Cap its radius against
-  // the adjacent corners so short replies remain a clean pill.
-  CGFloat cornerRadius = MIN(MAX(radius, palette.userMessageTailCornerRadius),
-                             MIN(NSWidth(body) - radius, NSHeight(body) - radius));
-  CGFloat cornerJoinX = maxX - cornerRadius * (1.0 - diagonal) + tailOffset;
-  CGFloat cornerInset = maxX - cornerJoinX;
-  CGFloat tangentY = 1.0 - cornerInset / cornerRadius;
-  CGFloat tangentX = sqrt(MAX(0.0, 1.0 - tangentY * tangentY));
-  CGFloat cornerRise = cornerRadius * tangentX;
-  NSPoint cornerJoin = NSMakePoint(cornerJoinX, minY + cornerRadius - cornerRise);
-  CGFloat shoulderAngle = atan2(tangentX, tangentY);
-  CGFloat shoulderHandle = (4.0 / 3.0) * cornerRadius * tan(shoulderAngle * 0.25);
 
-  // Match both slope and curvature where the concave tail meets the corner.
-  // The lower attachment, tip and tail width keep their existing positions.
-  CGFloat returnReach = (tangentX * (cornerJoin.y - tipY - tipRadius) -
-                         tangentY * (cornerJoin.x - tipX)) / (tangentX + tangentY) + radius * 0.07;
-  NSPoint returnControl = NSMakePoint(tipX - returnReach, tipY + tipRadius + returnReach);
-  CGFloat shoulderBend = tangentX * (cornerRise - shoulderHandle) - tangentY * cornerInset;
-  CGFloat returnBend = tangentX * (returnControl.y - cornerJoin.y) - tangentY * (returnControl.x - cornerJoin.x);
-  CGFloat returnJoinHandle = shoulderHandle * sqrt(MAX(0.0, returnBend) / shoulderBend);
+  [path moveToPoint:NSMakePoint(minX + radius, maxY)];
+  [path lineToPoint:NSMakePoint(maxX - radius, maxY)];
+  [path curveToPoint:NSMakePoint(maxX, maxY - radius)
+       controlPoint1:NSMakePoint(maxX - radius + radius * kappa, maxY)
+       controlPoint2:NSMakePoint(maxX, maxY - radius + radius * kappa)];
+  [path lineToPoint:TLMessageBubbleReferencePoint(352, 73, body, scale)];
 
-  // A broad base sweeps from the bottom edge into the slim, rounded tip.
-  // Clamp it to the bottom-left corner so short replies keep a smooth outline.
-  [path moveToPoint:NSMakePoint(minX + radius, minY)];
-  [path lineToPoint:NSMakePoint(tailBaseX, minY)];
-  [path curveToPoint:NSMakePoint(tipX - tipRadius, tipY + tipRadius * 0.2)
-       controlPoint1:NSMakePoint(tailBaseX + tailBaseWidth * 0.3, minY)
-       controlPoint2:NSMakePoint(tipX - tailBaseWidth * 0.34, tipY)];
-  [path curveToPoint:NSMakePoint(tipX, tipY + tipRadius)
-       controlPoint1:NSMakePoint(tipX + tipRadius * 0.3, tipY)
-       controlPoint2:NSMakePoint(tipX + tipRadius * 0.5, tipY + tipRadius * 0.5)];
-  [path curveToPoint:cornerJoin
-       controlPoint1:returnControl
-       controlPoint2:NSMakePoint(cornerJoin.x - returnJoinHandle * tangentX,
-                                cornerJoin.y - returnJoinHandle * tangentY)];
-  [path curveToPoint:NSMakePoint(maxX, minY + cornerRadius)
-       controlPoint1:NSMakePoint(cornerJoin.x + shoulderHandle * tangentX,
-                                cornerJoin.y + shoulderHandle * tangentY)
-       controlPoint2:NSMakePoint(maxX, minY + cornerRadius - shoulderHandle)];
+  // The rounded shoulder, inset return, tip and lower attachment are one
+  // continuous outline copied from the cleaned union, without overlapping fills.
+  [path curveToPoint:TLMessageBubbleReferencePoint(339.783, 99.5674, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(352, 83.6282, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(347.261, 93.1484, body, scale)];
+  [path curveToPoint:TLMessageBubbleReferencePoint(337.115, 101.644, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(338.877, 100.34, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(338.012, 101.013, body, scale)];
+  [path curveToPoint:TLMessageBubbleReferencePoint(340.293, 116.688, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(334.273, 105.105, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(334.506, 111.216, body, scale)];
+  [path curveToPoint:TLMessageBubbleReferencePoint(339.043, 120.411, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(341.721, 118.04, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(340.997, 120.626, body, scale)];
+  [path curveToPoint:TLMessageBubbleReferencePoint(315.07, 108, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(329.608, 119.374, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(322.313, 114.367, body, scale)];
 
-  [path lineToPoint:NSMakePoint(maxX, maxY - radius)];
-  [path curveToPoint:NSMakePoint(maxX - radius, maxY)
-       controlPoint1:NSMakePoint(maxX, maxY - radius + radius * kappa)
-       controlPoint2:NSMakePoint(maxX - radius + radius * kappa, maxY)];
-  [path lineToPoint:NSMakePoint(minX + radius, maxY)];
-  [path curveToPoint:NSMakePoint(minX, maxY - radius)
-       controlPoint1:NSMakePoint(minX + radius - radius * kappa, maxY)
-       controlPoint2:NSMakePoint(minX, maxY - radius + radius * kappa)];
-  [path lineToPoint:NSMakePoint(minX, minY + radius)];
-  [path curveToPoint:NSMakePoint(minX + radius, minY)
-       controlPoint1:NSMakePoint(minX, minY + radius - radius * kappa)
-       controlPoint2:NSMakePoint(minX + radius - radius * kappa, minY)];
+  [path lineToPoint:NSMakePoint(minX + radius, minY)];
+  [path curveToPoint:NSMakePoint(minX, minY + radius)
+       controlPoint1:NSMakePoint(minX + radius - radius * kappa, minY)
+       controlPoint2:NSMakePoint(minX, minY + radius - radius * kappa)];
+  [path lineToPoint:NSMakePoint(minX, maxY - radius)];
+  [path curveToPoint:NSMakePoint(minX + radius, maxY)
+       controlPoint1:NSMakePoint(minX, maxY - radius + radius * kappa)
+       controlPoint2:NSMakePoint(minX + radius - radius * kappa, maxY)];
   [path closePath];
   return path;
 }
