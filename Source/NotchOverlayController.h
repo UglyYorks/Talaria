@@ -11,6 +11,8 @@ typedef void (^TLNotchOverlayFileDropHandler)(NSArray<NSURL *> *fileURLs);
 @property (nonatomic, readonly) NSPoint lastMouseLocation;
 // Stable visible bounds, including the opening animation's destination.
 @property (nonatomic, readonly) NSRect presentationFrame;
+// The frame currently on screen, including intermediate animation geometry.
+@property (nonatomic, readonly) NSRect visibleFrame;
 @property (nonatomic, strong, readonly, nullable) NSScreen *presentationScreen;
 @property (nonatomic, copy, nullable) TLNotchOverlayFileDropHandler fileDropHandler;
 

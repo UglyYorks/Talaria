@@ -69,7 +69,7 @@ CEF_DEFINES := -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -DCEF_USE_SANDBOX
 CEF_INCLUDE_FLAGS := -I$(CEF_ROOT)
 CEF_CXXFLAGS := $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-strict-aliasing -fstack-protector -funwind-tables -fvisibility=hidden -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-narrowing -Wsign-compare -Wno-undefined-var-template -O3 -mmacosx-version-min=13.0
 APP_OBJCXXFLAGS := $(OBJCFLAGS) $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-sign-compare -Wno-nullability-completeness -Wno-missing-field-initializers
-APP_FRAMEWORKS := -framework Quartz -framework ServiceManagement -framework Carbon -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -framework AppKit -framework Foundation -framework QuartzCore -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
+APP_FRAMEWORKS := -framework Quartz -framework ServiceManagement -framework Carbon -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -framework AppKit -framework Foundation -framework QuartzCore -framework ScreenCaptureKit -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
 TEST_FRAMEWORKS := -framework Foundation -framework AppKit -framework Virtualization -framework Security -lsqlite3
 
 .PHONY: all build test audit-theme-colors clean run widgetbook close-running-app check-signing-identity FORCE
@@ -292,6 +292,16 @@ $(BUILD_DIR)/AutomationsTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OB
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 $(BUILD_DIR)/QuickInputTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/QuickInputTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+
+# Explicit native integration check; uses existing Screen Recording access only.
+.PHONY: test-screen-capture
+test-screen-capture: $(BUILD_DIR)/ScreenCaptureTests check-signing-identity
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --identifier com.talaria.chat "$<"
+	"$<"
+
+$(BUILD_DIR)/ScreenCaptureTests: Source/TLScreenCapture.m Source/TLScreenCapture.h Tests/ScreenCaptureTests.m
+	mkdir -p "$(BUILD_DIR)"
+	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework ScreenCaptureKit -o "$@"
 
 $(BUILD_DIR)/MarkdownCodeTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Tests/MarkdownCodeTests.m $(MARKDOWN_RESOURCES_STAMP)
 	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
