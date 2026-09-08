@@ -182,7 +182,7 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 - (void)openBrowserURLString:(NSString *)urlString;
 - (void)openExternalURLString:(NSString *)urlString;
 - (BOOL)handleBrowserLinkURLString:(NSString *)urlString fromBrowser:(CefRefPtr<CefBrowser>)browser userGesture:(BOOL)userGesture;
-- (void (^)(NSURL *))splitLinkHandlerForBrowser:(CefRefPtr<CefBrowser>)browser;
+- (TLBrowserLinkOpenHandler)contextLinkHandlerForBrowser:(CefRefPtr<CefBrowser>)browser;
 - (void)openImageURL:(NSURL *)URL fromBrowser:(CefRefPtr<CefBrowser>)browser inNewWindow:(BOOL)newWindow;
 - (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
 - (nullable NSWindow *)windowForBrowser:(CefRefPtr<CefBrowser>)browser;
@@ -361,6 +361,7 @@ class TLChromiumClient : public CefClient,
                            CefRefPtr<CefContextMenuParams> params,
                            CefRefPtr<CefMenuModel> model) override {
     CEF_REQUIRE_UI_THREAD();
+    if (params && params->GetLinkUrl().empty() && !params->GetSelectionText().empty()) return;
     if (params && params->GetMediaType() == CM_MEDIATYPE_IMAGE) {
       TLChromiumPopulateImageMenu(model, [NSString stringWithUTF8String:params->GetSourceUrl().ToString().c_str()], params->HasImageContents());
       return;
@@ -393,16 +394,29 @@ class TLChromiumClient : public CefClient,
       if (URL) {
         TLChromiumBrowserController *controller = browserController_;
         TLChromiumShowLinkContextMenu(browser, params->GetMediaType() == CM_MEDIATYPE_IMAGE ? model : nullptr,
-          URL, [controller splitLinkHandlerForBrowser:browser] != nil, CefPoint(params->GetXCoord(), params->GetYCoord()), callback,
+          URL, [controller contextLinkHandlerForBrowser:browser] != nil, CefPoint(params->GetXCoord(), params->GetYCoord()), callback,
           ^(NSURL *linkedURL, TLBrowserLinkDestination destination) {
             if (!browser->IsValid()) return;
-            if (destination == TLBrowserLinkSplitView) {
-              void (^split)(NSURL *) = [controller splitLinkHandlerForBrowser:browser];
-              if (split) split(linkedURL);
-            } else [controller openImageURL:linkedURL fromBrowser:browser inNewWindow:destination == TLBrowserLinkNewWindow];
+            TLBrowserLinkOpenHandler handler = [controller contextLinkHandlerForBrowser:browser];
+            if (handler) handler(linkedURL, destination);
+            else if (destination != TLBrowserLinkSplitView) [controller openImageURL:linkedURL fromBrowser:browser inNewWindow:destination == TLBrowserLinkNewWindow];
           });
         return true;
       }
+    }
+    if (!params->GetSelectionText().empty() && params->IsEditable()) return false;
+    if (!params->GetSelectionText().empty()) {
+      NSString *text = TLNSStringFromCefString(params->GetSelectionText());
+      CefPoint location(params->GetXCoord(), params->GetYCoord());
+      TLChromiumDeferToMainRunLoop(^{
+        if (browser->IsValid()) {
+          NSView *view = (__bridge NSView *)browser->GetHost()->GetWindowHandle();
+          NSPoint point = NSMakePoint(location.x, view.isFlipped ? location.y : NSHeight(view.bounds)-location.y);
+          [TLBrowserLinkActions showSelectedText:text inView:view atPoint:point];
+        }
+        callback->Cancel();
+      });
+      return true;
     }
     TLChromiumShowContextMenu(browser, model, CefPoint(params->GetXCoord(),params->GetYCoord()), callback);
     return true;
@@ -1876,9 +1890,9 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   }
 }
 
-- (void (^)(NSURL *))splitLinkHandlerForBrowser:(CefRefPtr<CefBrowser>)browser {
+- (TLBrowserLinkOpenHandler)contextLinkHandlerForBrowser:(CefRefPtr<CefBrowser>)browser {
   if (!browser || !browser->IsValid()) return nil;
-  return _sessionsByBrowserIdentifier[@(browser->GetIdentifier())].splitLinkHandler;
+  return _sessionsByBrowserIdentifier[@(browser->GetIdentifier())].contextLinkHandler;
 }
 
 - (void)openImageURL:(NSURL *)URL fromBrowser:(CefRefPtr<CefBrowser>)browser inNewWindow:(BOOL)newWindow {

@@ -1,6 +1,7 @@
 #import "MarkdownRenderer.h"
 #import "Theme.h"
 #import <WebKit/WebKit.h>
+#import "design_system/TLMarkdownContentWebView.h"
 
 // A separate handler avoids a retain cycle between the view and its configuration.
 @interface TLMarkdownClipboardHandler : NSObject <WKScriptMessageHandlerWithReply>
@@ -20,9 +21,6 @@
   BOOL copied = [pasteboard setString:message.body forType:NSPasteboardTypeString];
   replyHandler(copied ? @YES : nil, copied ? nil : @"Could not copy code");
 }
-@end
-
-@interface TLMarkdownContentWebView : WKWebView
 @end
 
 @interface TLMarkdownWebView : NSView <WKNavigationDelegate>
@@ -77,6 +75,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
                                         baseFont:baseFont
                                      linkHandler:self.linkHandler
                                  rendersMarkdown:YES];
+  ((TLMarkdownContentWebView *)view.webView).linkContextMenuHandler = self.linkContextMenuHandler;
   view.heightChangeHandler = self.heightChangeHandler;
   return view;
 }
@@ -94,34 +93,6 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
   if ([view isKindOfClass:TLMarkdownWebView.class] && ![((TLMarkdownWebView *)view).text isEqualToString:markdown]) {
     [(TLMarkdownWebView *)view updateText:markdown];
   }
-}
-
-@end
-
-@implementation TLMarkdownContentWebView
-
-- (void)scrollWheel:(NSEvent *)event {
-  if (fabs(event.scrollingDeltaY) >= fabs(event.scrollingDeltaX)) {
-    NSScrollView *parentScrollView = [self parentScrollView];
-    if (parentScrollView) {
-      [parentScrollView scrollWheel:event];
-      return;
-    }
-  }
-
-  [super scrollWheel:event];
-}
-
-- (NSScrollView *)parentScrollView {
-  NSView *view = self.superview;
-  while (view) {
-    if ([view isKindOfClass:NSScrollView.class]) {
-      return (NSScrollView *)view;
-    }
-    view = view.superview;
-  }
-
-  return nil;
 }
 
 @end
@@ -158,6 +129,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     [_webView setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_webView setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     _webView.navigationDelegate = self;
+    if (@available(macOS 13.3, *)) _webView.inspectable = YES;
     _webView.allowsBackForwardNavigationGestures = NO;
     if (@available(macOS 11.0, *)) {
       _webView.underPageBackgroundColor = palette.transparentSurface;

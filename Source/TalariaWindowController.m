@@ -1,4 +1,5 @@
 #import "TLBrowserImageActions.h"
+#import "TLBrowserLinkActions.h"
 #import "TLAutomationsTabController.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
@@ -2177,11 +2178,19 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self updateControlStates];
 }
 
+- (void)handleContextLinkURL:(NSURL *)URL destination:(TLBrowserLinkDestination)destination sourceIdentity:(NSString *)identity {
+  TLWorkspaceTab *source = [self tabWithPresentationIdentity:identity];
+  if (!source || ![self isBrowserURL:URL]) return;
+  if (destination == TLBrowserLinkNewWindow) {
+    [TLChromiumBrowserController.sharedController openURL:URL fromWindow:self.window modifierFlags:0];
+    return;
+  }
+  [self openBrowserTabWithURL:URL];
+  if (destination == TLBrowserLinkSplitView) [self splitTab:[self activeWorkspaceTab] besideTab:source onLeft:NO];
+}
 - (void)openLinkURL:(NSURL *)URL inSplitBesideBrowserTabID:(NSInteger)tabID {
   TLWorkspaceTab *source = [self browserTabWithID:tabID];
-  if (!source || ![self isBrowserURL:URL]) return;
-  [self openBrowserTabWithURL:URL];
-  [self splitTab:[self activeWorkspaceTab] besideTab:source onLeft:NO];
+  if (source) [self handleContextLinkURL:URL destination:TLBrowserLinkSplitView sourceIdentity:TLWorkspaceTabIdentity(source)];
 }
 
 - (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab {
@@ -2216,8 +2225,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   controller.linkHandler = ^(NSURL *linkedURL, NSEventModifierFlags flags) {
     [weakSelf handleBrowserTabRequestURL:linkedURL modifierFlags:flags];
   };
-  controller.splitLinkHandler = ^(NSURL *linkedURL) {
-    [weakSelf openLinkURL:linkedURL inSplitBesideBrowserTabID:tabID];
+  NSString *sourceIdentity = TLWorkspaceTabIdentity(tab);
+  controller.contextLinkHandler = ^(NSURL *linkedURL, TLBrowserLinkDestination destination) {
+    [weakSelf handleContextLinkURL:linkedURL destination:destination sourceIdentity:sourceIdentity];
   };
   controller.settingsProvider = ^{ return weakSelf.settings; };
   controller.settingsRequiredHandler = ^{ [weakSelf showSettings:weakSelf]; };
@@ -4679,6 +4689,17 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [weakSelf handleLinkURL:URL modifierFlags:modifierFlags];
   };
   __weak TLChatPresentation *origin = self.chatPresentation;
+  renderer.linkContextMenuHandler = ^dispatch_block_t(NSURL *URL, NSMenu *menu, NSView *view, NSPoint point) {
+    TalariaWindowController *controller = weakSelf;
+    if (!controller || !origin) return nil;
+    TLWorkspaceTab *source = [controller.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:origin.chat.chatID];
+    NSString *identity = TLWorkspaceTabIdentity(source);
+    if (!source) return nil;
+    return [TLBrowserLinkActions configureNativeMenu:menu forURL:URL inView:view atPoint:point
+      open:^(NSURL *link, TLBrowserLinkDestination destination) {
+        [weakSelf handleContextLinkURL:link destination:destination sourceIdentity:identity];
+      }];
+  };
   __block __weak NSView *weakView = nil;
   renderer.heightChangeHandler = ^{
     TalariaWindowController *controller = weakSelf;

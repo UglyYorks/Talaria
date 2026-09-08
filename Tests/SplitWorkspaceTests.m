@@ -8,6 +8,7 @@
 #import "design_system/TLChromeTabView.h"
 #import "WorkspaceTabRuntime.h"
 #import "AppStateManager.h"
+#import "TLBrowserLinkActions.h"
 
 static void Check(BOOL value, NSString *message) { if (!value) { NSLog(@"FAIL: %@", message); exit(1); } }
 static void Drain(void) { [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.06]]; }
@@ -37,6 +38,7 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 - (void)openBrowserTab:(id)sender;
 - (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab;
 - (void)openLinkURL:(NSURL *)URL inSplitBesideBrowserTabID:(NSInteger)tabID;
+- (void)handleContextLinkURL:(NSURL *)URL destination:(TLBrowserLinkDestination)destination sourceIdentity:(NSString *)identity;
 - (void)closeBrowserTab:(id)sender;
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller willSelectTab:(TLWorkspaceTab *)tab;
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller dragTab:(TLWorkspaceTab *)tab atWindowPoint:(NSPoint)point;
@@ -270,6 +272,10 @@ static void TestRealWorkspace(void) {
   [owner openLinkURL:linkedURL inSplitBesideBrowserTabID:99999];
   [owner openLinkURL:[NSURL URLWithString:@"javascript:alert(1)"] inSplitBesideBrowserTabID:browser.tabID];
   Check(state.snapshot.workspaceTabs.count == beforeSplitLink + 1, @"closed sources and unsupported URLs cannot create split tabs");
+  [owner handleContextLinkURL:linkedURL destination:TLBrowserLinkSplitView sourceIdentity:TLWorkspaceTabIdentity(c)]; Drain();
+  TLWorkspaceTab *chatLink = state.snapshot.workspaceTabs.lastObject;
+  Check([[splits groupForTab:c].rightIdentity isEqual:TLWorkspaceTabIdentity(chatLink)] &&
+    [[splits groupForTab:c].leftIdentity isEqual:TLWorkspaceTabIdentity(c)], @"chat answers use the same split routing beside their originating chat");
   [window close];
 }
 int main(void) { @autoreleasepool {

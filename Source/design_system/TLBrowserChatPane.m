@@ -89,6 +89,9 @@
   [self.markdownView removeFromSuperview];
   self.renderer = [[TLMarkdownRenderer alloc] initWithPalette:palette];
   __weak typeof(self) weakSelf = self;
+  self.renderer.linkContextMenuHandler = ^dispatch_block_t(NSURL *URL, NSMenu *menu, NSView *view, NSPoint point) {
+    return weakSelf.linkContextMenuHandler ? weakSelf.linkContextMenuHandler(URL, menu, view, point) : nil;
+  };
   self.renderer.linkHandler = ^(NSURL *URL, NSEventModifierFlags flags) {
     if (weakSelf.linkHandler) weakSelf.linkHandler(URL, flags);
   };

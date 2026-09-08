@@ -2,7 +2,6 @@
 #include "include/cef_client.h"
 #import "ChromiumRunLoop.h"
 #import "ChromiumImageActions.h"
-#import "design_system/TLLinkServicesView.h"
 
 @interface TLChromiumContextMenuSelection : NSObject
 @property(nonatomic) NSInteger command;
@@ -80,21 +79,7 @@ void TLChromiumShowLinkContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefM
       CefWindowInfo info; CefBrowserSettings settings;
       browser->GetHost()->ShowDevTools(info, nullptr, settings, location);
     } imageMenu:imageMenu];
-    // Services reads this specific link from a temporary requestor, even when
-    // different text is selected on the web page. The general clipboard is untouched.
-    TLLinkServicesView *requestor = [[TLLinkServicesView alloc] initWithFrame:NSZeroRect]; requestor.URL = URL;
-    NSResponder *previousResponder = window.firstResponder;
-    NSMenu *previousServices = NSApp.servicesMenu;
-    if (!imageMenu) {
-      [view addSubview:requestor]; [window makeFirstResponder:requestor];
-      [NSApp registerServicesMenuSendTypes:requestor.writablePasteboardTypes returnTypes:@[]];
-      NSApp.servicesMenu = menu.itemArray.lastObject.submenu;
-      NSUpdateDynamicServices();
-    }
-    [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
-    if (!imageMenu) NSApp.servicesMenu = previousServices;
-    if (window.firstResponder == requestor) [window makeFirstResponder:previousResponder];
-    [requestor removeFromSuperview];
+    [TLBrowserLinkActions popUpMenu:menu forURL:URL inView:view atPoint:point];
     if (selection.command >= 0 && browser->IsValid()) callback->Continue((int)selection.command, selection.flags);
     else callback->Cancel();
   });

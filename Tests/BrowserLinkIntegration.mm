@@ -21,7 +21,7 @@
 @interface TLChromiumBrowserController (Integration)
 - (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
 - (void)checkBackgroundBrowsers;
-- (void (^)(NSURL *))splitLinkHandlerForBrowser:(CefRefPtr<CefBrowser>)browser;
+- (TLBrowserLinkOpenHandler)contextLinkHandlerForBrowser:(CefRefPtr<CefBrowser>)browser;
 - (void)browserTitleChanged:(CefRefPtr<CefBrowser>)browser title:(NSString *)title;
 @end
 static void Check(BOOL condition, NSString *message) {
@@ -72,8 +72,11 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   self.session = [self.browser loadURL:[NSURL URLWithString:self.baseURL] inView:self.window.contentView fromWindow:self.window
     titleHandler:^(NSString *title) {
       if (![title isEqual:@"Link menu fixture"] || self.started) return;
-      self.started = YES; dispatch_async(dispatch_get_main_queue(), ^{ [self testMenu]; });
+      self.started = YES;
+      if (NSProcessInfo.processInfo.environment[@"TL_CONTEXT_MENU_INTERACTIVE"]) return;
+      dispatch_async(dispatch_get_main_queue(), ^{ [self testMenu]; });
     } linkHandler:^(NSURL *URL, NSEventModifierFlags flags) { self.openedURL = URL; } URLHandler:nil faviconHandler:nil navigationHandler:nil];
+  if (NSProcessInfo.processInfo.environment[@"TL_CONTEXT_MENU_INTERACTIVE"]) return;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,45*NSEC_PER_SEC),dispatch_get_main_queue(), ^{ Check(NO,@"link integration timeout"); });
 }
 - (void)waitFor:(BOOL (^)(void))condition then:(dispatch_block_t)then attempt:(NSUInteger)attempt {
@@ -113,11 +116,11 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   NSMenu *menu = [TLBrowserLinkActions menuForURL:URL canSplit:YES view:self.window.contentView point:NSZeroPoint
     open:^(NSURL *URL, TLBrowserLinkDestination destination) { self.menuDestination = destination; self.openedURL = URL; }
     inspect:^{} imageMenu:nil];
-  NSArray *expected = @[@"Open Link in New Tab",@"Open Link in New Window",@"Open Link in Split View",@"",@"Copy Link",@"",@"Share…",@"",@"Inspect Element",@"",@"Services"];
+  NSArray *expected = @[@"Open Link in New Tab",@"Open Link in New Window",@"Open Link in Split View",@"",@"Copy Link",@"",@"Share…",@"",@"Inspect Element"];
   Check(menu.numberOfItems == expected.count, @"link menu has all requested options, excluding bookmarks and reading list");
   for (NSUInteger i=0; i<expected.count; i++) Check([[menu itemAtIndex:i].title isEqual:expected[i]], [NSString stringWithFormat:@"link menu row %lu",(unsigned long)i]);
   Check([menu itemAtIndex:2].enabled && ![menu itemAtIndex:2].submenu, @"split opens directly without a submenu");
-  Check([menu itemAtIndex:4].image && [menu itemAtIndex:6].image && [menu itemAtIndex:10].image, @"copy, share and Services have native icons");
+  Check([menu itemAtIndex:4].image && [menu itemAtIndex:6].image, @"copy and share have native icons");
   TLLinkServicesView *requestor = [TLLinkServicesView new]; requestor.URL = URL;
   NSPasteboard *pasteboard = [NSPasteboard pasteboardWithUniqueName];
   Check([requestor validRequestorForSendType:NSPasteboardTypeString returnType:nil] == requestor &&
@@ -146,10 +149,10 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
         Check(self.menuDestination == TLBrowserLinkSplitView && [self.openedURL isEqual:URL], @"split menu action preserves the clicked link and its destination");
         CefRefPtr<CefBrowser> browser = [self.browser browserWithIdentifier:(int)self.session.browserIdentifier];
         __weak TLLinkProbeDelegate *weakSelf = self;
-        self.session.splitLinkHandler = ^(NSURL *link) { weakSelf.openedURL = link; };
-        void (^split)(NSURL *) = [self.browser splitLinkHandlerForBrowser:browser];
+        self.session.contextLinkHandler = ^(NSURL *link, TLBrowserLinkDestination destination) { weakSelf.openedURL = link; };
+        TLBrowserLinkOpenHandler split = [self.browser contextLinkHandlerForBrowser:browser];
         Check(split != nil, @"CEF resolves the source session's split handler");
-        split([self URL:@"/two"]);
+        split([self URL:@"/two"], TLBrowserLinkSplitView);
         Check([self.openedURL isEqual:[self URL:@"/two"]], @"split request reaches the originating tab");
         [self testNewWindow];
       });
@@ -173,7 +176,7 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   CefRefPtr<CefBrowser> closing = [self.browser browserWithIdentifier:(int)self.session.browserIdentifier];
   self.window.title = @"Host window";
   [self.browser closeSession:self.session];
-  Check([self.browser splitLinkHandlerForBrowser:closing] == nil, @"closed tabs cannot receive split requests");
+  Check([self.browser contextLinkHandlerForBrowser:closing] == nil, @"closed tabs cannot receive split requests");
   // Deliver the callback before deferred native teardown, when CEF is still
   // valid but the workspace tab and its title handler are already gone.
   Check(closing && closing->IsValid(), @"exercise title event during asynchronous tab closure");

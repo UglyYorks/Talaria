@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import "TLBrowserLinkActions.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -17,7 +18,7 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 @property (nonatomic, readonly, getter=isFullscreen) BOOL fullscreen;
 @property (nonatomic, readonly) BOOL devToolsVisible;
 @property (nonatomic, copy, nullable) dispatch_block_t devToolsVisibilityChangedHandler;
-@property (nonatomic, copy, nullable) void (^splitLinkHandler)(NSURL *URL);
+@property (nonatomic, copy, nullable) TLBrowserLinkOpenHandler contextLinkHandler;
 
 @end
 
