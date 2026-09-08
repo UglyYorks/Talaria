@@ -47,75 +47,11 @@
 
 static void *TLEffectiveAppearanceObservationContext = &TLEffectiveAppearanceObservationContext;
 
-static const CGFloat TLUserMessageBaseHorizontalInsetScale = 1.3;
-static const CGFloat TLUserMessageMultilineHorizontalInsetScale = 1.6;
-static const CGFloat TLUserMessageMultilineVerticalInsetScale = 1.3;
-static const NSUInteger TLUserMessageShortTailCharacterLimit = 5;
 static NSString *const TLAWSOutageChatTitle = @"AWS Oregon Outage";
 static NSString *const TLAWSOutageAgentMessage = @"\u26A0\uFE0F AWS is reporting an outage in the Oregon region. Talaria traffic routed through US West is seeing elevated errors and intermittent request failures. Failover capacity is available in US Central.";
 static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-central region";
 static const CGFloat TLMainWindowOnboardingRevealDuration = 0.3;
 static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
-
-static NSRect TLUserMessageTextBounds(NSString *text, NSFont *font, CGFloat maxWidth) {
-  NSString *measuredText = text.length > 0 ? text : @" ";
-  CGFloat availableWidth = MAX(1.0, maxWidth);
-  NSDictionary<NSAttributedStringKey, id> *attributes = @{NSFontAttributeName: font};
-  return [measuredText boundingRectWithSize:NSMakeSize(availableWidth, CGFLOAT_MAX)
-                                    options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                 attributes:attributes];
-}
-
-static NSInteger TLUserMessageLineCount(NSString *text, NSFont *font, CGFloat maxWidth) {
-  NSRect boundingRect = TLUserMessageTextBounds(text, font, maxWidth);
-  CGFloat lineHeight = MAX(1.0, ceil(font.ascender - font.descender + font.leading));
-  return MAX(1, (NSInteger)ceil(NSHeight(boundingRect) / lineHeight));
-}
-
-typedef struct {
-  CGFloat leadingInset;
-  CGFloat trailingInset;
-  CGFloat topInset;
-  CGFloat bottomInset;
-  CGFloat textMaxWidth;
-  BOOL rendersAsPill;
-  CGFloat tailHorizontalOffset;
-} TLUserMessageBubbleLayout;
-
-static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *content,
-                                                                     TLThemePalette *palette,
-                                                                     CGFloat availableWidth,
-                                                                     CGFloat widthMultiplier,
-                                                                     BOOL showsOutgoingTail) {
-  CGFloat baseHorizontalInset = palette.space4 * TLUserMessageBaseHorizontalInsetScale;
-  CGFloat leadingInset = baseHorizontalInset;
-  CGFloat trailingInset = baseHorizontalInset;
-  CGFloat topInset = palette.space4;
-  CGFloat bottomInset = palette.space4;
-  CGFloat textMaxWidth = MAX(1.0, (availableWidth * widthMultiplier) - leadingInset - trailingInset);
-  NSInteger lineCount = TLUserMessageLineCount(content, palette.messageBodyFont, textMaxWidth);
-
-  if (lineCount > 1) {
-    leadingInset = baseHorizontalInset * TLUserMessageMultilineHorizontalInsetScale;
-    trailingInset = baseHorizontalInset * TLUserMessageMultilineHorizontalInsetScale;
-    topInset = palette.space4 * TLUserMessageMultilineVerticalInsetScale;
-    bottomInset = palette.space3 * TLUserMessageMultilineVerticalInsetScale;
-    textMaxWidth = MAX(1.0, (availableWidth * widthMultiplier) - leadingInset - trailingInset);
-    lineCount = TLUserMessageLineCount(content, palette.messageBodyFont, textMaxWidth);
-  }
-
-  NSString *trimmedContent = [content stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  TLUserMessageBubbleLayout layout = {
-    .leadingInset = leadingInset,
-    .trailingInset = trailingInset,
-    .topInset = topInset,
-    .bottomInset = bottomInset + (showsOutgoingTail ? palette.space4 : palette.space0),
-    .textMaxWidth = textMaxWidth,
-    .rendersAsPill = lineCount == 1,
-    .tailHorizontalOffset = showsOutgoingTail && trimmedContent.length < TLUserMessageShortTailCharacterLimit ? palette.space2 : palette.space0,
-  };
-  return layout;
-}
 
 @interface TLClosedWorkspaceTab : NSObject
 @property (nonatomic, copy) TLWorkspaceTab *tab;
@@ -4460,12 +4396,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   bubble.borderColor = self.palette.transparentSurface;
   bubble.borderEdges = TLBorderEdgeNone;
   bubble.borderWidth = self.palette.borderWidth;
-  bubble.cornerRadius = user ? self.palette.space9 : self.palette.space0;
+  bubble.cornerRadius = user ? self.palette.userMessageCornerRadius : self.palette.space0;
   bubble.wantsLayer = YES;
-  bubble.layer.shadowColor = TLCGColor(self.palette.messageShadow);
-  bubble.layer.shadowOpacity = user ? (self.palette.dark ? 0.24 : 0.07) : 0.0;
-  bubble.layer.shadowRadius = user ? self.palette.space8 : self.palette.space0;
-  bubble.layer.shadowOffset = NSMakeSize(self.palette.space0, user ? -self.palette.space2 : self.palette.space0);
   [bubble setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
   [bubble setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
 
@@ -4506,22 +4438,24 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     for (NSDictionary *attachment in message.attachments) {
       [content appendFormat:@"\n%@ %@", [attachment[@"directory"] boolValue] ? @"▸" : @"↳", attachment[@"name"]];
     }
-    TLUserMessageBubbleLayout userLayout = TLUserMessageBubbleLayoutForContent(content,
-                                                                               self.palette,
-                                                                               availableMessageWidth,
-                                                                               widthMultiplier,
-                                                                               drawsOutgoingTail);
-    userLeadingInset = userLayout.leadingInset;
-    userTrailingInset = userLayout.trailingInset;
-    userTopInset = userLayout.topInset;
-    userBottomInset = userLayout.bottomInset;
-    userTextMaxWidth = userLayout.textMaxWidth;
-    bubble.rendersAsPill = userLayout.rendersAsPill;
-    bubble.outgoingTailHorizontalOffset = userLayout.tailHorizontalOffset;
+    userLeadingInset = self.palette.userMessageHorizontalPadding;
+    userTrailingInset = self.palette.userMessageHorizontalPadding;
+    userTopInset = self.palette.userMessageVerticalPadding;
+    userBottomInset = self.palette.userMessageVerticalPadding +
+      (drawsOutgoingTail ? self.palette.userMessageTailHeight : self.palette.space0);
+    userTextMaxWidth = MAX(1.0, availableMessageWidth * widthMultiplier - userLeadingInset - userTrailingInset);
     contentLabel = [self wrappingLabelWithString:content
                                             font:self.palette.messageBodyFont
                                            color:textColor];
     contentLabel.selectable = YES;
+    contentLabel.preferredMaxLayoutWidth = userTextMaxWidth;
+    // Grow the padding symmetrically for tiny messages, keeping the label at
+    // its natural width so punctuation stays centred in the rounded body.
+    CGFloat minimumBubbleWidth = MIN(self.palette.userMessageMinWidth, availableMessageWidth * widthMultiplier);
+    CGFloat minimumInset = (minimumBubbleWidth - contentLabel.intrinsicContentSize.width) * 0.5;
+    userLeadingInset = MAX(userLeadingInset, minimumInset);
+    userTrailingInset = MAX(userTrailingInset, minimumInset);
+    userTextMaxWidth = MAX(1.0, availableMessageWidth * widthMultiplier - userLeadingInset - userTrailingInset);
     contentLabel.preferredMaxLayoutWidth = userTextMaxWidth;
     [contentLabel setContentHuggingPriority:NSLayoutPriorityDefaultHigh
                              forOrientation:NSLayoutConstraintOrientationHorizontal];
