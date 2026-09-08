@@ -4,8 +4,9 @@
 #import "TalariaWindowController.h"
 #import "TLMainWindow.h"
 #import "TLChatPresentation.h"
-#import "design_system/TLAttachmentCard.h"
-#import "design_system/TLThemedButton.h"
+#import "design_system/TLAttachmentChipView.h"
+#import "design_system/TLGlassButton.h"
+#import "design_system/UIComponents.h"
 
 static void Check(BOOL value, NSString *message) { if (!value) { NSLog(@"FAIL: %@", message); exit(1); } }
 static void Drain(void) { [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.08]]; }
@@ -21,10 +22,10 @@ static TLAttachmentPreviewItem *Item(NSString *name, NSURL *URL, BOOL directory)
   item.URLResolver = ^NSURL *{ return [NSFileManager.defaultManager fileExistsAtPath:URL.path] ? URL : nil; };
   return item;
 }
-static NSArray<TLAttachmentCard *> *FindCards(NSView *view) {
+static NSArray<TLAttachmentChipView *> *FindChips(NSView *view) {
   NSMutableArray *cards = [NSMutableArray array];
-  if ([view isKindOfClass:TLAttachmentCard.class]) [cards addObject:view];
-  for (NSView *child in view.subviews) [cards addObjectsFromArray:FindCards(child)];
+  if ([view isKindOfClass:TLAttachmentChipView.class]) [cards addObject:view];
+  for (NSView *child in view.subviews) [cards addObjectsFromArray:FindChips(child)];
   return cards;
 }
 
@@ -33,6 +34,50 @@ static NSArray<TLAttachmentCard *> *FindCards(NSView *view) {
 - (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)tail;
 - (NSString *)displayTextForMessage:(TLChatMessage *)message;
 @end
+
+static NSUInteger PixelsMatching(NSBitmapImageRep *bitmap, CGFloat expected[3]) {
+  NSUInteger count = 0;
+  for (NSInteger y = 0; y < bitmap.pixelsHigh; y++) for (NSInteger x = 0; x < bitmap.pixelsWide; x++) {
+    NSColor *pixel = [[bitmap colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    if (fabs(pixel.redComponent - expected[0]) < 0.04 && fabs(pixel.greenComponent - expected[1]) < 0.04 && fabs(pixel.blueComponent - expected[2]) < 0.04) count++;
+  }
+  return count;
+}
+static CGFloat Luminance(NSColor *color) {
+  NSColor *rgb = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  CGFloat channels[3] = {rgb.redComponent,rgb.greenComponent,rgb.blueComponent};
+  for (NSUInteger i = 0; i < 3; i++) channels[i] = channels[i] <= 0.04045 ? channels[i] / 12.92 : pow((channels[i] + 0.055) / 1.055,2.4);
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}
+static void TestSharedChipAppearance(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,220,52) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO]; window.releasedWhenClosed = NO;
+  TLTokenView *root = [TLTokenView new]; window.contentView = root;
+  TLAttachmentChipView *chip = [[TLAttachmentChipView alloc] initWithFrame:NSMakeRect(10,10,200,32)];
+  chip.title = @"Research notes.md"; chip.showsRemoveButton = NO; chip.activationHandler = ^{}; [root addSubview:chip];
+  NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:NSMakePoint(30,25) modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+  for (NSNumber *theme in @[@1,@2]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue]; root.fillColor = palette.tabBackground; chip.palette = palette;
+    for (NSString *state in @[@"normal",@"hovered",@"pressed",@"focused"]) {
+      [chip mouseExited:event]; [chip mouseUp:event]; [window makeFirstResponder:nil];
+      if ([state isEqual:@"hovered"]) [chip mouseEntered:event];
+      if ([state isEqual:@"pressed"]) [chip mouseDown:event];
+      if ([state isEqual:@"focused"]) [window makeFirstResponder:chip];
+      NSBitmapImageRep *bitmap = Snapshot(root,[NSString stringWithFormat:@"attachment-chip-%@-%@.png",theme,state]);
+      NSColor *ink = [palette.controlText colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+      CGFloat foreground[3] = {ink.redComponent,ink.greenComponent,ink.blueComponent};
+      Check(PixelsMatching(bitmap,foreground) > 10,@"shared chips render readable theme text in normal, hover, pressed and focus states");
+      // Measure the rendered surface, rather than predicting Core Animation's color-space compositing.
+      CGFloat scale = bitmap.pixelsWide / NSWidth(root.bounds);
+      NSColor *surface = [bitmap colorAtX:bitmap.pixelsWide / 2 y:bitmap.pixelsHigh - (NSInteger)(15 * scale)];
+      CGFloat foregroundLuminance = Luminance(ink), backgroundLuminance = Luminance(surface);
+      CGFloat contrast = (MAX(foregroundLuminance,backgroundLuminance) + 0.05) / (MIN(foregroundLuminance,backgroundLuminance) + 0.05);
+      Check(contrast >= 4.5,@"rendered chip text and surface maintain readable contrast in both themes and interaction states");
+    }
+  }
+  chip.showsRemoveButton = YES;
+  Check([chip.accessibilityChildren containsObject:chip.closeButton],@"composer chip removal remains accessible after sharing the component");
+  [window close];
+}
 
 static void TestResolution(NSURL *base) {
   NSFileManager *manager = NSFileManager.defaultManager;
@@ -84,9 +129,10 @@ static void TestTranscript(void) {
       NSView *row = [owner rowForMessage:second showsOutgoingTail:YES]; [root addSubview:row];
       [NSLayoutConstraint activateConstraints:@[[row.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20], [row.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20], [row.topAnchor constraintEqualToAnchor:root.topAnchor constant:20]]];
       [root layoutSubtreeIfNeeded];
-      NSArray<TLAttachmentCard *> *cards = FindCards(row);
+      NSArray<TLAttachmentChipView *> *cards = FindChips(row);
       Check(cards.firstObject.isAccessibilityElement && [cards.firstObject.accessibilityRole isEqual:NSAccessibilityButtonRole], @"file cards expose a named accessible preview action");
-      Check(cards.count == 1 && NSHeight(row.bounds) >= palette.attachmentCardHeight, @"attachment-only message has a real preview card and nonzero height");
+      Check(cards.firstObject.showsRemoveButton == NO && [cards.firstObject.label.font isEqual:palette.smallFont], @"message chips use composer typography and hide draft-only removal controls");
+      Check(cards.count == 1 && NSHeight(row.bounds) >= palette.fieldHeight, @"attachment-only message has a real preview card and nonzero height");
       Snapshot(root, [NSString stringWithFormat:@"attachment-message-%@-%@.png",theme,width]);
       Check(NSWidth(cards[0].bounds) > 0 && NSMaxX([cards[0] convertRect:cards[0].bounds toView:root]) <= width.doubleValue, @"message file card fits a 200px window");
       // Change the active pane before activating an existing card.
@@ -105,7 +151,7 @@ static void TestTranscript(void) {
   NSView *row = [owner rowForMessage:first showsOutgoingTail:YES]; [root addSubview:row];
   [NSLayoutConstraint activateConstraints:@[[row.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20], [row.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20], [row.topAnchor constraintEqualToAnchor:root.topAnchor constant:20]]];
   [root layoutSubtreeIfNeeded];
-  NSStackView *stack = (id)FindCards(row).firstObject.superview;
+  NSStackView *stack = (id)FindChips(row).firstObject.superview.superview;
   NSTextField *label = (id)stack.arrangedSubviews.firstObject;
   NSRect required = [first.content boundingRectWithSize:NSMakeSize(NSWidth(label.bounds),CGFLOAT_MAX) options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:@{NSFontAttributeName:label.font}];
   Check(NSHeight(label.bounds) + 2 >= ceil(NSHeight(required)), @"message text wraps to attachment width without clipping");
@@ -138,20 +184,27 @@ static void TestViewer(NSURL *base) {
   for (NSNumber *theme in @[@1,@2]) {
     TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
     [viewer applyPalette:palette];
-    for (NSNumber *width in @[@520,@980]) {
-      [viewer.window setContentSize:NSMakeSize(width.doubleValue,680)]; Drain();
-      [viewer.window.contentView layoutSubtreeIfNeeded];
-      NSView *preview = [viewer valueForKey:@"previewHost"];
-      Check(NSWidth(preview.frame) > 450, @"preview remains useful in compact and wide windows");
-      Check(((NSView *)[viewer valueForKey:@"sidebar"]).hidden == (width.integerValue == 520), @"compact viewer collapses its file list");
-      Snapshot(viewer.window.contentView,[NSString stringWithFormat:@"attachment-viewer-%@-%@.png",theme,width]);
-    }
-    Check([[viewer valueForKey:@"saveButton"] isKindOfClass:TLThemedButton.class] && [[viewer valueForKey:@"finderButton"] isKindOfClass:TLThemedButton.class], @"viewer actions use the reusable button covered by rendered interaction tests");
+    Check(!viewer.window.opaque && viewer.window.styleMask == (NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel), @"viewer is a transparent borderless fullscreen panel");
+    Check(NSEqualRects(viewer.window.frame, viewer.window.screen.frame), @"viewer covers the full screen, including menu bar and dock areas");
+    TLTokenView *root = (id)viewer.window.contentView;
+    Check(root.fillColor.alphaComponent > 0 && root.fillColor.alphaComponent < 1 && [[viewer valueForKey:@"palette"] dark], @"both app themes use a dark semitransparent backdrop");
+    Check(FindChips(root).count == 0, @"carousel has no attachment list or sidebar");
+    NSView *preview = [viewer valueForKey:@"previewHost"];
+    Check(fabs(NSMidX(preview.frame) - NSMidX(root.bounds)) < 1, @"the file is centered across the full screen");
+    Snapshot(root,[NSString stringWithFormat:@"attachment-carousel-%@.png",theme]);
+    Check([[viewer valueForKey:@"closeButton"] isKindOfClass:TLHoverIconButton.class], @"fullscreen carousel has an accessible close control");
   }
+  // Plain arrow keys work even while the native text preview owns focus.
+  [viewer.window makeFirstResponder:[viewer valueForKey:@"textView"]];
+  NSEvent *right = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:viewer.window.windowNumber context:nil characters:@"\uF703" charactersIgnoringModifiers:@"\uF703" isARepeat:NO keyCode:124];
+  [NSApp sendEvent:right]; Check(viewer.selectedIndex == 2, @"right arrow advances the carousel");
+  NSEvent *left = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:viewer.window.windowNumber context:nil characters:@"\uF702" charactersIgnoringModifiers:@"\uF702" isARepeat:NO keyCode:123];
+  [NSApp sendEvent:left]; Check(viewer.selectedIndex == 1, @"left arrow returns to the previous file");
   [viewer selectItemAtIndex:0];
-  Check([[(QLPreviewView *)[viewer valueForKey:@"preview"] previewItem].previewItemURL isEqual:imageURL], @"images use the native Quick Look preview");
-  for (NSUInteger tick = 0; tick < 8; tick++) Drain();
-  Snapshot(viewer.window.contentView,@"attachment-viewer-image.png");
+  deadline = [NSDate dateWithTimeIntervalSinceNow:3];
+  while (![viewer valueForKey:@"imageView"] && deadline.timeIntervalSinceNow > 0) Drain();
+  Check([(NSImageView *)[viewer valueForKey:@"imageView"] image] != nil, @"images fill the transparent stage without an opaque Quick Look canvas");
+  Snapshot(viewer.window.contentView,@"attachment-carousel-image.png");
   [viewer selectItemAtIndex:1]; [viewer selectItemAtIndex:3]; Drain();
   Check(![viewer valueForKey:@"textView"] && ![viewer valueForKey:@"preview"], @"late text loads cannot overwrite a new selection");
   Check(![(NSButton *)[viewer valueForKey:@"saveButton"] isEnabled], @"missing files cannot be saved");
@@ -161,7 +214,8 @@ static void TestViewer(NSURL *base) {
   [viewer selectItemAtIndex:0];
   Check(![(NSButton *)[viewer valueForKey:@"previousButton"] isEnabled], @"navigation stops at first file");
   [viewer selectItemAtIndex:3]; Check(![(NSButton *)[viewer valueForKey:@"nextButton"] isEnabled], @"navigation stops at last file");
-  [viewer close]; Check(![viewer valueForKey:@"keyMonitor"] && ![viewer valueForKey:@"preview"], @"closing releases keyboard and native preview resources");
+  [(NSButton *)[viewer valueForKey:@"closeButton"] performClick:nil]; Check(!viewer.window.visible, @"close button dismisses the fullscreen viewer");
+  Check(![viewer valueForKey:@"keyMonitor"] && ![viewer valueForKey:@"preview"], @"closing releases keyboard and native preview resources");
   NSMutableData *large = [NSMutableData dataWithLength:3 * 1024 * 1024]; memset(large.mutableBytes, 'a', large.length); [large writeToURL:textURL atomically:YES];
   viewer = [[TLAttachmentViewerWindowController alloc] initWithItems:@[items[1]] conversationTitle:@"Large log" selectedIndex:0 palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
   deadline = [NSDate dateWithTimeIntervalSinceNow:3]; while (![viewer valueForKey:@"textView"] && deadline.timeIntervalSinceNow > 0) Drain();
@@ -175,7 +229,7 @@ int main(void) {
     [NSApplication sharedApplication];
     NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
     [NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:nil error:nil];
-    TestResolution(base); TestViewer(base); TestTranscript();
+    TestResolution(base); TestViewer(base); TestTranscript(); TestSharedChipAppearance();
     [NSFileManager.defaultManager removeItemAtURL:base error:nil];
     NSLog(@"AttachmentViewerTests passed");
   }

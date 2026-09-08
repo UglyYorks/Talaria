@@ -9,5 +9,6 @@ NS_ASSUME_NONNULL_BEGIN
            conversationTitle:(NSString *)title selectedIndex:(NSUInteger)index palette:(TLThemePalette *)palette;
 - (void)applyPalette:(TLThemePalette *)palette;
 - (void)selectItemAtIndex:(NSUInteger)index;
+- (void)showOnScreen:(NSScreen *)screen;
 @end
 NS_ASSUME_NONNULL_END

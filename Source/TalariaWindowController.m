@@ -34,7 +34,7 @@
 #import "WorkspaceState.h"
 #import "TLChatPresentation.h"
 #import "TLAttachmentViewerWindowController.h"
-#import "design_system/TLAttachmentCard.h"
+#import "design_system/TLAttachmentChipView.h"
 #import "TLWorkspaceSplitState.h"
 #import "design_system/TLSplitWorkspaceView.h"
 #import "WorkspaceTabRuntime.h"
@@ -4490,6 +4490,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   CGFloat userTopInset = self.palette.space0;
   CGFloat userBottomInset = self.palette.space0;
   CGFloat userTextMaxWidth = self.palette.messageInputMaxWidth;
+  TLAttachmentChipRow *attachmentRow = nil;
   CGFloat availableMessageWidth = self.messageInputWidthConstraint.constant > 0.0
     ? self.messageInputWidthConstraint.constant
     : self.palette.messageInputMaxWidth;
@@ -4514,7 +4515,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     userTrailingInset = userLayout.trailingInset;
     userTopInset = userLayout.topInset;
     userBottomInset = userLayout.bottomInset;
-    userTextMaxWidth = message.attachments.count ? MIN(userLayout.textMaxWidth, self.palette.attachmentCardWidth) : userLayout.textMaxWidth;
+    userTextMaxWidth = userLayout.textMaxWidth;
     bubble.rendersAsPill = userLayout.rendersAsPill && !message.attachments.count;
     bubble.outgoingTailHorizontalOffset = userLayout.tailHorizontalOffset;
     contentLabel = [self wrappingLabelWithString:content
@@ -4549,16 +4550,19 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     // Capture the originating presentation: split-pane focus may change before a click.
     __weak TLChatPresentation *origin = self.chatPresentation;
     __weak typeof(self) weakSelf = self;
+    NSMutableArray<TLAttachmentChipView *> *chips = [NSMutableArray array];
     [message.attachments enumerateObjectsUsingBlock:^(NSDictionary *attachment, NSUInteger index, BOOL *stop) {
       TLAttachmentPreviewItem *item = [self previewItemForAttachment:attachment sessionID:origin.chat.hermesSessionID];
-      TLAttachmentCard *card = [[TLAttachmentCard alloc] init];
-      card.translatesAutoresizingMaskIntoConstraints = NO; card.palette = self.palette;
-      card.title = item.name; card.directory = item.directory; card.subtitle = item.detail; card.fileURL = item.previewItemURL;
-      card.activationHandler = ^{ [weakSelf previewAttachmentsForPresentation:origin message:message index:index]; };
-      [card setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-      [stack addArrangedSubview:card];
-      [card.heightAnchor constraintEqualToConstant:self.palette.attachmentCardHeight].active = YES;
+      TLAttachmentChipView *chip = [[TLAttachmentChipView alloc] init];
+      chip.palette = self.palette; chip.showsRemoveButton = NO;
+      chip.title = item.name; chip.toolTip = [NSString stringWithFormat:@"%@\n%@", item.name, item.detail];
+      chip.image = [NSImage imageWithSystemSymbolName:item.directory ? @"folder" : @"doc" accessibilityDescription:nil];
+      chip.activationHandler = ^{ [weakSelf previewAttachmentsForPresentation:origin message:message index:index]; };
+      if (item.previewItemURL) [chip loadPreviewForURL:item.previewItemURL];
+      [chips addObject:chip];
     }];
+    attachmentRow = [[TLAttachmentChipRow alloc] initWithChips:chips palette:self.palette];
+    [stack addArrangedSubview:attachmentRow];
   }
 
   if (!user && message.approvalRequest) {
@@ -4589,7 +4593,10 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   if (!user) {
     [constraints addObject:assistantWidth];
   } else if (message.attachments.count) {
-    NSLayoutConstraint *attachmentWidth = [bubble.widthAnchor constraintEqualToConstant:MIN(self.palette.attachmentCardWidth + userLeadingInset + userTrailingInset, availableMessageWidth * widthMultiplier)];
+    CGFloat textWidth = hasResponseContent ? NSWidth(TLUserMessageTextBounds(message.content, self.palette.messageBodyFont, userTextMaxWidth)) : 0;
+    CGFloat desiredWidth = MIN(MAX(attachmentRow.preferredWidth, textWidth) + userLeadingInset + userTrailingInset, availableMessageWidth * widthMultiplier);
+    if (contentLabel) contentLabel.preferredMaxLayoutWidth = MAX(1, desiredWidth - userLeadingInset - userTrailingInset);
+    NSLayoutConstraint *attachmentWidth = [bubble.widthAnchor constraintEqualToConstant:desiredWidth];
     attachmentWidth.priority = NSLayoutPriorityDefaultHigh;
     [constraints addObject:attachmentWidth];
   }
@@ -4629,7 +4636,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   [self.attachmentViewer close];
   self.attachmentViewer = [[TLAttachmentViewerWindowController alloc] initWithItems:items
     conversationTitle:presentation.chat.title selectedIndex:selectedIndex palette:self.palette];
-  [self.attachmentViewer showWindow:self];
+  [self.attachmentViewer showOnScreen:self.window.screen ?: NSScreen.mainScreen];
 }
 
 - (NSView *)markdownViewWithString:(NSString *)string textColor:(NSColor *)textColor baseFont:(NSFont *)baseFont {
