@@ -31,6 +31,7 @@
 #include "include/cef_life_span_handler.h"
 #include "include/cef_keyboard_handler.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_find_handler.h"
 #include "include/cef_request_handler.h"
 #include "include/cef_task.h"
 #include "include/cef_values.h"
@@ -114,6 +115,8 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 @property (nonatomic, readwrite) NSUInteger documentGeneration;
 @property (nonatomic, readwrite, getter=isFullscreen) BOOL fullscreen;
 @property (nonatomic, readwrite) BOOL devToolsVisible;
+@property (nonatomic) BOOL finding;
+@property (nonatomic) NSInteger latestFindIdentifier;
 @property (nonatomic) NSUInteger overlayCursor;
 @property (nonatomic, copy) NSDictionary *overlayHint;
 @property (nonatomic) NSTimeInterval overlayFallbackAfter;
@@ -137,6 +140,7 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 @end
 
 @interface TLChromiumBrowserController ()
+- (void)browserFindResult:(CefRefPtr<CefBrowser>)browser identifier:(int)identifier count:(int)count activeMatch:(int)activeMatch finalUpdate:(BOOL)finalUpdate;
 - (void)browserContextReady;
 - (void)trackPermissionAlert:(NSAlert *)alert browser:(int)browserID prompt:(uint64_t)promptID;
 - (void)dismissPermissionAlertForBrowser:(int)browserID prompt:(uint64_t)promptID;
@@ -334,6 +338,7 @@ class TLChromiumClient : public CefClient,
                          public CefKeyboardHandler,
                          public CefLifeSpanHandler,
                          public CefLoadHandler,
+                         public CefFindHandler,
                          public CefRequestHandler,
                          public CefDownloadHandler,
                          public CefPermissionHandler {
@@ -429,6 +434,13 @@ class TLChromiumClient : public CefClient,
 
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+  CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
+  void OnFindResult(CefRefPtr<CefBrowser> browser, int identifier, int count,
+                    const CefRect &selectionRect, int activeMatchOrdinal, bool finalUpdate) override {
+    CEF_REQUIRE_UI_THREAD();
+    [browserController_ browserFindResult:browser identifier:identifier count:count
+                             activeMatch:activeMatchOrdinal finalUpdate:finalUpdate];
+  }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
   CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return this; }
   CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
@@ -987,6 +999,36 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
                                                           TLChromiumNavigationCommand::Reload));
 }
 
+- (void)findText:(NSString *)text inSession:(TLChromiumBrowserSession *)session forward:(BOOL)forward findNext:(BOOL)findNext {
+  CefRefPtr<CefBrowser> browser = session ? [self browserWithIdentifier:(int)session.browserIdentifier] : nullptr;
+  if (!browser || !text.length) { [self stopFindingInSession:session]; return; }
+  // Bundled CEF 151 forwards its last flag as Chromium's find_match option:
+  // false counts matches without selecting one. Reset fresh searches explicitly
+  // and always request an active match so typing also scrolls to the result.
+  if (!findNext) [self stopFindingInSession:session];
+  session.finding = YES;
+  browser->GetHost()->Find(TLStringFromNSString(text), forward, false, true);
+}
+
+- (void)stopFindingInSession:(TLChromiumBrowserSession *)session {
+  session.finding = NO;
+  CefRefPtr<CefBrowser> browser = session ? [self browserWithIdentifier:(int)session.browserIdentifier] : nullptr;
+  if (browser) browser->GetHost()->StopFinding(true);
+}
+
+- (void)focusSession:(TLChromiumBrowserSession *)session {
+  CefRefPtr<CefBrowser> browser = session ? [self browserWithIdentifier:(int)session.browserIdentifier] : nullptr;
+  if (browser) browser->GetHost()->SetFocus(true);
+}
+
+- (void)browserFindResult:(CefRefPtr<CefBrowser>)browser identifier:(int)identifier count:(int)count
+             activeMatch:(int)activeMatch finalUpdate:(BOOL)finalUpdate {
+  TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(browser->GetIdentifier())];
+  if (!session.finding || identifier < session.latestFindIdentifier) return;
+  session.latestFindIdentifier = identifier;
+  if (session.findResultsChangedHandler) session.findResultsChangedHandler(count, activeMatch, finalUpdate);
+}
+
 - (void)readPageInSession:(TLChromiumBrowserSession *)session expectedURL:(NSURL *)URL
               completion:(void (^)(NSDictionary *, NSError *))completion {
   CefRefPtr<CefBrowser> browser = session ? [self browserWithIdentifier:(int)session.browserIdentifier] : nullptr;
@@ -1038,6 +1080,9 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   if (!session) {
     return;
   }
+  [self stopFindingInSession:session];
+  session.findResultsChangedHandler = nil;
+  session.documentStartedHandler = nil;
   if (session.browserIdentifier == _fullscreenBrowserIdentifier) [self exitBrowserFullscreen];
   [self devToolsVisibilityChanged:NO forBrowserIdentifier:session.browserIdentifier];
   [session.documentFooter stop]; session.documentFooter = nil;
@@ -1540,6 +1585,8 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
 
 - (void)browserDocumentStarted:(CefRefPtr<CefBrowser>)browser {
   TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(browser->GetIdentifier())];
+  [self stopFindingInSession:session];
+  if (session.documentStartedHandler) session.documentStartedHandler();
   session.documentGeneration += 1;
   session.documentFooterConfiguration = nil;
   session.overlayCursor = 0;
