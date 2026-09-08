@@ -19,6 +19,34 @@ import uuid
 TALARIA_DISABLED_SKILLS = frozenset({"grounded-citations"})
 
 
+def tool_activity(kind, payload):
+    """Project Hermes tool_progress.py callbacks into bounded presentation data.
+
+    Prefer Hermes's display context and redacted verbose text. Do not copy full
+    tool arguments, binary results, or arbitrary result objects into the UI.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    def text(key, limit=1000):
+        value = payload.get(key)
+        return value[:limit] if isinstance(value, str) else ""
+
+    name, tool_id = text("name", 200), text("tool_id", 200)
+    if not name or (kind != "tool.generating" and not tool_id):
+        return None
+    state = {"tool.generating": "preparing", "tool.start": "running", "tool.complete": "completed"}[kind]
+    result = payload.get("result")
+    if kind == "tool.complete" and isinstance(result, dict):
+        exit_code = result.get("exit_code")
+        if (result.get("error") or result.get("is_error") is True or result.get("success") is False
+                or (isinstance(exit_code, (int, float)) and exit_code != 0)):
+            state = "failed"
+    return {"id": tool_id or "preparing:" + name, "name": name, "state": state,
+            "detail": text("context") or text("preview") or text("args_text"),
+            "summary": text("summary") or text("result_text")}
+
+
 class RPCError(RuntimeError):
     def __init__(self, payload):
         self.code = payload.get("code")
@@ -548,6 +576,10 @@ class HermesGateway:
                         # Hermes's thinking callback replaces its spinner text;
                         # it is not a reasoning token stream. Empty text clears it.
                         delta("status", payload.get("text", ""))
+                    elif kind in {"tool.generating", "tool.start", "tool.complete"}:
+                        activity = tool_activity(kind, payload)
+                        if activity:
+                            delta("tool_activity", json.dumps(activity, ensure_ascii=False))
                     elif kind == "message.complete":
                         if payload.get("status") == "error":
                             raise RuntimeError(payload.get("text") or "Hermes turn failed.")

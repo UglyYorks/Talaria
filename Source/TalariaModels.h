@@ -39,6 +39,10 @@ NSString *TLAgentDisplayStatus(NSString *status);
 // Runtime-only structured approval state; never sent as model context or loaded as a live request from history.
 @property (nonatomic, copy, nullable) NSDictionary *approvalRequest;
 @property (nonatomic, copy, nullable) NSDictionary *approvalResponse;
+// Bounded, runtime-only tool snapshots. Never used as model context or restored as running work.
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *toolActivities;
+- (BOOL)applyToolActivity:(NSDictionary *)activity;
+- (void)finishToolActivitiesWithState:(NSString *)state;
 // JSON-compatible records: name, guestPath, directory. Originals are never exposed to the VM.
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *attachments;
 

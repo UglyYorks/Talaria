@@ -55,6 +55,7 @@ static NSUInteger TLFailureCount = 0;
 @property (nonatomic, copy) NSString *contentDelta;
 @property (nonatomic, copy) NSString *thinkingDelta;
 @property (nonatomic, copy) NSDictionary *approvalDelta;
+@property (nonatomic, copy) NSDictionary *toolActivityDelta;
 @property (nonatomic, copy) NSDictionary *capturedApprovalResponse;
 @property (nonatomic, strong, nullable) NSError *streamError;
 @property (nonatomic, strong, nullable) NSError *installError;
@@ -142,6 +143,10 @@ static NSUInteger TLFailureCount = 0;
   if (self.approvalDelta) {
     NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:self.approvalDelta options:0 error:nil] encoding:NSUTF8StringEncoding];
     delta(requestID, TLAgentStreamDeltaKindApproval, json);
+  }
+  if (self.toolActivityDelta) {
+    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:self.toolActivityDelta options:0 error:nil] encoding:NSUTF8StringEncoding];
+    delta(requestID, TLAgentStreamDeltaKindToolActivity, json);
   }
   completion(nil);
 }
@@ -731,6 +736,7 @@ static void TestStatusTransport(void) {
   TLAssertTrue(length > 0, @"approval response writes its request");
   NSDictionary *wire = length > 0 ? [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:requestBytes length:length] options:0 error:nil] : nil;
   TLAssertEqualObjects(wire[@"approval_response"], approvalResponse, @"exact approval response is sent as structured metadata");
+  NSString *activityJSON = @"{\"id\":\"call-1\",\"name\":\"terminal\",\"state\":\"running\"}";
   NSString *approvalJSON = @"{\"request_id\":\"next-id\",\"command\":\"print('hi')\",\"choices\":[\"once\",\"deny\"]}";
   for (NSDictionary *event in @[
     @{@"type":@"delta", @"request_id":@"status", @"kind":@"status", @"text":@"waiting"},
@@ -738,6 +744,7 @@ static void TestStatusTransport(void) {
     @{@"type":@"delta", @"request_id":@"status", @"kind":@"thinking", @"text":@"Reasoning"},
     @{@"type":@"delta", @"request_id":@"status", @"kind":@"unknown", @"text":@"Ignore"},
     @{@"type":@"delta", @"request_id":@"status", @"kind":@"content", @"text":@"Answer"},
+    @{@"type":@"delta", @"request_id":@"status", @"kind":@"tool_activity", @"text":activityJSON},
     @{@"type":@"delta", @"request_id":@"status", @"kind":@"approval", @"text":approvalJSON},
     @{@"type":@"complete"}]) {
     NSMutableData *line = [[NSJSONSerialization dataWithJSONObject:event options:0 error:nil] mutableCopy];
@@ -750,7 +757,7 @@ static void TestStatusTransport(void) {
   TLAssertTrue(finished, @"status frames finish within the test deadline");
   TLAssertEqualObjects(received, (@[@[@(TLAgentStreamDeltaKindStatus), @"waiting"],
     @[@(TLAgentStreamDeltaKindStatus), @""], @[@(TLAgentStreamDeltaKindThinking), @"Reasoning"],
-    @[@(TLAgentStreamDeltaKindContent), @"Answer"], @[@(TLAgentStreamDeltaKindApproval), approvalJSON]]),
+    @[@(TLAgentStreamDeltaKindContent), @"Answer"], @[@(TLAgentStreamDeltaKindToolActivity), activityJSON], @[@(TLAgentStreamDeltaKindApproval), approvalJSON]]),
     @"wire transport separates approvals from content and preserves status clears");
   close(descriptors[1]);
 }
@@ -1125,6 +1132,19 @@ static void TestBrowserConversation(void) {
   TLAssertEqualObjects(client.capturedApprovalResponse, (@{@"request_id":@"browser-approval", @"choice":@"once"}), @"orchestrator forwards exact approval metadata");
   TLAssertEqualObjects(client.capturedSessionID, summary.hermesSessionID, @"approval resumes the same Hermes session");
   TLAssertTrue(!conversation.pendingApproval && [conversation.markdown containsString:@"Approved answer"], @"browser clears completed approval and displays continuation");
+  client.contentDelta = @"";
+  client.toolActivityDelta = @{@"id":@"tool-1", @"name":@"terminal", @"state":@"running", @"detail":@"pwd"};
+  __block BOOL sawLiveTool = NO;
+  __weak TLBrowserConversation *weakConversation = conversation;
+  conversation.changeHandler = ^{
+    if (weakConversation.busy && weakConversation.toolActivities.count && !weakConversation.loading) sawLiveTool = YES;
+  };
+  [conversation sendPrompt:@"Inspect files" token:@"token" model:@"test/model" pageReader:^(void (^completion)(NSDictionary *, NSError *)) { completion(@{}, nil); }];
+  TLAssertTrue(sawLiveTool && [conversation.toolActivities.firstObject[@"state"] isEqual:@"ended"],
+    @"browser loader gives way to live tools before completion and settles them afterward");
+  client.toolActivityDelta = nil;
+  [conversation sendPrompt:@"Next turn" token:@"token" model:@"test/model" pageReader:^(void (^completion)(NSDictionary *, NSError *)) { completion(@{}, nil); }];
+  TLAssertTrue(!conversation.toolActivities.count, @"new browser turns clear previous tool activity");
 }
 
 static void TestAssistantTurnRunner(void) {

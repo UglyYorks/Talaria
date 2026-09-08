@@ -278,6 +278,43 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(chunks, [('status', text) for _, text in frames[:5]] +
                          [('thinking', 'First'), ('thinking', ' thought'), ('content', 'Answer')])
 
+    def test_tool_activity_is_delivered_before_turn_finishes(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
+        frames = [('tool.generating', {'name': 'terminal'}),
+                  ('tool.start', {'name': 'terminal', 'tool_id': 'a', 'context': 'pwd', 'args': {'command': 'pwd'}}),
+                  ('tool.start', {'name': 'web_search', 'tool_id': 'b', 'context': 'weather'}),
+                  ('tool.complete', {'name': 'terminal', 'tool_id': 'a', 'duration_s': 0.1,
+                                     'result': {'exit_code': 1}, 'result_text': 'Command failed'}),
+                  ('tool.complete', {'name': 'web_search', 'tool_id': 'b', 'summary': 'Did 1 search',
+                                     'result': {'data': {'web': []}}})]
+        def call(method, params):
+            for kind, payload in frames:
+                self.gateway.listeners['runtime'].put({'type': kind, 'payload': payload})
+        self.gateway.call.side_effect = call
+        chunks = []
+        def delta(kind, text):
+            chunks.append((kind, text))
+            # No terminal event exists until all tool updates have been delivered.
+            if len(chunks) == len(frames):
+                self.gateway.listeners['runtime'].put({'type': 'message.complete', 'payload': {'text': 'Done'}})
+        self.gateway.run('chat', 'model', 'hello', delta)
+        activities = [json.loads(text) for kind, text in chunks if kind == 'tool_activity']
+        self.assertEqual([a['state'] for a in activities], ['preparing', 'running', 'running', 'failed', 'completed'])
+        self.assertEqual([a['id'] for a in activities], ['preparing:terminal', 'a', 'b', 'a', 'b'])
+        self.assertEqual(activities[1]['detail'], 'pwd')
+        self.assertEqual(activities[3]['summary'], 'Command failed')
+        self.assertTrue(all('args' not in a and 'result' not in a for a in activities))
+        self.assertEqual(chunks[-1], ('content', 'Done'))
+
+    def test_tool_activity_rejects_malformed_and_bounds_display_text(self):
+        from hermes_gateway import tool_activity
+        for payload in ([], None, {}, {'name': 'terminal'}, {'name': [], 'tool_id': 'a'}):
+            self.assertIsNone(tool_activity('tool.start', payload))
+        activity = tool_activity('tool.start', {'name': 'terminal', 'tool_id': 'a', 'context': 'x' * 100000})
+        self.assertEqual(len(activity['detail']), 1000)
+        activity = tool_activity('tool.complete', {'name': 'x', 'tool_id': 'a', 'result': {'success': False}})
+        self.assertEqual(activity['state'], 'failed')
+
     def test_skill_result_is_submitted_through_live_session(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
         self.gateway.command = Mock(return_value={'type': 'skill', 'message': 'Hermes skill expansion'})

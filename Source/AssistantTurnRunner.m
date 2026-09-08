@@ -156,10 +156,12 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     assistantMessage.content = [assistantContent copy];
     NSString *displayThinking = [assistantThinking copy];
     assistantMessage.thinking = displayThinking.length > 0 ? displayThinking : nil;
+    [assistantMessage finishToolActivitiesWithState:cancelled ? @"stopped" :
+      (streamError ? @"interrupted" : (assistantMessage.approvalRequest ? @"paused" : @"ended"))];
 
     NSError *assistantSaveError = nil;
     TLChatMessage *resultAssistant = assistantMessage;
-    if (streamError && assistantContent.length == 0 && assistantThinking.length == 0) {
+    if (streamError && assistantContent.length == 0 && assistantThinking.length == 0 && !assistantMessage.toolActivities.count) {
       [messages removeObjectIdenticalTo:assistantMessage];
       resultAssistant = nil;
     } else {
@@ -171,6 +173,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
       }
       if (savedAssistant && !assistantSaveError) {
         savedAssistant.approvalRequest = assistantMessage.approvalRequest;
+        savedAssistant.toolActivities = assistantMessage.toolActivities;
         resultAssistant = savedAssistant;
         NSUInteger currentIndex = [messages indexOfObjectIdenticalTo:assistantMessage];
         if (currentIndex != NSNotFound) messages[currentIndex] = savedAssistant;
@@ -196,7 +199,12 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     }
 
     BOOL displayChanged = NO;
-    if (kind == TLAgentStreamDeltaKindApproval) {
+    if (kind == TLAgentStreamDeltaKindToolActivity) {
+      id activity = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+      displayChanged = [assistantMessage applyToolActivity:activity];
+      if (!displayChanged) return;
+      assistantStatus = @"";
+    } else if (kind == TLAgentStreamDeltaKindApproval) {
       id request = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
       if (![request isKindOfClass:NSDictionary.class] || ![request[@"request_id"] isKindOfClass:NSString.class] ||
           ![request[@"request_id"] length] || ![request[@"command"] isKindOfClass:NSString.class]) return;

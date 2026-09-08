@@ -99,6 +99,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
     _role = [TLRoleUser copy];
     _content = @"";
     _attachments = @[];
+    _toolActivities = @[];
   }
   return self;
 }
@@ -110,8 +111,58 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.thinking = self.thinking;
   copy.approvalRequest = self.approvalRequest;
   copy.approvalResponse = self.approvalResponse;
+  copy.toolActivities = self.toolActivities;
   copy.attachments = self.attachments;
   return copy;
+}
+
+- (BOOL)applyToolActivity:(NSDictionary *)activity {
+  if (![activity isKindOfClass:NSDictionary.class]) return NO;
+  for (NSString *key in @[@"id", @"name", @"state"]) {
+    if (![activity[key] isKindOfClass:NSString.class] || ![activity[key] length]) return NO;
+  }
+  if (![@[@"preparing", @"running", @"completed", @"failed"] containsObject:activity[@"state"]]) return NO;
+  NSMutableDictionary *next = [NSMutableDictionary dictionary];
+  for (NSString *key in @[@"id", @"name", @"state", @"detail", @"summary"]) {
+    NSString *value = [activity[key] isKindOfClass:NSString.class] ? activity[key] : @"";
+    next[key] = [value substringToIndex:MIN(value.length, 1000u)];
+  }
+  NSMutableArray *rows = [self.toolActivities mutableCopy];
+  NSUInteger index = [rows indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger idx, BOOL *stop) {
+    return [row[@"id"] isEqual:next[@"id"]];
+  }];
+  if (index == NSNotFound && ![next[@"state"] isEqual:@"preparing"]) {
+    index = [rows indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger idx, BOOL *stop) {
+      return [row[@"state"] isEqual:@"preparing"] && [row[@"name"] isEqual:next[@"name"]];
+    }];
+  }
+  if (index != NSNotFound) {
+    NSDictionary *previous = rows[index];
+    // Replayed starts must not reopen completed calls.
+    if ([@[@"completed", @"failed"] containsObject:previous[@"state"]] &&
+        [@[@"preparing", @"running"] containsObject:next[@"state"]]) return NO;
+    for (NSString *key in @[@"detail", @"summary"]) if (![next[key] length]) next[key] = previous[key] ?: @"";
+    if ([previous isEqual:next]) return NO;
+    rows[index] = [next copy];
+  } else {
+    [rows addObject:[next copy]];
+  }
+  // Keep the most recent activity without allowing long turns to grow the UI indefinitely.
+  while (rows.count > 80) [rows removeObjectAtIndex:0];
+  self.toolActivities = rows;
+  return YES;
+}
+
+- (void)finishToolActivitiesWithState:(NSString *)state {
+  NSMutableArray *rows = [NSMutableArray array];
+  for (NSDictionary *row in self.toolActivities) {
+    if ([@[@"preparing", @"running"] containsObject:row[@"state"]]) {
+      NSMutableDictionary *finished = [row mutableCopy];
+      finished[@"state"] = state;
+      [rows addObject:[finished copy]];
+    } else [rows addObject:row];
+  }
+  self.toolActivities = rows;
 }
 
 - (NSDictionary<NSString *, NSString *> *)requestDictionary {
