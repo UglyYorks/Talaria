@@ -1,15 +1,17 @@
 #import <AppKit/AppKit.h>
 #import "TLBrowserDownloadManager.h"
-#import "TLDownloadsWindowController.h"
+#import "TLDownloadsTabController.h"
 #import "design_system/TLDownloadRowView.h"
 #import "design_system/TLThemedButton.h"
+#import "TalariaWindowController.h"
+#import "WorkspaceTabRuntime.h"
 static void Check(BOOL ok, NSString *message) { if (!ok) { NSLog(@"FAIL: %@", message); exit(1); } }
 static void Update(TLBrowserDownloadManager *manager, NSUInteger identifier, TLBrowserDownloadState state, NSString *path, TLBrowserDownloadControl control) {
   [manager updateDownloadWithID:identifier browserIdentifier:7 URLString:@"https://example.com/report.pdf" fileName:@"Quarterly report.pdf" path:path
     receivedBytes:512000 totalBytes:1024000 bytesPerSecond:128000 state:state failureReason:state == TLBrowserDownloadStateFailed ? @"Network disconnected" : @"" control:control];
 }
 static NSButton *Button(TLDownloadRowView *row, NSString *title) {
-  for (NSButton *button in [(NSStackView *)[row valueForKey:@"actions"] arrangedSubviews]) if ([button.title isEqual:title]) return button;
+  for (NSButton *button in [(NSView *)[row valueForKey:@"actions"] subviews]) if ([button.title isEqual:title]) return button;
   return nil;
 }
 static BOOL ContainsColor(NSBitmapImageRep *image, NSColor *color) {
@@ -22,9 +24,56 @@ static BOOL ContainsColor(NSBitmapImageRep *image, NSColor *color) {
   }
   return NO;
 }
+@interface TalariaWindowController (DownloadTests)
+- (void)showDownloads:(id)sender;
+- (void)closeDownloadsTab:(id)sender;
+- (TLWorkspaceTabRuntime *)runtimeForTab:(TLWorkspaceTab *)tab;
+- (void)hydrateWorkspaceTabsFromAppState;
+@end
+@interface TLDownloadTabTestOwner : TalariaWindowController
+@end
+@implementation TLDownloadTabTestOwner
+- (void)reloadWorkspaceTabs {}
+- (void)renderWorkspaceTabs {}
+- (void)updateWorkspaceMode {}
+- (void)updateControlStates {}
+@end
+static void TestWorkspaceDownloads(void) {
+  TLAppStateManager *state = [[TLAppStateManager alloc] init];
+  [state addWorkspaceTab:[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindHistory tabID:0 title:@"History" toolTip:nil URL:nil closeable:YES] activate:YES];
+  TLDownloadTabTestOwner *owner = [[TLDownloadTabTestOwner alloc] initWithWindow:nil];
+  [owner setValue:state forKey:@"appStateManager"];
+  [owner setValue:[NSMutableDictionary dictionary] forKey:@"workspaceTabRuntimes"];
+  [owner setValue:[TLThemePalette paletteForPreference:TLThemePreferenceLight] forKey:@"palette"];
+  NSUInteger windowCount = NSApp.windows.count;
+  [owner showDownloads:nil];
+  TLWorkspaceTab *tab = [state workspaceTabWithKind:TLWorkspaceTabKindDownloads tabID:0];
+  TLWorkspaceTabRuntime *runtime = [owner runtimeForTab:tab];
+  Check(tab && state.snapshot.activeTabKind == TLWorkspaceTabKindDownloads && [runtime.featureController isKindOfClass:TLDownloadsTabController.class],
+    @"avatar-menu action creates and activates a native downloads tab");
+  Check(NSApp.windows.count == windowCount, @"opening downloads does not create a separate window");
+  [owner showDownloads:nil];
+  Check(state.snapshot.workspaceTabs.count == 2 && [owner runtimeForTab:tab] == runtime, @"opening downloads again selects the existing tab");
+  [owner hydrateWorkspaceTabsFromAppState];
+  Check([owner runtimeForTab:tab] == runtime, @"hydration does not duplicate the downloads controller");
+  TLBrowserDownloadManager *manager = TLBrowserDownloadManager.sharedManager;
+  Update(manager, 50, TLBrowserDownloadStateDownloading, @"", ^(TLBrowserDownloadAction action) {});
+  TLBrowserDownload *active = manager.downloads.firstObject;
+  [owner closeDownloadsTab:nil];
+  Check(![state hasWorkspaceTabWithKind:TLWorkspaceTabKindDownloads tabID:0] && runtime.featureController.closed && active.active,
+    @"closing the downloads tab releases its view while transfers continue");
+  [owner performTabCommand:TLTabCommandReopen];
+  TLWorkspaceTab *reopened = [state workspaceTabWithKind:TLWorkspaceTabKindDownloads tabID:0];
+  Check(reopened && state.snapshot.activeTabKind == TLWorkspaceTabKindDownloads && [owner runtimeForTab:reopened] != runtime && active.active,
+    @"reopen restores downloads in the workspace without restarting transfers");
+  [owner closeDownloadsTab:nil];
+  [manager finishSession];
+}
 int main(void) { @autoreleasepool {
   [NSApplication sharedApplication];
   NSString *folder = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+  setenv("TL_CHROMIUM_PROFILE_DIR", folder.UTF8String, 1);
+  TestWorkspaceDownloads();
   NSURL *history = [NSURL fileURLWithPath:[folder stringByAppendingPathComponent:@"history.json"]];
   TLBrowserDownloadManager *manager = [[TLBrowserDownloadManager alloc] initWithHistoryURL:history];
   Check(manager.downloads.count == 0, @"missing history starts empty");
@@ -60,26 +109,37 @@ int main(void) { @autoreleasepool {
   Update(manager, 3, TLBrowserDownloadStateDownloading, thirdPath, control);
   TLBrowserDownload *active = manager.downloads.firstObject;
   [manager removeDownload:active]; Check(manager.downloads.count == 3, @"active downloads cannot be removed");
-  TLDownloadsWindowController *window = [[TLDownloadsWindowController alloc] initWithManager:manager palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  TLDownloadsTabController *controller = [[TLDownloadsTabController alloc] initWithManager:manager palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,760,640) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  NSView *host = window.contentView;
+  [host addSubview:controller.view];
+  [NSLayoutConstraint activateConstraints:@[
+    [controller.view.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+    [controller.view.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+    [controller.view.topAnchor constraintEqualToAnchor:host.topAnchor],
+    [controller.view.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
+  ]];
   for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
     TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
-    [window applyPalette:palette];
-    for (NSNumber *width in @[@760, @494]) {
-      [window.window setContentSize:NSMakeSize(width.doubleValue, 640)];
-      [window.window.contentView layoutSubtreeIfNeeded];
-      NSStackView *rows = [window valueForKey:@"rows"];
+    [controller applyPalette:palette];
+    for (NSNumber *width in @[@760, @494, @200, @160, @1200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 640)];
+      [window.contentView layoutSubtreeIfNeeded];
+      Check(fabs(NSWidth(controller.view.frame) - width.doubleValue) < 1, [NSString stringWithFormat:@"downloads content fits width %@ (window %@, view %@)", width, NSStringFromRect(window.contentView.frame), NSStringFromRect(controller.view.frame)]);
+      NSStackView *rows = [controller valueForKey:@"rows"];
       Check(rows.arrangedSubviews.count == 3, @"download list includes all states");
       for (TLDownloadRowView *row in rows.arrangedSubviews) {
-        Check(NSWidth(row.frame) > 400 && NSHeight(row.frame) > 100, @"download rows have readable layout at minimum width");
-        for (NSButton *button in [(NSStackView *)[row valueForKey:@"actions"] arrangedSubviews]) {
+        Check(NSWidth(row.frame) > width.doubleValue - 40 && NSHeight(row.frame) > 100, @"download rows have readable layout at minimum width");
+        for (NSButton *button in [(NSView *)[row valueForKey:@"actions"] subviews]) {
           NSRect rect = [button convertRect:button.bounds toView:row];
-          Check(NSMaxX(rect) <= NSWidth(row.bounds) && NSMinX(rect) >= 0 && NSMinY(rect) >= 0, @"all action buttons fit within the row");
+          Check(NSMaxX(rect) <= NSWidth(row.bounds) && NSMinX(rect) >= -0.5 && NSMinY(rect) >= -0.5 && NSMaxY(rect) <= NSHeight(row.bounds) + 0.5, @"all action buttons fit within the row");
           Check([button isKindOfClass:TLThemedButton.class], @"download actions use the shared themed control");
         }
       }
-      TLDownloadRowView *completedRow = [[window valueForKey:@"rowViews"] objectForKey:firstID];
+      TLDownloadRowView *completedRow = [[controller valueForKey:@"rowViews"] objectForKey:firstID];
       Check(Button(completedRow,@"Open").enabled && Button(completedRow,@"Show in Finder").enabled, @"finished download offers file actions");
-      NSView *root = window.window.contentView;
+      NSView *root = window.contentView;
       NSBitmapImageRep *bitmap = [root bitmapImageRepForCachingDisplayInRect:root.bounds];
       [root cacheDisplayInRect:root.bounds toBitmapImageRep:bitmap];
       Check(ContainsColor(bitmap, palette.secondaryActionText) && ContainsColor(bitmap, palette.secondaryActionSurface), @"download buttons render paired foreground and surface in both themes");
@@ -87,8 +147,8 @@ int main(void) { @autoreleasepool {
     }
   }
   [NSFileManager.defaultManager removeItemAtPath:firstPath error:nil];
-  [window applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
-  TLDownloadRowView *completedRow = [[window valueForKey:@"rowViews"] objectForKey:firstID];
+  [controller applyPalette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
+  TLDownloadRowView *completedRow = [[controller valueForKey:@"rowViews"] objectForKey:firstID];
   Check(!Button(completedRow,@"Open").enabled && [first.statusText containsString:@"moved or deleted"], @"missing files disable file actions without corrupting history");
   [manager clearFinishedDownloads];
   Check(manager.downloads.count == 1 && manager.downloads.firstObject == active, @"clear finished preserves active transfers");
@@ -105,7 +165,9 @@ int main(void) { @autoreleasepool {
   Check(restored.downloads.count == 3 && ![restored.downloads.firstObject.identifier isEqual:oldIdentifier], @"reused Chromium IDs cannot overwrite previous-session history");
   [@"[null,42,{\"state\":\"bad\"}]" writeToURL:history atomically:YES encoding:NSUTF8StringEncoding error:nil];
   Check([[TLBrowserDownloadManager alloc] initWithHistoryURL:history].downloads.count == 0, @"malformed history is ignored safely");
-  [window.window close];
+  [controller close];
+  Check(active.state == TLBrowserDownloadStateFailed, @"closing the view does not mutate transfer history");
+  [window close];
   [NSFileManager.defaultManager removeItemAtPath:folder error:nil];
   NSLog(@"BrowserDownloadTests passed");
   return 0;

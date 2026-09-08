@@ -28,7 +28,7 @@ int main(void) {
     [store observeStateManager:state];
     NSArray *tabs = @[Tab(TLWorkspaceTabKindChat, 42), Tab(TLWorkspaceTabKindBrowser, 42),
       Tab(TLWorkspaceTabKindChat, -8), Tab(TLWorkspaceTabKindSettings, 0), Tab(TLWorkspaceTabKindHistory, 0),
-      Tab(TLWorkspaceTabKindAgents, 0), Tab(TLWorkspaceTabKindAutomations, 0), Tab(TLWorkspaceTabKindDebug, 0)];
+      Tab(TLWorkspaceTabKindAgents, 0), Tab(TLWorkspaceTabKindAutomations, 0), Tab(TLWorkspaceTabKindDebug, 0), Tab(TLWorkspaceTabKindDownloads, 0)];
     for (TLWorkspaceTab *tab in tabs) [state addWorkspaceTab:tab activate:YES];
     [state moveWorkspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42 toIndex:0];
     for (TLWorkspaceTab *tab in tabs) {

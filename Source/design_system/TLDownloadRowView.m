@@ -1,10 +1,11 @@
 #import "TLDownloadRowView.h"
 #import "TLThemedButton.h"
+#import "TLWrappingActionView.h"
 
 @interface TLDownloadRowView ()
 @property NSTextField *nameLabel, *sourceLabel, *statusLabel;
 @property NSImageView *iconView;
-@property NSStackView *actions;
+@property TLWrappingActionView *actions;
 @property TLTokenView *progressTrack, *progressFill;
 @property TLBrowserDownload *download;
 @property TLThemePalette *palette;
@@ -19,35 +20,37 @@
     _statusLabel = [NSTextField labelWithString:@""];
     _iconView = [[NSImageView alloc] init];
     _iconView.image = [NSImage imageWithSystemSymbolName:@"doc" accessibilityDescription:@"Downloaded file"];
-    _actions = [NSStackView stackViewWithViews:@[]];
-    _actions.spacing = p.space5;
+    _actions = [[TLWrappingActionView alloc] initWithViews:@[] palette:p];
     _progressTrack = [[TLTokenView alloc] init];
     _progressFill = [[TLTokenView alloc] init];
     [_progressTrack addSubview:_progressFill];
-    for (NSTextField *label in @[_nameLabel, _sourceLabel, _statusLabel]) label.lineBreakMode = NSLineBreakByTruncatingTail;
+    for (NSTextField *label in @[_nameLabel, _sourceLabel, _statusLabel]) {
+      label.lineBreakMode = NSLineBreakByTruncatingTail;
+      [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
     for (NSView *view in @[_nameLabel, _sourceLabel, _statusLabel, _iconView, _actions, _progressTrack]) {
       view.translatesAutoresizingMaskIntoConstraints = NO; [self addSubview:view];
     }
     [NSLayoutConstraint activateConstraints:@[
-      [_iconView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:p.space10],
-      [_iconView.topAnchor constraintEqualToAnchor:self.topAnchor constant:p.space10],
+      [_iconView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:p.space5],
+      [_iconView.topAnchor constraintEqualToAnchor:self.topAnchor constant:p.space5],
       [_iconView.widthAnchor constraintEqualToConstant:p.fieldHeight],
       [_iconView.heightAnchor constraintEqualToConstant:p.fieldHeight],
       [_nameLabel.leadingAnchor constraintEqualToAnchor:_iconView.trailingAnchor constant:p.space8],
-      [_nameLabel.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-p.space10],
+      [_nameLabel.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-p.space5],
       [_nameLabel.topAnchor constraintEqualToAnchor:self.topAnchor constant:p.space8],
-      [_sourceLabel.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
+      [_sourceLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:p.space5],
       [_sourceLabel.trailingAnchor constraintEqualToAnchor:_nameLabel.trailingAnchor],
-      [_sourceLabel.topAnchor constraintEqualToAnchor:_nameLabel.bottomAnchor constant:p.space2],
-      [_statusLabel.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
+      [_sourceLabel.topAnchor constraintEqualToAnchor:_iconView.bottomAnchor constant:p.space2],
+      [_statusLabel.leadingAnchor constraintEqualToAnchor:_sourceLabel.leadingAnchor],
       [_statusLabel.trailingAnchor constraintEqualToAnchor:_nameLabel.trailingAnchor],
       [_statusLabel.topAnchor constraintEqualToAnchor:_sourceLabel.bottomAnchor constant:p.space4],
-      [_progressTrack.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
+      [_progressTrack.leadingAnchor constraintEqualToAnchor:_sourceLabel.leadingAnchor],
       [_progressTrack.trailingAnchor constraintEqualToAnchor:_nameLabel.trailingAnchor],
       [_progressTrack.topAnchor constraintEqualToAnchor:_statusLabel.bottomAnchor constant:p.space5],
       [_progressTrack.heightAnchor constraintEqualToConstant:p.space2],
-      [_actions.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
-      [_actions.trailingAnchor constraintLessThanOrEqualToAnchor:_nameLabel.trailingAnchor],
+      [_actions.leadingAnchor constraintEqualToAnchor:_sourceLabel.leadingAnchor],
+      [_actions.trailingAnchor constraintEqualToAnchor:_nameLabel.trailingAnchor],
       [_actions.topAnchor constraintEqualToAnchor:_progressTrack.bottomAnchor constant:p.space5],
       [_actions.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-p.space8],
     ]];
@@ -75,20 +78,24 @@
     download.canRetry ? @[@"Retry", @"Remove"] : @[@"Remove"];
   if (![names isEqual:self.actionNames]) {
     self.actionNames = names;
-    for (NSView *view in self.actions.arrangedSubviews.copy) { [self.actions removeArrangedSubview:view]; [view removeFromSuperview]; }
+    for (NSView *view in self.actions.subviews.copy) [view removeFromSuperview];
     for (NSString *name in names) {
       TLThemedButton *button = [TLThemedButton buttonWithTitle:name target:self action:@selector(performAction:)];
       button.identifier = name;
-      [self.actions addArrangedSubview:button];
+      button.translatesAutoresizingMaskIntoConstraints = YES;
+      [self.actions addSubview:button];
     }
   }
-  for (TLThemedButton *button in self.actions.arrangedSubviews) {
+  for (TLThemedButton *button in self.actions.subviews) {
     button.palette = p;
     button.enabled = download.active ? download.controllable :
       [@[@"Open", @"Show in Finder"] containsObject:button.title] ? download.fileAvailable : YES;
     button.accessibilityLabel = [NSString stringWithFormat:@"%@ %@", button.title, download.fileName];
     button.toolTip = [button.title isEqual:@"Remove"] ? @"Remove from this list. The file stays on disk." : nil;
   }
+  self.actions.palette = p;
+  [self.actions invalidateIntrinsicContentSize];
+  self.actions.needsLayout = YES;
   self.needsLayout = YES;
 }
 - (void)layout {

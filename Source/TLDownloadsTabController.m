@@ -1,11 +1,11 @@
-#import "TLDownloadsWindowController.h"
+#import "TLDownloadsTabController.h"
 #import "ChromiumBrowserController.h"
 #import "design_system/TLDownloadRowView.h"
 #import "design_system/TLThemedButton.h"
+#import "design_system/TLWrappingActionView.h"
 
-@interface TLDownloadsWindowController () <NSWindowDelegate>
+@interface TLDownloadsTabController ()
 @property TLBrowserDownloadManager *manager;
-@property TLThemePalette *palette;
 @property NSTextField *titleLabel, *summaryLabel, *emptyLabel;
 @property TLThemedButton *clearButton;
 @property NSScrollView *scrollView;
@@ -13,16 +13,12 @@
 @property NSMutableDictionary<NSString *, TLDownloadRowView *> *rowViews;
 @property BOOL refreshScheduled;
 @end
-@implementation TLDownloadsWindowController
+@implementation TLDownloadsTabController
 - (instancetype)initWithManager:(TLBrowserDownloadManager *)manager palette:(TLThemePalette *)p {
-  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, p.settingsSheetWidth, p.settingsSheetHeight)
-    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
-  if ((self = [super initWithWindow:window])) {
+  if ((self = [super initWithPalette:p])) {
     _manager = manager; _rowViews = [NSMutableDictionary dictionary];
-    window.title = @"Downloads"; window.releasedWhenClosed = NO; window.delegate = self;
-    window.contentMinSize = NSMakeSize(p.settingsSheetWidth * 0.65, p.settingsSheetHeight * 0.5);
-    [window setFrameAutosaveName:@"TalariaDownloadsWindow"]; [window center];
-    TLTokenView *root = [[TLTokenView alloc] init]; window.contentView = root;
+    TLTokenView *root = [[TLTokenView alloc] init]; self.view = root;
+    root.translatesAutoresizingMaskIntoConstraints = NO;
     _titleLabel = [NSTextField labelWithString:@"Downloads"];
     _summaryLabel = [NSTextField labelWithString:@""];
     _summaryLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -30,25 +26,26 @@
     _clearButton.toolTip = @"Clear completed, cancelled, and failed downloads from this list. Files stay on disk.";
     _emptyLabel = [NSTextField wrappingLabelWithString:@"No downloads yet\nFiles you download in the browser will appear here."];
     _emptyLabel.alignment = NSTextAlignmentCenter;
+    for (NSTextField *label in @[_titleLabel, _summaryLabel, _emptyLabel])
+      [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     _scrollView = [[NSScrollView alloc] init]; _scrollView.hasVerticalScroller = YES; _scrollView.drawsBackground = NO;
     TLFlippedView *document = [[TLFlippedView alloc] init]; document.translatesAutoresizingMaskIntoConstraints = NO;
     _scrollView.documentView = document;
     _rows = [NSStackView stackViewWithViews:@[]]; _rows.orientation = NSUserInterfaceLayoutOrientationVertical;
     _rows.alignment = NSLayoutAttributeLeading; _rows.spacing = p.space8; _rows.translatesAutoresizingMaskIntoConstraints = NO;
     [document addSubview:_rows];
-    for (NSView *view in @[_titleLabel, _summaryLabel, _clearButton, _scrollView, _emptyLabel]) { view.translatesAutoresizingMaskIntoConstraints = NO; [root addSubview:view]; }
+    TLWrappingActionView *header = [[TLWrappingActionView alloc] initWithViews:@[_titleLabel, _clearButton] palette:p];
+    for (NSView *view in @[header, _summaryLabel, _scrollView, _emptyLabel]) { view.translatesAutoresizingMaskIntoConstraints = NO; [root addSubview:view]; }
     [NSLayoutConstraint activateConstraints:@[
-      [_titleLabel.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:p.space12],
-      [_titleLabel.topAnchor constraintEqualToAnchor:root.topAnchor constant:p.space12],
-      [_clearButton.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-p.space12],
-      [_clearButton.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
-      [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_clearButton.leadingAnchor constant:-p.space8],
-      [_summaryLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:p.space5],
-      [_summaryLabel.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
-      [_summaryLabel.trailingAnchor constraintEqualToAnchor:_clearButton.trailingAnchor],
+      [header.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:p.space5],
+      [header.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-p.space5],
+      [header.topAnchor constraintEqualToAnchor:root.topAnchor constant:p.space5],
+      [_summaryLabel.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:p.space5],
+      [_summaryLabel.leadingAnchor constraintEqualToAnchor:header.leadingAnchor],
+      [_summaryLabel.trailingAnchor constraintEqualToAnchor:header.trailingAnchor],
       [_scrollView.topAnchor constraintEqualToAnchor:_summaryLabel.bottomAnchor constant:p.space10],
-      [_scrollView.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:p.space12],
-      [_scrollView.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-p.space12],
+      [_scrollView.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:p.space5],
+      [_scrollView.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-p.space5],
       [_scrollView.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-p.space10],
       [document.widthAnchor constraintEqualToAnchor:_scrollView.contentView.widthAnchor],
       [_rows.leadingAnchor constraintEqualToAnchor:document.leadingAnchor],
@@ -65,15 +62,19 @@
   return self;
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
-- (void)showWindow:(id)sender { [self refresh]; [super showWindow:sender]; [self.window makeKeyAndOrderFront:sender]; }
-- (void)windowDidBecomeKey:(NSNotification *)notification { [self refresh]; }
+- (void)viewWillAppear { [super viewWillAppear]; [self refresh]; }
+- (void)close {
+  [super close];
+  [NSNotificationCenter.defaultCenter removeObserver:self];
+}
 - (void)downloadsChanged:(NSNotification *)notification {
-  if (self.refreshScheduled) return;
+  if (self.closed || self.refreshScheduled) return;
   self.refreshScheduled = YES;
   __weak typeof(self) weakSelf = self;
-  dispatch_async(dispatch_get_main_queue(), ^{ typeof(self) self = weakSelf; self.refreshScheduled = NO; if (self.window.visible) [self refresh]; });
+  dispatch_async(dispatch_get_main_queue(), ^{ typeof(self) self = weakSelf; self.refreshScheduled = NO; if (self && !self.closed) [self refresh]; });
 }
 - (void)refresh {
+  if (self.closed) return;
   NSArray<TLBrowserDownload *> *downloads = self.manager.downloads;
   NSSet *identifiers = [NSSet setWithArray:[downloads valueForKey:@"identifier"]];
   for (NSString *key in self.rowViews.allKeys) if (![identifiers containsObject:key]) {
@@ -105,21 +106,19 @@
   else if ([action isEqual:@"Cancel"]) [self.manager performAction:TLBrowserDownloadActionCancel forDownload:download];
   else if ([action isEqual:@"Remove"]) [self.manager removeDownload:download];
   else if ([action isEqual:@"Retry"] && download.canRetry)
-    [TLChromiumBrowserController.sharedController startDownloadURL:[NSURL URLWithString:download.URLString] fromWindow:self.window];
+    [TLChromiumBrowserController.sharedController startDownloadURL:[NSURL URLWithString:download.URLString] fromWindow:self.view.window];
   else if ([@[@"Open", @"Show in Finder"] containsObject:action] && download.fileAvailable) {
     NSURL *URL = [NSURL fileURLWithPath:download.path];
     if ([action isEqual:@"Show in Finder"]) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[URL]];
-    else if (![NSWorkspace.sharedWorkspace openURL:URL]) [self.window presentError:[NSError errorWithDomain:@"Talaria.Downloads" code:1
+    else if (![NSWorkspace.sharedWorkspace openURL:URL]) [self.view.window presentError:[NSError errorWithDomain:@"Talaria.Downloads" code:1
       userInfo:@{NSLocalizedDescriptionKey:@"The downloaded file could not be opened."}]];
   }
   [self refresh];
 }
 - (void)clearFinished:(id)sender { [self.manager clearFinishedDownloads]; [self refresh]; }
 - (void)applyPalette:(TLThemePalette *)p {
-  self.palette = p;
-  self.window.appearance = [NSAppearance appearanceNamed:p.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
-  self.window.backgroundColor = p.tabBackground;
-  ((TLTokenView *)self.window.contentView).fillColor = p.tabBackground;
+  [super applyPalette:p];
+  ((TLTokenView *)self.view).fillColor = p.tabBackground;
   self.titleLabel.font = p.titleFont; self.titleLabel.textColor = p.appText;
   self.summaryLabel.font = p.smallFont; self.summaryLabel.textColor = p.textMuted;
   self.emptyLabel.font = p.bodyFont; self.emptyLabel.textColor = p.textMuted;
