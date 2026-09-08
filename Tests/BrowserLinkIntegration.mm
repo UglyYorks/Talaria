@@ -22,6 +22,7 @@
 @interface TLChromiumBrowserController (Integration)
 - (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
 - (void)checkBackgroundBrowsers;
+- (void)browserTitleChanged:(CefRefPtr<CefBrowser>)browser title:(NSString *)title;
 @end
 static void Check(BOOL condition, NSString *message) {
   if (!condition) { fprintf(stderr,"FAIL: %s\n",message.UTF8String); exit(1); }
@@ -214,9 +215,28 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
       NSArray<NSWindow *> *windows = self.groupWindows;
       Check(windows[0].tabGroup == windows[1].tabGroup && windows[0].tabGroup.windows.count == 2, @"links open as real native tabs in the selected group");
       Check([windows[0].subtitle isEqual:@"Link Test Group"], @"grouped windows display the group name");
-      [self.browser closeSession:self.session];
-      dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+      [self waitFor:^BOOL {
+        return [windows[0].title isEqual:@"Link menu fixture"] && [windows[1].title isEqual:@"Link menu fixture"];
+      } then:^{
+        Check(YES, @"standalone native tabs still receive page titles");
+        [self testClosingTitle];
+      } attempt:0];
     } attempt:0];
+  } attempt:0];
+}
+- (void)testClosingTitle {
+  CefRefPtr<CefBrowser> closing = [self.browser browserWithIdentifier:(int)self.session.browserIdentifier];
+  self.window.title = @"Host window";
+  [self.browser closeSession:self.session];
+  // Deliver the callback before deferred native teardown, when CEF is still
+  // valid but the workspace tab and its title handler are already gone.
+  Check(closing && closing->IsValid(), @"exercise title event during asynchronous tab closure");
+  [self.browser browserTitleChanged:closing title:@"Late page title"];
+  Check([self.window.title isEqual:@"Host window"], @"late embedded title cannot rename the host window");
+  [self waitFor:^BOOL { return !closing->IsValid(); } then:^{
+    [self.browser browserTitleChanged:closing title:@"After view destruction"];
+    Check([self.window.title isEqual:@"Host window"], @"title after browser destruction is safely ignored");
+    dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
   } attempt:0];
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender { return [self.browser prepareForApplicationTermination] ? NSTerminateNow : NSTerminateLater; }

@@ -151,6 +151,7 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 - (void)handleScheduledMessagePumpWork:(int64_t)delayMS;
 - (void)performMessagePumpWork;
 - (void)browserCreated:(CefRefPtr<CefBrowser>)browser parentView:(nullable NSView *)parentView;
+- (void)browserWillClose:(CefRefPtr<CefBrowser>)browser;
 - (void)browserClosed:(CefRefPtr<CefBrowser>)browser;
 - (void)devToolsVisibilityChanged:(BOOL)visible forBrowserIdentifier:(NSInteger)identifier;
 - (void)showPageSourceForBrowser:(CefRefPtr<CefBrowser>)browser;
@@ -733,6 +734,7 @@ class TLChromiumClient : public CefClient,
 
   bool DoClose(CefRefPtr<CefBrowser> browser) override {
     CEF_REQUIRE_UI_THREAD();
+    [browserController_ browserWillClose:browser];
     if (groupID_.length) {
       // AppKit's tab group retains each native window. Detach the browser view
       // explicitly so Chromium receives destruction before waiting for app exit.
@@ -937,6 +939,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   CefScopedLibraryLoader *_libraryLoader;
   CefRefPtr<TLChromiumApp> _cefApp;
   std::vector<CefRefPtr<CefBrowser>> _browsers;
+  NSMapTable<NSNumber *, NSWindow *> *_standaloneBrowserWindows;
   NSMutableDictionary<NSValue *, NSNumber *> *_browserIdentifiersByContainer;
   NSMutableDictionary<NSNumber *, NSValue *> *_containersByBrowserIdentifier;
   NSMutableDictionary<NSValue *, TLChromiumBrowserSession *> *_sessionsByContainer;
@@ -983,6 +986,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
 - (instancetype)init {
   self = [super init];
   if (self) {
+    _standaloneBrowserWindows = [NSMapTable strongToWeakObjectsMapTable];
     _fullscreenBrowserIdentifier = -1;
     _browserIdentifiersByContainer = [NSMutableDictionary dictionary];
     _containersByBrowserIdentifier = [NSMutableDictionary dictionary];
@@ -1379,6 +1383,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   _messagePumpTimer = nil;
   [TLBrowserDownloadManager.sharedManager finishSession];
   [_detachedDownloadContainers removeAllObjects];
+  [_standaloneBrowserWindows removeAllObjects];
   _browsers.clear();
   CefShutdown();
   _cefApp = nullptr;
@@ -1526,6 +1531,10 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
     return;
   }
 
+  // Resolve the native window while its CEF view is known to be alive. Keep
+  // only a weak window reference; retaining CEF views prevents their teardown.
+  NSWindow *window = [self windowForBrowser:browser];
+  if (window) [_standaloneBrowserWindows setObject:window forKey:@(browser->GetIdentifier())];
 }
 
 - (void)showPageSourceForBrowser:(CefRefPtr<CefBrowser>)browser {
@@ -1651,7 +1660,12 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   if (NSApp.isActive && origin.isVisible) [origin makeFirstResponder:view];
 }
 
+- (void)browserWillClose:(CefRefPtr<CefBrowser>)browser {
+  if (browser) [_standaloneBrowserWindows removeObjectForKey:@(browser->GetIdentifier())];
+}
+
 - (void)browserClosed:(CefRefPtr<CefBrowser>)browser {
+  [self browserWillClose:browser];
   int identifier = browser ? browser->GetIdentifier() : -1;
   [TLBrowserDownloadManager.sharedManager browserClosed:identifier];
   [_detachedDownloadContainers removeObjectForKey:@(identifier)];
@@ -1691,7 +1705,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
 }
 
 - (void)browserTitleChanged:(CefRefPtr<CefBrowser>)browser title:(NSString *)title {
-  if (!browser || title.length == 0) {
+  if (!browser || !browser->IsValid() || title.length == 0) {
     return;
   }
 
@@ -1706,8 +1720,11 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
     return;
   }
 
-  NSView *browserView = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(browser->GetHost()->GetWindowHandle());
-  browserView.window.title = title;
+  // Embedded tabs can lose their handler before the final title notification.
+  // Never fall back to their native handle: CEF can return a forwarding proxy
+  // whose underlying view has already been destroyed.
+  NSWindow *window = [_standaloneBrowserWindows objectForKey:browserIdentifier];
+  window.title = title;
 }
 
 - (void)browserFaviconURLChanged:(CefRefPtr<CefBrowser>)browser URLString:(NSString *)URLString {
