@@ -45,6 +45,7 @@
 @end
 
 @interface TLNotchOverlayController (Testing)
+- (NSRect)activationRectForNotchRect:(NSRect)notchRect screenFrame:(NSRect)screenFrame;
 - (void)showOverlayForNotchRect:(NSRect)rect screen:(NSScreen *)screen
   presentation:(NSUInteger)presentation progress:(CGFloat)progress virtualNotch:(BOOL)virtualNotch;
 - (void)animateOverlayOutToFrame:(NSRect)frame;
@@ -111,6 +112,31 @@ static CGFloat HighlightCenter(NSBitmapImageRep *image, NSBitmapImageRep *baseli
   return weightedX / weight;
 }
 
+static void TestActivationHeightStartsAtScreenTop(void) {
+  NSRect screenFrame = NSMakeRect(-1440, -300, 1440, 900);
+  CGFloat top = NSMaxY(screenFrame);
+  CGFloat center = NSMidX(screenFrame);
+  for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    TLNotchOverlayController *controller = [[TLNotchOverlayController alloc]
+      initWithPalette:palette target:NSApp action:@selector(hide:)];
+    for (NSNumber *notchHeight in @[@21.0, @38.0]) {
+      NSRect notch = NSMakeRect(center - 100, top - notchHeight.doubleValue, 200, notchHeight.doubleValue);
+      NSRect activation = [controller activationRectForNotchRect:notch screenFrame:screenFrame];
+      Check(NSPointInRect(NSMakePoint(center, top - 29.9), activation),
+        @"cursor just inside the top 30 points activates the notch");
+      Check(!NSPointInRect(NSMakePoint(center, top - 30.1), activation),
+        @"cursor below the top 30 points does not activate, regardless of notch height");
+      Check(!NSPointInRect(NSMakePoint(center, top - 45), activation),
+        @"cursor 45 points below the screen top does not activate the notch");
+      Check(NSPointInRect(NSMakePoint(NSMaxX(notch) + 39.9, top - 10), activation),
+        @"horizontal activation still includes the 40-point margin");
+      Check(!NSPointInRect(NSMakePoint(NSMaxX(notch) + 40.1, top - 10), activation),
+        @"cursor outside the horizontal margin does not activate the notch");
+    }
+  }
+}
+
 static void TestOpeningDoesNotRestart(void) {
   TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
   TLNotchOverlayController *controller = [[TLNotchOverlayController alloc] initWithPalette:palette target:NSApp action:@selector(hide:)];
@@ -128,6 +154,8 @@ static void TestOpeningDoesNotRestart(void) {
   NSTimeInterval startedAt = [[controller valueForKey:@"frameAnimationStartedAt"] doubleValue];
   [controller updateFrameAnimationAtTimestamp:startedAt + 0.06];
   NSRect intermediate = panel.frame;
+  Check(NSEqualRects(controller.visibleFrame, intermediate),
+    @"input expansion can start from the currently rendered notch frame");
   Check(NSEqualRects(controller.presentationFrame, [[controller valueForKey:@"frameAnimationTarget"] rectValue]),
     @"quick input anchors below the destination while the notch is opening");
   for (NSUInteger index = 0; index < 10; index++) {
@@ -148,6 +176,7 @@ static void TestOpeningDoesNotRestart(void) {
   [controller updateFrameAnimationAtTimestamp:startedAt + 1];
   Check(panel.isVisible && NSEqualRects(panel.frame, target), @"reopening replaces the old closing animation");
   [controller stopTracking];
+  Check(NSIsEmptyRect(controller.visibleFrame), @"stopped notch exposes no frame for an animated handoff");
   Check([controller valueForKey:@"frameAnimationTimer"] == nil, @"stopping removes frame animation timer");
   [controller updatePalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
   Check(!panel.visible && [controller valueForKey:@"frameAnimationTimer"] == nil,
@@ -157,6 +186,7 @@ static void TestOpeningDoesNotRestart(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestActivationHeightStartsAtScreenTop();
     TLTestNotchView *view = [[TLTestNotchView alloc] initWithFrame:NSMakeRect(0, 0, 442, 96)];
     NSWindow *window = [[NSWindow alloc] initWithContentRect:view.bounds
       styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];

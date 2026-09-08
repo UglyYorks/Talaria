@@ -7,6 +7,7 @@
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLScreenRegionSelectionView.h"
 #import "TLScreenCapture.h"
+#import "design_system/TLTransitionCoordinator.h"
 
 static void Check(BOOL value, NSString *message) {
   if (!value) { NSLog(@"FAIL: %@", message); exit(1); }
@@ -32,13 +33,22 @@ static void Escape(TLQuickInputWindowController *controller) {
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)files;
 @end
 
+@interface TLNotchOverlayController (QuickInputTesting)
+- (void)showOverlayForNotchRect:(NSRect)rect screen:(NSScreen *)screen
+  presentation:(NSUInteger)presentation progress:(CGFloat)progress virtualNotch:(BOOL)virtualNotch;
+- (void)updateFrameAnimationAtTimestamp:(NSTimeInterval)timestamp;
+@end
+
 @interface TLTestScreenCapture : TLScreenCapture
 @property (nonatomic) NSRect capturedRect;
+@property (nonatomic, copy) NSArray<NSNumber *> *excludedWindowIDs;
 @property (nonatomic, copy) void (^pendingCompletion)(NSURL *, NSError *);
 @end
 @implementation TLTestScreenCapture
-- (void)captureRect:(NSRect)screenRect completion:(void (^)(NSURL *, NSError *))completion {
+- (void)captureRect:(NSRect)screenRect excludingWindowIDs:(NSArray<NSNumber *> *)windowIDs
+         completion:(void (^)(NSURL *, NSError *))completion {
   self.capturedRect = screenRect;
+  self.excludedWindowIDs = windowIDs;
   self.pendingCompletion = completion;
 }
 - (void)cancel {}
@@ -70,6 +80,106 @@ static BOOL WindowReceivesMouseAtPoint(NSWindow *window, NSPoint point) {
   return [NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0] == window.windowNumber;
 }
 
+static void TestNotchExpansion(void) {
+  NSScreen *screen = NSScreen.mainScreen;
+  NSRect start = NSMakeRect(NSMidX(screen.frame) - 150, NSMaxY(screen.frame) - 21, 189, 21);
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    TLQuickInputWindowController *quick = [[TLQuickInputWindowController alloc] initWithPalette:palette];
+    __block NSTimeInterval now = 100;
+    TLTransitionCoordinator *transition = [[TLTransitionCoordinator alloc]
+      initWithClock:^NSTimeInterval { return now; } automaticallyAdvances:NO];
+    [quick setValue:transition forKey:@"notchTransition"];
+    __weak TLQuickInputWindowController *weakQuick = quick;
+    __block BOOL coveredBeforeHandoff = NO;
+    quick.visibilityChangeHandler = ^(BOOL visible) {
+      if (visible) coveredBeforeHandoff = weakQuick.window.visible && NSEqualRects(weakQuick.window.frame, start);
+    };
+    [quick presentInNotchOnScreen:screen fromFrame:start];
+    NSRect target = [[quick valueForKey:@"notchTargetFrame"] rectValue];
+    NSView *content = [quick valueForKey:@"inputContainer"];
+    Check(coveredBeforeHandoff && transition.hasTransitions && NSEqualRects(quick.window.frame, start),
+      @"input notch covers the compact frame before the old overlay is hidden");
+    Check(content.alphaValue == 0 && fabs(NSWidth(quick.messageInput.frame) - 600) < 1,
+      @"input starts hidden and laid out at the narrower final width");
+    now += palette.notchInputExpansionDuration * 0.5;
+    [transition advance];
+    NSRect middle = quick.window.frame;
+    Check(NSWidth(middle) > NSWidth(start) && NSWidth(middle) < NSWidth(target) &&
+      NSHeight(middle) > NSHeight(start) && NSHeight(middle) < NSHeight(target),
+      @"notch passes through intermediate widths and heights");
+    Check(fabs(NSMaxY(middle) - NSMaxY(screen.frame)) < 1 &&
+      NSMidX(middle) > NSMidX(start) && NSMidX(middle) < NSMidX(target),
+      @"notch slides smoothly to its new center while staying pinned to the top");
+    [quick applyPalette:palette];
+    [quick presentInNotchOnScreen:screen fromFrame:start];
+    SetText(quick, @"A draft typed while the notch expands");
+    Check(NSEqualRects(quick.window.frame, middle) && fabs(NSWidth(quick.messageInput.frame) - 600) < 1,
+      @"layout, typing, and repeated presentation do not snap or restart expansion");
+    now += palette.notchInputExpansionDuration * 0.25;
+    [transition advance];
+    Check(content.alphaValue == 0 && quick.window.firstResponder == quick.messageInput.textView,
+      @"input accepts typing immediately but remains hidden until the controls fit");
+    now += palette.notchInputExpansionDuration;
+    [transition advance];
+    NSRect overshoot = quick.window.frame;
+    Check(![transition hasTransitionForKey:@"notchExpansion"] && NSWidth(overshoot) > NSWidth(target) &&
+      NSHeight(overshoot) > NSHeight(target) && NSWidth(overshoot) < NSWidth(target) * 1.06,
+      @"fast expansion ends with a small size overshoot");
+    Check(fabs(NSMaxY(overshoot) - NSMaxY(screen.frame)) < 1 && fabs(NSMidX(overshoot) - NSMidX(target)) < 1,
+      @"bounce stays centered and pinned to the screen top");
+    now += palette.notchInputRevealDuration * 0.5;
+    [transition advance];
+    Check(content.alphaValue > 0 && content.alphaValue < 1,
+      @"input fades in while the bounce settles around the whole row");
+    NSRect settling = quick.window.frame;
+    Check(NSWidth(settling) < NSWidth(overshoot) && NSWidth(settling) > NSWidth(target),
+      @"bounce smoothly returns toward the final width");
+    [quick applyPalette:palette];
+    Check(NSEqualRects(quick.window.frame, settling) && fabs(NSWidth(quick.messageInput.frame) - 600) < 1,
+      @"layout updates do not interrupt the bounce or resize its input");
+    InvalidateSnapshot(quick.window.contentView);
+    NSBitmapImageRep *image = [quick.window.contentView bitmapImageRepForCachingDisplayInRect:quick.window.contentView.bounds];
+    [quick.window.contentView cacheDisplayInRect:quick.window.contentView.bounds toBitmapImageRep:image];
+    [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:
+      [NSString stringWithFormat:@"/tmp/talaria-notch-expanding-%@.png", theme] atomically:YES];
+    now += palette.notchInputRevealDuration;
+    [transition advance];
+    Check(!transition.hasTransitions && content.alphaValue == 1, @"input reveal finishes fully visible");
+    // AppKit rounds fractional window origins and sizes to display coordinates.
+    Check(fabs(NSMinX(quick.window.frame) - NSMinX(target)) < 1 &&
+      fabs(NSMinY(quick.window.frame) - NSMinY(target)) < 1 &&
+      fabs(NSWidth(quick.window.frame) - NSWidth(target)) < 1 &&
+      fabs(NSHeight(quick.window.frame) - NSHeight(target)) < 1,
+      @"bounce settles at the intended final frame without residual overshoot");
+    [quick dismiss];
+    [quick presentInNotchOnScreen:screen fromFrame:start];
+    now += palette.notchInputExpansionDuration * 0.25;
+    [transition advance];
+    [quick dismiss];
+    NSRect dismissed = quick.window.frame;
+    now += palette.notchInputExpansionDuration;
+    [transition advance];
+    Check(!transition.hasTransitions && !quick.window.visible && NSEqualRects(quick.window.frame, dismissed),
+      @"dismissing mid-expansion cancels all later frame updates");
+    [quick presentInNotchOnScreen:screen fromFrame:start];
+    now += palette.notchInputExpansionDuration * 1.1;
+    [transition advance];
+    now += palette.notchInputRevealDuration * 0.5;
+    [transition advance];
+    [quick dismiss];
+    dismissed = quick.window.frame;
+    now += palette.notchInputRevealDuration;
+    [transition advance];
+    Check(!transition.hasTransitions && !quick.window.visible && NSEqualRects(quick.window.frame, dismissed),
+      @"dismissing during the bounce cancels its settling and reveal");
+    [quick presentInNotchOnScreen:screen];
+    Check(content.alphaValue == 1 && [quick.messageInput.textView.string hasPrefix:@"A draft typed"],
+      @"reopening after interrupted expansion restores the visible draft");
+    [quick dismiss];
+  }
+}
+
 static void TestNotchPresentationAndCapture(void) {
   TLQuickInputWindowController *quick = [[TLQuickInputWindowController alloc]
     initWithPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
@@ -87,7 +197,7 @@ static void TestNotchPresentationAndCapture(void) {
       CGFloat top = NSHeight(quick.window.contentView.bounds) - NSMaxY(quick.messageInput.frame);
       CGFloat bottom = NSMinY(quick.messageInput.frame);
       if (cameraInset.doubleValue == 0) {
-        Check(fabs(top - bottom) < 1 && fabs(top - palette.space5) < 1,
+        Check(fabs(top - bottom) < 1 && fabs(top - palette.notchInputVerticalPadding) < 1,
               @"screens without a physical notch use equal normal padding above and below the input");
       } else {
         Check(top >= cameraInset.doubleValue && top >= palette.notchOverlayMinimumHeight,
@@ -138,7 +248,7 @@ static void TestNotchPresentationAndCapture(void) {
             @"capture drags can start on either side of the notch above its bottom edge");
       [selection resetSelection];
     }
-    Check(fabs(NSMinY(quick.messageInput.frame) - palette.space5) < 1,
+    Check(fabs(NSMinY(quick.messageInput.frame) - palette.notchInputVerticalPadding) < 1,
           @"notch ends below the composer without an extra instructional text row");
     InvalidateSnapshot(selection);
     NSBitmapImageRep *clear = [selection bitmapImageRepForCachingDisplayInRect:selection.bounds];
@@ -163,11 +273,19 @@ static void TestNotchPresentationAndCapture(void) {
         @"dragging leaves the inside and outside of the selection transparent");
   [[selectionBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@"/tmp/talaria-capture-selection.png" atomically:YES];
   NSRect expected = [selection.window convertRectToScreen:selection.selectionRect];
+  NSRect notchBeforeCapture = quick.window.frame;
+  NSInteger notchWindowNumber = quick.window.windowNumber;
   [selection mouseUp:SelectionEvent(selection, NSEventTypeLeftMouseUp, NSMakePoint(40, 30))];
-  Check(!selection.window.visible && quick.window.alphaValue == 0 && !quick.messageInput.attachmentsEditable,
-        @"capture hides both the selection UI and notch and locks attachment edits");
+  Check(!selection.window.visible && quick.window.visible && quick.window.alphaValue == 1 &&
+        NSEqualRects(quick.window.frame, notchBeforeCapture) && !quick.messageInput.attachmentsEditable,
+        @"capture removes the selection border while keeping the notch visible in place");
   for (NSUInteger attempt = 0; attempt < 10 && !capture.pendingCompletion; attempt++) Drain();
   Check(NSEqualRects(capture.capturedRect, expected), @"capture receives only the dragged area in global screen coordinates");
+  Check([capture.excludedWindowIDs containsObject:@(notchWindowNumber)] &&
+        [capture.excludedWindowIDs containsObject:@(selection.window.windowNumber)],
+        @"capture excludes the notch and selection windows without hiding the composer");
+  Check(quick.window.visible && quick.window.alphaValue == 1 && NSEqualRects(quick.window.frame, notchBeforeCapture),
+        @"notch stays visible and stationary while the screenshot is pending");
   __block NSUInteger submissions = 0;
   __block NSArray<NSURL *> *submittedFiles;
   quick.submissionHandler = ^(NSString *text, NSArray<NSURL *> *files, BOOL routing) { submissions++; submittedFiles = files; };
@@ -179,7 +297,10 @@ static void TestNotchPresentationAndCapture(void) {
   Drain();
   Check([quick.messageInput.attachmentURLs isEqualToArray:@[fixture]] && quick.messageInput.attachmentsEditable &&
         selection.window.visible && quick.window.alphaValue == 1 && quick.window.firstResponder == quick.messageInput.textView,
-        @"completed capture attaches its image and restores the composer and selection surface");
+        @"completed capture attaches its image to the visible composer and restores selection");
+  Check(quick.window.windowNumber == notchWindowNumber && fabs(NSMaxY(quick.window.frame) - NSMaxY(notchBeforeCapture)) < 1 &&
+        fabs(NSMidX(quick.window.frame) - NSMidX(notchBeforeCapture)) < 1,
+        @"new attachment grows the same notch downwards without moving its top or center");
   Check([quick.messageInput.textView.string isEqual:@"Describe the area I capture"], @"capture preserves the prompt draft");
   Submit(quick);
   Check(submissions == 1 && [submittedFiles isEqualToArray:@[fixture]] && !selection.window.visible,
@@ -358,8 +479,18 @@ static void TestWorkspaceHandoff(void) {
   NSURL *file = [NSURL fileURLWithPath:@"/tmp/quick-input-attachment.txt"];
   existing.messageInput.attachmentURLs = @[file];
   [window orderOut:nil];
-  [owner openFromNotchOverlay:nil]; Drain();
+  NSScreen *screen = NSScreen.mainScreen;
+  NSRect compact = NSMakeRect(NSMidX(screen.frame) - 100, NSMaxY(screen.frame) - 21, 200, 21);
+  [notch showOverlayForNotchRect:compact screen:screen presentation:0 progress:0 virtualNotch:YES];
+  [notch updateFrameAnimationAtTimestamp:[[notch valueForKey:@"frameAnimationStartedAt"] doubleValue] + 0.06];
+  [[notch valueForKey:@"frameAnimationTimer"] invalidate];
+  [[notch valueForKey:@"trackingTimer"] invalidate];
+  NSRect clickedFrame = notch.visibleFrame;
+  [owner openFromNotchOverlay:nil];
   TLQuickInputWindowController *quick = [owner valueForKey:@"quickInputController"];
+  Check(NSEqualRects(quick.window.frame, clickedFrame),
+    @"clicking an opening notch transfers its current frame to the expanding input");
+  Drain();
   Check([notch valueForKey:@"trackingTimer"] == nil && NSIsEmptyRect(notch.presentationFrame),
     @"opening quick input hides the notch and stops hover tracking");
   Check(!window.visible && quick.window.visible && state.snapshot.workspaceTabs.count == 1, @"notch opens only the popup and creates no tab");
@@ -479,6 +610,7 @@ int main(void) {
     [NSApplication sharedApplication];
     Check(NSScreen.mainScreen != nil, @"native tests require access to the macOS window server");
     TestPanel();
+    TestNotchExpansion();
     TestNotchPresentationAndCapture();
     TestWorkspaceHandoff();
     TestFocusAndDraftRestoration();
