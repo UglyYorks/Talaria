@@ -23,8 +23,10 @@
     [foreground setFill]; NSRectFillUsingOperation(bounds, NSCompositingOperationSourceIn);
     return YES;
   }];
-  [tinted drawInRect:frame fromRect:NSZeroRect operation:NSCompositingOperationSourceOver
-    fraction:button.enabled ? 1 : button.palette.disabledOpacity respectFlipped:YES hints:nil];
+  // AppKit passes the symbol's alignment rectangle, which excludes vertical margins.
+  // Preserve those metrics so the full image isn't squeezed into that shorter frame.
+  tinted.alignmentRect = image.alignmentRect;
+  [super drawImage:tinted withFrame:frame inView:view];
 }
 @end
 

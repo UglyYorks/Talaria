@@ -4516,7 +4516,7 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     userTopInset = userLayout.topInset;
     userBottomInset = userLayout.bottomInset;
     userTextMaxWidth = userLayout.textMaxWidth;
-    bubble.rendersAsPill = userLayout.rendersAsPill && !message.attachments.count;
+    bubble.rendersAsPill = userLayout.rendersAsPill;
     bubble.outgoingTailHorizontalOffset = userLayout.tailHorizontalOffset;
     contentLabel = [self wrappingLabelWithString:content
                                             font:self.palette.messageBodyFont
@@ -4562,7 +4562,8 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
       [chips addObject:chip];
     }];
     attachmentRow = [[TLAttachmentChipRow alloc] initWithChips:chips palette:self.palette];
-    [stack addArrangedSubview:attachmentRow];
+    attachmentRow.alignsTrailing = user;
+    [row addSubview:attachmentRow];
   }
 
   if (!user && message.approvalRequest) {
@@ -4574,31 +4575,44 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
     [stack addArrangedSubview:card];
     [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
   }
+  BOOL hasBubble = stack.arrangedSubviews.count > 0 || !attachmentRow;
+  NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray array];
+  if (attachmentRow) {
+    [constraints addObjectsFromArray:@[
+      [attachmentRow.topAnchor constraintEqualToAnchor:hasBubble ? bubble.bottomAnchor : row.topAnchor constant:hasBubble ? self.palette.space5 : self.palette.space0],
+      [attachmentRow.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
+      [attachmentRow.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:widthMultiplier],
+    ]];
+    NSLayoutConstraint *preferredWidth = [attachmentRow.widthAnchor constraintEqualToConstant:MIN(attachmentRow.preferredWidth, availableMessageWidth * widthMultiplier)];
+    preferredWidth.priority = NSLayoutPriorityDefaultHigh;
+    [constraints addObject:preferredWidth];
+    if (user) {
+      [constraints addObject:[attachmentRow.trailingAnchor constraintEqualToAnchor:row.trailingAnchor]];
+      [constraints addObject:[attachmentRow.leadingAnchor constraintGreaterThanOrEqualToAnchor:row.leadingAnchor]];
+    } else {
+      [constraints addObject:[attachmentRow.leadingAnchor constraintEqualToAnchor:row.leadingAnchor]];
+      [constraints addObject:[attachmentRow.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
+    }
+  }
+  if (!hasBubble) { [NSLayoutConstraint activateConstraints:constraints]; return row; }
   [row addSubview:bubble];
   NSLayoutConstraint *assistantWidth = [bubble.widthAnchor constraintEqualToAnchor:row.widthAnchor multiplier:widthMultiplier];
   assistantWidth.priority = NSLayoutPriorityDefaultHigh + 1.0;
 
-  NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
+  [constraints addObjectsFromArray:@[
     [bubble.topAnchor constraintEqualToAnchor:row.topAnchor],
-    [bubble.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
     [bubble.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:widthMultiplier],
     [stack.leadingAnchor constraintEqualToAnchor:bubble.leadingAnchor constant:user ? userLeadingInset : self.palette.space0],
     [stack.trailingAnchor constraintEqualToAnchor:bubble.trailingAnchor constant:user ? -userTrailingInset : self.palette.space0],
     [stack.topAnchor constraintEqualToAnchor:bubble.topAnchor constant:user ? userTopInset : self.palette.space0],
     [stack.bottomAnchor constraintEqualToAnchor:bubble.bottomAnchor constant:user ? -userBottomInset : self.palette.space0],
   ]];
+  if (!attachmentRow) [constraints addObject:[bubble.bottomAnchor constraintEqualToAnchor:row.bottomAnchor]];
   if (contentLabel) {
     [constraints addObject:[contentLabel.widthAnchor constraintLessThanOrEqualToConstant:userTextMaxWidth]];
   }
   if (!user) {
     [constraints addObject:assistantWidth];
-  } else if (message.attachments.count) {
-    CGFloat textWidth = hasResponseContent ? NSWidth(TLUserMessageTextBounds(message.content, self.palette.messageBodyFont, userTextMaxWidth)) : 0;
-    CGFloat desiredWidth = MIN(MAX(attachmentRow.preferredWidth, textWidth) + userLeadingInset + userTrailingInset, availableMessageWidth * widthMultiplier);
-    if (contentLabel) contentLabel.preferredMaxLayoutWidth = MAX(1, desiredWidth - userLeadingInset - userTrailingInset);
-    NSLayoutConstraint *attachmentWidth = [bubble.widthAnchor constraintEqualToConstant:desiredWidth];
-    attachmentWidth.priority = NSLayoutPriorityDefaultHigh;
-    [constraints addObject:attachmentWidth];
   }
 
   if (user) {

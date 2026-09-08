@@ -29,6 +29,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface TLAttachmentChipRow : NSView
 @property (nonatomic, strong) TLThemePalette *palette;
+@property (nonatomic) BOOL alignsTrailing;
 @property (nonatomic, readonly) CGFloat preferredWidth;
 - (instancetype)initWithChips:(NSArray<TLAttachmentChipView *> *)chips palette:(TLThemePalette *)palette;
 @end

@@ -29,6 +29,10 @@ static NSArray<TLAttachmentChipView *> *FindChips(NSView *view) {
   for (NSView *child in view.subviews) [cards addObjectsFromArray:FindChips(child)];
   return cards;
 }
+static TLMessageBubbleView *FindBubble(NSView *row) {
+  for (NSView *view in row.subviews) if ([view isKindOfClass:TLMessageBubbleView.class]) return (id)view;
+  return nil;
+}
 
 @interface TalariaWindowController (AttachmentViewerTests)
 - (NSView *)rowForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)tail;
@@ -50,6 +54,19 @@ static CGFloat Luminance(NSColor *color) {
   for (NSUInteger i = 0; i < 3; i++) channels[i] = channels[i] <= 0.04045 ? channels[i] / 12.92 : pow((channels[i] + 0.055) / 1.055,2.4);
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 }
+static NSRect RenderedSymbolBounds(NSBitmapImageRep *bitmap) {
+  CGFloat peak = 0;
+  for (NSInteger y = 0; y < bitmap.pixelsHigh; y++) for (NSInteger x = 0; x < bitmap.pixelsWide; x++) {
+    NSColor *color = [bitmap colorAtX:x y:y]; peak = MAX(peak,Luminance(color) * color.alphaComponent);
+  }
+  NSInteger left = bitmap.pixelsWide, top = bitmap.pixelsHigh, right = -1, bottom = -1;
+  for (NSInteger y = 0; y < bitmap.pixelsHigh; y++) for (NSInteger x = 0; x < bitmap.pixelsWide; x++) {
+    NSColor *color = [bitmap colorAtX:x y:y];
+    if (Luminance(color) * color.alphaComponent < peak * 0.6) continue;
+    left = MIN(left,x); top = MIN(top,y); right = MAX(right,x); bottom = MAX(bottom,y);
+  }
+  return NSMakeRect(left,top,right - left + 1,bottom - top + 1);
+}
 static void ClickPreview(NSWindow *window, NSPoint point) {
   NSPoint location = [window.contentView convertPoint:point toView:nil];
   NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:location modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1];
@@ -61,6 +78,11 @@ static void TestViewerControlAppearance(TLAttachmentViewerWindowController *view
   NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:viewer.window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
   for (NSString *key in @[@"finderButton",@"saveButton",@"closeButton"]) {
     TLHoverIconButton *button = [viewer valueForKey:key];
+    NSWindow *referenceWindow = [[NSWindow alloc] initWithContentRect:button.bounds styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO]; referenceWindow.releasedWhenClosed = NO;
+    referenceWindow.appearance = viewer.window.appearance;
+    NSButton *native = [[NSButton alloc] initWithFrame:button.bounds]; native.bordered = NO; native.imagePosition = NSImageOnly;
+    native.image = button.image; native.contentTintColor = palette.labelText; referenceWindow.contentView = native;
+    NSRect nativeGlyph = RenderedSymbolBounds(Snapshot(native,[NSString stringWithFormat:@"attachment-%@-native.png",key]));
     CGFloat idleBrightness = 0;
     for (NSString *state in @[@"normal",@"hovered",@"pressed",@"focused",@"inactive",@"disabled"]) {
       [button mouseExited:event]; [button setValue:@NO forKey:@"pressed"]; button.enabled = YES;
@@ -76,6 +98,13 @@ static void TestViewerControlAppearance(TLAttachmentViewerWindowController *view
       NSColor *ink = [(highlighted ? palette.statusItemIcon : palette.labelText) colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
       CGFloat foreground[3] = {ink.redComponent,ink.greenComponent,ink.blueComponent};
       if (button.enabled) Check(PixelsMatching(bitmap,foreground) > 10,@"preview icons render their explicit light tint, including white on hover and press, in both themes and inactive windows");
+      if (button.enabled) {
+        NSRect actualGlyph = RenderedSymbolBounds(bitmap);
+        Check(fabs(NSWidth(actualGlyph) - NSWidth(nativeGlyph)) <= 2 && fabs(NSHeight(actualGlyph) - NSHeight(nativeGlyph)) <= 2,
+          @"tinted preview symbols preserve the native glyph width and height without squashing");
+        Check(fabs(NSMidX(actualGlyph) - NSMidX(nativeGlyph)) <= 1 && fabs(NSMidY(actualGlyph) - NSMidY(nativeGlyph)) <= 1,
+          @"tinted preview symbols preserve native alignment");
+      }
       CGFloat scale = bitmap.pixelsWide / NSWidth(button.bounds);
       NSColor *surface = [bitmap colorAtX:(NSInteger)(7 * scale) y:bitmap.pixelsHigh / 2];
       if ([state isEqual:@"normal"]) idleBrightness = Luminance(surface);
@@ -83,6 +112,7 @@ static void TestViewerControlAppearance(TLAttachmentViewerWindowController *view
       if (button.enabled) Check((Luminance(ink) + 0.05) / (Luminance(surface) + 0.05) >= 4.5,@"preview icon and surface retain readable rendered contrast");
     }
     button.enabled = YES; [button mouseExited:event]; [button setValue:@NO forKey:@"pressed"];
+    [referenceWindow close];
   }
   [viewer.window makeKeyWindow];
 }
@@ -167,20 +197,37 @@ static void TestTranscript(void) {
       [NSLayoutConstraint activateConstraints:@[[row.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20], [row.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20], [row.topAnchor constraintEqualToAnchor:root.topAnchor constant:20]]];
       [root layoutSubtreeIfNeeded];
       NSArray<TLAttachmentChipView *> *cards = FindChips(row);
+      Check(!FindBubble(row),@"attachment-only messages show standalone chips without an empty bubble");
       Check(cards.firstObject.isAccessibilityElement && [cards.firstObject.accessibilityRole isEqual:NSAccessibilityButtonRole], @"file cards expose a named accessible preview action");
       Check(cards.firstObject.showsRemoveButton == NO && [cards.firstObject.label.font isEqual:palette.smallFont], @"message chips use composer typography and hide draft-only removal controls");
       Check(cards.count == 1 && NSHeight(row.bounds) >= palette.fieldHeight, @"attachment-only message has a real preview card and nonzero height");
       Snapshot(root, [NSString stringWithFormat:@"attachment-message-%@-%@.png",theme,width]);
-      Check(NSWidth(cards[0].bounds) > 0 && NSMaxX([cards[0] convertRect:cards[0].bounds toView:root]) <= width.doubleValue, @"message file card fits a 200px window");
+      Check(NSWidth(cards[0].bounds) > 0 && NSMaxX([cards[0] convertRect:cards[0].bounds toView:root]) <= width.doubleValue,
+        [NSString stringWithFormat:@"message chips fit the requested %@px window (content %@, row %@, chip %@)",width,NSStringFromRect(root.bounds),NSStringFromRect(row.frame),NSStringFromRect([cards[0] convertRect:cards[0].bounds toView:root])]);
       // Change the active pane before activating an existing card.
       [owner setValue:[TLChatPresentation new] forKey:@"chatPresentation"];
       [cards[0] accessibilityPerformPress];
       TLAttachmentViewerWindowController *viewer = [owner valueForKey:@"attachmentViewer"];
       Check(viewer.selectedIndex == 2 && [[viewer valueForKey:@"items"] count] == 3, @"click preserves the originating conversation and selected attachment across focus changes");
       [viewer close]; [owner setValue:origin forKey:@"chatPresentation"];
+      [row removeFromSuperview];
+      row = [owner rowForMessage:first showsOutgoingTail:YES]; [root addSubview:row];
+      [NSLayoutConstraint activateConstraints:@[[row.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20], [row.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20], [row.topAnchor constraintEqualToAnchor:root.topAnchor constant:20]]];
+      [root layoutSubtreeIfNeeded];
+      TLMessageBubbleView *bubble = FindBubble(row);
+      NSArray<TLAttachmentChipView *> *chips = FindChips(row);
+      Check(bubble && FindChips(bubble).count == 0,@"message attachments are outside the text bubble");
+      for (TLAttachmentChipView *chip in chips) {
+        NSRect chipFrame = [chip convertRect:chip.bounds toView:row];
+        Check(NSMaxY(chipFrame) + palette.space5 <= NSMinY(bubble.frame) + 0.5,@"attachments sit below the text bubble with theme spacing");
+        Check(NSMinX(chipFrame) >= 0 && NSMaxX(chipFrame) <= NSWidth(row.bounds) + 0.5,@"attachment chips fit narrow conversation rows");
+      }
+      NSRect lastChipFrame = [chips.lastObject convertRect:chips.lastObject.bounds toView:row];
+      Check(fabs(NSMaxX(lastChipFrame) - NSWidth(row.bounds)) < 0.5,@"wrapped outgoing attachments align to the message's trailing edge");
+      Snapshot(root,[NSString stringWithFormat:@"attachment-below-bubble-%@-%@.png",theme,width]);
     }
   }
-  // Long message text must wrap to the card's narrower width without clipping.
+  // Long text wraps independently of the attachment row below it.
   [window setContentSize:NSMakeSize(700,700)];
   [owner setValue:[NSLayoutConstraint constraintWithItem:[NSView new] attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1 constant:660] forKey:@"messageInputWidthConstraint"];
   first.content = @"Please review these attachments before our next meeting. The design includes a number of important changes to the navigation and the document viewer. I have included the research notes so that everyone can check the supporting details.";
@@ -188,7 +235,7 @@ static void TestTranscript(void) {
   NSView *row = [owner rowForMessage:first showsOutgoingTail:YES]; [root addSubview:row];
   [NSLayoutConstraint activateConstraints:@[[row.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20], [row.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20], [row.topAnchor constraintEqualToAnchor:root.topAnchor constant:20]]];
   [root layoutSubtreeIfNeeded];
-  NSStackView *stack = (id)FindChips(row).firstObject.superview.superview;
+  NSStackView *stack = (id)FindBubble(row).subviews.firstObject;
   NSTextField *label = (id)stack.arrangedSubviews.firstObject;
   NSRect required = [first.content boundingRectWithSize:NSMakeSize(NSWidth(label.bounds),CGFLOAT_MAX) options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading attributes:@{NSFontAttributeName:label.font}];
   Check(NSHeight(label.bounds) + 2 >= ceil(NSHeight(required)), @"message text wraps to attachment width without clipping");

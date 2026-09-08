@@ -246,15 +246,30 @@
   return MAX(0, width - self.palette.space3);
 }
 - (CGFloat)arrange:(BOOL)apply {
-  CGFloat width = MAX(1, NSWidth(self.bounds)), x = 0, y = 0, height = self.palette.fieldHeight;
-  for (NSView *chip in self.subviews) {
-    CGFloat itemWidth = MIN(width, chip.intrinsicContentSize.width);
-    if (x > 0 && x + itemWidth > width) { x = 0; y += height + self.palette.space3; }
-    if (apply) chip.frame = NSMakeRect(x, y, itemWidth, height);
-    x += itemWidth + self.palette.space3;
+  CGFloat width = MAX(1, NSWidth(self.bounds)), y = 0, height = self.palette.fieldHeight;
+  NSUInteger start = 0;
+  while (start < self.subviews.count) {
+    NSUInteger end = start;
+    CGFloat lineWidth = 0;
+    while (end < self.subviews.count) {
+      CGFloat nextWidth = MIN(width, self.subviews[end].intrinsicContentSize.width);
+      CGFloat candidate = lineWidth + (end > start ? self.palette.space3 : 0) + nextWidth;
+      if (end > start && candidate > width) break;
+      lineWidth = candidate; end++;
+    }
+    CGFloat x = self.alignsTrailing ? width - lineWidth : 0;
+    for (NSUInteger index = start; index < end; index++) {
+      NSView *chip = self.subviews[index];
+      CGFloat itemWidth = MIN(width, chip.intrinsicContentSize.width);
+      if (apply) chip.frame = NSMakeRect(x, y, itemWidth, height);
+      x += itemWidth + self.palette.space3;
+    }
+    start = end;
+    if (start < self.subviews.count) y += height + self.palette.space3;
   }
   return self.subviews.count ? y + height : 0;
 }
+- (void)setAlignsTrailing:(BOOL)alignsTrailing { _alignsTrailing = alignsTrailing; self.needsLayout = YES; }
 - (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric, [self arrange:NO]); }
 - (void)setFrameSize:(NSSize)size {
   BOOL changed = size.width != NSWidth(self.frame); [super setFrameSize:size];
