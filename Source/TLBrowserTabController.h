@@ -20,6 +20,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithURL:(NSURL *)URL palette:(TLThemePalette *)palette
                   database:(TLDatabase *)database orchestrator:(TLAgentOrchestrator *)orchestrator
                 inputWidth:(CGFloat)inputWidth browserService:(TLChromiumBrowserController *)browserService;
+@property (nonatomic, readonly) BOOL findBarVisible;
+- (void)showFindBar;
+- (void)findNext:(BOOL)forward;
+- (void)hideFindBar;
 - (void)startInWindow:(nullable NSWindow *)window;
 - (void)setAddressInputWidth:(CGFloat)width;
 @end

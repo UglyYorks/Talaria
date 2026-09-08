@@ -8,8 +8,12 @@
 #import "InputSuggestions.h"
 #import "UIComponents.h"
 #import "design_system/TLBrowserChatPane.h"
+#import "design_system/TLFindBar.h"
 
 @interface TLBrowserTabController ()
+@property (nonatomic, strong) TLFindBar *findBar;
+@property (nonatomic, strong) NSLayoutConstraint *findBarHeightConstraint;
+@property (nonatomic) BOOL findHasQuery;
 @property (nonatomic, strong) TLDatabase *database;
 @property (nonatomic, strong) TLBrowserPreferences *browserPreferences;
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
@@ -85,6 +89,12 @@
 
 - (void)close {
   if (self.isClosed) return;
+  [self dismissFindBarRestoringFocus:NO];
+  self.findBar.queryChangedHandler = nil;
+  self.findBar.navigateHandler = nil;
+  self.findBar.closeHandler = nil;
+  self.browserSession.findResultsChangedHandler = nil;
+  self.browserSession.documentStartedHandler = nil;
   [super close];
   [self.overlayTimer invalidate];
   self.overlayTimer = nil;
@@ -127,6 +137,8 @@
   self.browserHostView.palette = palette;
   self.browserAddressInput.palette = palette;
   self.browserChatPane.palette = palette;
+  self.findBar.palette = palette;
+  if (self.findBarVisible) self.findBarHeightConstraint.constant = palette.fieldHeight + palette.space4 * 2;
   CGFloat reducedInset = palette.browserReducedHeightSpacing + MAX(palette.composerButtonHeight, NSHeight(self.browserAddressInput.frame));
   [self.heightTransition setBrowserBottomInset:self.browserUsesReducedHeight ? -reducedInset : palette.space0 duration:0 overshoot:0];
   self.browserAddressInput.reducedHeight = self.browserUsesReducedHeight;
@@ -221,10 +233,11 @@
         overshoot:0];
     }
   };
+  [self buildFindBar];
   [NSLayoutConstraint activateConstraints:@[
     [browserHostView.leadingAnchor constraintEqualToAnchor:browserContentView.leadingAnchor],
     [browserHostView.trailingAnchor constraintEqualToAnchor:browserContentView.trailingAnchor],
-    [browserHostView.topAnchor constraintEqualToAnchor:browserContentView.topAnchor],
+    [browserHostView.topAnchor constraintEqualToAnchor:self.findBar.bottomAnchor],
     browserHostBottomConstraint,
     [browserBackdropView.leadingAnchor constraintEqualToAnchor:browserContentView.leadingAnchor],
     [browserBackdropView.trailingAnchor constraintEqualToAnchor:browserContentView.trailingAnchor],
@@ -239,6 +252,67 @@
     [addressInput.bottomAnchor constraintEqualToAnchor:browserContentView.bottomAnchor constant:-self.palette.space10],
   ]];
 
+}
+
+- (void)buildFindBar {
+  self.findBar = [TLFindBar new];
+  self.findBar.translatesAutoresizingMaskIntoConstraints = NO;
+  self.findBar.palette = self.palette;
+  self.findBar.hidden = YES;
+  [self.view addSubview:self.findBar];
+  self.findBarHeightConstraint = [self.findBar.heightAnchor constraintEqualToConstant:0];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.findBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+    [self.findBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    [self.findBar.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+    self.findBarHeightConstraint
+  ]];
+  __weak typeof(self) weakSelf = self;
+  self.findBar.queryChangedHandler = ^{ [weakSelf updateFindQuery]; };
+  self.findBar.navigateHandler = ^(BOOL forward) { [weakSelf findNext:forward]; };
+  self.findBar.closeHandler = ^{ [weakSelf hideFindBar]; };
+}
+
+- (BOOL)findBarVisible { return !self.findBar.hidden; }
+- (void)showFindBar {
+  if (self.isClosed) return;
+  BOOL wasVisible = self.findBarVisible;
+  self.findBar.hidden = NO;
+  self.findBarHeightConstraint.constant = self.palette.fieldHeight + self.palette.space4 * 2;
+  [self.view layoutSubtreeIfNeeded];
+  [self.findBar focusSearchField];
+  if (!wasVisible) [self updateFindQuery];
+}
+- (void)updateFindQuery {
+  if (!self.findBarVisible || self.isClosed) return;
+  NSString *query = self.findBar.searchField.stringValue;
+  self.findHasQuery = query.length > 0;
+  [self.findBar setMatchCount:0 activeMatch:0 searching:self.findHasQuery];
+  if (self.findHasQuery) [self.browserService findText:query inSession:self.browserSession forward:YES findNext:NO];
+  else [self.browserService stopFindingInSession:self.browserSession];
+}
+- (void)findNext:(BOOL)forward {
+  if (self.isClosed) return;
+  if (!self.findBarVisible) { [self showFindBar]; return; }
+  NSString *query = self.findBar.searchField.stringValue;
+  if (!query.length) { [self.findBar focusSearchField]; return; }
+  [self.browserService findText:query inSession:self.browserSession forward:forward findNext:self.findHasQuery];
+  self.findHasQuery = YES;
+}
+- (void)hideFindBar { [self dismissFindBarRestoringFocus:YES]; }
+- (void)dismissFindBarRestoringFocus:(BOOL)restoreFocus {
+  if (!self.findBarVisible) return;
+  NSResponder *responder = self.view.window.firstResponder;
+  BOOL ownsFocus = responder == self.findBar.searchField.currentEditor ||
+    ([responder isKindOfClass:NSView.class] && [(NSView *)responder isDescendantOf:self.findBar]);
+  if (ownsFocus) [self.view.window makeFirstResponder:nil];
+  self.findBar.hidden = YES;
+  self.findBarHeightConstraint.constant = 0;
+  self.findHasQuery = NO;
+  [self.browserService stopFindingInSession:self.browserSession];
+  [self.findBar setMatchCount:0 activeMatch:0 searching:NO];
+  [self.view layoutSubtreeIfNeeded];
+  if (restoreFocus && ownsFocus) [self.browserService focusSession:self.browserSession];
 }
 
 - (void)startInWindow:(NSWindow *)window {
@@ -280,6 +354,12 @@
     if (!controller.isClosed && controller.contextLinkHandler) controller.contextLinkHandler(URL, destination);
   };
   if (self.browserSession) {
+    self.browserSession.findResultsChangedHandler = ^(NSInteger count, NSInteger activeMatch, BOOL finalUpdate) {
+      TLBrowserTabController *controller = weakSelf;
+      if (!controller || controller.isClosed || !controller.findBarVisible || !controller.findHasQuery) return;
+      [controller.findBar setMatchCount:count activeMatch:activeMatch searching:!finalUpdate && count == 0];
+    };
+    self.browserSession.documentStartedHandler = ^{ [weakSelf dismissFindBarRestoringFocus:NO]; };
     self.browserSession.devToolsVisibilityChangedHandler = ^{
       TLBrowserTabController *controller = weakSelf;
       if (!controller || controller.isClosed) return;
@@ -588,6 +668,7 @@
     return [controller.browserConversation respondToApproval:requestID choice:choice token:settings.openRouterToken model:settings.selectedModel];
   };
   [self.browserChatPane showApprovalRequest:conversation.pendingApproval];
+  [self.browserChatPane showToolActivities:conversation.toolActivities];
   [self.browserChatPane showMarkdown:conversation.markdown loading:conversation.loading];
   self.browserAddressInput.chatVisible = conversation.minimized;
   self.browserAddressInput.responseCount = conversation.responseCount;

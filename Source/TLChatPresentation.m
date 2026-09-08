@@ -6,6 +6,7 @@
     _messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
     _messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
     _messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
+    _messageActivityViews = [NSMapTable strongToStrongObjectsMapTable];
     _errorMessage = @"";
   }
   return self;

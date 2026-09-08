@@ -36,6 +36,7 @@
 #import "design_system/TLChromeTabView.h"
 #import "WorkspaceState.h"
 #import "TLChatPresentation.h"
+#import "design_system/TLToolActivityView.h"
 #import "TLAttachmentViewerWindowController.h"
 #import "design_system/TLAttachmentChipView.h"
 #import "TLWorkspaceSplitState.h"
@@ -456,6 +457,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     self.messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
     self.messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
     self.messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
+    self.chatPresentation.messageActivityViews = [NSMapTable strongToStrongObjectsMapTable];
     self.errorMessage = @"";
     _sidebarVisible = YES;
     _widgetbookMode = TLWidgetbookModeEnabled();
@@ -692,6 +694,30 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (tab && [self.appStateManager hasWorkspaceTabWithKind:tab.kind tabID:tab.tabID]) {
     [self workspaceTabsController:self.workspaceTabsController moveTab:tab
                           toIndex:MIN(closed.index, [self workspaceTabs].count - 1)];
+  }
+}
+
+- (TLBrowserTabController *)activeBrowserController {
+  TLWorkspaceTab *tab = [self activeWorkspaceTab];
+  if (self.widgetbookMode || tab.kind != TLWorkspaceTabKindBrowser) return nil;
+  id controller = [self runtimeForTab:tab].featureController;
+  return [controller isKindOfClass:TLBrowserTabController.class] && ![controller isClosed] ? controller : nil;
+}
+- (BOOL)canPerformBrowserFindAction:(NSTextFinderAction)action {
+  TLBrowserTabController *controller = [self activeBrowserController];
+  if (!controller) return NO;
+  if (action == NSTextFinderActionHideFindInterface) return controller.findBarVisible;
+  return action == NSTextFinderActionShowFindInterface || action == NSTextFinderActionNextMatch || action == NSTextFinderActionPreviousMatch;
+}
+- (void)performBrowserFindAction:(NSTextFinderAction)action {
+  if (![self canPerformBrowserFindAction:action]) return;
+  TLBrowserTabController *controller = [self activeBrowserController];
+  switch (action) {
+    case NSTextFinderActionShowFindInterface: [controller showFindBar]; break;
+    case NSTextFinderActionNextMatch: [controller findNext:YES]; break;
+    case NSTextFinderActionPreviousMatch: [controller findNext:NO]; break;
+    case NSTextFinderActionHideFindInterface: [controller hideFindBar]; break;
+    default: break;
   }
 }
 
@@ -1636,6 +1662,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.messageRowViews removeObjectForKey:message];
   [self.messageRowSignatures removeObjectForKey:message];
   [self.messageMarkdownViews removeObjectForKey:message];
+  [self.chatPresentation.messageActivityViews removeObjectForKey:message];
   [self.messages removeObjectAtIndex:index];
   [self refreshChatsKeepingActiveSelection];
   [self renderMessagesScrollingToBottom:NO];
@@ -4216,14 +4243,18 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (!row || [self.messageRowViews objectForKey:current] ||
         ![previous.role isEqualToString:current.role] || ![previous.content isEqualToString:current.content] ||
         ![(previous.thinking ?: @"") isEqualToString:current.thinking ?: @""] ||
+        ![previous.toolActivities isEqual:current.toolActivities] ||
         ![(previous.approvalRequest ?: @{}) isEqual:current.approvalRequest ?: @{}]) return;
     [self.messageRowViews setObject:row forKey:current];
     [self.messageRowSignatures setObject:[self.messageRowSignatures objectForKey:previous] forKey:current];
     NSView *markdown = [self.messageMarkdownViews objectForKey:previous];
     if (markdown) [self.messageMarkdownViews setObject:markdown forKey:current];
+    NSView *activity = [self.chatPresentation.messageActivityViews objectForKey:previous];
+    if (activity) [self.chatPresentation.messageActivityViews setObject:activity forKey:current];
     [self.messageRowViews removeObjectForKey:previous];
     [self.messageRowSignatures removeObjectForKey:previous];
     [self.messageMarkdownViews removeObjectForKey:previous];
+    [self.chatPresentation.messageActivityViews removeObjectForKey:previous];
   }];
   self.renderedMessages = self.messages.copy;
   for (TLChatMessage *cachedMessage in self.messageRowViews.keyEnumerator.allObjects) {
@@ -4233,6 +4264,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       [self.messageRowViews removeObjectForKey:cachedMessage];
       [self.messageRowSignatures removeObjectForKey:cachedMessage];
       [self.messageMarkdownViews removeObjectForKey:cachedMessage];
+      [self.chatPresentation.messageActivityViews removeObjectForKey:cachedMessage];
     }
   }
   NSArray<NSView *> *previousRows = self.messageStack.arrangedSubviews.copy;
@@ -4388,6 +4420,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   NSString *previousSignature = [self.messageRowSignatures objectForKey:message];
 
   if (row && [previousSignature isEqualToString:signature]) {
+    TLToolActivityView *activity = (id)[self.chatPresentation.messageActivityViews objectForKey:message];
+    activity.activities = message.toolActivities;
     NSView *markdown = [self.messageMarkdownViews objectForKey:message];
     if (markdown) {
       TLMarkdownRenderer *renderer = [[TLMarkdownRenderer alloc] initWithPalette:self.palette];
@@ -4401,6 +4435,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
 
   [self.messageMarkdownViews removeObjectForKey:message];
+  [self.chatPresentation.messageActivityViews removeObjectForKey:message];
   row = [self rowForMessage:message showsOutgoingTail:showsOutgoingTail];
   [self.messageRowViews setObject:row forKey:message];
   [self.messageRowSignatures setObject:signature forKey:message];
@@ -4430,7 +4465,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   return [NSString stringWithFormat:@"%@\n--TLROW--\n%@\n--TLROW--\n%.0f\n--TLROW--\n%@\n--TLROW--\n%@",
                                     message.role ?: @"",
-                                    [mode stringByAppendingFormat:@"\n%@", message.attachments ?: @[]],
+                                    [mode stringByAppendingFormat:@"\n%@\nactivity:%d\ncontent:%d", message.attachments ?: @[], message.toolActivities.count > 0, message.content.length > 0],
                                     layoutWidth,
                                     showsOutgoingTail ? @"tail" : @"body",
                                     user ? [self displayTextForMessage:message] : ([self messageShowsAWSOutageIntent:message] ? @"intent" : @"answer")];
@@ -4445,6 +4480,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
   self.messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
   self.messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
+  self.chatPresentation.messageActivityViews = [NSMapTable strongToStrongObjectsMapTable];
   self.renderedMessages = @[];
 }
 
@@ -4557,7 +4593,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                                            forOrientation:NSLayoutConstraintOrientationHorizontal];
     if (hasResponseContent) [stack addArrangedSubview:contentLabel];
     else contentLabel = nil;
-  } else if (hasResponseContent || (!message.approvalRequest && !message.attachments.count)) {
+  } else if (hasResponseContent || (!message.approvalRequest && !message.attachments.count && !message.toolActivities.count)) {
     NSString *content = hasResponseContent ? message.content : @"...";
     if ([self messageShowsAWSOutageIntent:message]) {
       content = TLAWSOutageAgentMessage;
@@ -4594,6 +4630,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [row addSubview:attachmentRow];
   }
 
+  if (!user && message.toolActivities.count) {
+    TLToolActivityView *activity = [[TLToolActivityView alloc] init];
+    activity.palette = self.palette;
+    activity.activities = message.toolActivities;
+    [stack addArrangedSubview:activity];
+    [activity.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    [self.chatPresentation.messageActivityViews setObject:activity forKey:message];
+  }
   if (!user && message.approvalRequest) {
     TLApprovalCardView *card = [[TLApprovalCardView alloc] initWithRequest:message.approvalRequest palette:self.palette];
     NSString *requestID = message.approvalRequest[@"request_id"];

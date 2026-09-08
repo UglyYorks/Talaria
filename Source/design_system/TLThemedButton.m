@@ -68,7 +68,11 @@
     NSRectFillUsingOperation(bounds, NSCompositingOperationSourceIn);
     return YES;
   }];
-  [super drawImage:tinted withFrame:frame inView:view];
+  // NSImage drawing uses its own opacity. Match the opacity used for the
+  // surface and title instead of NSButtonCell's native disabled-image dimming.
+  TLThemedButton *button = (TLThemedButton *)view;
+  [tinted drawInRect:frame fromRect:NSZeroRect operation:NSCompositingOperationSourceOver
+            fraction:button.enabled ? 1 : button.palette.disabledOpacity respectFlipped:view.isFlipped hints:nil];
 }
 @end
 

@@ -19,6 +19,8 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 @property (nonatomic, readonly) BOOL devToolsVisible;
 @property (nonatomic, copy, nullable) dispatch_block_t devToolsVisibilityChangedHandler;
 @property (nonatomic, copy, nullable) TLBrowserLinkOpenHandler contextLinkHandler;
+@property (nonatomic, copy, nullable) void (^findResultsChangedHandler)(NSInteger count, NSInteger activeMatch, BOOL finalUpdate);
+@property (nonatomic, copy, nullable) dispatch_block_t documentStartedHandler;
 
 @end
 
@@ -46,6 +48,9 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 - (void)goBackInSession:(nullable TLChromiumBrowserSession *)session;
 - (void)goForwardInSession:(nullable TLChromiumBrowserSession *)session;
 - (void)reloadSession:(nullable TLChromiumBrowserSession *)session;
+- (void)findText:(NSString *)text inSession:(nullable TLChromiumBrowserSession *)session forward:(BOOL)forward findNext:(BOOL)findNext;
+- (void)stopFindingInSession:(nullable TLChromiumBrowserSession *)session;
+- (void)focusSession:(nullable TLChromiumBrowserSession *)session;
 - (void)readPageInSession:(nullable TLChromiumBrowserSession *)session
              expectedURL:(NSURL *)URL
               completion:(void (^)(NSDictionary * _Nullable page, NSError * _Nullable error))completion;

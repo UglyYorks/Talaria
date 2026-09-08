@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageRowViews;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSString *> *messageRowSignatures;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageMarkdownViews;
+@property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageActivityViews;
 @property (nonatomic, copy) NSArray<TLChatMessage *> *renderedMessages;
 @property (nonatomic) BOOL isLoading;
 @property (nonatomic, copy) NSString *errorMessage;

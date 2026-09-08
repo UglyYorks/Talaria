@@ -6,6 +6,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "ChromiumOverlayProbe.h"
 #import "ChromiumDocumentFooter.h"
+#import "ChromiumNavigationTransition.h"
 #import "BrowserPageContext.h"
 #import "TLBrowserPreferences.h"
 #import "TLBrowserDownloadManager.h"
@@ -33,6 +34,7 @@
 #include "include/cef_life_span_handler.h"
 #include "include/cef_keyboard_handler.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_find_handler.h"
 #include "include/cef_request_handler.h"
 #include "include/cef_task.h"
 #include "include/cef_values.h"
@@ -73,6 +75,13 @@ static NSString *TLBrowserOrigin(NSString *string) {
 
 static NSValue *TLChromiumContainerKey(NSView *view) {
   return view ? [NSValue valueWithNonretainedObject:view] : nil;
+}
+
+static void TLChromiumApplyZoom(CefRefPtr<CefBrowser> browser, double zoom) {
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  // SetZoomLevel(0) also resets Chromium's page scale. Avoid sending a visual
+  // reset on every navigation (or unrelated preference change) at the same zoom.
+  if (std::abs(host->GetZoomLevel() - zoom) > 0.000001) host->SetZoomLevel(zoom);
 }
 
 static NSEventModifierFlags TLChromiumCurrentModifierFlags(void) {
@@ -116,10 +125,13 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 @property (nonatomic, readwrite) NSUInteger documentGeneration;
 @property (nonatomic, readwrite, getter=isFullscreen) BOOL fullscreen;
 @property (nonatomic, readwrite) BOOL devToolsVisible;
+@property (nonatomic) BOOL finding;
+@property (nonatomic) NSInteger latestFindIdentifier;
 @property (nonatomic) NSUInteger overlayCursor;
 @property (nonatomic, copy) NSDictionary *overlayHint;
 @property (nonatomic) NSTimeInterval overlayFallbackAfter;
 @property (nonatomic, strong) TLChromiumDocumentFooter *documentFooter;
+@property (nonatomic, strong) TLChromiumNavigationTransition *navigationTransition;
 @property (nonatomic, copy) NSDictionary *documentFooterConfiguration;
 - (instancetype)initWithContainerView:(NSView *)containerView initialURLString:(NSString *)initialURLString;
 @end
@@ -139,6 +151,7 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 @end
 
 @interface TLChromiumBrowserController ()
+- (void)browserFindResult:(CefRefPtr<CefBrowser>)browser identifier:(int)identifier count:(int)count activeMatch:(int)activeMatch finalUpdate:(BOOL)finalUpdate;
 - (void)browserContextReady;
 - (void)downloadUpdatedForBrowser:(CefRefPtr<CefBrowser>)browser;
 - (void)closeBrowserOrKeepDownload:(CefRefPtr<CefBrowser>)browser;
@@ -341,6 +354,7 @@ class TLChromiumClient : public CefClient,
                          public CefKeyboardHandler,
                          public CefLifeSpanHandler,
                          public CefLoadHandler,
+                         public CefFindHandler,
                          public CefRequestHandler,
                          public CefDownloadHandler,
                          public CefPermissionHandler {
@@ -498,6 +512,13 @@ class TLChromiumClient : public CefClient,
 
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+  CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
+  void OnFindResult(CefRefPtr<CefBrowser> browser, int identifier, int count,
+                    const CefRect &selectionRect, int activeMatchOrdinal, bool finalUpdate) override {
+    CEF_REQUIRE_UI_THREAD();
+    [browserController_ browserFindResult:browser identifier:identifier count:count
+                             activeMatch:activeMatchOrdinal finalUpdate:finalUpdate];
+  }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
   CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return this; }
   CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
@@ -652,7 +673,7 @@ class TLChromiumClient : public CefClient,
     CEF_REQUIRE_UI_THREAD();
     if (frame && frame->IsMain()) {
       double zoom = log([[TLBrowserPreferences.sharedPreferences localValue:@"zoom"] doubleValue] / 100.0) / log(1.2);
-      browser->GetHost()->SetZoomLevel(zoom);
+      TLChromiumApplyZoom(browser, zoom);
       [browserController_ browserDocumentStarted:browser];
     }
   }
@@ -1153,6 +1174,36 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
                                                           TLChromiumNavigationCommand::Reload));
 }
 
+- (void)findText:(NSString *)text inSession:(TLChromiumBrowserSession *)session forward:(BOOL)forward findNext:(BOOL)findNext {
+  CefRefPtr<CefBrowser> browser = session ? [self browserWithIdentifier:(int)session.browserIdentifier] : nullptr;
+  if (!browser || !text.length) { [self stopFindingInSession:session]; return; }
+  // Bundled CEF 151 forwards its last flag as Chromium's find_match option:
+  // false counts matches without selecting one. Reset fresh searches explicitly
+  // and always request an active match so typing also scrolls to the result.
+  if (!findNext) [self stopFindingInSession:session];
+  session.finding = YES;
+  browser->GetHost()->Find(TLStringFromNSString(text), forward, false, true);
+}
+
+- (void)stopFindingInSession:(TLChromiumBrowserSession *)session {
+  session.finding = NO;
+  CefRefPtr<CefBrowser> browser = session ? [self browserWithIdentifier:(int)session.browserIdentifier] : nullptr;
+  if (browser) browser->GetHost()->StopFinding(true);
+}
+
+- (void)focusSession:(TLChromiumBrowserSession *)session {
+  CefRefPtr<CefBrowser> browser = session ? [self browserWithIdentifier:(int)session.browserIdentifier] : nullptr;
+  if (browser) browser->GetHost()->SetFocus(true);
+}
+
+- (void)browserFindResult:(CefRefPtr<CefBrowser>)browser identifier:(int)identifier count:(int)count
+             activeMatch:(int)activeMatch finalUpdate:(BOOL)finalUpdate {
+  TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(browser->GetIdentifier())];
+  if (!session.finding || identifier < session.latestFindIdentifier) return;
+  session.latestFindIdentifier = identifier;
+  if (session.findResultsChangedHandler) session.findResultsChangedHandler(count, activeMatch, finalUpdate);
+}
+
 - (void)readPageInSession:(TLChromiumBrowserSession *)session expectedURL:(NSURL *)URL
               completion:(void (^)(NSDictionary *, NSError *))completion {
   CefRefPtr<CefBrowser> browser = session ? [self browserWithIdentifier:(int)session.browserIdentifier] : nullptr;
@@ -1204,9 +1255,13 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   if (!session) {
     return;
   }
+  [self stopFindingInSession:session];
+  session.findResultsChangedHandler = nil;
+  session.documentStartedHandler = nil;
   if (session.browserIdentifier == _fullscreenBrowserIdentifier) [self exitBrowserFullscreen];
   [self devToolsVisibilityChanged:NO forBrowserIdentifier:session.browserIdentifier];
   [session.documentFooter stop]; session.documentFooter = nil;
+  [session.navigationTransition stop]; session.navigationTransition = nil;
 
   NSView *containerView = session.containerView;
   if (containerView) {
@@ -1239,6 +1294,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   if (browserIdentifier && browserIdentifier.integerValue == _fullscreenBrowserIdentifier) [self exitBrowserFullscreen];
   [_browserIdentifiersByContainer removeObjectForKey:containerKey];
   [session.documentFooter stop]; session.documentFooter = nil;
+  [session.navigationTransition stop]; session.navigationTransition = nil;
 
   [_sessionsByContainer removeObjectForKey:containerKey];
   [_titleHandlersByContainer removeObjectForKey:containerKey];
@@ -1456,6 +1512,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
       session.browserIdentifier = browserIdentifier.integerValue;
       if (session) {
         _sessionsByBrowserIdentifier[browserIdentifier] = session;
+        session.navigationTransition = [[TLChromiumNavigationTransition alloc] initWithBrowser:browser container:parentView];
       }
     }
     [self attachBrowserViewForBrowser:browser toContainerView:parentView];
@@ -1529,6 +1586,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   if (!browser) return;
   TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(browser->GetIdentifier())];
   session.fullscreen = fullscreen;
+  [session.navigationTransition cancel];
   [session.documentFooter configure:fullscreen ? @{@"enabled":@NO} : (session.documentFooterConfiguration ?: @{@"enabled":@NO}) completion:nil];
   // AppKit can pump events during presentation. Never re-enter Chromium's pump
   // while it is delivering the fullscreen notification.
@@ -1624,6 +1682,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
     TLChromiumBrowserSession *session = _sessionsByContainer[containerKey];
     [session.documentFooter stop];
     session.documentFooter = nil;
+    [session.navigationTransition stop]; session.navigationTransition = nil;
     session.browserIdentifier = -1;
     [_sessionsByContainer removeObjectForKey:containerKey];
     [_containersByBrowserIdentifier removeObjectForKey:browserIdentifier];
@@ -1725,6 +1784,8 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
 
 - (void)browserDocumentStarted:(CefRefPtr<CefBrowser>)browser {
   TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(browser->GetIdentifier())];
+  [self stopFindingInSession:session];
+  if (session.documentStartedHandler) session.documentStartedHandler();
   session.documentGeneration += 1;
   session.documentFooterConfiguration = nil;
   session.overlayCursor = 0;
@@ -1799,6 +1860,8 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[browserIdentifier];
   if (!isLoading && !session.documentFooter.ready)
     [self installDocumentFooterInSession:session browser:browser];
+  if (isLoading && session.documentGeneration > 0 && !session.fullscreen) [session.navigationTransition begin];
+  else if (!isLoading) [session.navigationTransition finish];
   NSValue *containerKey = _containersByBrowserIdentifier[browserIdentifier];
   TLChromiumBrowserNavigationHandler navigationHandler = nil;
   if (containerKey) {
@@ -2060,7 +2123,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   double zoom = log([[preferences localValue:@"zoom"] doubleValue] / 100.0) / log(1.2);
   for (auto browser : _browsers) {
     if (!browser->IsValid()) continue;
-    browser->GetHost()->SetZoomLevel(zoom);
+    TLChromiumApplyZoom(browser, zoom);
     browser->GetHost()->SetAccessibilityState([[preferences localValue:@"screenReader"] boolValue] ? STATE_ENABLED : STATE_DEFAULT);
   }
   [self checkBackgroundBrowsers];

@@ -24,8 +24,11 @@
 }
 - (void)changed { if (self.changeHandler) self.changeHandler(); }
 - (NSString *)title { return self.chat.title ?: @"New chat"; }
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)toolActivities {
+  return self.messages.count > self.turnStart ? self.messages.lastObject.toolActivities : @[];
+}
 - (BOOL)loading {
-  return self.busy && !self.pendingApproval && (self.messages.count <= self.turnStart || !self.messages.lastObject.content.length);
+  return self.busy && !self.pendingApproval && !self.toolActivities.count && (self.messages.count <= self.turnStart || !self.messages.lastObject.content.length);
 }
 - (NSDictionary *)pendingApproval {
   for (TLChatMessage *message in self.messages.reverseObjectEnumerator) {

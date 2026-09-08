@@ -6,6 +6,7 @@
 #import "TLBrowserHeightTransition.h"
 #import "ChromiumRunLoop.h"
 #import "design_system/TLBrowserChatPane.h"
+#import "design_system/TLToolActivityView.h"
 #import "BrowserPageContext.h"
 #import <WebKit/WebKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -132,6 +133,18 @@ static void TestBrowserChatPane(void) {
   [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
   Check([Evaluate(web, @"document.querySelector('h1')?.textContent") isEqual:@"Updated"], @"pane updates existing Markdown view");
   Check([Evaluate(web, @"window.documentIdentity") isEqual:@"preserved"], @"streaming never reloads the web document");
+  NSArray *activities = @[
+    @{@"name":@"terminal", @"state":@"running", @"detail":@"Running the project test suite"},
+    @{@"name":@"web_search", @"state":@"completed", @"detail":@"Hermes gateway tool callbacks", @"summary":@"Did 1 search"}];
+  [pane showToolActivities:activities];
+  TLToolActivityView *activityView = [pane valueForKey:@"activityView"];
+  [pane showMarkdown:@"" loading:NO];
+  Check(!activityView.hidden && ![[pane valueForKey:@"scrollView"] isHidden], @"tools are visible before answer text arrives");
+  [pane showApprovalRequest:@{@"request_id":@"approval", @"command":@"make test", @"choices":@[@"once", @"deny"]}];
+  [window.contentView layoutSubtreeIfNeeded];
+  Check([[pane valueForKey:@"approvalCard"] superview] == activityView.superview, @"approval and live tools share the visible transcript");
+  [pane showApprovalRequest:nil];
+  [pane showMarkdown:@"# Working on your request\n\nI’m checking the results." loading:NO];
   for (NSNumber *width in @[@200, @320, @700]) {
     [window setContentSize:NSMakeSize(width.doubleValue, 500)];
     [window.contentView layoutSubtreeIfNeeded];
@@ -140,6 +153,29 @@ static void TestBrowserChatPane(void) {
     Check([title.stringValue isEqualToString:pane.title], @"pane header shows conversation title");
     Check(NSMaxX(title.frame) < NSMinX(pane.minimizeButton.frame), @"long title never overlaps minimize control");
     Check(fabs(NSMidY(title.frame) - NSMidY(pane.minimizeButton.frame)) < 1, @"header title is centered opposite minimize control");
+    Check(NSWidth(activityView.frame) <= NSWidth(pane.frame) && NSHeight(activityView.frame) > 0,
+      @"tool activity stays visible and fits at 200px and wider");
+    for (NSTextField *label in activityView.arrangedSubviews) {
+      Check(NSMaxX([label alignmentRectForFrame:label.frame]) <= NSWidth(activityView.frame) + 1,
+        @"tool labels keep their text within the pane, accounting for AppKit text-field optical insets");
+    }
+  }
+  for (NSNumber *preference in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    pane.palette = [TLThemePalette paletteForPreference:preference.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:pane.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    NSView *themedMarkdown = [pane valueForKey:@"markdownView"];
+    NSDate *renderDeadline = [NSDate dateWithTimeIntervalSinceNow:10];
+    while (![[themedMarkdown valueForKey:@"documentReady"] boolValue] && renderDeadline.timeIntervalSinceNow > 0)
+      [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    [window.contentView layoutSubtreeIfNeeded];
+    Check([activityView.activities isEqual:activities], @"theme switching preserves live activity");
+    NSTextField *heading = activityView.arrangedSubviews.firstObject;
+    Check([heading.textColor isEqual:pane.palette.labelText], @"existing activity labels reapply semantic theme colors");
+    NSBitmapImageRep *preview = [pane bitmapImageRepForCachingDisplayInRect:pane.bounds];
+    [pane cacheDisplayInRect:pane.bounds toBitmapImageRep:preview];
+    NSString *path = [NSString stringWithFormat:@"/tmp/talaria-tool-activity-%@.png", pane.palette.dark ? @"dark" : @"light"];
+    [[preview representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
   }
   [window setContentSize:NSMakeSize(700, 500)];
   [window.contentView layoutSubtreeIfNeeded];

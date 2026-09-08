@@ -189,6 +189,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   if ([kindString isEqualToString:@"thinking"]) kind = TLAgentStreamDeltaKindThinking;
   else if ([kindString isEqualToString:@"status"]) kind = TLAgentStreamDeltaKindStatus;
   else if ([kindString isEqualToString:@"approval"]) kind = TLAgentStreamDeltaKindApproval;
+  else if ([kindString isEqualToString:@"tool_activity"]) kind = TLAgentStreamDeltaKindToolActivity;
   else if ([kindString isEqualToString:@"content"]) kind = TLAgentStreamDeltaKindContent;
   else return;
   if (text.length == 0 && kind != TLAgentStreamDeltaKindStatus) return;
