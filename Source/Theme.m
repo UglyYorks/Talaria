@@ -167,7 +167,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.userMessageHorizontalPadding = 12.0;
   self.userMessageVerticalPadding = 8.0;
   // Preserve the tail-to-corner proportions of assets/message-bubble.svg.
-  self.userMessageTailHeight = self.userMessageCornerRadius * 10.0 / 35.0;
+  self.userMessageTailHeight = self.userMessageCornerRadius * 12.0 / 35.0;
   self.assistantMessageMaxWidthMultiplier = 0.90;
   self.controlMinWidth = 78.0;
   self.fieldHeight = 32.0;

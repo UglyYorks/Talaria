@@ -162,10 +162,12 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   body.origin.y += tailHeight;
   body.size.height -= tailHeight;
   CGFloat radius = TLMessageBubbleBodyRadius(requestedRadius, body, rendersAsPill);
+  // Keep the lower tail attachment clear of the left corner on narrow bubbles.
+  radius = MIN(radius, NSWidth(body) * 35.0 / (35.0 + 35.807));
   if (radius <= 0.0 || tailHeight <= 0.0) {
     return TLCreateMessageBubbleBezierPath(body, requestedRadius, rendersAsPill);
   }
-  CGFloat scale = MIN(radius / 35.0, tailHeight / 10.0);
+  CGFloat scale = MIN(radius / 35.0, tailHeight / 12.0);
   CGFloat minX = NSMinX(body), maxX = NSMaxX(body);
   CGFloat minY = NSMinY(body), maxY = NSMaxY(body);
   CGFloat kappa = 0.5522847498307936;
@@ -179,21 +181,21 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
 
   // The rounded shoulder, inset return, tip and lower attachment are one
   // continuous outline copied from the cleaned union, without overlapping fills.
-  [path curveToPoint:TLMessageBubbleReferencePoint(339.749, 99.5967, body, scale)
-       controlPoint1:TLMessageBubbleReferencePoint(352, 83.6444, body, scale)
-       controlPoint2:TLMessageBubbleReferencePoint(347.247, 93.1774, body, scale)];
-  [path curveToPoint:TLMessageBubbleReferencePoint(337.797, 101.151, body, scale)
-       controlPoint1:TLMessageBubbleReferencePoint(338.882, 100.323, body, scale)
-       controlPoint2:TLMessageBubbleReferencePoint(338.346, 100.745, body, scale)];
-  [path curveToPoint:TLMessageBubbleReferencePoint(336.4, 113.755, body, scale)
-       controlPoint1:TLMessageBubbleReferencePoint(334.189, 104.438, body, scale)
-       controlPoint2:TLMessageBubbleReferencePoint(332.678, 109.305, body, scale)];
-  [path curveToPoint:TLMessageBubbleReferencePoint(335.051, 117.525, body, scale)
-       controlPoint1:TLMessageBubbleReferencePoint(338.099, 115.786, body, scale)
-       controlPoint2:TLMessageBubbleReferencePoint(337.585, 118.294, body, scale)];
-  [path curveToPoint:TLMessageBubbleReferencePoint(318, 108, body, scale)
-       controlPoint1:TLMessageBubbleReferencePoint(329.004, 115.69, body, scale)
-       controlPoint2:TLMessageBubbleReferencePoint(321.817, 111.123, body, scale)];
+  [path curveToPoint:TLMessageBubbleReferencePoint(341.519, 97.9727, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(352, 82.7805, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(347.986, 91.6219, body, scale)];
+  [path curveToPoint:TLMessageBubbleReferencePoint(337.881, 101.09, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(340.298, 99.1607, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(339.122, 100.166, body, scale)];
+  [path curveToPoint:TLMessageBubbleReferencePoint(338.267, 115.448, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(334.383, 105.091, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(333.452, 110.55, body, scale)];
+  [path curveToPoint:TLMessageBubbleReferencePoint(337.037, 119.295, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(340.122, 117.336, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(339.6, 119.957, body, scale)];
+  [path curveToPoint:TLMessageBubbleReferencePoint(316.193, 108, body, scale)
+       controlPoint1:TLMessageBubbleReferencePoint(329.864, 117.443, body, scale)
+       controlPoint2:TLMessageBubbleReferencePoint(320.941, 111.844, body, scale)];
 
   [path lineToPoint:NSMakePoint(minX + radius, minY)];
   [path curveToPoint:NSMakePoint(minX, minY + radius)
