@@ -79,22 +79,20 @@ void TLChromiumShowLinkContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefM
       if (!browser->IsValid()) return;
       CefWindowInfo info; CefBrowserSettings settings;
       browser->GetHost()->ShowDevTools(info, nullptr, settings, location);
-    }];
-    if (imageMenu) {
-      NSMenuItem *imageItem = [[NSMenuItem alloc] initWithTitle:@"Image" action:nil keyEquivalent:@""];
-      imageItem.submenu = imageMenu; [menu insertItem:imageItem atIndex:0]; [menu insertItem:NSMenuItem.separatorItem atIndex:1];
-    }
+    } imageMenu:imageMenu];
     // Services reads this specific link from a temporary requestor, even when
     // different text is selected on the web page. The general clipboard is untouched.
     TLLinkServicesView *requestor = [[TLLinkServicesView alloc] initWithFrame:NSZeroRect]; requestor.URL = URL;
     NSResponder *previousResponder = window.firstResponder;
     NSMenu *previousServices = NSApp.servicesMenu;
-    [view addSubview:requestor]; [window makeFirstResponder:requestor];
-    [NSApp registerServicesMenuSendTypes:@[NSPasteboardTypeString, NSPasteboardTypeURL] returnTypes:@[]];
-    NSApp.servicesMenu = menu.itemArray.lastObject.submenu;
-    NSUpdateDynamicServices();
+    if (!imageMenu) {
+      [view addSubview:requestor]; [window makeFirstResponder:requestor];
+      [NSApp registerServicesMenuSendTypes:@[NSPasteboardTypeString, NSPasteboardTypeURL] returnTypes:@[]];
+      NSApp.servicesMenu = menu.itemArray.lastObject.submenu;
+      NSUpdateDynamicServices();
+    }
     [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
-    NSApp.servicesMenu = previousServices;
+    if (!imageMenu) NSApp.servicesMenu = previousServices;
     if (window.firstResponder == requestor) [window makeFirstResponder:previousResponder];
     [requestor removeFromSuperview];
     if (selection.command >= 0 && browser->IsValid()) callback->Continue((int)selection.command, selection.flags);

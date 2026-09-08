@@ -6,7 +6,8 @@ typedef void (^TLBrowserLinkOpenHandler)(NSURL *URL, TLBrowserLinkDestination de
 @interface TLBrowserLinkActions : NSObject
 + (void)copyURL:(NSURL *)URL toPasteboard:(NSPasteboard *)pasteboard;
 + (NSMenu *)menuForURL:(NSURL *)URL title:(NSString *)title view:(NSView *)view point:(NSPoint)point
-                 open:(TLBrowserLinkOpenHandler)open download:(void (^)(BOOL saveAs))download inspect:(dispatch_block_t)inspect;
+                 open:(TLBrowserLinkOpenHandler)open download:(void (^)(BOOL saveAs))download inspect:(dispatch_block_t)inspect
+            imageMenu:(nullable NSMenu *)imageMenu;
 + (void)appendLibraryMenusToMenu:(NSMenu *)menu window:(NSWindow *)window open:(TLBrowserLinkOpenHandler)open;
 + (void)promptForName:(NSString *)title initialValue:(NSString *)value window:(NSWindow *)window completion:(void (^)(NSString * _Nullable))completion;
 @end

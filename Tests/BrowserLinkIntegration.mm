@@ -5,6 +5,7 @@
 #import "TLBrowserDownloadManager.h"
 #import "ChromiumImageActions.h"
 #import "TLBrowserLinkActions.h"
+#import "design_system/TLActionMenuItem.h"
 #import "design_system/TLLinkServicesView.h"
 #include "include/cef_client.h"
 #include "include/cef_menu_model_delegate.h"
@@ -111,12 +112,38 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   Check([store removeGroup:group error:&error] && !store.groups.count, @"saved tab group can be removed");
   self.groupID = [TLBrowserLinkStore.sharedStore createGroupNamed:@"Link Test Group" error:&error];
 }
+- (void)testCombinedMenu {
+  NSMenu *images = [NSMenu new]; images.autoenablesItems = NO;
+  __block NSInteger selectedImage = -1;
+  NSArray *imageTitles = TLBrowserImageMenuTitles();
+  for (NSUInteger i=0; i<imageTitles.count; i++) {
+    if (i == TLBrowserImageSaveDownloads || i == TLBrowserImageCopyAddress || i == TLBrowserImageShare) [images addItem:NSMenuItem.separatorItem];
+    NSMenuItem *item = [TLActionMenuItem itemWithTitle:imageTitles[i] action:^{ selectedImage = i; }];
+    item.tag = TLChromiumImageCommandFirst + i; item.enabled = i != TLBrowserImageLookUp;
+    [images addItem:item];
+  }
+  [images addItem:NSMenuItem.separatorItem];
+  [images addItem:[TLActionMenuItem itemWithTitle:@"Inspect Element" action:^{}]];
+  NSMenuItem *imageOpen = images.itemArray.firstObject;
+  NSMenu *combined = [TLBrowserLinkActions menuForURL:[self URL:@"/one"] title:@"Linked image" view:self.window.contentView point:NSZeroPoint
+    open:^(NSURL *, TLBrowserLinkDestination, NSString *) {} download:^(BOOL) {} inspect:^{} imageMenu:images];
+  NSArray *expected = @[@"Open Link in New Tab",@"Open Link in New Window",@"Open Link in Tab Group",@"",
+    @"Download Linked File",@"Download Linked File As…",@"",@"Copy Link",@"",
+    @"Open Image in New Tab",@"Open Image in New Window",@"",@"Save Image to “Downloads”",@"Save Image As…",
+    @"Add Image to Photos",@"Use Image as Desktop Wallpaper",@"",@"Copy Image Address",@"Copy Image",@"Copy Subject",@"Look Up",@"",@"Share…",@"",@"Inspect Element"];
+  Check([[combined.itemArray valueForKey:@"title"] isEqual:expected], @"linked-image menu matches the flat reference order with one Share and Inspect");
+  Check([combined itemAtIndex:9] == imageOpen && ![combined itemWithTitle:@"Image"], @"image actions retain their targets and are directly accessible");
+  Check(![combined itemWithTitle:@"Look Up"].enabled, @"combined menu preserves unavailable image-action states");
+  [combined performActionForItemAtIndex:9];
+  Check(selectedImage == TLBrowserImageOpenTab && imageOpen.tag == TLChromiumImageCommandFirst, @"image selection still routes to its original image command");
+}
 - (void)testMenu {
+  [self testCombinedMenu];
   NSURL *URL = [self URL:@"/one"];
   __block BOOL downloaded = NO, saveAs = NO;
   NSMenu *menu = [TLBrowserLinkActions menuForURL:URL title:@"A link" view:self.window.contentView point:NSZeroPoint
     open:^(NSURL *URL, TLBrowserLinkDestination destination, NSString *groupID) { self.menuDestination = destination; self.openedURL = URL; }
-    download:^(BOOL ask) { downloaded = YES; saveAs = ask; } inspect:^{}];
+    download:^(BOOL ask) { downloaded = YES; saveAs = ask; } inspect:^{} imageMenu:nil];
   NSArray *expected = @[@"Open Link in New Tab",@"Open Link in New Window",@"Open Link in Tab Group",@"",@"Download Linked File",@"Download Linked File As…",@"",@"Copy Link",@"",@"Share…",@"",@"Inspect Element",@"",@"Services"];
   Check(menu.numberOfItems == expected.count, @"link menu has all requested options, excluding bookmarks and reading list");
   for (NSUInteger i=0; i<expected.count; i++) Check([[menu itemAtIndex:i].title isEqual:expected[i]], [NSString stringWithFormat:@"link menu row %lu",(unsigned long)i]);

@@ -30,7 +30,7 @@ static void TLLinkEmptyItem(NSMenu *menu, NSString *title) {
   [alert.window makeFirstResponder:name];
 }
 + (NSMenu *)menuForURL:(NSURL *)URL title:(NSString *)title view:(NSView *)view point:(NSPoint)point
-                 open:(TLBrowserLinkOpenHandler)open download:(void (^)(BOOL))download inspect:(dispatch_block_t)inspect {
+                 open:(TLBrowserLinkOpenHandler)open download:(void (^)(BOOL))download inspect:(dispatch_block_t)inspect imageMenu:(NSMenu *)imageMenu {
   TLBrowserLinkStore *store = TLBrowserLinkStore.sharedStore;
   NSWindow *window = view.window;
   NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
@@ -65,6 +65,14 @@ static void TLLinkEmptyItem(NSMenu *menu, NSString *title) {
     [self copyURL:URL toPasteboard:NSPasteboard.generalPasteboard];
   }); copy.image = [NSImage imageWithSystemSymbolName:@"link" accessibilityDescription:nil]; [menu addItem:copy];
   [menu addItem:NSMenuItem.separatorItem];
+  if (imageMenu) {
+    // Linked images expose both sets of actions directly. Keep the original
+    // image targets, enabled states and command IDs, including its Share/Inspect.
+    for (NSMenuItem *item in imageMenu.itemArray) {
+      [imageMenu removeItem:item]; [menu addItem:item];
+    }
+    return menu;
+  }
   NSMenuItem *share = TLLinkAction(@"Share…", ^{ [TLBrowserImageActions shareURL:URL fromView:view atPoint:point]; });
   share.image = [NSImage imageWithSystemSymbolName:@"square.and.arrow.up" accessibilityDescription:nil]; [menu addItem:share];
   [menu addItem:NSMenuItem.separatorItem];
