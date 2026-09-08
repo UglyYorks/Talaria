@@ -166,9 +166,14 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   CGFloat tailBaseX = MAX(minX + radius, maxX - radius * 1.25) + tailOffset;
   CGFloat tailBaseWidth = tipX - tailBaseX;
   CGFloat arcControl = (4.0 / 3.0) * tan(M_PI / 16.0);
-  NSPoint cornerJoin = NSMakePoint(maxX - radius * (1.0 - diagonal),
+  NSPoint cornerJoin = NSMakePoint(maxX - radius * (1.0 - diagonal) + tailOffset,
                                   minY + radius * (1.0 - diagonal));
-  CGFloat returnHandle = radius / 3.0 + tailOffset * 0.5;
+  CGFloat returnHandle = radius / 3.0;
+  CGFloat cornerInset = maxX - cornerJoin.x;
+  CGFloat cornerHandle = MIN(radius * arcControl * diagonal, cornerInset);
+  CGFloat verticalHandle = radius > 0.0
+    ? MAX(0.0, radius * diagonal - cornerInset - 3.0 * sqrt(2.0) * cornerHandle * cornerHandle / radius)
+    : 0.0;
 
   // A broad base sweeps from the bottom edge into the slim, rounded tip.
   // Clamp it to the bottom-left corner so short replies keep a smooth outline.
@@ -183,12 +188,11 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   [path curveToPoint:cornerJoin
        controlPoint1:NSMakePoint(tipX - returnHandle, tipY + tipRadius + returnHandle)
        controlPoint2:NSMakePoint(cornerJoin.x - radius * 0.16, cornerJoin.y - radius * 0.16)];
-  // Keep the body's rounded corner fixed as the base and tip move together.
-  // The concave return retains the same tangent at both ends.
+  // Both attachment points and every tail control point move together.
+  // Rejoin the stationary side with matching tangent and corner curvature.
   [path curveToPoint:NSMakePoint(maxX, minY + radius)
-       controlPoint1:NSMakePoint(cornerJoin.x + radius * arcControl * diagonal,
-                                cornerJoin.y + radius * arcControl * diagonal)
-       controlPoint2:NSMakePoint(maxX, minY + radius * (1.0 - arcControl))];
+       controlPoint1:NSMakePoint(cornerJoin.x + cornerHandle, cornerJoin.y + cornerHandle)
+       controlPoint2:NSMakePoint(maxX, minY + radius - verticalHandle)];
 
   [path lineToPoint:NSMakePoint(maxX, maxY - radius)];
   [path curveToPoint:NSMakePoint(maxX - radius, maxY)
