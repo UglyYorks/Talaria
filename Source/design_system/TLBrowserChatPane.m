@@ -1,12 +1,14 @@
 #import "TLBrowserChatPane.h"
 #import "TLApprovalCardView.h"
 #import "TLGlassButton.h"
+#import "TLToolActivityView.h"
 #import <QuartzCore/QuartzCore.h>
 
 @interface TLBrowserChatPane ()
 @property NSDictionary *approvalRequest;
 @property TLApprovalCardView *approvalCard;
-@property NSLayoutConstraint *markdownBottom;
+@property NSStackView *contentStack;
+@property TLToolActivityView *activityView;
 @property (nonatomic, readwrite) NSButton *minimizeButton;
 @property NSTextField *titleLabel;
 @property NSProgressIndicator *spinner;
@@ -47,6 +49,12 @@
     _document = [[TLFlippedView alloc] init];
     _document.translatesAutoresizingMaskIntoConstraints = NO;
     _scrollView.documentView = _document;
+    _contentStack = [[NSStackView alloc] init];
+    _contentStack.translatesAutoresizingMaskIntoConstraints = NO;
+    _contentStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    _contentStack.alignment = NSLayoutAttributeLeading;
+    [_document addSubview:_contentStack];
+    _activityView = [[TLToolActivityView alloc] init];
     [self addSubview:_scrollView];
     _spinner = [[NSProgressIndicator alloc] init];
     _spinner.translatesAutoresizingMaskIntoConstraints = NO;
@@ -67,6 +75,10 @@
       [_scrollView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-palette.space8],
       [_scrollView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-palette.space8],
       [_document.widthAnchor constraintEqualToAnchor:_scrollView.contentView.widthAnchor],
+      [_contentStack.leadingAnchor constraintEqualToAnchor:_document.leadingAnchor],
+      [_contentStack.trailingAnchor constraintEqualToAnchor:_document.trailingAnchor],
+      [_contentStack.topAnchor constraintEqualToAnchor:_document.topAnchor],
+      [_contentStack.bottomAnchor constraintEqualToAnchor:_document.bottomAnchor],
       [_spinner.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
       [_spinner.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
     ]];
@@ -84,6 +96,12 @@
   self.titleLabel.font = palette.labelFont;
   self.titleLabel.textColor = palette.controlText;
   if (!self.document) return;
+  self.contentStack.spacing = palette.space5;
+  self.activityView.palette = palette;
+  for (NSView *view in [self.contentStack.arrangedSubviews copy]) {
+    [self.contentStack removeArrangedSubview:view];
+    [view removeFromSuperview];
+  }
   [self.approvalCard removeFromSuperview];
   self.approvalCard = nil;
   [self.markdownView removeFromSuperview];
@@ -100,14 +118,11 @@
     }
   };
   self.markdownView = [self.renderer viewForMarkdown:self.markdown ?: @"" textColor:palette.assistantMessageText baseFont:palette.messageBodyFont];
-  [self.document addSubview:self.markdownView];
-  self.markdownBottom = [self.markdownView.bottomAnchor constraintEqualToAnchor:self.document.bottomAnchor];
-  [NSLayoutConstraint activateConstraints:@[
-    [self.markdownView.leadingAnchor constraintEqualToAnchor:self.document.leadingAnchor],
-    [self.markdownView.trailingAnchor constraintEqualToAnchor:self.document.trailingAnchor],
-    [self.markdownView.topAnchor constraintEqualToAnchor:self.document.topAnchor],
-    self.markdownBottom,
-  ]];
+  self.markdownView.hidden = !self.markdown.length;
+  [self.contentStack addArrangedSubview:self.markdownView];
+  [self.contentStack addArrangedSubview:self.activityView];
+  [self.markdownView.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor].active = YES;
+  [self.activityView.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor].active = YES;
   NSDictionary *approval = self.approvalRequest;
   self.approvalRequest = nil;
   [self showApprovalRequest:approval];
@@ -115,21 +130,28 @@
 - (void)showApprovalRequest:(NSDictionary *)request {
   if ([(self.approvalRequest ?: @{}) isEqual:request ?: @{}]) return;
   self.approvalRequest = request;
+  if (self.approvalCard) [self.contentStack removeArrangedSubview:self.approvalCard];
   [self.approvalCard removeFromSuperview];
   self.approvalCard = nil;
-  self.markdownBottom.active = !request;
   if (!request) return;
   self.approvalCard = [[TLApprovalCardView alloc] initWithRequest:request palette:self.palette];
   __weak typeof(self) weakSelf = self;
   self.approvalCard.choiceHandler = ^BOOL(NSString *choice) {
     return weakSelf.approvalHandler ? weakSelf.approvalHandler(request[@"request_id"], choice) : NO;
   };
-  [self.document addSubview:self.approvalCard];
-  [NSLayoutConstraint activateConstraints:@[
-    [self.approvalCard.leadingAnchor constraintEqualToAnchor:self.document.leadingAnchor],
-    [self.approvalCard.trailingAnchor constraintEqualToAnchor:self.document.trailingAnchor],
-    [self.approvalCard.topAnchor constraintEqualToAnchor:self.markdownView.bottomAnchor constant:self.palette.space5],
-    [self.approvalCard.bottomAnchor constraintEqualToAnchor:self.document.bottomAnchor]]];
+  [self.contentStack addArrangedSubview:self.approvalCard];
+  [self.approvalCard.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor].active = YES;
+}
+- (void)showToolActivities:(NSArray<NSDictionary<NSString *, NSString *> *> *)activities {
+  if ([self.activityView.activities isEqual:activities]) return;
+  BOOL followsBottom = self.loading ||
+    NSMaxY(self.scrollView.documentVisibleRect) >= NSHeight(self.document.bounds) - self.palette.space8;
+  self.activityView.activities = activities;
+  [self.document layoutSubtreeIfNeeded];
+  if (followsBottom) {
+    [self.scrollView.contentView scrollToPoint:NSMakePoint(0, MAX(0, NSHeight(self.document.bounds) - NSHeight(self.scrollView.contentView.bounds)))];
+    [self.scrollView reflectScrolledClipView:self.scrollView.contentView];
+  }
 }
 - (void)setTitle:(NSString *)title {
   _title = [title copy];
@@ -140,6 +162,7 @@
   self.followsBottom = self.loading || !self.markdown.length ||
     NSMaxY(self.scrollView.documentVisibleRect) >= NSHeight(self.document.bounds) - self.palette.space8;
   self.markdown = markdown ?: @"";
+  self.markdownView.hidden = !self.markdown.length;
   self.loading = loading;
   self.scrollView.hidden = loading;
   if (loading && !self.hidden) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];

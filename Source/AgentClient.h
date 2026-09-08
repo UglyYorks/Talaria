@@ -11,6 +11,7 @@ typedef NS_ENUM(NSInteger, TLAgentStreamDeltaKind) {
   TLAgentStreamDeltaKindThinking,
   TLAgentStreamDeltaKindStatus,
   TLAgentStreamDeltaKindApproval,
+  TLAgentStreamDeltaKindToolActivity,
 };
 
 typedef void (^TLAgentStreamDeltaHandler)(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text);

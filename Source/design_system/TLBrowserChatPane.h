@@ -7,6 +7,7 @@
 @property (nonatomic, copy) TLMarkdownLinkHandler linkHandler;
 @property (nonatomic, copy) BOOL (^approvalHandler)(NSString *requestID, NSString *choice);
 - (void)showApprovalRequest:(NSDictionary *)request;
+- (void)showToolActivities:(NSArray<NSDictionary<NSString *, NSString *> *> *)activities;
 @property (nonatomic, readonly, getter=isPresented) BOOL presented;
 - (void)setPresented:(BOOL)presented animated:(BOOL)animated;
 - (void)showMarkdown:(NSString *)markdown loading:(BOOL)loading;

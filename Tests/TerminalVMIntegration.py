@@ -5,7 +5,7 @@ workspace afterward. Ordinary make test uses local PTYs instead.
 
 Build the probe from the repository root with:
   xcrun clang -fobjc-arc -fmodules -ISource Tests/TerminalVMProbe.m \
-    Source/AgentVMService.m Source/TalariaModels.m Source/TLVMTerminalSession.m \
+    Source/AgentVMService.m Source/TLAgentVMLock.m Source/TalariaModels.m Source/TLVMTerminalSession.m \
     -framework Foundation -framework AppKit -framework Virtualization \
     -o build/TerminalVMProbe
 Sign it with the app's development identity and Entitlements.plist, then run:

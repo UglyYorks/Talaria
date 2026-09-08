@@ -13,6 +13,29 @@ import threading
 _lock = threading.RLock()
 
 
+def configure_vm_database(config=None):
+    """Provision SQLite for Talaria's macOS-backed virtiofs volume.
+
+    This is VM storage setup, before the gateway opens its heartbeat/session
+    database. Hermes owns the config format and the database connections. Never
+    change an existing database's journal mode under live connections; profiles
+    already in WAL need a separate offline migration/recovery.
+    """
+    if config is None:
+        from hermes_cli import config
+    desired = {"journal_mode": "delete", "mmap_size": 0, "synchronous": "full"}
+    current = config.load_config().get("database", {})
+    if not isinstance(current, dict):
+        raise RuntimeError("Hermes database configuration must be a mapping.")
+    if all(current.get(key) == value for key, value in desired.items()):
+        return
+    config.save_config({"database": desired}, merge_existing=True,
+                       preserve_keys={("database", key) for key in desired})
+    verified = config.load_config().get("database", {})
+    if not isinstance(verified, dict) or any(verified.get(key) != value for key, value in desired.items()):
+        raise RuntimeError("Could not configure Hermes database storage for the shared VM volume.")
+
+
 def credentials(action, params, config=None):
     if config is None:
         from hermes_cli import config
@@ -98,6 +121,8 @@ def register(server):
 
 
 def main():
+    # Must precede entry/server import and its background database maintenance.
+    configure_vm_database()
     from tui_gateway import entry
     from hermes_automations import register as register_automations
     register(entry.server)

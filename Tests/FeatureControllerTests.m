@@ -34,6 +34,7 @@
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLWorkspaceOutlineView.h"
 #import "design_system/TLChromeTabView.h"
+#import "design_system/TLToolActivityView.h"
 
 static void Check(BOOL condition, NSString *message) {
   if (!condition) { NSLog(@"FAIL: %@", message); exit(1); }
@@ -310,12 +311,16 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   [controller setValue:stack forKey:@"messageDocumentView"];
   TLChatMessage *user = [TLChatMessage messageWithRole:TLRoleUser content:@"Write a long answer" thinking:nil];
   TLChatMessage *assistant = [TLChatMessage messageWithRole:TLRoleAssistant content:@"First paragraph.\n\n" thinking:nil];
+  [assistant applyToolActivity:@{@"id":@"tool-1", @"name":@"terminal", @"state":@"running", @"detail":@"make test"}];
   NSMutableArray *messages = [NSMutableArray arrayWithObjects:user, assistant, nil];
   [controller setValue:messages forKey:@"messages"];
   [controller renderMessages];
   NSArray *rows = stack.arrangedSubviews.copy;
   NSMapTable *markdownViews = [controller valueForKey:@"messageMarkdownViews"];
   NSView *markdown = [markdownViews objectForKey:assistant];
+  NSMapTable *activityViews = [[controller valueForKey:@"chatPresentation"] valueForKey:@"messageActivityViews"];
+  TLToolActivityView *activityView = [activityViews objectForKey:assistant];
+  Check(activityView && !activityView.hidden && activityView.superview, @"main chat displays tools alongside streamed answer text");
   WKWebView *web = [markdown valueForKey:@"webView"];
   NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
   while (![[markdown valueForKey:@"documentReady"] boolValue] && deadline.timeIntervalSinceNow > 0) {
@@ -340,6 +345,10 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
           @"already visible answer text remains present throughout the stream");
   }
   Check([EvaluateChatScript(web, @"document.body.innerText") containsString:@"Done."], @"final streamed text is rendered");
+  [assistant applyToolActivity:@{@"id":@"tool-1", @"name":@"terminal", @"state":@"completed", @"summary":@"Tests passed"}];
+  [controller renderMessages];
+  Check([activityViews objectForKey:assistant] == activityView && [markdownViews objectForKey:assistant] == markdown &&
+    [activityView.activities.firstObject[@"state"] isEqual:@"completed"], @"tool completions update in place without reloading the answer");
   EvaluateChatScript(web, @"window.domRenderCount = 0; const render = window.talariaRender; window.talariaRender = source => { window.domRenderCount++; render(source); }; true;");
   [controller renderMessages];
   [controller renderMessages];
@@ -363,15 +372,18 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
   Check(controller.renderCount == renderCount, @"immediate navigation or completion invalidates an older pending render");
   TLStoredChatMessage *saved = [TLStoredChatMessage messageWithRole:assistant.role content:assistant.content thinking:assistant.thinking];
+  saved.toolActivities = assistant.toolActivities;
   saved.messageID = 7;
   messages[1] = saved;
   [controller renderMessages];
   Check([stack.arrangedSubviews isEqual:rows] && [markdownViews objectForKey:saved] == markdown && stack.removalCount == 0,
         @"saving the completed answer preserves its visible row and renderer");
+  Check([activityViews objectForKey:saved] == activityView, @"saving retains the visible tool activity view");
   [messages removeObjectAtIndex:1];
   [controller renderMessages];
   Check(stack.arrangedSubviews.count == 1 && stack.arrangedSubviews.firstObject == rows.firstObject &&
         ![markdownViews objectForKey:saved], @"deleting an answer removes only its own row and renderer");
+  Check(![activityViews objectForKey:saved], @"deleting an answer releases its tool activity view");
   [controller scheduleStreamingMessageRender];
   [controller resetMessageRowCache];
   renderCount = controller.renderCount;
@@ -933,7 +945,10 @@ static void TestConcurrentChatStreams(void) {
   Check(controller.stream.requests.count == 2 && [a.sessionID isEqual:@"17"] && [b.sessionID isEqual:@"18"],
     @"two independent runners dispatch separate Hermes sessions");
   a.delta(a.requestID, TLAgentStreamDeltaKindContent, @" continues");
+  a.delta(a.requestID, TLAgentStreamDeltaKindToolActivity, @"{\"id\":\"a-tool\",\"name\":\"terminal\",\"state\":\"running\"}");
   b.delta(b.requestID, TLAgentStreamDeltaKindContent, @"Answer B");
+  Check(((TLChatMessage *)messagesA.lastObject).toolActivities.count == 1 && !((TLChatMessage *)messagesB.lastObject).toolActivities.count,
+    @"background tool updates stay in their originating chat");
   Check([((TLChatMessage *)messagesA.lastObject).content isEqual:@"Answer A continues"] &&
     [((TLChatMessage *)messagesB.lastObject).content isEqual:@"Answer B"], @"interleaved deltas stay in their own chats");
   input.textView.string = @"do not duplicate B";

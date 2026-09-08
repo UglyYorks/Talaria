@@ -419,9 +419,55 @@ static void TestAttachmentPrompt(void) {
     [stream.lastMessages.lastObject.content containsString:@"/help with this file"], @"attached slash text is sent as a turn, not dispatched as a TUI command");
 }
 
+static void TestLiveToolActivity(void) {
+  for (NSNumber *outcome in @[@0, @1, @2, @3]) {
+    TLTurnTestMessageStore *store = [TLTurnTestMessageStore new];
+    TLTurnTestStream *stream = [TLTurnTestStream new];
+    stream.deferred = YES;
+    TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+    NSMutableArray<TLChatMessage *> *messages = [NSMutableArray array];
+    __block NSUInteger updates = 0;
+    __block TLAssistantTurnResult *result;
+    [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"hello"
+      updateHandler:^{ updates++; } completionHandler:^(TLAssistantTurnResult *value) { result = value; } error:nil];
+    TLTurnTestRequest *request = stream.requests.lastObject;
+    void (^emit)(NSString *, NSString *, NSString *) = ^(NSString *rid, NSString *identifier, NSString *state) {
+      NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"id":identifier, @"name":@"terminal", @"state":state, @"detail":@"pwd"} options:0 error:nil];
+      request.delta(rid, TLAgentStreamDeltaKindToolActivity, [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);
+    };
+    emit(@"wrong-request", @"wrong", @"running");
+    request.delta(request.requestID, TLAgentStreamDeltaKindToolActivity, @"[]");
+    TLAssert(!messages.lastObject.toolActivities.count, @"malformed and foreign tool updates are ignored");
+    emit(request.requestID, @"preparing:terminal", @"preparing");
+    emit(request.requestID, @"a", @"running");
+    TLAssert(runner.running && messages.lastObject.toolActivities.count == 1, @"preparing becomes a live running row before completion");
+    TLChatMessage *snapshot = [messages.lastObject copy];
+    NSUInteger before = updates;
+    emit(request.requestID, @"a", @"running");
+    TLAssert(updates == before, @"repeated tool snapshots do not redraw");
+    emit(request.requestID, @"b", @"running");
+    emit(request.requestID, @"a", @"completed");
+    emit(request.requestID, @"a", @"running");
+    TLAssert(messages.lastObject.toolActivities.count == 2 && [messages.lastObject.toolActivities[0][@"state"] isEqual:@"completed"],
+      @"overlapping same-name tools are keyed by call ID and completed calls stay completed");
+    TLAssert([snapshot.toolActivities[0][@"state"] isEqual:@"running"], @"activity snapshots are immutable");
+    TLAssert(!messages.lastObject.content.length && !messages.lastObject.thinking.length &&
+      ![messages.lastObject.requestDictionary.description containsString:@"terminal"], @"tool activity stays out of answer, reasoning and prompt context");
+    if (outcome.integerValue == 3) request.delta(request.requestID, TLAgentStreamDeltaKindApproval, @"{\"request_id\":\"p\",\"command\":\"pwd\"}");
+    if (outcome.integerValue == 2) [runner cancel];
+    else request.completion(outcome.integerValue == 1 ? TLTestError(@"Disconnected") : nil);
+    NSString *expected = @[@"ended", @"interrupted", @"stopped", @"paused"][outcome.unsignedIntegerValue];
+    TLAssert([messages.lastObject.toolActivities.lastObject[@"state"] isEqual:expected], @"all terminal paths settle active tool rows");
+    TLAssert(result.assistantMessage.toolActivities.count == 2, @"tool-only turns survive persistence replacement and failure");
+    emit(request.requestID, @"b", @"completed");
+    TLAssert([messages.lastObject.toolActivities.lastObject[@"state"] isEqual:expected], @"late callbacks cannot reopen a finished turn");
+  }
+}
+
 int main(void) {
   @autoreleasepool {
     TestAttachmentPrompt();
+    TestLiveToolActivity();
     TestCancellation();
     TestSuccessfulTurn();
     TestUserSaveFailure();
