@@ -127,7 +127,7 @@ static NSBezierPath *TLCreateRoundedRectBezierPath(NSRect rect,
 
 static CGFloat TLMessageBubbleBodyRadius(CGFloat requestedRadius, NSRect bodyRect, BOOL rendersAsPill) {
   if (rendersAsPill) {
-    return MAX(0.0, NSHeight(bodyRect) * 0.5);
+    return MAX(0.0, MIN(NSWidth(bodyRect), NSHeight(bodyRect)) * 0.5);
   }
 
   return TLClampedCornerRadius(requestedRadius, bodyRect);
@@ -143,176 +143,56 @@ static CGPathRef TLCreateMessageBubblePath(NSRect rect, CGFloat requestedRadius,
   return TLCreateRoundedRectPath(rect, radius, radius, radius, radius);
 }
 
-static const CGFloat TLMessageBubbleTailDropScale = 0.20;
-static const CGFloat TLMessageBubbleTailTipInsetScale = 0.32;
-static const CGFloat TLMessageBubbleTailRightJoinWidthScale = 0.30;
-static const CGFloat TLMessageBubbleTailRightJoinRadiusScale = 0.45;
-static const CGFloat TLMessageBubbleTailEndHeightScale = 0.72;
-static const CGFloat TLMessageBubbleTailTipRadiusScale = 0.22;
-static const CGFloat TLMessageBubbleTailTipRadiusTokenScale = 0.1;
-static const CGFloat TLMessageBubbleTailTipStartXScale = 0.80;
-static const CGFloat TLMessageBubbleTailTipStartYScale = 0.12;
-static const CGFloat TLMessageBubbleTailTipEndXScale = 0.10;
-static const CGFloat TLMessageBubbleTailTipEndYScale = 0.82;
-static const CGFloat TLMessageBubbleTailLeadingControlXScale = 0.52;
-static const CGFloat TLMessageBubbleTailLeadingControlDropScale = 0.12;
-static const CGFloat TLMessageBubbleTailLeadingControlToTipXScale = 0.44;
-static const CGFloat TLMessageBubbleTailLeadingControlToTipYScale = 0.18;
-static const CGFloat TLMessageBubbleTailTipControl1XScale = 0.36;
-static const CGFloat TLMessageBubbleTailTipControl2XScale = 0.08;
-static const CGFloat TLMessageBubbleTailTipControl2YScale = 0.28;
-static const CGFloat TLMessageBubbleTailTrailingControlXScale = 0.10;
-static const CGFloat TLMessageBubbleTailTrailingControlYScale = 0.22;
-static const CGFloat TLMessageBubbleTailTrailingControlToEndXScale = 0.28;
-static const CGFloat TLMessageBubbleTailTrailingControlToEndYScale = 0.30;
-
-typedef struct {
-  BOOL valid;
-  CGPoint start;
-  CGPoint leadingControl1;
-  CGPoint leadingControl2;
-  CGPoint tipStart;
-  CGPoint tipControl1;
-  CGPoint tipControl2;
-  CGPoint tipEnd;
-  CGPoint trailingControl1;
-  CGPoint trailingControl2;
-  CGPoint end;
-} TLMessageBubbleTailGeometry;
-
-static NSPoint TLNSPointFromCGPoint(CGPoint point) {
-  return NSMakePoint(point.x, point.y);
-}
-
-static CGFloat TLMessageBubbleTailDrop(TLThemePalette *palette, NSRect bounds) {
-  return MIN(palette.space4, NSHeight(bounds) * TLMessageBubbleTailDropScale);
-}
-
-static CGFloat TLMessageBubbleTailWidth(TLThemePalette *palette) {
-  return palette.space11;
-}
-
-static CGFloat TLMessageBubbleTailBaseWidth(TLThemePalette *palette) {
-  return palette.space10;
-}
-
-static NSRect TLMessageBubbleBodyRectForBounds(TLThemePalette *palette, NSRect bounds) {
-  CGFloat tailDrop = TLMessageBubbleTailDrop(palette, bounds);
-  NSRect bodyRect = bounds;
-  bodyRect.origin.y += tailDrop;
-  bodyRect.size.height = MAX(palette.space0, NSHeight(bounds) - tailDrop);
-  return bodyRect;
-}
-
-static TLMessageBubbleTailGeometry TLMessageBubbleTailGeometryForBounds(NSRect bounds,
-                                                                        NSRect bodyRect,
-                                                                        TLThemePalette *palette,
-                                                                        CGFloat bodyRadius,
-                                                                        CGFloat horizontalOffset) {
-  TLMessageBubbleTailGeometry geometry = {0};
-  CGFloat tailDrop = NSMinY(bodyRect) - NSMinY(bounds);
-  CGFloat tailWidth = TLMessageBubbleTailWidth(palette);
-  if (tailDrop <= palette.borderWidth * 0.5 || tailWidth <= palette.borderWidth * 0.5) {
-    return geometry;
-  }
-
-  CGFloat effectiveRadius = MIN(MAX(palette.space0, bodyRadius), NSWidth(bodyRect) * 0.5);
-  CGFloat bodyMaxX = NSMaxX(bodyRect);
-  CGFloat bodyMinX = NSMinX(bodyRect);
-  CGFloat bodyMinY = NSMinY(bodyRect);
-  CGFloat baseWidth = TLMessageBubbleTailBaseWidth(palette);
-  CGFloat tailTipInset = MIN(palette.space4, tailWidth * TLMessageBubbleTailTipInsetScale);
-  CGFloat rightJoinInset = MIN(tailWidth * TLMessageBubbleTailRightJoinWidthScale,
-                               effectiveRadius * TLMessageBubbleTailRightJoinRadiusScale);
-  CGFloat tailEndX = bodyMaxX - rightJoinInset + horizontalOffset;
-  CGFloat leftJoinX = MAX(bodyMinX + effectiveRadius, tailEndX - baseWidth);
-  CGFloat joinY = bodyMinY + palette.borderWidth * 0.75;
-  CGFloat tipRadius = MIN(palette.borderWidth + palette.space2 * TLMessageBubbleTailTipRadiusTokenScale,
-                          tailDrop * TLMessageBubbleTailTipRadiusScale);
-
-  CGPoint tip = CGPointMake(bodyMaxX - tailTipInset + horizontalOffset,
-                            NSMinY(bounds) + palette.borderWidth * 0.5);
-  geometry.valid = YES;
-  geometry.start = CGPointMake(leftJoinX, joinY);
-  geometry.tipStart = CGPointMake(tip.x - tipRadius * TLMessageBubbleTailTipStartXScale,
-                                  tip.y + tipRadius * TLMessageBubbleTailTipStartYScale);
-  geometry.tipControl1 = CGPointMake(tip.x - tipRadius * TLMessageBubbleTailTipControl1XScale, tip.y);
-  geometry.tipControl2 = CGPointMake(tip.x - tipRadius * TLMessageBubbleTailTipControl2XScale,
-                                     tip.y + tipRadius * TLMessageBubbleTailTipControl2YScale);
-  geometry.tipEnd = CGPointMake(tip.x - tipRadius * TLMessageBubbleTailTipEndXScale,
-                                tip.y + tipRadius * TLMessageBubbleTailTipEndYScale);
-  geometry.end = CGPointMake(tailEndX, bodyMinY + tailDrop * TLMessageBubbleTailEndHeightScale);
-  geometry.leadingControl1 = CGPointMake(geometry.start.x + tailWidth * TLMessageBubbleTailLeadingControlXScale,
-                                         geometry.start.y - tailDrop * TLMessageBubbleTailLeadingControlDropScale);
-  geometry.leadingControl2 = CGPointMake(tip.x - tailWidth * TLMessageBubbleTailLeadingControlToTipXScale,
-                                         tip.y + tailDrop * TLMessageBubbleTailLeadingControlToTipYScale);
-  geometry.trailingControl1 = CGPointMake(geometry.tipEnd.x - tailWidth * TLMessageBubbleTailTrailingControlXScale,
-                                          geometry.tipEnd.y + tailDrop * TLMessageBubbleTailTrailingControlYScale);
-  geometry.trailingControl2 = CGPointMake(geometry.end.x - tailWidth * TLMessageBubbleTailTrailingControlToEndXScale,
-                                          geometry.end.y - tailDrop * TLMessageBubbleTailTrailingControlToEndYScale);
-  return geometry;
-}
-
-static NSBezierPath *TLCreateOutgoingTailBezierPath(NSRect bounds,
-                                                    NSRect bodyRect,
-                                                    TLThemePalette *palette,
-                                                    CGFloat bodyRadius,
-                                                    CGFloat horizontalOffset) {
-  TLMessageBubbleTailGeometry geometry = TLMessageBubbleTailGeometryForBounds(bounds,
-                                                                              bodyRect,
-                                                                              palette,
-                                                                              bodyRadius,
-                                                                              horizontalOffset);
+static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
+                                                       TLThemePalette *palette,
+                                                       CGFloat requestedRadius,
+                                                       BOOL rendersAsPill) {
   NSBezierPath *path = [NSBezierPath bezierPath];
-  if (!geometry.valid) {
-    return path;
-  }
+  if (NSIsEmptyRect(bounds)) return path;
 
-  [path moveToPoint:TLNSPointFromCGPoint(geometry.start)];
-  [path curveToPoint:TLNSPointFromCGPoint(geometry.tipStart)
-       controlPoint1:TLNSPointFromCGPoint(geometry.leadingControl1)
-       controlPoint2:TLNSPointFromCGPoint(geometry.leadingControl2)];
-  [path curveToPoint:TLNSPointFromCGPoint(geometry.tipEnd)
-       controlPoint1:TLNSPointFromCGPoint(geometry.tipControl1)
-       controlPoint2:TLNSPointFromCGPoint(geometry.tipControl2)];
-  [path curveToPoint:TLNSPointFromCGPoint(geometry.end)
-       controlPoint1:TLNSPointFromCGPoint(geometry.trailingControl1)
-       controlPoint2:TLNSPointFromCGPoint(geometry.trailingControl2)];
-  [path lineToPoint:TLNSPointFromCGPoint(geometry.start)];
+  CGFloat tailHeight = MIN(palette.userMessageTailHeight, NSHeight(bounds) * 0.2);
+  NSRect body = bounds;
+  body.origin.y += tailHeight;
+  body.size.height -= tailHeight;
+  CGFloat radius = TLMessageBubbleBodyRadius(requestedRadius, body, rendersAsPill);
+  CGFloat minX = NSMinX(body), maxX = NSMaxX(body);
+  CGFloat minY = NSMinY(body), maxY = NSMaxY(body);
+  CGFloat kappa = 0.5522847498307936;
+  CGFloat tipX = maxX - radius / 3.0;
+  CGFloat tipY = NSMinY(bounds);
+  CGFloat tipRadius = MIN(radius, tailHeight) * 0.1;
+  NSPoint neck = NSMakePoint(maxX - radius * 0.4, minY + radius * 0.2);
+
+  // The bottom edge, rounded tip and concave return form one continuous contour.
+  // Keeping the tail inside the body's width also keeps short replies aligned.
+  [path moveToPoint:NSMakePoint(minX + radius, minY)];
+  [path lineToPoint:NSMakePoint(maxX - radius, minY)];
+  [path curveToPoint:NSMakePoint(tipX - tipRadius, tipY + tipRadius * 0.2)
+       controlPoint1:NSMakePoint(maxX - radius * 0.7, minY)
+       controlPoint2:NSMakePoint(tipX - radius * 0.4, tipY)];
+  [path curveToPoint:NSMakePoint(tipX, tipY + tipRadius)
+       controlPoint1:NSMakePoint(tipX + tipRadius * 0.3, tipY)
+       controlPoint2:NSMakePoint(tipX + tipRadius * 0.5, tipY + tipRadius * 0.5)];
+  [path curveToPoint:neck
+       controlPoint1:NSMakePoint(tipX - radius * 0.25, tipY + radius * 0.23)
+       controlPoint2:NSMakePoint(neck.x - radius * 0.07, neck.y - radius * 0.13)];
+  [path curveToPoint:NSMakePoint(maxX, minY + radius)
+       controlPoint1:NSMakePoint(neck.x + radius * 0.14, neck.y + radius * 0.26)
+       controlPoint2:NSMakePoint(maxX, minY + radius * 0.55)];
+
+  [path lineToPoint:NSMakePoint(maxX, maxY - radius)];
+  [path curveToPoint:NSMakePoint(maxX - radius, maxY)
+       controlPoint1:NSMakePoint(maxX, maxY - radius + radius * kappa)
+       controlPoint2:NSMakePoint(maxX - radius + radius * kappa, maxY)];
+  [path lineToPoint:NSMakePoint(minX + radius, maxY)];
+  [path curveToPoint:NSMakePoint(minX, maxY - radius)
+       controlPoint1:NSMakePoint(minX + radius - radius * kappa, maxY)
+       controlPoint2:NSMakePoint(minX, maxY - radius + radius * kappa)];
+  [path lineToPoint:NSMakePoint(minX, minY + radius)];
+  [path curveToPoint:NSMakePoint(minX + radius, minY)
+       controlPoint1:NSMakePoint(minX, minY + radius - radius * kappa)
+       controlPoint2:NSMakePoint(minX + radius - radius * kappa, minY)];
   [path closePath];
-  return path;
-}
-
-static CGPathRef TLCreateOutgoingTailPath(NSRect bounds,
-                                          NSRect bodyRect,
-                                          TLThemePalette *palette,
-                                          CGFloat bodyRadius,
-                                          CGFloat horizontalOffset) {
-  TLMessageBubbleTailGeometry geometry = TLMessageBubbleTailGeometryForBounds(bounds,
-                                                                              bodyRect,
-                                                                              palette,
-                                                                              bodyRadius,
-                                                                              horizontalOffset);
-  CGMutablePathRef path = CGPathCreateMutable();
-  if (!geometry.valid) {
-    return path;
-  }
-
-  CGPathMoveToPoint(path, NULL, geometry.start.x, geometry.start.y);
-  CGPathAddCurveToPoint(path, NULL,
-                        geometry.leadingControl1.x, geometry.leadingControl1.y,
-                        geometry.leadingControl2.x, geometry.leadingControl2.y,
-                        geometry.tipStart.x, geometry.tipStart.y);
-  CGPathAddCurveToPoint(path, NULL,
-                        geometry.tipControl1.x, geometry.tipControl1.y,
-                        geometry.tipControl2.x, geometry.tipControl2.y,
-                        geometry.tipEnd.x, geometry.tipEnd.y);
-  CGPathAddCurveToPoint(path, NULL,
-                        geometry.trailingControl1.x, geometry.trailingControl1.y,
-                        geometry.trailingControl2.x, geometry.trailingControl2.y,
-                        geometry.end.x, geometry.end.y);
-  CGPathAddLineToPoint(path, NULL, geometry.start.x, geometry.start.y);
-  CGPathCloseSubpath(path);
   return path;
 }
 
@@ -766,7 +646,6 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _drawsOutgoingTail = NO;
     _rendersAsPill = NO;
-    _outgoingTailHorizontalOffset = 0.0;
   }
   return self;
 }
@@ -792,13 +671,6 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
   [self updateLayerCornerGeometry];
 }
 
-- (void)setOutgoingTailHorizontalOffset:(CGFloat)outgoingTailHorizontalOffset {
-  _outgoingTailHorizontalOffset = outgoingTailHorizontalOffset;
-  [self setNeedsDisplay:YES];
-  [self setNeedsLayout:YES];
-  [self updateLayerCornerGeometry];
-}
-
 - (void)drawRect:(NSRect)dirtyRect {
   if (!self.drawsOutgoingTail) {
     if (self.cornerRadius > 0.0 && !NSIsEmptyRect(self.bounds)) {
@@ -818,41 +690,33 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
 }
 
 - (NSBezierPath *)outgoingBubblePathForBounds:(NSRect)bounds {
-  TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
-  if (NSIsEmptyRect(bounds)) {
-    return [NSBezierPath bezierPath];
-  }
-
-  NSRect bodyRect = TLMessageBubbleBodyRectForBounds(palette, bounds);
-  CGFloat radius = TLMessageBubbleBodyRadius(self.cornerRadius, bodyRect, self.rendersAsPill);
-  NSBezierPath *path = TLCreateMessageBubbleBezierPath(bodyRect, self.cornerRadius, self.rendersAsPill);
-  [path appendBezierPath:TLCreateOutgoingTailBezierPath(bounds,
-                                                        bodyRect,
-                                                        palette,
-                                                        radius,
-                                                        self.outgoingTailHorizontalOffset)];
-  return path;
+  return TLCreateOutgoingMessageBubblePath(bounds, self.palette, self.cornerRadius, self.rendersAsPill);
 }
 
 - (CGPathRef)newOutgoingBubbleCGPathForBounds:(NSRect)bounds CF_RETURNS_RETAINED {
-  TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
-  if (NSIsEmptyRect(bounds)) {
-    return CGPathCreateMutable();
-  }
-
-  NSRect bodyRect = TLMessageBubbleBodyRectForBounds(palette, bounds);
+  // Derive the layer geometry from the exact same outline used for drawing.
+  NSBezierPath *outline = [self outgoingBubblePathForBounds:bounds];
   CGMutablePathRef path = CGPathCreateMutable();
-  CGFloat radius = TLMessageBubbleBodyRadius(self.cornerRadius, bodyRect, self.rendersAsPill);
-  CGPathRef bodyPath = TLCreateMessageBubblePath(bodyRect, self.cornerRadius, self.rendersAsPill);
-  CGPathRef tailPath = TLCreateOutgoingTailPath(bounds,
-                                                bodyRect,
-                                                palette,
-                                                radius,
-                                                self.outgoingTailHorizontalOffset);
-  CGPathAddPath(path, NULL, bodyPath);
-  CGPathAddPath(path, NULL, tailPath);
-  CGPathRelease(bodyPath);
-  CGPathRelease(tailPath);
+  NSPoint points[3];
+  for (NSInteger index = 0; index < outline.elementCount; index++) {
+    switch ([outline elementAtIndex:index associatedPoints:points]) {
+      case NSBezierPathElementMoveTo:
+        CGPathMoveToPoint(path, NULL, points[0].x, points[0].y);
+        break;
+      case NSBezierPathElementLineTo:
+        CGPathAddLineToPoint(path, NULL, points[0].x, points[0].y);
+        break;
+      case NSBezierPathElementCurveTo:
+        CGPathAddCurveToPoint(path, NULL, points[0].x, points[0].y,
+                            points[1].x, points[1].y, points[2].x, points[2].y);
+        break;
+      case NSBezierPathElementClosePath:
+        CGPathCloseSubpath(path);
+        break;
+      default:
+        break;
+    }
+  }
   return path;
 }
 

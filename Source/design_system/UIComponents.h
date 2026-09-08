@@ -42,7 +42,6 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic) BOOL drawsOutgoingTail;
 @property (nonatomic) BOOL rendersAsPill;
-@property (nonatomic) CGFloat outgoingTailHorizontalOffset;
 @end
 
 @interface TLGlassMessageInput : TLMessageInput
