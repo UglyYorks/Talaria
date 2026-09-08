@@ -166,21 +166,20 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   CGFloat tipRadius = MIN(radius, tailHeight) * 0.1;
   CGFloat tailBaseX = MAX(minX + radius, maxX - radius * 1.25) + tailOffset;
   CGFloat tailBaseWidth = tipX - tailBaseX;
-  NSPoint cornerJoin = NSMakePoint(maxX - radius * (1.0 - diagonal) + tailOffset,
-                                  minY + radius * (1.0 - diagonal));
-  CGFloat cornerInset = maxX - cornerJoin.x;
-  CGFloat cornerRise = minY + radius - cornerJoin.y;
+  CGFloat cornerJoinX = maxX - radius * (1.0 - diagonal) + tailOffset;
+  CGFloat cornerInset = maxX - cornerJoinX;
 
-  // Fit a circular shoulder through the existing attachment and side. Its
-  // tangent adapts to the offset instead of forcing a tight 45-degree bend.
-  CGFloat shoulderRadius = (cornerInset * cornerInset + cornerRise * cornerRise) / (2.0 * cornerInset);
-  CGFloat tangentX = cornerRise / shoulderRadius;
-  CGFloat tangentY = (shoulderRadius - cornerInset) / shoulderRadius;
+  // Keep the same circular radius as the other body corners. The attachment
+  // follows that circle while retaining its requested horizontal offset.
+  CGFloat tangentY = 1.0 - cornerInset / radius;
+  CGFloat tangentX = sqrt(MAX(0.0, 1.0 - tangentY * tangentY));
+  CGFloat cornerRise = radius * tangentX;
+  NSPoint cornerJoin = NSMakePoint(cornerJoinX, minY + radius - cornerRise);
   CGFloat shoulderAngle = atan2(tangentX, tangentY);
-  CGFloat shoulderHandle = (4.0 / 3.0) * shoulderRadius * tan(shoulderAngle * 0.25);
+  CGFloat shoulderHandle = (4.0 / 3.0) * radius * tan(shoulderAngle * 0.25);
 
-  // Match both slope and curvature where the concave tail meets the shoulder.
-  // The attachment points and tip stay fixed while only the handles change.
+  // Match both slope and curvature where the concave tail meets the corner.
+  // The lower attachment, tip and tail width keep their existing positions.
   CGFloat returnReach = (tangentX * (cornerJoin.y - tipY - tipRadius) -
                          tangentY * (cornerJoin.x - tipX)) / (tangentX + tangentY) + radius * 0.07;
   NSPoint returnControl = NSMakePoint(tipX - returnReach, tipY + tipRadius + returnReach);
