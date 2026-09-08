@@ -36,6 +36,25 @@ static BOOL TLAttachmentSessionIsValid(NSString *sessionID) {
   return [manager createDirectoryAtURL:URL withIntermediateDirectories:NO attributes:nil error:error];
 }
 
+- (NSURL *)fileURLForAttachment:(NSDictionary *)attachment sessionID:(NSString *)sessionID {
+  if (!TLAttachmentSessionIsValid(sessionID) || ![attachment isKindOfClass:NSDictionary.class]) return nil;
+  NSString *path = attachment[@"guestPath"];
+  NSString *prefix = [NSString stringWithFormat:@"/workspace/attachments/%@/", sessionID];
+  if (![path isKindOfClass:NSString.class] || ![path hasPrefix:prefix]) return nil;
+  NSString *relative = [path substringFromIndex:@"/workspace/".length];
+  for (NSString *component in relative.pathComponents) {
+    if ([component isEqual:@".."] || [component isEqual:@"."]) return nil;
+  }
+  NSURL *URL = [self.workspaceURL URLByAppendingPathComponent:relative];
+  NSString *sessionPath = [[self.workspaceURL.path stringByAppendingPathComponent:@"attachments"] stringByAppendingPathComponent:sessionID];
+  if (![URL.path hasPrefix:[sessionPath stringByAppendingString:@"/"]] ||
+      ![URL.path isEqual:URL.URLByResolvingSymlinksInPath.path]) return nil;
+  NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:URL.path error:nil];
+  NSString *type = attributes[NSFileType];
+  if (![type isEqual:NSFileTypeRegular] && ![type isEqual:NSFileTypeDirectory]) return nil;
+  return [NSFileManager.defaultManager isReadableFileAtPath:URL.path] ? URL : nil;
+}
+
 // Walk rather than blindly copying directory trees: do not follow links or copy devices/sockets.
 - (BOOL)copyItem:(NSURL *)source toURL:(NSURL *)destination error:(NSError **)error {
   NSFileManager *manager = NSFileManager.defaultManager;

@@ -9,7 +9,29 @@
 @property (nonatomic) BOOL pressed;
 @end
 
+@interface TLHoverIconButtonCell : NSButtonCell
+@end
+
+@implementation TLHoverIconButtonCell
+- (void)drawImage:(NSImage *)image withFrame:(NSRect)frame inView:(NSView *)view {
+  TLHoverIconButton *button = (TLHoverIconButton *)view;
+  if (!image.template || !button.idleContentTintColor) { [super drawImage:image withFrame:frame inView:view]; return; }
+  NSColor *foreground = button.enabled && (button.hovered || button.pressed)
+    ? (button.hoverContentTintColor ?: button.idleContentTintColor) : button.idleContentTintColor;
+  NSImage *tinted = [NSImage imageWithSize:image.size flipped:NO drawingHandler:^BOOL(NSRect bounds) {
+    [image drawInRect:bounds];
+    [foreground setFill]; NSRectFillUsingOperation(bounds, NSCompositingOperationSourceIn);
+    return YES;
+  }];
+  // AppKit passes the symbol's alignment rectangle, which excludes vertical margins.
+  // Preserve those metrics so the full image isn't squeezed into that shorter frame.
+  tinted.alignmentRect = image.alignmentRect;
+  [super drawImage:tinted withFrame:frame inView:view];
+}
+@end
+
 @implementation TLHoverIconButton
++ (Class)cellClass { return TLHoverIconButtonCell.class; }
 - (NSEdgeInsets)alignmentRectInsets {
   return self.hoverSurfaceOnly ? NSEdgeInsetsMake(0, 0, 0, 0) : super.alignmentRectInsets;
 }
@@ -40,6 +62,10 @@
 }
 - (void)setPalette:(TLThemePalette *)palette { _palette = palette; [self updateHoverSurface]; }
 - (void)setIdleSurfaceColor:(NSColor *)color { _idleSurfaceColor = color; [self updateHoverSurface]; }
+- (void)setHoverSurfaceColor:(NSColor *)color { _hoverSurfaceColor = color; [self updateHoverSurface]; }
+- (void)setPressedSurfaceColor:(NSColor *)color { _pressedSurfaceColor = color; [self updateHoverSurface]; }
+- (void)setIdleContentTintColor:(NSColor *)color { _idleContentTintColor = color; self.needsDisplay = YES; }
+- (void)setHoverContentTintColor:(NSColor *)color { _hoverContentTintColor = color; self.needsDisplay = YES; }
 - (void)setEnabled:(BOOL)enabled { [super setEnabled:enabled]; [self updateHoverSurface]; }
 - (void)setHoverSurfaceOnly:(BOOL)hoverSurfaceOnly {
   _hoverSurfaceOnly = hoverSurfaceOnly;
@@ -53,10 +79,11 @@
   [self updateHoverSurface];
 }
 - (void)updateHoverSurface {
+  self.needsDisplay = YES;
   if (!self.hoverSurfaceOnly || !self.palette) { return; }
   self.layer.cornerRadius = MIN(NSWidth(self.bounds), NSHeight(self.bounds)) / 2.0;
   self.layer.backgroundColor = TLCGColor(self.enabled && (self.hovered || self.pressed)
-    ? (self.pressed ? self.palette.sidebarActiveSurface : self.palette.chromeHoverSurface)
+    ? (self.pressed ? (self.pressedSurfaceColor ?: self.palette.sidebarActiveSurface) : (self.hoverSurfaceColor ?: self.palette.chromeHoverSurface))
     : (self.idleSurfaceColor ?: self.palette.transparentSurface));
 }
 @end

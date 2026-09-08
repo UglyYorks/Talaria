@@ -428,6 +428,17 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   return YES;
 }
 
+- (NSURL *)fileURLForAttachment:(NSDictionary *)attachment sessionID:(NSString *)sessionID {
+  // Reading a saved attachment must never start a VM or create an agent.
+  for (TLAgentRecord *agent in [self.database listAgents:nil]) {
+    NSURL *workspace = [[NSURL fileURLWithPath:agent.vmDirectory] URLByAppendingPathComponent:@"workspace"];
+    TLChatAttachmentStore *store = [[TLChatAttachmentStore alloc] initWithWorkspaceURL:workspace];
+    NSURL *URL = [store fileURLForAttachment:attachment sessionID:sessionID];
+    if (URL) return URL;
+  }
+  return nil;
+}
+
 - (void)createFreshHermesAgentWithProgress:(TLHermesInstallProgressHandler)progress
                                 completion:(TLAgentOperationCompletionHandler)completion {
   NSError *createError = nil;

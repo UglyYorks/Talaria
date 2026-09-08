@@ -208,6 +208,8 @@ CGColorRef TLCGColor(NSColor *color) {
   self.space11 = 22.0;
   self.space12 = 24.0;
   self.space16 = 52.0;
+  self.attachmentViewerControlSize = 44.0;
+  self.attachmentViewerContentInset = 88.0;
   self.sidebarActionIconSize = self.space9;
   self.sidebarActionStackHorizontalInset = self.space6 * 0.5;
   self.sidebarContentLeadingInset = self.space6 + self.space3;

@@ -256,6 +256,8 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat messageInputMinWidth;
 @property (nonatomic) CGFloat messageInputMaxWidth;
 @property (nonatomic) CGFloat messageMaxWidth;
+@property (nonatomic) CGFloat attachmentViewerControlSize;
+@property (nonatomic) CGFloat attachmentViewerContentInset;
 @property (nonatomic) CGFloat messageHorizontalInset;
 @property (nonatomic) CGFloat messageVerticalSpacing;
 @property (nonatomic) CGFloat messageBottomSpacing;

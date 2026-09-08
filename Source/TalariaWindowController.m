@@ -33,6 +33,8 @@
 #import "design_system/TLChromeTabView.h"
 #import "WorkspaceState.h"
 #import "TLChatPresentation.h"
+#import "TLAttachmentViewerWindowController.h"
+#import "design_system/TLAttachmentChipView.h"
 #import "TLWorkspaceSplitState.h"
 #import "design_system/TLSplitWorkspaceView.h"
 #import "WorkspaceTabRuntime.h"
@@ -65,6 +67,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @interface TalariaWindowController () <NSWindowDelegate, NSTextViewDelegate, NSTableViewDataSource, NSTableViewDelegate, TLHistoryPanelControllerDelegate, TLWorkspaceTabsControllerDelegate>
 
 @property (nonatomic, strong) TLChatPresentation *chatPresentation;
+@property (nonatomic, strong) TLAttachmentViewerWindowController *attachmentViewer;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLChatPresentation *> *chatPresentations;
 @property (nonatomic, strong) TLWorkspaceSplitState *splitState;
 @property (nonatomic, strong) TLSplitWorkspaceView *splitWorkspace;
@@ -4317,7 +4320,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   NSString *displayText = showThinking
     ? (message.thinking ?: @"")
     : (hasResponseContent ? message.content : ([message.role isEqualToString:TLRoleAssistant] ? @"..." : @""));
-  if (user && message.attachments.count) displayText = [displayText stringByAppendingFormat:@"\n%@", message.attachments];
   if ([self messageShowsAWSOutageIntent:message]) {
     displayText = TLAWSOutageAgentMessage;
   }
@@ -4334,7 +4336,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   return [NSString stringWithFormat:@"%@\n--TLROW--\n%@\n--TLROW--\n%.0f\n--TLROW--\n%@\n--TLROW--\n%@",
                                     message.role ?: @"",
-                                    mode,
+                                    [mode stringByAppendingFormat:@"\n%@", message.attachments ?: @[]],
                                     layoutWidth,
                                     showsOutgoingTail ? @"tail" : @"body",
                                     user ? [self displayTextForMessage:message] : ([self messageShowsAWSOutageIntent:message] ? @"intent" : @"answer")];
@@ -4420,6 +4422,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   CGFloat userTopInset = self.palette.space0;
   CGFloat userBottomInset = self.palette.space0;
   CGFloat userTextMaxWidth = self.palette.messageInputMaxWidth;
+  TLAttachmentChipRow *attachmentRow = nil;
   CGFloat availableMessageWidth = self.messageInputWidthConstraint.constant > 0.0
     ? self.messageInputWidthConstraint.constant
     : self.palette.messageInputMaxWidth;
@@ -4434,10 +4437,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [stack addArrangedSubview:markdown];
     [self.messageMarkdownViews setObject:markdown forKey:message];
   } else if (user) {
-    NSMutableString *content = [NSMutableString stringWithString:hasResponseContent ? message.content : @""];
-    for (NSDictionary *attachment in message.attachments) {
-      [content appendFormat:@"\n%@ %@", [attachment[@"directory"] boolValue] ? @"▸" : @"↳", attachment[@"name"]];
-    }
+    NSString *content = hasResponseContent ? message.content : @"";
     userLeadingInset = self.palette.userMessageHorizontalPadding;
     userTrailingInset = self.palette.userMessageHorizontalPadding;
     userTopInset = self.palette.userMessageVerticalPadding;
@@ -4461,8 +4461,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                              forOrientation:NSLayoutConstraintOrientationHorizontal];
     [contentLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                            forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [stack addArrangedSubview:contentLabel];
-  } else if (hasResponseContent || !message.approvalRequest) {
+    if (hasResponseContent) [stack addArrangedSubview:contentLabel];
+    else contentLabel = nil;
+  } else if (hasResponseContent || (!message.approvalRequest && !message.attachments.count)) {
     NSString *content = hasResponseContent ? message.content : @"...";
     if ([self messageShowsAWSOutageIntent:message]) {
       content = TLAWSOutageAgentMessage;
@@ -4479,6 +4480,26 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self.messageMarkdownViews setObject:markdown forKey:message];
   }
 
+  if (message.attachments.count) {
+    // Capture the originating presentation: split-pane focus may change before a click.
+    __weak TLChatPresentation *origin = self.chatPresentation;
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<TLAttachmentChipView *> *chips = [NSMutableArray array];
+    [message.attachments enumerateObjectsUsingBlock:^(NSDictionary *attachment, NSUInteger index, BOOL *stop) {
+      TLAttachmentPreviewItem *item = [self previewItemForAttachment:attachment sessionID:origin.chat.hermesSessionID];
+      TLAttachmentChipView *chip = [[TLAttachmentChipView alloc] init];
+      chip.palette = self.palette; chip.showsRemoveButton = NO;
+      chip.title = item.name; chip.toolTip = [NSString stringWithFormat:@"%@\n%@", item.name, item.detail];
+      chip.image = [NSImage imageWithSystemSymbolName:item.directory ? @"folder" : @"doc" accessibilityDescription:nil];
+      chip.activationHandler = ^{ [weakSelf previewAttachmentsForPresentation:origin message:message index:index]; };
+      if (item.previewItemURL) [chip loadPreviewForURL:item.previewItemURL];
+      [chips addObject:chip];
+    }];
+    attachmentRow = [[TLAttachmentChipRow alloc] initWithChips:chips palette:self.palette];
+    attachmentRow.alignsTrailing = user;
+    [row addSubview:attachmentRow];
+  }
+
   if (!user && message.approvalRequest) {
     TLApprovalCardView *card = [[TLApprovalCardView alloc] initWithRequest:message.approvalRequest palette:self.palette];
     NSString *requestID = message.approvalRequest[@"request_id"];
@@ -4488,19 +4509,40 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [stack addArrangedSubview:card];
     [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
   }
+  BOOL hasBubble = stack.arrangedSubviews.count > 0 || !attachmentRow;
+  NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray array];
+  if (attachmentRow) {
+    [constraints addObjectsFromArray:@[
+      [attachmentRow.topAnchor constraintEqualToAnchor:hasBubble ? bubble.bottomAnchor : row.topAnchor constant:hasBubble ? self.palette.space5 : self.palette.space0],
+      [attachmentRow.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
+      [attachmentRow.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:widthMultiplier],
+    ]];
+    // Reserve the available row width; thumbnails can change chip widths after loading.
+    NSLayoutConstraint *preferredWidth = [attachmentRow.widthAnchor constraintEqualToConstant:availableMessageWidth * widthMultiplier];
+    preferredWidth.priority = NSLayoutPriorityDefaultHigh;
+    [constraints addObject:preferredWidth];
+    if (user) {
+      [constraints addObject:[attachmentRow.trailingAnchor constraintEqualToAnchor:row.trailingAnchor]];
+      [constraints addObject:[attachmentRow.leadingAnchor constraintGreaterThanOrEqualToAnchor:row.leadingAnchor]];
+    } else {
+      [constraints addObject:[attachmentRow.leadingAnchor constraintEqualToAnchor:row.leadingAnchor]];
+      [constraints addObject:[attachmentRow.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
+    }
+  }
+  if (!hasBubble) { [NSLayoutConstraint activateConstraints:constraints]; return row; }
   [row addSubview:bubble];
   NSLayoutConstraint *assistantWidth = [bubble.widthAnchor constraintEqualToAnchor:row.widthAnchor multiplier:widthMultiplier];
   assistantWidth.priority = NSLayoutPriorityDefaultHigh + 1.0;
 
-  NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
+  [constraints addObjectsFromArray:@[
     [bubble.topAnchor constraintEqualToAnchor:row.topAnchor],
-    [bubble.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
     [bubble.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:widthMultiplier],
     [stack.leadingAnchor constraintEqualToAnchor:bubble.leadingAnchor constant:user ? userLeadingInset : self.palette.space0],
     [stack.trailingAnchor constraintEqualToAnchor:bubble.trailingAnchor constant:user ? -userTrailingInset : self.palette.space0],
     [stack.topAnchor constraintEqualToAnchor:bubble.topAnchor constant:user ? userTopInset : self.palette.space0],
     [stack.bottomAnchor constraintEqualToAnchor:bubble.bottomAnchor constant:user ? -userBottomInset : self.palette.space0],
   ]];
+  if (!attachmentRow) [constraints addObject:[bubble.bottomAnchor constraintEqualToAnchor:row.bottomAnchor]];
   if (contentLabel) {
     [constraints addObject:[contentLabel.widthAnchor constraintLessThanOrEqualToConstant:userTextMaxWidth]];
   }
@@ -4518,6 +4560,32 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   [NSLayoutConstraint activateConstraints:constraints];
   return row;
+}
+
+- (TLAttachmentPreviewItem *)previewItemForAttachment:(NSDictionary *)attachment sessionID:(NSString *)sessionID {
+  TLAttachmentPreviewItem *item = [[TLAttachmentPreviewItem alloc] init];
+  NSString *name = attachment[@"name"];
+  item.name = [name isKindOfClass:NSString.class] && name.length ? name : @"Attachment";
+  item.directory = [attachment[@"directory"] boolValue];
+  TLAgentOrchestrator *orchestrator = self.agentOrchestrator;
+  item.URLResolver = ^NSURL *{ return [orchestrator fileURLForAttachment:attachment sessionID:sessionID]; };
+  return item;
+}
+
+- (void)previewAttachmentsForPresentation:(TLChatPresentation *)presentation message:(TLChatMessage *)selectedMessage index:(NSUInteger)index {
+  NSMutableArray *items = [NSMutableArray array];
+  NSUInteger selectedIndex = NSNotFound;
+  for (TLChatMessage *message in presentation.messages) {
+    if (message == selectedMessage && index < message.attachments.count) selectedIndex = items.count + index;
+    for (NSDictionary *attachment in message.attachments) {
+      [items addObject:[self previewItemForAttachment:attachment sessionID:presentation.chat.hermesSessionID]];
+    }
+  }
+  if (selectedIndex == NSNotFound || !items.count) return;
+  [self.attachmentViewer close];
+  self.attachmentViewer = [[TLAttachmentViewerWindowController alloc] initWithItems:items
+    conversationTitle:presentation.chat.title selectedIndex:selectedIndex palette:self.palette];
+  [self.attachmentViewer showOnScreen:self.window.screen ?: NSScreen.mainScreen];
 }
 
 - (NSView *)markdownViewWithString:(NSString *)string textColor:(NSColor *)textColor baseFont:(NSFont *)baseFont {
@@ -5540,6 +5608,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self applySidebarTilePalette];
   [self applySidebarInboxPalette];
   [self.historyPanelController applyPalette:self.palette];
+  [self.attachmentViewer applyPalette:self.palette];
   self.topbar.fillColor = self.palette.appBackground;
   self.topbar.borderColor = self.palette.topbarBorder;
   self.topbar.borderEdges = TLBorderEdgeNone;
