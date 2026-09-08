@@ -161,7 +161,10 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   CGFloat tipX = maxX - radius / 3.0;
   CGFloat tipY = NSMinY(bounds);
   CGFloat tipRadius = MIN(radius, tailHeight) * 0.1;
-  NSPoint neck = NSMakePoint(maxX - radius * 0.4, minY + radius * 0.2);
+  CGFloat diagonal = sqrt(0.5);
+  CGFloat arcControl = (4.0 / 3.0) * tan(M_PI / 16.0);
+  NSPoint cornerJoin = NSMakePoint(maxX - radius * (1.0 - diagonal),
+                                  minY + radius * (1.0 - diagonal));
 
   // The bottom edge, rounded tip and concave return form one continuous contour.
   // Keeping the tail inside the body's width also keeps short replies aligned.
@@ -173,12 +176,15 @@ static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
   [path curveToPoint:NSMakePoint(tipX, tipY + tipRadius)
        controlPoint1:NSMakePoint(tipX + tipRadius * 0.3, tipY)
        controlPoint2:NSMakePoint(tipX + tipRadius * 0.5, tipY + tipRadius * 0.5)];
-  [path curveToPoint:neck
-       controlPoint1:NSMakePoint(tipX - radius * 0.25, tipY + radius * 0.23)
-       controlPoint2:NSMakePoint(neck.x - radius * 0.07, neck.y - radius * 0.13)];
+  [path curveToPoint:cornerJoin
+       controlPoint1:NSMakePoint(tipX - radius / 3.0, tipY + tipRadius + radius / 3.0)
+       controlPoint2:NSMakePoint(cornerJoin.x - radius * 0.16, cornerJoin.y - radius * 0.16)];
+  // Preserve the round corner through its upper 45 degrees, then meet the
+  // tail's concave return at the same tangent instead of pinching the side.
   [path curveToPoint:NSMakePoint(maxX, minY + radius)
-       controlPoint1:NSMakePoint(neck.x + radius * 0.14, neck.y + radius * 0.26)
-       controlPoint2:NSMakePoint(maxX, minY + radius * 0.55)];
+       controlPoint1:NSMakePoint(cornerJoin.x + radius * arcControl * diagonal,
+                                cornerJoin.y + radius * arcControl * diagonal)
+       controlPoint2:NSMakePoint(maxX, minY + radius * (1.0 - arcControl))];
 
   [path lineToPoint:NSMakePoint(maxX, maxY - radius)];
   [path curveToPoint:NSMakePoint(maxX - radius, maxY)
