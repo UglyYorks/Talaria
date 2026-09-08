@@ -5,6 +5,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "ChromiumOverlayProbe.h"
 #import "ChromiumDocumentFooter.h"
+#import "ChromiumNavigationTransition.h"
 #import "BrowserPageContext.h"
 #import "TLBrowserPreferences.h"
 
@@ -125,6 +126,7 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 @property (nonatomic, copy) NSDictionary *overlayHint;
 @property (nonatomic) NSTimeInterval overlayFallbackAfter;
 @property (nonatomic, strong) TLChromiumDocumentFooter *documentFooter;
+@property (nonatomic, strong) TLChromiumNavigationTransition *navigationTransition;
 @property (nonatomic, copy) NSDictionary *documentFooterConfiguration;
 - (instancetype)initWithContainerView:(NSView *)containerView initialURLString:(NSString *)initialURLString;
 @end
@@ -1048,6 +1050,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   if (session.browserIdentifier == _fullscreenBrowserIdentifier) [self exitBrowserFullscreen];
   [self devToolsVisibilityChanged:NO forBrowserIdentifier:session.browserIdentifier];
   [session.documentFooter stop]; session.documentFooter = nil;
+  [session.navigationTransition stop]; session.navigationTransition = nil;
 
   NSView *containerView = session.containerView;
   if (containerView) {
@@ -1081,6 +1084,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   if (browserIdentifier && browserIdentifier.integerValue == _fullscreenBrowserIdentifier) [self exitBrowserFullscreen];
   [_browserIdentifiersByContainer removeObjectForKey:containerKey];
   [session.documentFooter stop]; session.documentFooter = nil;
+  [session.navigationTransition stop]; session.navigationTransition = nil;
 
   [_sessionsByContainer removeObjectForKey:containerKey];
   [_titleHandlersByContainer removeObjectForKey:containerKey];
@@ -1296,6 +1300,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
       session.browserIdentifier = browserIdentifier.integerValue;
       if (session) {
         _sessionsByBrowserIdentifier[browserIdentifier] = session;
+        session.navigationTransition = [[TLChromiumNavigationTransition alloc] initWithBrowser:browser container:parentView];
       }
     }
     [self attachBrowserViewForBrowser:browser toContainerView:parentView];
@@ -1365,6 +1370,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   if (!browser) return;
   TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[@(browser->GetIdentifier())];
   session.fullscreen = fullscreen;
+  [session.navigationTransition cancel];
   [session.documentFooter configure:fullscreen ? @{@"enabled":@NO} : (session.documentFooterConfiguration ?: @{@"enabled":@NO}) completion:nil];
   // AppKit can pump events during presentation. Never re-enter Chromium's pump
   // while it is delivering the fullscreen notification.
@@ -1449,6 +1455,7 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
     TLChromiumBrowserSession *session = _sessionsByContainer[containerKey];
     [session.documentFooter stop];
     session.documentFooter = nil;
+    [session.navigationTransition stop]; session.navigationTransition = nil;
     session.browserIdentifier = -1;
     [_sessionsByContainer removeObjectForKey:containerKey];
     [_containersByBrowserIdentifier removeObjectForKey:browserIdentifier];
@@ -1621,6 +1628,8 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   TLChromiumBrowserSession *session = _sessionsByBrowserIdentifier[browserIdentifier];
   if (!isLoading && !session.documentFooter.ready)
     [self installDocumentFooterInSession:session browser:browser];
+  if (isLoading && session.documentGeneration > 0 && !session.fullscreen) [session.navigationTransition begin];
+  else if (!isLoading) [session.navigationTransition finish];
   NSValue *containerKey = _containersByBrowserIdentifier[browserIdentifier];
   TLChromiumBrowserNavigationHandler navigationHandler = nil;
   if (containerKey) {
