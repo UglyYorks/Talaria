@@ -427,6 +427,15 @@ test-browser-preferences: build
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserPreferencesProbe.app"
 	python3 Scripts/test-browser-preferences.py
 
+.PHONY: test-browser-navigation
+test-browser-navigation: build
+	mkdir -p "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserNavigationProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserNavigationIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserNavigationProbe.app"
+	python3 Scripts/test-browser-navigation.py
+
 # Native conversation attachment viewer, including transcript integration.
 test: $(BUILD_DIR)/AttachmentViewerTests
 
