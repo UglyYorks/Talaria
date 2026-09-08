@@ -87,7 +87,7 @@ void TLChromiumShowLinkContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefM
     NSMenu *previousServices = NSApp.servicesMenu;
     if (!imageMenu) {
       [view addSubview:requestor]; [window makeFirstResponder:requestor];
-      [NSApp registerServicesMenuSendTypes:@[NSPasteboardTypeString, NSPasteboardTypeURL] returnTypes:@[]];
+      [NSApp registerServicesMenuSendTypes:requestor.writablePasteboardTypes returnTypes:@[]];
       NSApp.servicesMenu = menu.itemArray.lastObject.submenu;
       NSUpdateDynamicServices();
     }

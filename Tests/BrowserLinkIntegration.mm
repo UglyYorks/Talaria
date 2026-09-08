@@ -123,6 +123,14 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   Check([requestor validRequestorForSendType:NSPasteboardTypeString returnType:nil] == requestor &&
         [requestor writeSelectionToPasteboard:pasteboard types:@[NSPasteboardTypeString, NSPasteboardTypeURL]] &&
         [[pasteboard stringForType:NSPasteboardTypeString] isEqual:URL.absoluteString], @"Services receives the clicked URL rather than unrelated page selection");
+  Check(NSEqualRanges(requestor.selectedRange, NSMakeRange(0, URL.absoluteString.length)), @"Services gets a real native selection for context filtering");
+  Check([requestor validRequestorForSendType:@"public.plain-text" returnType:nil] == requestor &&
+    [requestor writeSelectionToPasteboard:pasteboard types:@[@"public.plain-text"]] &&
+    [[pasteboard stringForType:@"public.plain-text"] isEqual:URL.absoluteString], @"Terminal Services can request the clicked link as plain text");
+  Check([requestor validRequestorForSendType:NSPasteboardTypeString returnType:NSPasteboardTypeString] != requestor,
+    @"read-only link services do not advertise replacement of page text");
+  Check([requestor writeSelectionToPasteboard:pasteboard types:@[@"NSStringPboardType"]] &&
+    [[pasteboard stringForType:@"NSStringPboardType"] isEqual:URL.absoluteString], @"legacy AppKit Services can read the same link selection");
   [TLBrowserLinkActions copyURL:URL toPasteboard:pasteboard];
   Check(pasteboard.pasteboardItems.count == 1 && [[pasteboard stringForType:NSPasteboardTypeString] isEqual:URL.absoluteString] &&
     [[pasteboard stringForType:NSPasteboardTypeURL] isEqual:URL.absoluteString], @"Copy Link puts one URL on the clipboard in text and URL formats");
