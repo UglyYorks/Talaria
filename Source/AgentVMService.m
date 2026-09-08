@@ -1,4 +1,5 @@
 #import "AgentVMService.h"
+#import "TLAgentVMLock.h"
 #import <Virtualization/Virtualization.h>
 
 static NSString * const TLAgentVMErrorDomain = @"Talaria.AgentVM";
@@ -26,6 +27,7 @@ static NSString *TLAgentTrim(NSString *value) {
 @property (nonatomic, strong) NSURL *agentsDirectoryURL;
 @property (nonatomic, strong) NSURL *runtimeBundleURL;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, VZVirtualMachine *> *runningVMs;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLAgentVMLock *> *runtimeLocks;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray *> *pendingStartCompletions;
 
 @end
@@ -64,9 +66,16 @@ static NSString *TLAgentTrim(NSString *value) {
     _agentsDirectoryURL = agentsDirectoryURL;
     _runtimeBundleURL = runtimeBundleURL;
     _runningVMs = [NSMutableDictionary dictionary];
+    _runtimeLocks = [NSMutableDictionary dictionary];
     _pendingStartCompletions = [NSMutableDictionary dictionary];
   }
   return self;
+}
+
+- (void)dealloc {
+  // Destroy the VMs before releasing ownership of their writable filesystems.
+  _runningVMs = nil;
+  _runtimeLocks = nil;
 }
 
 - (BOOL)isVirtualizationSupported {
@@ -117,8 +126,19 @@ static NSString *TLAgentTrim(NSString *value) {
     }
 
     NSError *error = nil;
+    if (!self.runtimeLocks[key]) {
+      if ([self prepareStorageForAgent:agent error:&error]) {
+        TLAgentVMLock *lock = [[TLAgentVMLock alloc] initWithDirectoryURL:[NSURL fileURLWithPath:agent.vmDirectory] error:&error];
+        if (lock) self.runtimeLocks[key] = lock;
+      }
+      if (!self.runtimeLocks[key]) {
+        if (completion) completion(error);
+        return;
+      }
+    }
     VZVirtualMachine *virtualMachine = [self virtualMachineForAgent:agent error:&error];
     if (!virtualMachine) {
+      [self.runtimeLocks removeObjectForKey:key];
       if (completion) {
         completion(error);
       }
@@ -130,6 +150,7 @@ static NSString *TLAgentTrim(NSString *value) {
     [virtualMachine startWithCompletionHandler:^(NSError *startError) {
       if (startError) {
         [self.runningVMs removeObjectForKey:key];
+        [self.runtimeLocks removeObjectForKey:key];
       }
       [self drainStartCompletionsForKey:key error:startError];
     }];
@@ -157,6 +178,7 @@ static NSString *TLAgentTrim(NSString *value) {
     [virtualMachine stopWithCompletionHandler:^(NSError *stopError) {
       if (!stopError) {
         [self.runningVMs removeObjectForKey:key];
+        [self.runtimeLocks removeObjectForKey:key];
       }
       if (completion) {
         completion(stopError);
@@ -209,6 +231,8 @@ static NSString *TLAgentTrim(NSString *value) {
     return YES;
   }
 
+  __attribute__((objc_precise_lifetime)) TLAgentVMLock *lock = [[TLAgentVMLock alloc] initWithDirectoryURL:vmDirectoryURL error:error];
+  if (!lock) return NO;
   return [NSFileManager.defaultManager removeItemAtURL:vmDirectoryURL error:error];
 }
 

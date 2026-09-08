@@ -822,6 +822,7 @@ class CredentialRPCTests(unittest.TestCase):
                 automations.preference.exists.return_value = False
                 with patch.dict(sys.modules, {"tui_gateway": types.SimpleNamespace(entry=entry)}), \
                      patch.dict(os.environ, {"HERMES_HOME": "/tmp/talaria-entry-test"}), \
+                     patch("talaria_gateway_entry.configure_vm_database") as configure_database, \
                      patch("hermes_automations.Automations", return_value=automations):
                     if failure:
                         with self.assertRaisesRegex(RuntimeError, "gateway stopped"):
@@ -832,6 +833,7 @@ class CredentialRPCTests(unittest.TestCase):
                                                 "talaria.credentials.remove", "talaria.skills.describe", "talaria.automations"})
                 self.assertIn("talaria.automations", server._LONG_HANDLERS)
                 entry.main.assert_called_once_with()
+                configure_database.assert_called_once_with()
                 automations.stop_event.set.assert_called_once_with()
 
     def test_worker_uses_gateway_and_returns_structured_response(self):
