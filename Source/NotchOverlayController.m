@@ -528,9 +528,7 @@ static NSUInteger TLFileCountFromPasteboard(NSPasteboard *pasteboard) {
     virtualNotch = YES;
   }
 
-  NSRect proximityRect = NSInsetRect(notchRect,
-                                    -self.palette.notchOverlayProximity,
-                                    -self.palette.notchOverlayProximity);
+  NSRect proximityRect = [self activationRectForNotchRect:notchRect screenFrame:screen.frame];
   if (NSPointInRect(self.lastMouseLocation, proximityRect)) {
     [self showOverlayForNotchRect:notchRect
                             screen:screen
@@ -540,6 +538,16 @@ static NSUInteger TLFileCountFromPasteboard(NSPasteboard *pasteboard) {
   } else {
     [self hideOverlayForNotchRect:notchRect screen:screen virtualNotch:virtualNotch];
   }
+}
+
+- (NSRect)activationRectForNotchRect:(NSRect)notchRect screenFrame:(NSRect)screenFrame {
+  // Activation depth is measured from the screen top, independent of notch height.
+  CGFloat height = self.palette.notchOverlayActivationHeight;
+  CGFloat horizontalMargin = self.palette.notchOverlayHorizontalProximity;
+  return NSMakeRect(NSMinX(notchRect) - horizontalMargin,
+                    NSMaxY(screenFrame) - height,
+                    NSWidth(notchRect) + horizontalMargin * 2.0,
+                    height);
 }
 
 - (BOOL)isFileDragInProgress {
@@ -618,6 +626,10 @@ static NSUInteger TLFileCountFromPasteboard(NSPasteboard *pasteboard) {
 - (NSRect)presentationFrame {
   if (!self.overlayWindow.isVisible) return NSZeroRect;
   return self.appearanceAnimationInFlight ? self.frameAnimationTarget : self.overlayWindow.frame;
+}
+
+- (NSRect)visibleFrame {
+  return self.overlayWindow.isVisible ? self.overlayWindow.frame : NSZeroRect;
 }
 
 - (NSScreen *)presentationScreen {

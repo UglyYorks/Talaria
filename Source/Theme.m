@@ -250,8 +250,14 @@ CGColorRef TLCGColor(NSColor *color) {
   self.notchOverlayFallbackNotchWidth = 210.0;
   self.notchOverlayHorizontalPadding = 12.0;
   self.notchOverlayVerticalPadding = 8.0;
+  self.notchInputVerticalPadding = self.space3;
+  self.notchInputMaxWidth = 600.0;
+  self.notchInputExpansionDuration = 0.16;
+  self.notchInputOvershootScale = 1.04;
+  self.notchInputRevealDuration = 0.12;
   self.notchOverlayTopOffset = 0.0;
-  self.notchOverlayProximity = 86.0;
+  self.notchOverlayHorizontalProximity = 40.0;
+  self.notchOverlayActivationHeight = 30.0;
   self.notchOverlayCornerRadius = 16.0;
   self.notchOverlayTopFlareOutset = self.notchOverlayCornerRadius * 0.70;
   self.notchOverlayTopFlareHeight = self.notchOverlayCornerRadius * 0.70;

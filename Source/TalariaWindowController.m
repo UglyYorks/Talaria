@@ -5756,9 +5756,9 @@ static TLUserMessageBubbleLayout TLUserMessageBubbleLayoutForContent(NSString *c
   }
   self.quickInputController.commands = [self availableSlashCommands];
   NSScreen *notchScreen = self.notchOverlayController.presentationScreen;
-  NSRect notchFrame = self.notchOverlayController.presentationFrame;
+  NSRect notchFrame = self.notchOverlayController.visibleFrame;
   if (notchScreen && !NSIsEmptyRect(notchFrame)) {
-    [self.quickInputController presentInNotchOnScreen:notchScreen];
+    [self.quickInputController presentInNotchOnScreen:notchScreen fromFrame:notchFrame];
     return;
   }
   NSPoint location = NSEvent.mouseLocation;

@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)presentOnScreen:(NSScreen *)screen;
 - (void)presentBelowRect:(NSRect)anchorRect onScreen:(NSScreen *)screen;
 - (void)presentInNotchOnScreen:(NSScreen *)screen;
+- (void)presentInNotchOnScreen:(NSScreen *)screen fromFrame:(NSRect)frame;
 - (void)dismiss;
 - (void)applyPalette:(TLThemePalette *)palette;
 @end

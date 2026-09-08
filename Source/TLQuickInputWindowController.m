@@ -4,6 +4,7 @@
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLQuickInputPanel.h"
 #import "design_system/TLNotchSurfaceView.h"
+#import "design_system/TLTransitionCoordinator.h"
 #import "design_system/TLScreenRegionSelectionView.h"
 #import "TLScreenCapture.h"
 #import <QuartzCore/QuartzCore.h>
@@ -23,6 +24,9 @@
 @property (nonatomic) BOOL sheetInteractionActive;
 @property (nonatomic) BOOL notchPresentation;
 @property (nonatomic, strong) TLNotchSurfaceView *notchSurface;
+@property (nonatomic, strong) NSView *inputContainer;
+@property (nonatomic, strong) TLTransitionCoordinator *notchTransition;
+@property (nonatomic) NSRect notchTargetFrame;
 @property (nonatomic, strong) NSLayoutConstraint *inputLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *inputTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *inputTopConstraint;
@@ -46,6 +50,7 @@
     _commands = @[];
     _trackingMenus = [NSMutableSet set];
     _inputHeight = palette.composerButtonHeight;
+    _notchTransition = [[TLTransitionCoordinator alloc] init];
     panel.title = @"Talaria Quick Input";
     panel.delegate = self;
     panel.opaque = NO;
@@ -57,6 +62,8 @@
     panel.level = NSFloatingWindowLevel;
     panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
     panel.contentView.wantsLayer = YES;
+    panel.contentView.layer.masksToBounds = YES;
+    panel.animationBehavior = NSWindowAnimationBehaviorNone;
     __weak typeof(self) weakSelf = self;
     panel.dismissHandler = ^{ [weakSelf dismiss]; };
     NSNotificationCenter *notifications = NSNotificationCenter.defaultCenter;
@@ -69,6 +76,10 @@
     _notchSurface.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     _notchSurface.hidden = YES;
     [panel.contentView addSubview:_notchSurface];
+    // Keep the input at its final width while the surrounding notch resizes.
+    _inputContainer = [[NSView alloc] initWithFrame:panel.contentView.bounds];
+    _inputContainer.wantsLayer = YES;
+    [panel.contentView addSubview:_inputContainer];
     _screenCapture = [[TLScreenCapture alloc] init];
 
     _messageInput = [[TLGlassMessageInput alloc] init];
@@ -86,10 +97,10 @@
       weakSelf.inputHeight = height;
       [weakSelf layoutPanel];
     };
-    [panel.contentView addSubview:_messageInput];
-    _inputLeadingConstraint = [_messageInput.leadingAnchor constraintEqualToAnchor:panel.contentView.leadingAnchor];
-    _inputTrailingConstraint = [_messageInput.trailingAnchor constraintEqualToAnchor:panel.contentView.trailingAnchor];
-    _inputTopConstraint = [_messageInput.topAnchor constraintEqualToAnchor:panel.contentView.topAnchor];
+    [_inputContainer addSubview:_messageInput];
+    _inputLeadingConstraint = [_messageInput.leadingAnchor constraintEqualToAnchor:_inputContainer.leadingAnchor];
+    _inputTrailingConstraint = [_messageInput.trailingAnchor constraintEqualToAnchor:_inputContainer.trailingAnchor];
+    _inputTopConstraint = [_messageInput.topAnchor constraintEqualToAnchor:_inputContainer.topAnchor];
     [NSLayoutConstraint activateConstraints:@[
       _inputLeadingConstraint, _inputTrailingConstraint, _inputTopConstraint,
     ]];
@@ -100,7 +111,7 @@
     _suggestionList = [[TLInputSuggestionListView alloc] init];
     _suggestionList.activationHandler = ^(NSUInteger index) { [weakSelf performSuggestionAtIndex:index completing:NO]; };
     [_suggestionPanel addSubview:_suggestionList];
-    [panel.contentView addSubview:_suggestionPanel];
+    [_inputContainer addSubview:_suggestionPanel];
     [NSLayoutConstraint activateConstraints:@[
       [_suggestionList.leadingAnchor constraintEqualToAnchor:_suggestionPanel.leadingAnchor constant:palette.space3],
       [_suggestionList.trailingAnchor constraintEqualToAnchor:_suggestionPanel.trailingAnchor constant:-palette.space3],
@@ -114,6 +125,7 @@
 }
 
 - (void)dealloc {
+  [_notchTransition cancelAllTransitions];
   [_screenCapture cancel];
   [_selectionWindow orderOut:nil];
   [NSNotificationCenter.defaultCenter removeObserver:self];
@@ -126,6 +138,7 @@
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
+  [self cancelNotchTransition];
   [self cancelCapture];
   [self.selectionWindow orderOut:self];
   if (self.visibilityChangeHandler) self.visibilityChangeHandler(NO);
@@ -187,18 +200,26 @@
 
 - (void)presentBelowRect:(NSRect)anchorRect onScreen:(NSScreen *)screen {
   if (self.window.attachedSheet || self.captureInProgress) return;
+  [self cancelNotchTransition];
   self.notchPresentation = NO;
-  [self presentWithAnchorRect:anchorRect onScreen:screen];
+  [self presentWithAnchorRect:anchorRect onScreen:screen fromFrame:NSZeroRect];
 }
 
 - (void)presentInNotchOnScreen:(NSScreen *)screen {
-  if (self.window.attachedSheet || self.captureInProgress) return;
-  self.notchPresentation = YES;
-  [self presentWithAnchorRect:NSMakeRect(NSMidX(screen.frame), NSMaxY(screen.frame), 0, 0) onScreen:screen];
+  [self presentInNotchOnScreen:screen fromFrame:NSZeroRect];
 }
 
-- (void)presentWithAnchorRect:(NSRect)anchorRect onScreen:(NSScreen *)screen {
+- (void)presentInNotchOnScreen:(NSScreen *)screen fromFrame:(NSRect)frame {
+  if (self.window.attachedSheet || self.captureInProgress) return;
+  self.notchPresentation = YES;
+  [self presentWithAnchorRect:NSMakeRect(NSMidX(screen.frame), NSMaxY(screen.frame), 0, 0)
+                    onScreen:screen fromFrame:frame];
+}
+
+- (void)presentWithAnchorRect:(NSRect)anchorRect onScreen:(NSScreen *)screen fromFrame:(NSRect)frame {
   if (self.window.attachedSheet) return;
+  if (self.presentationScreen != screen) [self cancelNotchTransition];
+  BOOL wasVisible = self.window.visible;
   self.presentationScreen = screen;
   self.anchorRect = anchorRect;
   ((TLQuickInputPanel *)self.window).pinsToScreenTop = self.notchPresentation;
@@ -208,14 +229,19 @@
   self.messageInput.showsBackground = !self.notchPresentation;
   [self applyPalette:self.palette];
   [self updateSuggestions];
-  if (!self.window.visible && self.visibilityChangeHandler) self.visibilityChangeHandler(YES);
+  if (!wasVisible && self.notchPresentation && !NSIsEmptyRect(frame)) {
+    [self expandNotchFromFrame:frame];
+  }
   [self.window makeKeyAndOrderFront:self];
   [self.window makeFirstResponder:self.messageInput.textView];
+  // Cover the compact notch at its current size before its tracking window hides.
+  if (!wasVisible && self.visibilityChangeHandler) self.visibilityChangeHandler(YES);
   [self updateSelectionWindow];
 }
 
 - (void)dismiss {
   BOOL wasVisible = self.window.visible;
+  [self cancelNotchTransition];
   [self cancelCapture];
   [self.selectionWindow orderOut:self];
   // Keep the live composer (including its attachment URLs) as the next draft.
@@ -269,11 +295,12 @@
   TLThemePalette *palette = self.palette;
   NSRect visibleFrame = self.presentationScreen.visibleFrame;
   CGFloat inset = self.notchPresentation ? palette.notchOverlayTopFlareOutset + palette.space4 : 0;
-  CGFloat width = MIN(palette.messageInputMaxWidth + inset * 2, NSWidth(visibleFrame) - palette.space11 * 2);
+  CGFloat inputWidth = self.notchPresentation ? palette.notchInputMaxWidth : palette.messageInputMaxWidth;
+  CGFloat width = MIN(inputWidth + inset * 2, NSWidth(visibleFrame) - palette.space11 * 2);
   CGFloat cameraInset = self.presentationScreen.safeAreaInsets.top;
   CGFloat topPadding = self.notchPresentation ?
-    (cameraInset > 0 ? MAX(cameraInset, palette.notchOverlayMinimumHeight) : palette.space5) : 0;
-  CGFloat bottomPadding = self.notchPresentation ? palette.space5 : 0;
+    (cameraInset > 0 ? MAX(cameraInset, palette.notchOverlayMinimumHeight) : palette.notchInputVerticalPadding) : 0;
+  CGFloat bottomPadding = self.notchPresentation ? palette.notchInputVerticalPadding : 0;
   self.inputLeadingConstraint.constant = inset;
   self.inputTrailingConstraint.constant = -inset;
   self.inputTopConstraint.constant = topPadding;
@@ -288,12 +315,63 @@
   for (NSUInteger pass = 0; pass < 2; pass++) {
     CGFloat height = topPadding + self.inputHeight + gap + suggestionsHeight + bottomPadding;
     NSRect frame = NSMakeRect(x, MAX(NSMinY(visibleFrame), topEdge - height), width, height);
-    [self.window setFrame:frame display:YES];
+    self.notchTargetFrame = frame;
+    self.inputContainer.frame = NSMakeRect(0, 0, width, height);
+    if (!self.notchTransition.hasTransitions) [self.window setFrame:frame display:YES];
+    [self positionInputContainer];
     self.suggestionPanel.frame = NSMakeRect(inset, bottomPadding, width - inset * 2, suggestionsHeight);
-    [self.window.contentView layoutSubtreeIfNeeded];
+    [self.inputContainer layoutSubtreeIfNeeded];
   }
   self.layingOut = NO;
   [self updateSelectionWindow];
+}
+
+- (void)positionInputContainer {
+  NSSize available = self.window.contentView.bounds.size;
+  NSSize content = self.inputContainer.frame.size;
+  [self.inputContainer setFrameOrigin:NSMakePoint((available.width - content.width) * 0.5,
+                                                 available.height - content.height)];
+}
+
+- (void)interpolateNotchFromFrame:(NSRect)start toFrame:(NSRect)target progress:(CGFloat)progress {
+  NSRect frame = NSMakeRect(start.origin.x + (target.origin.x - start.origin.x) * progress,
+    start.origin.y + (target.origin.y - start.origin.y) * progress,
+    start.size.width + (target.size.width - start.size.width) * progress,
+    start.size.height + (target.size.height - start.size.height) * progress);
+  [self.window setFrame:frame display:YES];
+  [self positionInputContainer];
+  self.notchSurface.needsDisplay = YES;
+}
+
+- (void)expandNotchFromFrame:(NSRect)start {
+  self.inputContainer.alphaValue = 0.0;
+  __weak typeof(self) weakSelf = self;
+  [self.notchTransition startTransitionForKey:@"notchExpansion"
+    duration:self.palette.notchInputExpansionDuration curve:TLTransitionCurveEaseInOut
+    update:^(CGFloat progress) {
+      typeof(self) owner = weakSelf;
+      if (!owner) return;
+      NSRect target = owner.notchTargetFrame;
+      CGFloat width = NSWidth(target) * owner.palette.notchInputOvershootScale;
+      CGFloat height = NSHeight(target) * owner.palette.notchInputOvershootScale;
+      NSRect overshoot = NSMakeRect(NSMidX(target) - width * 0.5, NSMaxY(target) - height, width, height);
+      [owner interpolateNotchFromFrame:start toFrame:overshoot progress:progress];
+    } completion:^(BOOL finished) {
+      if (!finished) return;
+      NSRect overshoot = weakSelf.window.frame;
+      [weakSelf.notchTransition startTransitionForKey:@"notchInputReveal"
+        duration:weakSelf.palette.notchInputRevealDuration update:^(CGFloat progress) {
+          [weakSelf interpolateNotchFromFrame:overshoot toFrame:weakSelf.notchTargetFrame progress:progress];
+          weakSelf.inputContainer.alphaValue = progress;
+        } completion:^(BOOL settled) {
+          if (settled) [weakSelf layoutPanel];
+        }];
+    }];
+}
+
+- (void)cancelNotchTransition {
+  [self.notchTransition cancelAllTransitions];
+  self.inputContainer.alphaValue = 1.0;
 }
 
 - (void)updateSelectionWindow {
@@ -331,27 +409,26 @@
   [self.screenCapture cancel];
   self.captureInProgress = NO;
   self.messageInput.attachmentsEditable = YES;
-  self.window.alphaValue = 1;
   [self.selectionView resetSelection];
 }
 
 - (void)captureSelection:(NSRect)rect {
   if (self.captureInProgress || !self.notchPresentation || !self.window.visible) return;
+  [self.notchTransition finishAllTransitions];
   self.captureInProgress = YES;
   NSUInteger generation = ++self.captureGeneration;
   self.messageInput.attachmentsEditable = NO;
   self.messageInput.sendButton.enabled = NO;
   [self.selectionWindow orderOut:self];
-  // A selection can now cross the notch, so exclude our composer from the captured pixels too.
-  self.window.alphaValue = 0;
+  NSArray<NSNumber *> *excludedWindows = @[@(self.window.windowNumber), @(self.selectionWindow.windowNumber)];
   [self.selectionView resetSelection];
   [CATransaction flush];
   __weak typeof(self) weakSelf = self;
-  // Let the window server remove our windows before capturing the selected area.
+  // Let the selection border clear; the notch stays visible and is filtered from capture.
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
     typeof(self) owner = weakSelf;
     if (!owner || owner.captureGeneration != generation || !owner.window.visible) return;
-    [owner.screenCapture captureRect:rect completion:^(NSURL *URL, NSError *error) {
+    [owner.screenCapture captureRect:rect excludingWindowIDs:excludedWindows completion:^(NSURL *URL, NSError *error) {
       typeof(self) current = weakSelf;
       if (!current || current.captureGeneration != generation || !current.window.visible) return;
       [current cancelCapture];
