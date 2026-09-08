@@ -9,5 +9,5 @@ void TLChromiumShowContextMenu(CefRefPtr<CefBrowser> browser,
                               CefRefPtr<CefRunContextMenuCallback> callback);
 
 void TLChromiumShowLinkContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefMenuModel> imageModel,
-  NSURL *URL, NSString *title, CefPoint location, CefRefPtr<CefRunContextMenuCallback> callback,
-  TLBrowserLinkOpenHandler open, void (^download)(BOOL));
+  NSURL *URL, BOOL canSplit, CefPoint location, CefRefPtr<CefRunContextMenuCallback> callback,
+  TLBrowserLinkOpenHandler open);

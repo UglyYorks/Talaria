@@ -11,6 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^metadataChangedHandler)(NSString *title, NSURL *URL);
 @property (nonatomic, copy, nullable) void (^faviconChangedHandler)(void);
 @property (nonatomic, copy, nullable) TLChromiumBrowserLinkHandler linkHandler;
+@property (nonatomic, copy, nullable) void (^splitLinkHandler)(NSURL *URL);
 @property (nonatomic, copy, nullable) TLAppSettings * _Nullable (^settingsProvider)(void);
 @property (nonatomic, copy, nullable) void (^settingsRequiredHandler)(void);
 - (instancetype)initWithURL:(NSURL *)URL palette:(TLThemePalette *)palette

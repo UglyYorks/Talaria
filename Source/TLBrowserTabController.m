@@ -103,6 +103,7 @@
                              self.browserAddressInput.chatButton]) {
     button.target = nil;
   }
+  self.browserSession.splitLinkHandler = nil;
   self.browserSession.devToolsVisibilityChangedHandler = nil;
   [self.browserService closeSession:self.browserSession];
   self.browserSession = nil;
@@ -110,6 +111,7 @@
   self.faviconChangedHandler = nil;
   self.headerColorChangedHandler = nil;
   self.linkHandler = nil;
+  self.splitLinkHandler = nil;
   self.settingsProvider = nil;
   self.settingsRequiredHandler = nil;
 }
@@ -272,6 +274,10 @@
       controller.browserAddressInput.forwardButton.enabled = canGoForward;
       controller.browserAddressInput.reloadButton.enabled = YES;
     }];
+  self.browserSession.splitLinkHandler = ^(NSURL *URL) {
+    TLBrowserTabController *controller = weakSelf;
+    if (!controller.isClosed && controller.splitLinkHandler) controller.splitLinkHandler(URL);
+  };
   if (self.browserSession) {
     self.browserSession.devToolsVisibilityChangedHandler = ^{
       TLBrowserTabController *controller = weakSelf;

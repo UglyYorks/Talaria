@@ -1,5 +1,4 @@
 #import "TLBrowserImageActions.h"
-#import "TLBrowserLinkActions.h"
 #import "TLAutomationsTabController.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
@@ -1998,11 +1997,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   downloadsItem.target = self;
   downloadsItem.image = [self symbolImageNamed:@"arrow.down.circle" accessibilityDescription:@"Downloads"];
   [menu addItem:downloadsItem];
-  __weak typeof(self) weakSelf = self;
-  [TLBrowserLinkActions appendLibraryMenusToMenu:menu window:self.window open:^(NSURL *URL, TLBrowserLinkDestination destination, NSString *groupID) {
-    if (destination == TLBrowserLinkTabGroup) [TLChromiumBrowserController.sharedController openURL:URL inTabGroup:groupID fromWindow:weakSelf.window];
-    else [weakSelf openBrowserTabWithURL:URL];
-  }];
 
   NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:@"Debug"
                                                      action:@selector(showDebug:)
@@ -2183,6 +2177,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self updateControlStates];
 }
 
+- (void)openLinkURL:(NSURL *)URL inSplitBesideBrowserTabID:(NSInteger)tabID {
+  TLWorkspaceTab *source = [self browserTabWithID:tabID];
+  if (!source || ![self isBrowserURL:URL]) return;
+  [self openBrowserTabWithURL:URL];
+  [self splitTab:[self activeWorkspaceTab] besideTab:source onLeft:NO];
+}
+
 - (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab {
   TLWorkspaceTabRuntime *existing = [self runtimeForTab:tab];
   if (existing) {
@@ -2214,6 +2215,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   controller.headerColorChangedHandler = ^{ [weakSelf.workspaceTabsController refreshContentColorsAnimated:YES]; };
   controller.linkHandler = ^(NSURL *linkedURL, NSEventModifierFlags flags) {
     [weakSelf handleBrowserTabRequestURL:linkedURL modifierFlags:flags];
+  };
+  controller.splitLinkHandler = ^(NSURL *linkedURL) {
+    [weakSelf openLinkURL:linkedURL inSplitBesideBrowserTabID:tabID];
   };
   controller.settingsProvider = ^{ return weakSelf.settings; };
   controller.settingsRequiredHandler = ^{ [weakSelf showSettings:weakSelf]; };

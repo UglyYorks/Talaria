@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run native link menus, downloads and tab groups against a local fixture."""
+"""Run native link menus and split routing against a local fixture."""
 import http.server
 import os
 from pathlib import Path

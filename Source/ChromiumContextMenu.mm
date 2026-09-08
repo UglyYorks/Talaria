@@ -65,8 +65,8 @@ void TLChromiumShowContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefMenuM
 }
 
 void TLChromiumShowLinkContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefMenuModel> imageModel,
-  NSURL *URL, NSString *title, CefPoint location, CefRefPtr<CefRunContextMenuCallback> callback,
-  TLBrowserLinkOpenHandler open, void (^download)(BOOL)) {
+  NSURL *URL, BOOL canSplit, CefPoint location, CefRefPtr<CefRunContextMenuCallback> callback,
+  TLBrowserLinkOpenHandler open) {
   TLChromiumContextMenuSelection *selection = [TLChromiumContextMenuSelection new];
   NSMenu *imageMenu = imageModel ? TLChromiumNativeMenu(imageModel, selection) : nil;
   TLChromiumDeferToMainRunLoop(^{
@@ -75,7 +75,7 @@ void TLChromiumShowLinkContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefM
     NSWindow *window = view.window;
     if (!window.isVisible) { callback->Cancel(); return; }
     NSPoint point = NSMakePoint(location.x, view.isFlipped ? location.y : NSHeight(view.bounds) - location.y);
-    NSMenu *menu = [TLBrowserLinkActions menuForURL:URL title:title view:view point:point open:open download:download inspect:^{
+    NSMenu *menu = [TLBrowserLinkActions menuForURL:URL canSplit:canSplit view:view point:point open:open inspect:^{
       if (!browser->IsValid()) return;
       CefWindowInfo info; CefBrowserSettings settings;
       browser->GetHost()->ShowDevTools(info, nullptr, settings, location);

@@ -17,6 +17,7 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 @property (nonatomic, readonly, getter=isFullscreen) BOOL fullscreen;
 @property (nonatomic, readonly) BOOL devToolsVisible;
 @property (nonatomic, copy, nullable) dispatch_block_t devToolsVisibilityChangedHandler;
+@property (nonatomic, copy, nullable) void (^splitLinkHandler)(NSURL *URL);
 
 @end
 
@@ -35,8 +36,6 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
                                 faviconHandler:(nullable TLChromiumBrowserFaviconHandler)faviconHandler
                              navigationHandler:(nullable TLChromiumBrowserNavigationHandler)navigationHandler;
 - (void)startDownloadURL:(NSURL *)URL fromWindow:(nullable NSWindow *)window;
-- (void)downloadLinkedURL:(NSURL *)URL fromWindow:(nullable NSWindow *)window askForDestination:(BOOL)ask;
-- (void)openURL:(NSURL *)URL inTabGroup:(NSString *)groupID fromWindow:(nullable NSWindow *)window;
 - (void)navigateSession:(nullable TLChromiumBrowserSession *)session toURL:(NSURL *)URL;
 - (void)prepareBrowserSettingsInWindow:(nullable NSWindow *)window completion:(void (^)(NSError * _Nullable))completion;
 - (NSDictionary *)browserSettingState:(NSDictionary *)setting;
