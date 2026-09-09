@@ -1,4 +1,5 @@
 #import "TLSettingsTabController.h"
+#import "TLProviderSetupWindowController.h"
 #import "TLBrowserSettingsController.h"
 #import "TLApplicationSettingsController.h"
 #import "AgentOrchestrator.h"
@@ -16,8 +17,6 @@
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
 @property (nonatomic, strong) TLAppSettings *draftSettings;
 @property (nonatomic, strong) TLSettingsWorkspaceView *workspace;
-@property (nonatomic, strong) NSSecureTextField *tokenField;
-@property (nonatomic, strong) NSButton *rememberButton;
 @property (nonatomic, strong) TLThemedButton *saveButton;
 @property (nonatomic, strong) NSTextField *footerLabel;
 @property (nonatomic, strong) NSMutableArray<TLThemedButton *> *buttons;
@@ -32,6 +31,7 @@
 @property (nonatomic) BOOL largeModelChanged;
 @property (nonatomic) BOOL smallModelChanged;
 @property (nonatomic, strong) TLModelSelectionWindowController *modelSelection;
+@property (nonatomic, strong) TLProviderSetupWindowController *providerSetup;
 @property (nonatomic, strong) NSStackView *credentialRows;
 @property (nonatomic, strong) NSSearchField *credentialSearch;
 @property (nonatomic, strong) NSPopUpButton *credentialCategory;
@@ -179,17 +179,8 @@
 }
 
 - (NSView *)buildModelPage {
-  self.tokenField = [[NSSecureTextField alloc] init];
-  [self styleField:self.tokenField];
-  self.tokenField.stringValue = self.draftSettings.openRouterToken;
-  self.tokenField.placeholderString = @"OpenRouter API key";
-  self.tokenField.accessibilityLabel = @"OpenRouter API key";
-  self.rememberButton = [NSButton checkboxWithTitle:@"Remember token" target:nil action:nil];
-  self.rememberButton.font = self.palette.bodyFont;
-  [self bindColorForObject:self.rememberButton keyPath:@"contentTintColor" token:@"controlText"];
-  self.rememberButton.state = self.draftSettings.rememberOpenRouterToken ? NSControlStateValueOn : NSControlStateValueOff;
-  NSView *provider = [self card:@"OpenRouter" description:@"Your API key connects Hermes to your model provider."
-    controls:@[self.tokenField, self.rememberButton]];
+  NSView *provider = [self card:@"Model provider" description:@"Choose a provider, connect your account or credentials, then select a model for this agent."
+    controls:@[[self button:@"Configure provider…" action:@selector(configureProvider:)]]];
   NSMutableArray *modelCards = [NSMutableArray array];
   for (NSUInteger i = 0; i < 2; i++) {
     TLThemedButton *choose = [self button:@"Choose model…" action:@selector(chooseModel:)];
@@ -296,12 +287,30 @@
   if ([view.identifier isEqual:@"smallModelLabel"]) [(NSTextField *)view setStringValue:self.draftSettings.supportingModel];
   for (NSView *child in view.subviews) [self updateModelLabelsInView:child];
 }
+- (void)configureProvider:(id)sender {
+  if (!self.view.window || self.view.window.attachedSheet) return;
+  TLAgentRecord *agent = [self.agentOrchestrator defaultAgentCreatingIfNeeded:nil];
+  if (!agent) return;
+  self.providerSetup = [[TLProviderSetupWindowController alloc] initWithAgent:agent orchestrator:self.agentOrchestrator palette:self.palette];
+  __weak typeof(self) weakSelf = self;
+  self.providerSetup.completionHandler = ^(NSString *selection) {
+    typeof(self) owner = weakSelf;
+    if (!owner || owner.isClosed) return;
+    TLAppSettings *latest = [owner.database appSettings:nil];
+    owner.draftSettings.selectedModel = latest.selectedModel;
+    owner.draftSettings.supportingModel = latest.supportingModel;
+    owner.largeModelChanged = NO; owner.smallModelChanged = NO;
+    [owner updateModelLabelsInView:owner.pages[@"Model"]];
+    if (owner.settingsSavedHandler) owner.settingsSavedHandler(latest);
+  };
+  [self.providerSetup presentForWindow:self.view.window];
+}
 - (void)chooseModel:(NSButton *)sender {
   if (!self.view.window || self.view.window.attachedSheet) return;
   BOOL small = sender.tag == 1;
   self.modelSelection = [[TLModelSelectionWindowController alloc] initWithSmallModel:small
     selectedModel:small ? self.draftSettings.supportingModel : self.draftSettings.selectedModel
-    token:self.tokenField.stringValue orchestrator:self.agentOrchestrator palette:self.palette];
+    token:self.draftSettings.openRouterToken orchestrator:self.agentOrchestrator palette:self.palette];
   __weak typeof(self) weakSelf = self;
   self.modelSelection.selectionHandler = ^(NSString *model, void (^completion)(NSError *)) {
     typeof(self) owner = weakSelf;
@@ -321,8 +330,6 @@
     else if (self.skillsPicker.changes.count) [self requestSkillsWithChanges:self.skillsPicker.changes];
     return;
   }
-  self.draftSettings.openRouterToken = self.tokenField.stringValue;
-  self.draftSettings.rememberOpenRouterToken = self.rememberButton.state == NSControlStateValueOn;
   TLAppSettings *latest = [self.database appSettings:nil];
   if (latest) {
     if (!self.largeModelChanged) self.draftSettings.selectedModel = latest.selectedModel;
@@ -442,7 +449,7 @@
   [self renderCredentials];
   NSUInteger generation = ++self.credentialGeneration;
   __weak typeof(self) weakSelf = self;
-  [self.agentOrchestrator hermesCredentialsWithAction:@"list" key:@"" value:@"" token:self.tokenField.stringValue
+  [self.agentOrchestrator hermesCredentialsWithAction:@"list" key:@"" value:@"" token:self.draftSettings.openRouterToken
     completion:^(NSDictionary *result, NSError *error) {
       dispatch_async(dispatch_get_main_queue(), ^{
         typeof(self) owner = weakSelf;
@@ -536,7 +543,7 @@
   self.credentialStatus.stringValue = [action isEqual:@"set"] ? @"Saving credential…" : @"Removing credential…";
   NSUInteger generation = ++self.credentialGeneration;
   __weak typeof(self) weakSelf = self;
-  [self.agentOrchestrator hermesCredentialsWithAction:action key:key value:value token:self.tokenField.stringValue
+  [self.agentOrchestrator hermesCredentialsWithAction:action key:key value:value token:self.draftSettings.openRouterToken
     completion:^(NSDictionary *result, NSError *error) {
       dispatch_async(dispatch_get_main_queue(), ^{
         typeof(self) owner = weakSelf;
@@ -565,6 +572,7 @@
   for (TLThemedButton *button in self.buttons) button.palette = palette;
   for (TLSidebarNavigationButton *button in self.navigation) button.palette = palette;
   [self.modelSelection applyPalette:palette];
+  [self.providerSetup applyPalette:palette];
   [self.browserSettingsController applyPalette:palette];
   [self.applicationSettingsController applyPalette:palette];
   self.skillsPicker.palette = palette;

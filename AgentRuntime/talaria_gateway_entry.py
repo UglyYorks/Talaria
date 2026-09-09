@@ -126,6 +126,8 @@ def main():
     from tui_gateway import entry
     from hermes_automations import register as register_automations
     register(entry.server)
+    from hermes_providers import register as register_providers
+    register_providers(entry.server)
     automations = register_automations(entry.server, os.environ["HERMES_HOME"])
     try:
         entry.main()

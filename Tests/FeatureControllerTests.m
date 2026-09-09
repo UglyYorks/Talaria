@@ -16,6 +16,7 @@
 #import "TLGlobalShortcut.h"
 #import <Carbon/Carbon.h>
 #import "TLModelSelectionWindowController.h"
+#import "TLProviderSetupWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AssistantTurnRunner.h"
 #import "TLChatPresentation.h"
@@ -2313,18 +2314,19 @@ static void TestSettingsThemeAndLateCatalogue(void) {
     orchestrator:(TLAgentOrchestrator *)catalogue
     palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
   NSWindow *window = HostController(controller);
-  NSSecureTextField *token = [controller valueForKey:@"tokenField"];
-  token.stringValue = @"test-only-unsaved-token";
+  TLAppSettings *draft = [controller valueForKey:@"draftSettings"];
+  draft.openRouterToken = @"test-only-legacy-token";
+  TLThemedButton *token = [controller valueForKey:@"saveButton"];
   [[controller valueForKey:@"draftSettings"] setTheme:TLThemePreferenceDark];
   [window makeFirstResponder:token];
   NSResponder *responder = window.firstResponder;
   NSView *view = controller.view;
   TLThemePalette *dark = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
   [controller applyPalette:dark];
-  Check(controller.view == view && [controller valueForKey:@"tokenField"] == token, @"settings theme keeps existing controls");
-  Check([token.stringValue isEqualToString:@"test-only-unsaved-token"], @"settings drafts survive theme change");
+  Check(controller.view == view && [controller valueForKey:@"saveButton"] == token, @"settings theme keeps existing controls");
+  Check([draft.openRouterToken isEqualToString:@"test-only-legacy-token"], @"settings drafts survive theme change");
   Check(window.firstResponder == responder, @"settings focus survives system palette changes");
-  Check([token.textColor isEqual:dark.controlText], @"settings controls update theme");
+  Check(token.palette == dark, @"settings controls update theme");
   Check(catalogue.pendingCatalogue == nil, @"settings only fetches the model catalogue when the picker opens");
   store.savedSettings = [TLAppSettings defaultSettings];
   store.savedSettings.selectedModel = @"new/large";
@@ -2333,7 +2335,7 @@ static void TestSettingsThemeAndLateCatalogue(void) {
   controller.settingsSavedHandler = ^(TLAppSettings *settings) { saved = settings; };
   NSButton *save = [controller valueForKey:@"saveButton"];
   [NSApp sendAction:save.action to:save.target from:save];
-  Check([saved.openRouterToken isEqualToString:token.stringValue] && saved.theme == TLThemePreferenceSystem, @"settings saves model drafts with the system color scheme");
+  Check([saved.openRouterToken isEqualToString:draft.openRouterToken] && saved.theme == TLThemePreferenceSystem, @"settings saves model drafts with the system color scheme");
   Check([saved.selectedModel isEqual:@"new/large"] && [saved.supportingModel isEqual:@"new/small"], @"stale settings draft cannot overwrite composer choices");
   [controller close];
   [window close];
@@ -3602,6 +3604,92 @@ static void TestHermesHistorySearchAndLayout(void) {
   [window close];
 }
 
+@interface TLProviderSetupWindowController (Testing)
+- (void)showProviders;
+- (void)next:(id)sender;
+- (void)back:(id)sender;
+- (void)cancel:(id)sender;
+- (void)login:(id)sender;
+@end
+@interface TLProviderServiceMock : NSObject
+@property NSDictionary *params;
+@property NSInteger agentID;
+@property (copy) void (^pending)(NSDictionary *, NSError *);
+@end
+@implementation TLProviderServiceMock
+- (void)hermesProvidersForAgentID:(NSInteger)agentID parameters:(NSDictionary *)params completion:(void (^)(NSDictionary *, NSError *))completion {
+  self.agentID = agentID; self.params = params; self.pending = completion;
+}
+@end
+static void ProviderTick(void) {
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+}
+static void ProviderSnapshot(TLProviderSetupWindowController *controller, NSString *name) {
+  [controller.window.contentView layoutSubtreeIfNeeded];
+  NSView *root = controller.window.contentView;
+  NSBitmapImageRep *bitmap = [root bitmapImageRepForCachingDisplayInRect:root.bounds];
+  [root cacheDisplayInRect:root.bounds toBitmapImageRep:bitmap];
+  [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+    writeToFile:[NSString stringWithFormat:@"build/provider-%@.png", name] atomically:YES];
+  NSView *next = [controller valueForKey:@"nextButton"];
+  NSRect frame = [next convertRect:next.bounds toView:root];
+  Check(NSMinX(frame) >= 0 && NSMaxX(frame) <= NSWidth(root.bounds), @"provider wizard actions remain in the window");
+}
+static void TestProviderSetupStages(void) {
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLProviderServiceMock *service = [TLProviderServiceMock new];
+    TLAgentRecord *agent = [TLAgentRecord new]; agent.agentID = 42; agent.name = @"Atlas";
+    TLProviderSetupWindowController *controller = [[TLProviderSetupWindowController alloc]
+      initWithAgent:agent orchestrator:(id)service palette:[TLThemePalette paletteForPreference:theme.integerValue]];
+    [controller showProviders];
+    Check(service.agentID == 42 && [service.params[@"action"] isEqual:@"list"], @"provider discovery stays pinned to the new agent");
+    service.pending(@{@"providers":@[
+      @{@"slug":@"openrouter", @"name":@"OpenRouter", @"auth_type":@"api_key", @"api_key_env_vars":@[@"OPENROUTER_API_KEY"]},
+      @{@"slug":@"openai-codex", @"name":@"OpenAI login", @"auth_type":@"oauth_external"}]}, nil);
+    ProviderTick(); ProviderSnapshot(controller, [NSString stringWithFormat:@"%@-1",theme]);
+    [controller next:nil];
+    Check([[controller valueForKey:@"stage"] integerValue] == 1, @"provider selection advances to credentials");
+    NSDictionary *fields = [controller valueForKey:@"fields"];
+    NSSecureTextField *key = fields[@"OPENROUTER_API_KEY"];
+    Check([key isKindOfClass:NSSecureTextField.class], @"provider API keys use a secure field");
+    key.stringValue = @"test-key";
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [controller applyPalette:palette];
+    Check([key.stringValue isEqual:@"test-key"] && [key.textColor isEqual:palette.controlText], @"theme updates retain credential draft and use semantic text color");
+    ProviderSnapshot(controller, [NSString stringWithFormat:@"%@-2",theme]);
+    [controller next:nil];
+    Check([service.params[@"action"] isEqual:@"configure"] && [service.params[@"slug"] isEqual:@"openrouter"], @"credentials sent only to selected provider");
+    service.pending(@{@"ok":@YES}, nil); ProviderTick();
+    Check(key.stringValue.length == 0 && [service.params[@"action"] isEqual:@"models"], @"saved credentials are cleared before model discovery");
+    service.pending(@{@"providers":@[@{@"slug":@"openrouter", @"models":@[@"example/model"]}]},nil); ProviderTick();
+    ProviderSnapshot(controller, [NSString stringWithFormat:@"%@-3",theme]);
+    NSTextField *manual = [controller valueForKey:@"manualModel"]; manual.stringValue = @"custom-model";
+    [controller next:nil];
+    Check([service.params[@"selection"] isEqual:@"openrouter::custom-model"], @"model selection retains provider identity");
+    service.pending(@{@"confirm_required":@YES, @"confirm_message":@"Review cost"},nil); ProviderTick();
+    manual.stringValue = @"different-model";
+    [controller next:nil];
+    Check(![service.params[@"confirmed"] boolValue], @"confirmation for one model cannot approve another");
+    service.pending(nil,[NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Retry"}]); ProviderTick();
+    [controller back:nil]; [controller back:nil];
+    void (^late)(NSDictionary *, NSError *) = service.pending;
+    [controller cancel:nil]; late(@{@"providers":@[@{@"slug":@"stale", @"name":@"Stale"}]},nil); ProviderTick();
+    Check([[[controller valueForKey:@"providerPicker"] itemTitles] count] == 0, @"late discovery cannot repopulate a dismissed wizard");
+    [controller.window close];
+  }
+  TLProviderServiceMock *service = [TLProviderServiceMock new];
+  TLAgentRecord *agent = [TLAgentRecord new]; agent.agentID = 42; agent.name = @"Atlas";
+  TLProviderSetupWindowController *controller = [[TLProviderSetupWindowController alloc] initWithAgent:agent orchestrator:(id)service palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  [controller showProviders];
+  service.pending(@{@"providers":@[@{@"slug":@"openai-codex",@"name":@"OpenAI login",@"auth_type":@"oauth_external"}]},nil); ProviderTick();
+  [controller next:nil]; [controller login:nil];
+  service.pending(@{@"session_id":@"login-session",@"verification_url":@"https://example.com/login",@"user_code":@"ABC-123",@"poll_interval":@30},nil); ProviderTick();
+  Check(![[controller valueForKey:@"nextButton"] isEnabled], @"model stage waits for account sign-in");
+  [controller cancel:nil];
+  Check([service.params[@"action"] isEqual:@"login.cancel"] && [service.params[@"session_id"] isEqual:@"login-session"] && service.agentID == 42, @"closing cancels this agent's pending login");
+  [controller.window close];
+}
+
 @interface TalariaWindowController (LinkInsertionTests)
 - (void)handleLinkURL:(NSURL *)URL modifierFlags:(NSEventModifierFlags)flags;
 - (void)handleBrowserTabRequestURL:(NSURL *)URL modifierFlags:(NSEventModifierFlags)flags;
@@ -3650,6 +3738,7 @@ static void TestLinkTabInsertion(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestProviderSetupStages();
     TestLinkTabInsertion();
     if (getenv("TL_TEST_BROWSER_IMPORT_ONLY")) {
       TestThemedButtonRenderedColors();

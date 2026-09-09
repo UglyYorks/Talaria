@@ -701,7 +701,7 @@
     TLBrowserTabController *controller = weakSelf;
     if (!controller || controller.isClosed) return NO;
     TLAppSettings *settings = controller.settingsProvider ? controller.settingsProvider() : nil;
-    if (!settings.openRouterToken.length || !settings.selectedModel.length) return NO;
+    if (!settings.selectedModel.length) return NO;
     return [controller.browserConversation respondToApproval:requestID choice:choice token:settings.openRouterToken model:settings.selectedModel];
   };
   [self.browserChatPane showApprovalRequest:conversation.pendingApproval];
@@ -727,7 +727,7 @@
 - (void)sendBrowserPrompt:(NSString *)prompt {
   if (self.browserConversation.busy) { NSBeep(); return; }
   TLAppSettings *settings = self.settingsProvider ? self.settingsProvider() : nil;
-  if (!settings.openRouterToken.length || !settings.selectedModel.length) {
+  if (!settings.selectedModel.length) {
     if (self.settingsRequiredHandler) self.settingsRequiredHandler();
     return;
   }

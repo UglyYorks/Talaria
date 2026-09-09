@@ -43,9 +43,9 @@
   _symbol.imageScaling = NSImageScaleProportionallyUpOrDown;
   _titleLabel = [NSTextField labelWithString:small ? @"Choose a small model" : @"Choose a large model"];
   _descriptionLabel = [NSTextField wrappingLabelWithString:small
-    ? @"Choose an OpenRouter model for chat icons."
-    : @"Choose an OpenRouter model for replies. Changes apply to your next message in this chat."];
-  _picker = [[TLModelPickerView alloc] initWithTitle:@"OpenRouter models" palette:palette selectedModelID:model];
+    ? @"Choose a Hermes model for chat icons."
+    : @"Choose a Hermes model for replies. Changes apply to your next message in this chat."];
+  _picker = [[TLModelPickerView alloc] initWithTitle:@"Hermes models" palette:palette selectedModelID:model];
   _footer = [[TLTokenView alloc] init];
   _footer.borderEdges = TLBorderEdgeTop;
   _cancelButton = [self button:@"Cancel" action:@selector(cancel:)];
@@ -117,7 +117,7 @@
   self.reloadButton.enabled = NO;
   self.switchButton.enabled = NO;
   self.picker.userInteractionEnabled = NO;
-  [self.picker setStatusText:@"Loading OpenRouter models…"];
+  [self.picker setStatusText:@"Loading Hermes models…"];
   __weak typeof(self) weakSelf = self;
   [self.orchestrator fetchModelCatalogueWithToken:self.token completion:^(NSArray<TLAgentModel *> *models, NSError *error) {
     typeof(self) controller = weakSelf;
@@ -131,8 +131,8 @@
     controller.picker.userInteractionEnabled = YES;
     controller.switchButton.enabled = controller.picker.hasSelectableModel;
     [controller.picker setStatusText:models.count
-      ? [NSString stringWithFormat:@"%lu OpenRouter models", (unsigned long)models.count]
-      : @"No OpenRouter models available. Check your provider setup."];
+      ? [NSString stringWithFormat:@"%lu Hermes models", (unsigned long)models.count]
+      : @"No Hermes models available. Check your provider setup."];
   }];
 }
 - (void)switchModel:(id)sender {

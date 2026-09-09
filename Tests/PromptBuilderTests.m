@@ -374,6 +374,24 @@ static void TestStreamingBlockBuffer(void) {
   TLAssertEqualObjects([code appendText:@"```\n\n"], @"```objc\nint a = 1;\n\n```\n\n", @"commits fenced code after its closing blank line");
 }
 
+static void TestAgentProviderDefaults(void) {
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:TLTemporaryDatabaseURL(@"AgentProviderDefaults")
+    credentialStore:[[TLFakeTestCredentialStore alloc] init] error:nil];
+  TLAgentRecord *first = [database createAgentWithName:@"First" guestKind:TLAgentGuestKindLinux runtime:TLAgentRuntimePython vmDirectory:@"/tmp/first" error:nil];
+  TLAgentRecord *second = [database createAgentWithName:@"Second" guestKind:TLAgentGuestKindLinux runtime:TLAgentRuntimePython vmDirectory:@"/tmp/second" error:nil];
+  TLAssertTrue([database saveDefaultModel:@"openai-codex::large" forAgentID:first.agentID error:nil], @"save the first agent's provider model");
+  TLAssertTrue([database saveDefaultModel:@"anthropic::large" forAgentID:second.agentID error:nil], @"save the second agent's provider model");
+  [database setCurrentAgentID:first.agentID error:nil];
+  TLAppSettings *settings = [database appSettings:nil];
+  TLAssertEqualObjects(settings.selectedModel, @"openai-codex::large", @"agent switch restores provider-qualified default");
+  settings.supportingModel = @"openai-codex::small";
+  [database saveAppSettings:settings error:nil];
+  [database setCurrentAgentID:second.agentID error:nil];
+  TLAssertEqualObjects([database appSettings:nil].selectedModel, @"anthropic::large", @"another agent retains its own provider");
+  [database setCurrentAgentID:first.agentID error:nil];
+  TLAssertEqualObjects([database appSettings:nil].supportingModel, @"openai-codex::small", @"agent switch preserves its separate supporting model");
+}
+
 static void TestHermesModelParsing(void) {
   NSDictionary *catalogue = @{@"providers": @[
     @{@"slug": @"openrouter", @"name": @"OpenRouter", @"models": @[@"openai/gpt-4", @"openai/gpt-4", @"", @42],
@@ -383,8 +401,8 @@ static void TestHermesModelParsing(void) {
   NSData *data = [NSJSONSerialization dataWithJSONObject:catalogue options:0 error:nil];
   NSError *error = nil;
   NSArray<TLAgentModel *> *models = TLParseHermesModelOptions(data, &error);
-  TLAssertTrue(error == nil && models.count == 1, @"parses Hermes provider rows and removes duplicates and malformed models");
-  TLAssertEqualObjects(models[0].modelID, @"openai/gpt-4", @"keeps the Hermes model identifier");
+  TLAssertTrue(error == nil && models.count == 2, @"parses Hermes provider rows and removes duplicates and malformed models");
+  TLAssertEqualObjects(models[0].modelID, @"openrouter::openai/gpt-4", @"keeps provider identity with the Hermes model identifier");
   TLAssertTrue([[models[0] detailText] containsString:@"$30/M input"], @"uses Hermes pricing without multiplying it again");
   data = [@"{\"data\":[]}" dataUsingEncoding:NSUTF8StringEncoding];
   TLAssertTrue(TLParseHermesModelOptions(data, &error) == nil && error != nil, @"rejects the removed HTTP catalogue shape");
@@ -1499,6 +1517,7 @@ int main(int argc, const char *argv[]) {
     TestPromptMessages();
     TestStreamingBlockBuffer();
     TestHermesModelParsing();
+    TestAgentProviderDefaults();
     TestDatabasePersistence();
     TestHermesHistoryCache();
     TestCompatibleVersion5Database();

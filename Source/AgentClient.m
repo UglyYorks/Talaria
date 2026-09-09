@@ -258,6 +258,29 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   return self;
 }
 
+- (void)hermesProvidersWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
+                   completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
+  NSString *requestID = NSUUID.UUID.UUIDString;
+  NSMutableString *response = [NSMutableString string];
+  [self startWorkerWithAgent:agent
+                    payload:@{@"operation": @"hermes_providers", @"request_id": requestID,
+                              @"params": parameters}
+                  operation:@"hermes_providers"
+                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
+    if ([deltaID isEqualToString:requestID]) [response appendString:text];
+  } streamCompletion:^(NSError *error) {
+    if (error) { completion(nil, error); return; }
+    NSError *parseError = nil;
+    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
+                                               options:0 error:&parseError];
+    if (![result isKindOfClass:NSDictionary.class]) {
+      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned invalid provider data."));
+      return;
+    }
+    completion(result, nil);
+  } modelCompletion:nil];
+}
+
 - (void)hermesAutomationsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
                         token:(NSString *)token model:(NSString *)model
                    completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {

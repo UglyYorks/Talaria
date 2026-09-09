@@ -64,12 +64,9 @@ def hermes_environment(token="", model=""):
     environment.update({
         "HOME": "/workspace",
         "HERMES_HOME": str(HERMES_HOME),
-        "HERMES_INFERENCE_PROVIDER": "openrouter",
     })
-    if trim(token):
+    if trim(token) and not (HERMES_HOME / "talaria-provider-configured").exists():
         environment["OPENROUTER_API_KEY"] = trim(token)
-    if trim(model):
-        environment["HERMES_INFERENCE_MODEL"] = trim(model)
     return environment
 
 
@@ -333,8 +330,8 @@ def stream_hermes_session(request, output=None, cancellation=None):
     token = trim(request.get("token"))
     model = trim(request.get("model"))
     prompt = trim(request.get("prompt"))
-    if not request_id or not session_id or not token or not model or not prompt:
-        error("Hermes session, OpenRouter token, model, request ID, and prompt are required.", output)
+    if not request_id or not session_id or not model or not prompt:
+        error("Hermes session, model, request ID, and prompt are required.", output)
         return
     try:
         if cancellation.cancelled():
@@ -356,8 +353,8 @@ def stream_hermes_session(request, output=None, cancellation=None):
 
 def select_hermes_model(request, output=None):
     token, model, session_id = (trim(request.get(key)) for key in ("token", "model", "session_id"))
-    if not token or not model or not session_id:
-        error("Token, model, and Hermes session are required to switch models.", output)
+    if not model or not session_id:
+        error("Model and Hermes session are required to switch models.", output)
         return
     try:
         tui_gateway(token, model).select_model(session_id, model)
@@ -378,8 +375,8 @@ def generate_hermes_text(request, output=None):
     request_id = trim(request.get("request_id"))
     token, model = trim(request.get("token")), trim(request.get("model"))
     instructions, user_input = request.get("instructions"), request.get("input")
-    if not request_id or not token or not model or not isinstance(instructions, str) or not isinstance(user_input, str) or not user_input.strip():
-        error("Request ID, token, model, instructions, and input are required for Hermes text generation.", output)
+    if not request_id or not model or not isinstance(instructions, str) or not isinstance(user_input, str) or not user_input.strip():
+        error("Request ID, model, instructions, and input are required for Hermes text generation.", output)
         return
     try:
         text = tui_gateway(token, model).generate_text(model, instructions, user_input)
@@ -387,6 +384,18 @@ def generate_hermes_text(request, output=None):
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError) as exc:
         error(f"Could not generate text through Hermes: {exc}", output)
+
+
+def hermes_providers(request, output=None):
+    try:
+        result = tui_gateway().providers(request.get("params", {}))
+        if request.get("params", {}).get("action") == "select" and result.get("ok"):
+            (HERMES_HOME / "talaria-provider-configured").touch()
+        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
+              "text": json.dumps(result)}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError):
+        error("Could not configure this Hermes provider. Check your entries and update Hermes if needed, then retry.", output)
 
 
 def hermes_credentials(request, output=None):
@@ -418,6 +427,9 @@ def handle_request(request, output=None, cancellation=None):
     if operation == "install_hermes":
         install_hermes(request, output)
         return 0
+    if operation == "hermes_providers":
+        hermes_providers(request, output)
+        return
     if operation == "hermes_credentials":
         hermes_credentials(request, output)
         return 0

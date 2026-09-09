@@ -51,6 +51,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
                                          soul:(NSString *)soul folderPaths:(NSArray<NSString *> *)folderPaths
                                   vmDirectory:(NSString *)vmDirectory error:(NSError **)error;
+- (BOOL)saveDefaultModel:(NSString *)model forAgentID:(NSInteger)agentID error:(NSError **)error;
 - (NSInteger)currentAgentID;
 - (BOOL)setCurrentAgentID:(NSInteger)agentID error:(NSError **)error;
 - (nullable TLAgentRecord *)updateAgentWithID:(NSInteger)agentID

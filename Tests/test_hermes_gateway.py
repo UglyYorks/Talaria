@@ -307,6 +307,20 @@ class GatewayTests(unittest.TestCase):
         self.gateway.call.assert_not_called()
         lock.release()
 
+    def test_waiting_follow_up_rechecks_provider_setup_before_submitting(self):
+        lock = Mock()
+        def acquire(**kwargs):
+            if 'timeout' not in kwargs:
+                return False
+            self.gateway._provider_mutating = True
+            return True
+        lock.acquire.side_effect = acquire
+        self.gateway.session_locks['chat'] = lock
+        with self.assertRaisesRegex(RuntimeError, 'Wait for provider setup'):
+            self.gateway.run('chat', 'model', 'selected', Mock(), wait_for_previous_turn=True)
+        lock.release.assert_called_once_with()
+        self.gateway.call.assert_not_called()
+
     def test_stream_filters_reasoning_and_avoids_duplicate_final(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
         def call(method, params):
@@ -890,7 +904,8 @@ class CredentialRPCTests(unittest.TestCase):
                     else:
                         main()
                 self.assertEqual(set(handlers), {"talaria.credentials.list", "talaria.credentials.set",
-                                                "talaria.credentials.remove", "talaria.skills.describe", "talaria.automations"})
+                                                "talaria.credentials.remove", "talaria.skills.describe", "talaria.automations",
+                                    "talaria.providers", "talaria.session.ready", "talaria.session.verify_model"})
                 self.assertIn("talaria.automations", server._LONG_HANDLERS)
                 entry.main.assert_called_once_with()
                 configure_database.assert_called_once_with()

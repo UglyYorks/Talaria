@@ -598,6 +598,25 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   });
 }
 
+- (void)hermesProvidersForAgentID:(NSInteger)agentID parameters:(NSDictionary *)parameters
+                       completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self startAgentWithID:agentID completion:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(hermesProvidersWithAgent:parameters:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"Update the runtime to configure providers.")); return;
+    }
+    [self.agentClient hermesProvidersWithAgent:agent parameters:parameters completion:^(NSDictionary *result, NSError *providerError) {
+      if ([result[@"ok"] boolValue] && [parameters[@"action"] isEqual:@"select"]) {
+        NSError *saveError = nil;
+        if (![self.database saveDefaultModel:result[@"selection"] forAgentID:agentID error:&saveError]) {
+          completion(nil, saveError); return;
+        }
+      }
+      completion(result, providerError);
+    }];
+  }];
+}
+
 - (void)hermesAutomationsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
                                   token:(NSString *)token model:(NSString *)model
                              completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {

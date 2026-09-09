@@ -180,6 +180,7 @@
     [section.widthAnchor constraintEqualToAnchor:self.generalSection.widthAnchor].active = YES;
   }
   if (self.editingAgentID) {
+    [self.generalSection addArrangedSubview:[self button:@"Configure provider and model…" action:@selector(configureProvider:)]];
     self.skillsSection = [self verticalStack];
     self.skillsSection.spacing = p.space5;
     [self.skillsSection addArrangedSubview:[self label:@"Skills" secondary:NO]];
@@ -314,6 +315,11 @@
   self.createdAgentID = agent.agentID;
   [self closeSheet:sender];
   if (self.agentCreatedHandler) self.agentCreatedHandler(agent);
+}
+
+- (void)configureProvider:(id)sender {
+  [self closeSheet:sender];
+  if (self.providerSetupHandler) self.providerSetupHandler();
 }
 
 - (void)closeSheet:(id)sender {

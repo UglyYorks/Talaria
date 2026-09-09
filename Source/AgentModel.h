@@ -5,6 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface TLAgentModel : NSObject <NSCopying>
 
 @property (nonatomic, copy) NSString *modelID;
+@property (nonatomic, copy) NSString *providerID;
 @property (nonatomic, copy) NSString *name;
 @property (nonatomic, copy) NSString *modelDescription;
 @property (nonatomic, copy) NSString *inputPrice;

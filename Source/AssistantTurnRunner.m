@@ -289,11 +289,8 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   if (!chat) {
     return TLAssistantTurnError(@"A chat is required before sending.");
   }
-  if (token.length == 0) {
-    return TLAssistantTurnError(@"OpenRouter token is required.");
-  }
   if (model.length == 0) {
-    return TLAssistantTurnError(@"OpenRouter model is required.");
+    return TLAssistantTurnError(@"A model is required.");
   }
   if (nextPrompt.length == 0) {
     return TLAssistantTurnError(@"Messages cannot be empty.");
