@@ -4,6 +4,12 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef NS_ENUM(NSInteger, TLHistoryFilter) {
+  TLHistoryFilterAll,
+  TLHistoryFilterChats,
+  TLHistoryFilterBrowsing,
+};
+
 @class TLHistoryPanelController;
 @class TLTokenView;
 
@@ -11,6 +17,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)historyPanelController:(TLHistoryPanelController *)controller didSelectChatID:(NSInteger)chatID;
 - (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteChatID:(NSInteger)chatID;
 @optional
+- (void)historyPanelController:(TLHistoryPanelController *)controller didSelectBrowserURL:(NSURL *)URL;
+- (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteBrowserVisitID:(NSInteger)visitID;
 - (void)historyPanelControllerDidRequestRefresh:(TLHistoryPanelController *)controller;
 @end
 
@@ -18,6 +26,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, strong, readonly) TLTokenView *panelView;
 @property (nonatomic, copy) NSArray<TLChatSummary *> *chats;
+@property (nonatomic, copy) NSArray<TLBrowserHistoryEntry *> *browsingHistory;
+@property (nonatomic) TLHistoryFilter filter;
+@property (nonatomic, copy) NSString *browsingStatusMessage;
 @property (nonatomic, weak, nullable) id<TLHistoryPanelControllerDelegate> delegate;
 @property (nonatomic) BOOL enabled;
 @property (nonatomic) BOOL loading;

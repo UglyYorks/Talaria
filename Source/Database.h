@@ -21,6 +21,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<TLBookmark *> *)listBookmarks:(NSError **)error;
 - (BOOL)saveBookmark:(TLBookmark *)bookmark error:(NSError **)error;
 - (BOOL)deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error;
+// Each committed navigation is a visit; title updates preserve its timestamp.
+- (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error;
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID title:(NSString *)title error:(NSError **)error;
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID faviconData:(NSData *)data error:(NSError **)error;
+- (nullable NSArray<TLBrowserHistoryEntry *> *)listBrowserHistory:(NSError **)error;
+- (BOOL)deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error;
 
 - (nullable NSArray<TLChatSummary *> *)listChats:(NSError **)error;
 - (nullable TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error;

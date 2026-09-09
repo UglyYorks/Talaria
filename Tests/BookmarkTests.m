@@ -332,6 +332,24 @@ static void TestPopover(TLBookmarkTestController *owner, TLAppStateManager *stat
   [window close];
 }
 
+static void TestBookmarkOnlySchemaCompatibility(void) {
+  NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+  NSURL *URL = [directory URLByAppendingPathComponent:@"bookmarks.sqlite"];
+  NSError *error = nil;
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:URL error:&error];
+  TLBookmark *bookmark = [TLBookmark new]; bookmark.name = @"Keep bookmark"; bookmark.URL = [NSURL URLWithString:@"https://example.com/kept"];
+  Check([database saveBookmark:bookmark error:&error], @"create existing bookmark");
+  database = nil;
+  TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
+  Check([fixture executeSQL:"DROP TABLE browser_history; PRAGMA user_version=9;" error:&error], @"create bookmark-only version-9 fixture");
+  database = [[TLDatabase alloc] initWithURL:URL error:&error];
+  Check(database != nil && [[database listBookmarks:&error].firstObject.name isEqual:@"Keep bookmark"], @"merging feature schemas preserves existing bookmarks");
+  Check([database recordBrowserVisitToURL:[NSURL URLWithString:@"https://example.com/new"] title:@"New visit" error:&error] > 0,
+    @"bookmark-only installations gain working browser history");
+  database = nil; fixture = nil;
+  [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
+}
+
 static void TestBrowserHistoryCompatibility(void) {
   for (NSNumber *version in @[@9, @10]) {
     NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
@@ -343,7 +361,7 @@ static void TestBrowserHistoryCompatibility(void) {
     database = nil;
     TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
     Check([fixture executeSQL:
-      "DROP TABLE bookmarks;"
+      "DROP TABLE bookmarks; DROP TABLE browser_history;"
       "CREATE TABLE browser_history (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, title TEXT NOT NULL, visited_at TEXT NOT NULL DEFAULT (datetime('now')));"
       "CREATE INDEX browser_history_recent ON browser_history(visited_at DESC, id DESC);"
       "INSERT INTO browser_history(url,title,visited_at) VALUES('https://example.com/kept','Kept page','2026-09-09 00:00:00');"
@@ -359,7 +377,7 @@ static void TestBrowserHistoryCompatibility(void) {
       Check([database saveBookmark:bookmark error:&error] && [database listBookmarks:&error].count == 1, @"bookmarks work alongside browser history and survive repeated opening");
       database = nil;
       TLSQLiteStatement *storedVersion = [fixture prepareSQL:"PRAGMA user_version" error:&error];
-      Check([storedVersion step] == SQLITE_ROW && sqlite3_column_int(storedVersion.handle,0) == version.integerValue, @"never downgrade the other worktree's version");
+      Check([storedVersion step] == SQLITE_ROW && sqlite3_column_int(storedVersion.handle,0) == 11, @"upgrade both feature schemas without losing their data");
       TLSQLiteStatement *history = [fixture prepareSQL:"SELECT url,title,visited_at FROM browser_history" error:&error];
       Check([history step] == SQLITE_ROW && [[history stringAtColumn:0] isEqual:@"https://example.com/kept"] &&
         [[history stringAtColumn:1] isEqual:@"Kept page"] && [[history stringAtColumn:2] isEqual:@"2026-09-09 00:00:00"], @"history row is untouched");
@@ -368,7 +386,7 @@ static void TestBrowserHistoryCompatibility(void) {
         Check([icon step] == SQLITE_ROW && [[icon stringAtColumn:0] isEqual:@"012345"], @"favicon bytes remain intact");
       }
     }
-    Check([fixture executeSQL:"PRAGMA user_version=11" error:&error], @"prepare unknown future version");
+    Check([fixture executeSQL:"PRAGMA user_version=12" error:&error], @"prepare unknown future version");
     error = nil;
     Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error, @"unknown future versions remain rejected");
     if (version.integerValue == 10) {
@@ -388,6 +406,7 @@ int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
     TestBrowserHistoryCompatibility();
+    TestBookmarkOnlySchemaCompatibility();
     NSURL *base = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
     [NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:nil error:nil];
     NSURL *URL = [base URLByAppendingPathComponent:@"bookmarks.sqlite"];

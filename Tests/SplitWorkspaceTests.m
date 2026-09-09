@@ -72,6 +72,7 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 @end
 @implementation TLSplitTestDatabase
 - (NSArray *)listBookmarks:(NSError **)error { return @[]; }
+- (NSArray *)listBrowserHistory:(NSError **)error { return @[]; }
 - (NSInteger)currentAgentID { return 0; }
 - (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supporting error:(NSError **)error {
   TLChatRecord *chat = [TLChatRecord new]; chat.chatID = 123; chat.model = model; chat.title = @"Saved chat"; chat.messages = @[]; return chat;
@@ -206,6 +207,18 @@ static void TestChatInputNavigation(TLSplitTestController *owner, TLAppStateMana
   Check(state.snapshot.workspaceTabs.count == count + 1 &&
     [state workspaceTabWithKind:nonempty.kind tabID:nonempty.tabID] && presentation.messages.count == 1,
     @"URL submission preserves chats that already contain messages");
+
+  [owner startNewChatWithModel:@"test-model" focus:NO];
+  TLWorkspaceTab *queued = state.snapshot.workspaceTabs.lastObject;
+  presentation = [owner valueForKey:@"chatPresentation"];
+  [presentation.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Keep this follow-up" attachmentURLs:@[]]];
+  presentation.queuePaused = YES;
+  presentation.promptTextView.string = URL.absoluteString;
+  count = state.snapshot.workspaceTabs.count;
+  [owner sendMessage:nil allowAutomaticRouting:YES]; Drain();
+  Check(state.snapshot.workspaceTabs.count == count + 1 &&
+    [state workspaceTabWithKind:queued.kind tabID:queued.tabID] && presentation.queuedPrompts.count == 1,
+    @"URL submission retains an otherwise empty chat with queued follow-ups");
 
   [owner startNewChatWithModel:@"test-model" focus:NO];
   empty = state.snapshot.workspaceTabs.lastObject;

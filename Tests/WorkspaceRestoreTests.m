@@ -55,6 +55,7 @@ static NSUInteger browserStarts;
 @interface TLRestoreTestDatabase : NSObject
 @end
 @implementation TLRestoreTestDatabase
+- (NSArray *)listBrowserHistory:(NSError **)error { return @[]; }
 - (NSInteger)currentAgentID { return 0; }
 - (TLAppSettings *)appSettings:(NSError **)error {
   TLAppSettings *settings = [TLAppSettings defaultSettings]; settings.onboardingCompleted = YES; return settings;

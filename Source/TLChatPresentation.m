@@ -17,6 +17,7 @@
 - (instancetype)init {
   if ((self = [super init])) {
     _messages = [NSMutableArray array];
+    _queuedPrompts = [NSMutableArray array];
     _messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
     _messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
     _messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];

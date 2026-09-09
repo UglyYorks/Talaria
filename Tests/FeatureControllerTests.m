@@ -18,6 +18,7 @@
 #import "TLModelSelectionWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AssistantTurnRunner.h"
+#import "TLChatPresentation.h"
 #import "design_system/ModelPickerView.h"
 #import "UIComponents.h"
 #import "TalariaWindowController.h"
@@ -31,6 +32,7 @@
 #import "design_system/TLButton.h"
 #import "design_system/TLThemedButton.h"
 #import "TLHistoryPanelController.h"
+#import "design_system/TLTabIconView.h"
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLWorkspaceOutlineView.h"
 #import "design_system/TLChromeTabView.h"
@@ -849,8 +851,8 @@ static void TestStreamingComposerStopButton(void) {
   for (NSString *draft in @[@"Next question", @" "]) {
     input.textView.string = draft;
     [controller updateControlStates];
-    Check(!input.showsStopButton && !input.sendButton.enabled && [input.sendButton.toolTip isEqual:@"Send"],
-      @"any draft restores Send and cannot accidentally stop the response");
+    Check(!input.showsStopButton && input.sendButton.enabled == (draft.length > 1) && [input.sendButton.toolTip isEqual:@"Queue follow-up"],
+      @"a nonblank streaming draft enables Queue and cannot accidentally stop the response");
   }
   input.textView.string = @"";
   chat.chatID = 18;
@@ -907,6 +909,7 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
 @interface TLConcurrentTestRequest : NSObject
 @property NSString *requestID;
 @property NSString *sessionID;
+@property NSArray<TLChatMessage *> *sentMessages;
 @property (copy) TLAgentStreamDeltaHandler delta;
 @property (copy) TLAgentStreamCompletionHandler completion;
 @end
@@ -926,7 +929,7 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
   token:(NSString *)token model:(NSString *)model messages:(NSArray<TLChatMessage *> *)messages
   delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
   TLConcurrentTestRequest *request = [[TLConcurrentTestRequest alloc] init];
-  request.requestID = requestID; request.sessionID = sessionID; request.delta = delta; request.completion = completion;
+  request.requestID = requestID; request.sessionID = sessionID; request.sentMessages = messages; request.delta = delta; request.completion = completion;
   [self.requests addObject:request];
 }
 - (void)cancelChatWithRequestID:(NSString *)requestID { [self.cancelledRequests addObject:requestID]; }
@@ -935,6 +938,7 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
 @interface TLConcurrentTestStore : NSObject <TLAssistantTurnMessageStore>
 @property NSMutableDictionary<NSNumber *, TLChatRecord *> *chats;
 @property NSInteger nextMessageID;
+@property BOOL failNextSave;
 @end
 @implementation TLConcurrentTestStore
 - (instancetype)init {
@@ -942,6 +946,11 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
   return self;
 }
 - (TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error {
+  if (self.failNextSave) {
+    self.failNextSave = NO;
+    if (error) *error = [NSError errorWithDomain:@"queue-test" code:3 userInfo:@{NSLocalizedDescriptionKey:@"Save failed"}];
+    return nil;
+  }
   TLStoredChatMessage *saved = [TLStoredChatMessage messageWithRole:message.role content:message.content thinking:message.thinking];
   saved.messageID = ++self.nextMessageID;
   TLChatRecord *chat = self.chats[@(chatID)];
@@ -1009,14 +1018,16 @@ static void TestConcurrentChatStreams(void) {
     [((TLChatMessage *)messagesB.lastObject).content isEqual:@"Answer B"], @"interleaved deltas stay in their own chats");
   input.textView.string = @"do not duplicate B";
   [controller sendMessage:nil allowAutomaticRouting:NO];
-  Check(controller.stream.requests.count == 2, @"a second turn in the same busy chat is still blocked");
+  Check(controller.stream.requests.count == 2, @"a follow-up waits for the busy chat to finish");
   [controller loadChatWithID:17];
   input = [controller valueForKey:@"messageInput"];
   Check([controller valueForKey:@"messages"] == messagesA && input.showsStopButton,
     @"returning to a streaming chat restores its live buffer and Stop button");
   [controller loadChatWithID:18];
   input = [controller valueForKey:@"messageInput"];
-  Check([input.textView.string isEqual:@"do not duplicate B"], @"returning to a busy chat preserves its unsent draft");
+  Check(input.textView.string.length == 0 && [[controller valueForKeyPath:@"chatPresentation.queuedPrompts"] count] == 1,
+    @"returning to a busy chat preserves its queued follow-up");
+  [[controller valueForKeyPath:@"chatPresentation.queuedPrompts"] removeAllObjects];
   input.textView.string = @"";
   [controller updateControlStates];
   [controller activateComposerButton:input.sendButton];
@@ -1046,6 +1057,302 @@ static void TestConcurrentChatStreams(void) {
   Check([((TLChatMessage *)[[controller valueForKey:@"messages"] lastObject]).content isEqual:@"Second B answer"] &&
     ![[controller valueForKey:@"hasSendingTurns"] boolValue], @"all chats finish independently without stale callbacks");
 }
+
+@interface TalariaWindowController (QueueTests)
+- (void)sendQueuedPromptNowAtIndex:(NSUInteger)index;
+- (void)editQueuedPromptAtIndex:(NSUInteger)index;
+- (void)removeQueuedPromptAtIndex:(NSUInteger)index;
+- (void)finishQueuedPromptEditingSaving:(BOOL)save;
+- (void)drainPromptQueue;
+- (void)removeRuntimeForKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID;
+@end
+
+@interface TLQueueTestController : TLConcurrentChatController
+@property NSString *reportedError;
+@end
+@implementation TLQueueTestController
+- (void)presentErrorMessage:(NSString *)message { self.reportedError = message; }
+@end
+
+static void QueueDrain(void) {
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]];
+}
+static TLQueueTestController *QueueController(void) {
+  TLQueueTestController *controller = [[TLQueueTestController alloc] initWithWindow:nil];
+  controller.store = [TLConcurrentTestStore new];
+  controller.stream = [TLConcurrentTestStream new];
+  [controller setValue:controller.store forKey:@"database"];
+  TLAppSettings *settings = [TLAppSettings defaultSettings];
+  settings.openRouterToken = @"test-token"; settings.selectedModel = @"test-model";
+  [controller setValue:settings forKey:@"settings"];
+  [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
+  [controller setValue:[NSView new] forKey:@"contentHost"];
+  for (NSNumber *chatID in @[@17, @18]) {
+    TLChatRecord *chat = [TLChatRecord new]; chat.chatID = chatID.integerValue;
+    chat.hermesSessionID = chatID.stringValue; chat.model = @"test-model"; chat.messages = @[];
+    controller.store.chats[chatID] = chat;
+  }
+  [controller loadChatWithID:17];
+  return controller;
+}
+static void QueueSend(TLQueueTestController *controller, NSString *text) {
+  TLMessageInput *input = [controller valueForKey:@"messageInput"];
+  input.textView.string = text;
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+}
+static void QueueComplete(TLConcurrentTestRequest *request) {
+  request.delta(request.requestID, TLAgentStreamDeltaKindContent, @"Done");
+  request.completion(nil);
+  QueueDrain();
+}
+static void TestQueuedFollowUps(void) {
+  TLQueueTestController *controller = QueueController();
+  TLChatPresentation *a = [controller valueForKey:@"chatPresentation"];
+  QueueSend(controller, @"First");
+  QueueSend(controller, @"Second");
+  QueueSend(controller, @"Remove this");
+  QueueSend(controller, @"Third");
+  Check(a.queuedPrompts.count == 3 && controller.stream.requests.count == 1 && a.messages.count == 2,
+    @"queued prompts remain outside transcript and gateway history until dispatched");
+  [controller removeQueuedPromptAtIndex:1];
+  a.messageInput.textView.string = @"Keep my draft";
+  [controller editQueuedPromptAtIndex:0];
+  a.messageInput.textView.string = @"Second revised";
+  QueueComplete(controller.stream.requests.firstObject);
+  Check(controller.stream.requests.count == 1 && a.queuedPrompts.count == 2, @"finishing a turn cannot dispatch a prompt being edited");
+  [controller finishQueuedPromptEditingSaving:YES];
+  Check(controller.stream.requests.count == 2 && [a.promptTextView.string isEqual:@"Keep my draft"] &&
+    [a.queuedPromptInFlight.text isEqual:@"Second revised"], @"editing preserves FIFO position and restores an unrelated composer draft");
+  Check([controller.stream.requests.lastObject.sentMessages.lastObject.content isEqual:@"Second revised"], @"the gateway receives the edited prompt");
+  [controller loadChatWithID:18];
+  TLChatPresentation *b = [controller valueForKey:@"chatPresentation"];
+  b.promptTextView.string = @"Other chat draft";
+  QueueComplete(controller.stream.requests[1]);
+  Check(controller.stream.requests.count == 3 && [controller.stream.requests.lastObject.sessionID isEqual:@"17"] &&
+    [b.promptTextView.string isEqual:@"Other chat draft"] && [a.promptTextView.string isEqual:@"Keep my draft"],
+    @"background queue dispatch keeps its session and never overwrites either chat draft");
+  QueueComplete(controller.stream.requests.lastObject);
+  Check(!a.queuedPrompts.count && !a.queuedPromptInFlight && !a.promptQueueView.preferredHeight,
+    @"queue collapses after its final prompt starts");
+  [controller loadChatWithID:17];
+  QueueSend(controller, @"Running");
+  QueueSend(controller, @"Stay queued");
+  [controller updateControlStates];
+  [controller activateComposerButton:a.sendButton];
+  QueueDrain();
+  Check(a.queuePaused && a.queuedPrompts.count == 1 && !a.queuedPromptInFlight, @"Stop pauses remaining follow-ups");
+  NSUInteger requestCount = controller.stream.requests.count;
+  [controller drainPromptQueue];
+  Check(controller.stream.requests.count == requestCount, @"a paused queue never silently restarts");
+  [controller editQueuedPromptAtIndex:0];
+  a.promptTextView.string = @"Discard this edit";
+  [controller finishQueuedPromptEditingSaving:NO];
+  Check([a.queuedPrompts.firstObject.text isEqual:@"Stay queued"], @"cancel editing keeps original queued content");
+  a.queuePaused = NO;
+  [controller drainPromptQueue];
+  TLConcurrentTestRequest *failed = controller.stream.requests.lastObject;
+  failed.completion([NSError errorWithDomain:@"queue-test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Offline"}]);
+  QueueDrain();
+  Check(a.queuePaused && !a.queuedPromptInFlight && controller.reportedError.length, @"gateway failure pauses the queue and surfaces the error");
+
+  // A failed user-message save must put the untouched prompt back at the front.
+  [a.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Retry after save failure" attachmentURLs:@[]]];
+  a.queuePaused = NO;
+  controller.store.failNextSave = YES;
+  a.promptTextView.string = @"Do not replace me";
+  [controller drainPromptQueue];
+  Check(a.queuePaused && a.queuedPrompts.count == 1 && !a.queuedPromptInFlight &&
+    [a.promptTextView.string isEqual:@"Do not replace me"], @"synchronous persistence failure restores the queue without replacing the draft");
+  a.queuePaused = NO;
+  [controller drainPromptQueue];
+  QueueComplete(controller.stream.requests.lastObject);
+
+  TLAttachmentPreparationRecorder *attachments = [TLAttachmentPreparationRecorder new];
+  [controller setValue:attachments forKey:@"agentOrchestrator"];
+  QueueSend(controller, @"Before files");
+  NSURL *file = [NSURL fileURLWithPath:@"/tmp/queued-example.txt"];
+  a.messageInput.attachmentURLs = @[file];
+  QueueSend(controller, @"Review this file");
+  Check(a.queuedPrompts.firstObject.attachmentURLs.count == 1, @"queued prompts retain their attachment URLs");
+  QueueComplete(controller.stream.requests.lastObject);
+  Check([attachments.receivedURLs isEqual:@[file]] && a.queuedPromptInFlight && [[controller valueForKey:@"preparingAttachments"] boolValue],
+    @"attachments are prepared only when their queued prompt is ready");
+  attachments.pendingCompletion(nil, [NSError errorWithDomain:@"queue-test" code:2 userInfo:nil]);
+  Check(a.queuePaused && a.queuedPrompts.count == 1 && !a.queuedPromptInFlight, @"attachment preparation failure restores the queued prompt");
+  a.queuePaused = NO;
+  [controller drainPromptQueue];
+  [controller removeRuntimeForKind:TLWorkspaceTabKindChat tabID:17];
+  NSUInteger beforeClosedCopy = controller.stream.requests.count;
+  attachments.pendingCompletion(@[], nil);
+  Check(a.queuePaused && a.queuedPrompts.count == 1 && !a.queuedPromptInFlight && controller.stream.requests.count == beforeClosedCopy,
+    @"closing a tab during attachment preparation pauses and restores its queued prompt");
+  [controller loadChatWithID:18];
+  [controller loadChatWithID:17];
+  Check([controller valueForKey:@"chatPresentation"] == a && a.queuedPrompts.count == 1,
+    @"reopening a closed chat retains its paused queue");
+  a.queuePaused = NO;
+  [controller drainPromptQueue];
+  attachments.pendingCompletion(@[], nil);
+  Check(a.queuedPromptInFlight != nil, @"retry starts exactly one prepared queued turn");
+  TLConcurrentTestRequest *approval = controller.stream.requests.lastObject;
+  approval.delta(approval.requestID, TLAgentStreamDeltaKindApproval,
+    @"{\"request_id\":\"queued-approval\",\"command\":\"echo hello\",\"choices\":[\"once\",\"deny\"]}");
+  QueueSend(controller, @"Wait for approval");
+  approval.completion(nil);
+  QueueDrain();
+  Check(a.queuePaused && a.queuedPrompts.count == 1, @"approval requests pause queued prompts");
+  a.queuePaused = NO;
+  requestCount = controller.stream.requests.count;
+  [controller drainPromptQueue];
+  Check(controller.stream.requests.count == requestCount, @"even Resume cannot bypass an unresolved approval");
+}
+
+static void TestSendQueuedPromptNow(void) {
+  TLQueueTestController *controller = QueueController();
+  TLChatPresentation *chat = [controller valueForKey:@"chatPresentation"];
+  QueueSend(controller, @"Original task");
+  TLConcurrentTestRequest *original = controller.stream.requests.lastObject;
+  original.delta(original.requestID, TLAgentStreamDeltaKindContent, @"Partial response");
+  QueueSend(controller, @"First queued");
+  QueueSend(controller, @"Selected queued");
+  QueueSend(controller, @"Last queued");
+  chat.promptTextView.string = @"Keep this draft";
+  [controller sendQueuedPromptNowAtIndex:1];
+  Check([controller.stream.cancelledRequests isEqual:@[original.requestID]] && controller.stream.requests.count == 1,
+    @"Send now cancels the active response before submitting its replacement");
+  [controller sendQueuedPromptNowAtIndex:2];
+  Check(chat.queueInterruptPending && [chat.queuedPrompts.firstObject.text isEqual:@"Selected queued"],
+    @"a second click cannot replace the pending Send now selection");
+  QueueDrain();
+  Check(controller.stream.requests.count == 2 && [controller.stream.requests.lastObject.sentMessages.lastObject.content isEqual:@"Selected queued"],
+    @"Send now dispatches the selected prompt exactly once");
+  Check([chat.queuedPrompts[0].text isEqual:@"First queued"] && [chat.queuedPrompts[1].text isEqual:@"Last queued"] &&
+    [chat.promptTextView.string isEqual:@"Keep this draft"], @"Send now preserves the remaining queue order and composer draft");
+  Check([chat.messages[1].content isEqual:@"Partial response"], @"interrupted output is retained in the transcript");
+  original.delta(original.requestID, TLAgentStreamDeltaKindContent, @"stale output");
+  original.completion(nil);
+  Check(controller.stream.requests.count == 2 && [chat.messages[1].content isEqual:@"Partial response"],
+    @"late events from the cancelled request cannot duplicate dispatch or overwrite its saved reply");
+  QueueComplete(controller.stream.requests.lastObject);
+  Check([chat.queuedPromptInFlight.text isEqual:@"First queued"], @"remaining prompts resume FIFO after the selected prompt finishes");
+  [controller sendQueuedPromptNowAtIndex:0];
+  QueueDrain();
+  Check([chat.queuedPromptInFlight.text isEqual:@"Last queued"] && chat.queuedPrompts.count == 0,
+    @"Send now can also interrupt an automatically dispatched queued turn");
+  QueueComplete(controller.stream.requests.lastObject);
+
+  [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Paused first" attachmentURLs:@[]]];
+  [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Paused selected" attachmentURLs:@[]]];
+  chat.queuePaused = YES;
+  [controller sendQueuedPromptNowAtIndex:1];
+  Check([chat.queuedPromptInFlight.text isEqual:@"Paused selected"] && !chat.queuePaused,
+    @"Send now starts a selected prompt from a paused idle queue");
+  QueueComplete(controller.stream.requests.lastObject);
+  [controller editQueuedPromptAtIndex:0]; // No remaining item: safely ignored.
+  QueueComplete(controller.stream.requests.lastObject);
+
+  QueueSend(controller, @"Task with a save error");
+  TLConcurrentTestRequest *saveFailure = controller.stream.requests.lastObject;
+  saveFailure.delta(saveFailure.requestID, TLAgentStreamDeltaKindContent, @"Unsaved partial");
+  QueueSend(controller, @"Keep queued on error");
+  controller.store.failNextSave = YES;
+  NSUInteger count = controller.stream.requests.count;
+  [controller sendQueuedPromptNowAtIndex:0];
+  QueueDrain();
+  Check(chat.queuePaused && !chat.queueInterruptPending && chat.queuedPrompts.count == 1 && controller.stream.requests.count == count,
+    @"a failure saving the interrupted response retains the selected prompt and pauses dispatch");
+
+  TLChatMessage *approval = [TLChatMessage messageWithRole:TLRoleAssistant content:@"Approval needed" thinking:nil];
+  approval.approvalRequest = @{@"request_id": @"pending", @"choices": @[@"once", @"deny"]};
+  [chat.messages addObject:approval];
+  [controller sendQueuedPromptNowAtIndex:0];
+  Check(controller.stream.requests.count == count && chat.queuedPrompts.count == 1,
+    @"Send now cannot bypass an unresolved approval");
+  [chat.messages removeLastObject];
+  [controller editQueuedPromptAtIndex:0];
+  [controller sendQueuedPromptNowAtIndex:0];
+  Check(controller.stream.requests.count == count && chat.editingQueuedPrompt != nil,
+    @"Send now leaves an unfinished edit intact");
+  [controller finishQueuedPromptEditingSaving:NO];
+}
+
+static void TestPromptQueueLayout(void) {
+  TLPromptQueueView *queue = [TLPromptQueueView new];
+  NSArray *prompts = @[
+    [TLQueuedPrompt promptWithText:@"Add tests for the new flow" attachmentURLs:@[]],
+    [TLQueuedPrompt promptWithText:@"Then check the layout in both themes" attachmentURLs:@[]],
+    [TLQueuedPrompt promptWithText:@"Review the attached notes" attachmentURLs:@[[NSURL fileURLWithPath:@"/tmp/notes.txt"]]],
+    [TLQueuedPrompt promptWithText:@"Summarize the changes" attachmentURLs:@[]]];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 650, 260)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  [window.contentView addSubview:queue];
+  [NSLayoutConstraint activateConstraints:@[
+    [queue.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [queue.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [queue.topAnchor constraintEqualToAnchor:window.contentView.topAnchor]]];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    for (NSNumber *width in @[@650, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 260)];
+      [queue updatePrompts:prompts editing:nil paused:YES canResume:YES canSendNow:YES palette:palette];
+      [window.contentView layoutSubtreeIfNeeded];
+      Check(fabs(NSWidth(queue.frame) - width.doubleValue) < 1 && queue.preferredHeight < 220,
+        @"queue fits narrow panes and bounds long queues with scrolling");
+      NSScrollView *scroll = nil;
+      for (NSView *view in [[queue valueForKey:@"body"] subviews]) if ([view isKindOfClass:NSScrollView.class]) scroll = (id)view;
+      NSMutableArray<TLHoverIconButton *> *sendButtons = [NSMutableArray array];
+      for (NSView *view in scroll.documentView.subviews) {
+        if ([view isKindOfClass:TLHoverIconButton.class] && [(NSButton *)view action] == NSSelectorFromString(@"sendNow:"))
+          [sendButtons addObject:(id)view];
+      }
+      Check(sendButtons.count == prompts.count, @"every queued prompt has an accessible Send now control");
+      __block NSUInteger selected = NSNotFound;
+      queue.sendNowHandler = ^(NSUInteger index) { selected = index; };
+      [sendButtons[1] performClick:nil];
+      Check(selected == 1, @"the Send now control targets its own queued prompt");
+      TLHoverIconButton *send = sendButtons.firstObject;
+      for (NSString *state in @[@"normal", @"hovered", @"pressed", @"disabled"]) {
+        send.enabled = ![state isEqual:@"disabled"];
+        [send setValue:@([state isEqual:@"hovered"]) forKey:@"hovered"];
+        [send setValue:@([state isEqual:@"pressed"]) forKey:@"pressed"];
+        NSBitmapImageRep *rendered = RenderThemedButton((id)send);
+        CGFloat surface[3], foreground[3], alpha;
+        RGBComponents(palette.tabBackground, surface, &alpha);
+        RGBComponents(([state isEqual:@"hovered"] || [state isEqual:@"pressed"]) ? palette.appText : palette.textMuted, foreground, &alpha);
+        NSUInteger glyphPixels = 0;
+        for (NSInteger y = 0; y < rendered.pixelsHigh; y++) {
+          for (NSInteger x = 0; x < rendered.pixelsWide; x++) {
+            CGFloat actual[3], pixelAlpha;
+            RGBComponents([rendered colorAtX:x y:y], actual, &pixelAlpha);
+            CGFloat numerator = 0, denominator = 0;
+            for (NSUInteger channel = 0; channel < 3; channel++) {
+              numerator += (actual[channel] - surface[channel]) * (foreground[channel] - surface[channel]);
+              denominator += pow(foreground[channel] - surface[channel], 2);
+            }
+            // Thin SF Symbols are antialiased: inspect coverage of the expected
+            // foreground over the surface instead of requiring a solid pixel.
+            CGFloat coverage = denominator > 0 ? numerator / denominator : 0;
+            if (send.enabled ? coverage > 0.25 : !PixelMatches(rendered, x, y, surface)) glyphPixels++;
+          }
+        }
+        Check(glyphPixels > 3, [NSString stringWithFormat:@"Send now renders a readable %@ symbol in theme %@", state, theme]);
+      }
+      send.enabled = YES;
+      [send setValue:@NO forKey:@"hovered"];
+      [send setValue:@NO forKey:@"pressed"];
+
+      NSBitmapImageRep *bitmap = [queue bitmapImageRepForCachingDisplayInRect:queue.bounds];
+      [queue cacheDisplayInRect:queue.bounds toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithFormat:@"build/prompt-queue-%@-%@.png", theme, width] atomically:YES];
+    }
+  }
+  [queue updatePrompts:@[] editing:nil paused:NO canResume:YES canSendNow:YES palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
+  Check(queue.hidden && queue.preferredHeight == 0, @"an empty queue takes no transcript space");
+  [window close];
+}
+
 
 // Real database and tab metadata paths, with only unrelated UI/services suppressed.
 @interface TLChatTitleTestController : TalariaWindowController
@@ -1223,6 +1530,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error;
 @end
 @implementation TLFeatureSettingsStoreMock
+- (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error { return 0; }
 - (TLAppSettings *)appSettings:(NSError **)error { return self.savedSettings; }
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error {
   self.savedSettings = [settings copy];
@@ -1624,6 +1932,9 @@ static void SettingsSnapshot(TLSettingsTabController *controller, NSWindow *wind
 @property NSMutableDictionary *values;
 @property BOOL failSave;
 @property NSUInteger writes;
+@property NSDictionary *importedProfile;
+@property NSDictionary *importedBrowser;
+@property (copy) void (^importCompletion)(NSString *);
 @end
 @implementation TLBrowserPreferencesMock
 - (instancetype)init { if ((self = [super init])) _values = [NSMutableDictionary dictionary]; return self; }
@@ -1635,7 +1946,74 @@ static void SettingsSnapshot(TLSettingsTabController *controller, NSWindow *wind
 }
 - (void)clearData:(NSString *)kind completion:(void (^)(NSError *))completion { completion(nil); }
 - (BOOL)resetDefaults:(NSError **)error { [self.values removeAllObjects]; return YES; }
+- (void)importProfile:(NSDictionary *)profile fromBrowser:(NSDictionary *)browser completion:(void (^)(NSString *))completion { self.importedProfile = profile; self.importedBrowser = browser; self.importCompletion = completion; }
 @end
+@interface TLImportSettingsFixture : TLBrowserSettingsController
+@end
+@implementation TLImportSettingsFixture
+- (NSArray *)detectedImportBrowsers {
+  return @[
+    @{ @"name":@"Google Chrome", @"bundleID":@"test.chrome", @"engine":@"chromium", @"profiles":@[
+      @{ @"name":@"Personal", @"URL":[NSURL fileURLWithPath:@"/tmp/import-ui-fixture/Default"] },
+      @{ @"name":@"Work", @"URL":[NSURL fileURLWithPath:@"/tmp/import-ui-fixture/Profile 1"] }] },
+    @{ @"name":@"Safari", @"bundleID":@"test.safari", @"engine":@"unsupported", @"profiles":@[] },
+    @{ @"name":@"Chrome Beta", @"bundleID":@"test.chrome-denied", @"engine":@"chromium", @"profiles":@[],
+       @"profileRootURL":[NSURL fileURLWithPath:@"/tmp/import-ui-fixture"],
+       @"discoveryError":[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadNoPermissionError userInfo:nil] },
+    @{ @"name":@"Firefox", @"bundleID":@"test.firefox", @"engine":@"firefox", @"profiles":@[] }];
+}
+@end
+@interface TLImportSettingsShellFixture : TLSettingsTabController
+@end
+@implementation TLImportSettingsShellFixture
+- (NSView *)buildBrowserPage {
+  TLImportSettingsFixture *page = [[TLImportSettingsFixture alloc] initWithPalette:self.palette preferences:self.browserPreferences];
+  [self setValue:page forKey:@"browserSettingsController"];
+  [self addChildViewController:page]; [page prepareInWindow:self.view.window]; return page.view;
+}
+@end
+static void TestBrowserImportSettings(void) {
+  TLBrowserPreferencesMock *preferences = [TLBrowserPreferencesMock new];
+  TLFeatureSettingsStoreMock *store = [TLFeatureSettingsStoreMock new]; store.currentAgentID = 7;
+  TLSettingsCredentialMock *service = [TLSettingsCredentialMock new];
+  TLImportSettingsShellFixture *shell = [[TLImportSettingsShellFixture alloc] initWithSettings:TLAppSettings.defaultSettings database:(id)store orchestrator:(id)service palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  shell.browserPreferences = preferences;
+  NSWindow *window = HostController(shell);
+  NSSegmentedControl *sections = [[shell valueForKey:@"workspace"] sectionTabs];
+  sections.selectedSegment = 1; [NSApp sendAction:sections.action to:sections.target from:sections]; SettingsTick(window);
+  TLBrowserSettingsController *controller = [shell valueForKey:@"browserSettingsController"];
+  controller.selectedCategoryIndex = [TLBrowserPreferences.categories indexOfObject:@"Import profiles"];
+  [controller prepareInWindow:window]; SettingsTick(window);
+  NSDictionary *pickers = [controller valueForKey:@"profilePickers"];
+  Check(pickers.count == 1, @"Only browsers with supported profiles offer an import selector");
+  NSPopUpButton *picker = pickers[@"test.chrome"]; [picker selectItemAtIndex:1];
+  TLThemedButton *import = nil;
+  for (TLThemedButton *button in [controller valueForKey:@"buttons"]) if ([button.identifier isEqual:@"test.chrome"]) import = button;
+  Check(import && import.enabled, @"A supported browser gets a themed Import profile button");
+  TLThemedButton *grant = nil;
+  for (TLThemedButton *button in [controller valueForKey:@"buttons"]) if ([button.identifier isEqual:@"test.chrome-denied"]) grant = button;
+  Check(grant && grant.enabled && [grant.title isEqual:@"Import"] && grant.action == NSSelectorFromString(@"importProfile:"), @"Access-denied browsers use Import without a separate permission action");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    window.appearance = [NSAppearance appearanceNamed:theme.integerValue == TLThemePreferenceDark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [shell applyPalette:[TLThemePalette paletteForPreference:theme.integerValue]];
+    for (NSNumber *width in @[@700,@200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue,900)]; SettingsTick(window);
+      Check(fabs(NSWidth(window.contentView.bounds) - width.doubleValue) < 1 && NSWidth(controller.view.bounds) <= width.doubleValue, [NSString stringWithFormat:@"Import page respects width %@ (page %.0f, window %.0f)",width,NSWidth(controller.view.bounds),NSWidth(window.contentView.bounds)]);
+      Check(NSWidth(import.frame) + 1 >= import.intrinsicContentSize.width && NSWidth(import.frame) <= width.doubleValue, @"Import label fits without truncation in narrow settings windows");
+      Check(NSWidth(grant.frame) + 1 >= grant.intrinsicContentSize.width && NSWidth(grant.frame) <= width.doubleValue, @"Import for a protected browser fits narrow windows in both themes");
+      NSBitmapImageRep *bitmap = [controller.view bitmapImageRepForCachingDisplayInRect:controller.view.bounds];
+      [controller.view cacheDisplayInRect:controller.view.bounds toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[NSString stringWithFormat:@"build/browser-import-%@-%@.png",theme,width] atomically:YES];
+    }
+  }
+  [import performClick:nil];
+  Check([preferences.importedProfile[@"name"] isEqual:@"Work"] && [preferences.importedBrowser[@"name"] isEqual:@"Google Chrome"], @"Import uses the explicitly selected browser profile");
+  Check(!import.enabled && !picker.enabled, @"Import disables repeated actions and profile changes while busy");
+  Check(!grant.enabled, @"Folder grants are disabled while importing");
+  preferences.importCompletion(@"Imported cookies. Restart Talaria to apply local storage.");
+  Check(import.enabled && [[[controller valueForKey:@"status"] stringValue] containsString:@"Restart Talaria"], @"Import completion restores controls and explains restart");
+  [shell close]; [window close];
+}
 static void TestBrowserPreferencePersistenceAndValidation(void) {
   NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
   TLBrowserPreferences *preferences = [[TLBrowserPreferences alloc] initWithProfileURL:directory];
@@ -2662,6 +3040,124 @@ static void DrainSuggestionTimer(void) {
   while (deadline.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runUntilDate:deadline];
 }
 
+@interface TalariaWindowController (QueuedSuggestionTests)
+- (NSView *)buildChatWorkspace;
+- (void)updateControlStates;
+- (void)renderSlashCommandList;
+- (void)hideSlashCommandList;
+- (BOOL)performInputSuggestionAtIndex:(NSUInteger)index;
+- (void)sendMessage:(id)sender;
+@end
+
+@interface TLQueuedSuggestionController : TalariaWindowController
+@property (nonatomic, strong) NSURL *openedURL;
+@property (nonatomic) NSUInteger openedCount;
+@end
+@implementation TLQueuedSuggestionController
+- (BOOL)isChatWorkspaceActive { return YES; }
+- (BOOL)isChatPresentationVisible { return YES; }
+- (void)styleSidebarActionButtons {}
+- (void)updateAgentControlStates {}
+- (void)refreshHermesCommandsIfNeeded {}
+- (void)updateWorkspaceMode {}
+- (void)reloadWorkspaceTabs {}
+- (void)renderMessages {}
+- (void)openBrowserURLFromChatInput:(NSURL *)URL { self.openedURL = URL; self.openedCount++; }
+@end
+
+static void TestSuggestionsWithQueuedPrompts(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 650, 600)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLQueuedSuggestionController *controller = [[TLQueuedSuggestionController alloc] initWithWindow:window];
+  TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  [controller setValue:palette forKey:@"palette"];
+  [controller setValue:window.contentView forKey:@"rootView"];
+  TLChatRecord *record = [TLChatRecord new]; record.chatID = 17;
+  [controller setValue:record forKey:@"activeChat"];
+  TLAppSettings *settings = [TLAppSettings defaultSettings];
+  settings.openRouterToken = @"test-token"; settings.selectedModel = @"test-model";
+  [controller setValue:settings forKey:@"settings"];
+  NSView *workspace = [controller buildChatWorkspace];
+  [controller setValue:workspace forKey:@"chatWorkspace"];
+  [window.contentView addSubview:workspace];
+  [NSLayoutConstraint activateConstraints:@[
+    [workspace.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [workspace.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [workspace.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [workspace.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor]]];
+  TLChatPresentation *chat = [controller valueForKey:@"chatPresentation"];
+  [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Summarize it" attachmentURLs:@[]]];
+  [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Summarize it again" attachmentURLs:@[]]];
+  TLStopTestRunner *runner = [[TLStopTestRunner alloc] initWithMessageStore:(id)[NSObject new] streaming:(id)[NSObject new]];
+  NSMutableDictionary *runners = [NSMutableDictionary dictionaryWithObject:runner forKey:@17];
+  [controller setValue:runners forKey:@"turnRunners"];
+  [window.contentView layoutSubtreeIfNeeded];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [controller setValue:palette forKey:@"palette"];
+    chat.messageInput.palette = palette;
+    for (NSNumber *width in @[@650, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 600)];
+      chat.messageInputWidthConstraint.constant = width.doubleValue - palette.space5 * 2;
+      [window.contentView layoutSubtreeIfNeeded];
+      chat.promptTextView.string = @"netflix.com";
+      [controller textDidChange:nil];
+      DrainSuggestionTimer();
+      Check(!chat.slashCommandListView.hidden && chat.visibleSlashCommands.count == 2 &&
+        [chat.visibleSlashCommands[0][@"kind"] isEqual:@"web"] && [chat.visibleSlashCommands[1][@"kind"] isEqual:@"prompt"],
+        @"a streaming chat with queued prompts still offers Open site and Send message");
+      [controller updateControlStates];
+      Check(!chat.slashCommandListView.hidden, @"streaming control updates cannot hide active suggestions");
+      NSRect queueRect = chat.promptQueueView.frame;
+      NSRect suggestions = chat.slashCommandListView.frame;
+      Check(NSMinY(queueRect) >= NSMaxY(suggestions) && NSMinY(suggestions) >= NSMaxY(chat.messageInput.frame),
+        @"queue, suggestions, and composer occupy separate vertical space at every width");
+      Check(-chat.messageStackBottomConstraint.constant > NSMaxY(queueRect), @"transcript inset clears both the suggestions and queue");
+      NSRect crop = NSMakeRect(0, 0, NSWidth(workspace.bounds), NSMaxY(queueRect) + palette.space5);
+      NSBitmapImageRep *bitmap = [workspace bitmapImageRepForCachingDisplayInRect:crop];
+      [workspace cacheDisplayInRect:crop toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithFormat:@"build/queued-suggestions-%@-%@.png", theme, width] atomically:YES];
+      [controller hideSlashCommandList];
+      Check(fabs(NSMinY(chat.promptQueueView.frame) - NSMaxY(chat.messageInput.frame) - palette.space3) < 1,
+        @"dismissing suggestions returns the queue to the composer without an empty gap");
+    }
+  }
+  chat.promptTextView.string = @"netflix.com";
+  [controller textDidChange:nil];
+  Check([controller textView:chat.promptTextView doCommandBySelector:@selector(insertNewline:)], @"Enter activates the pending website suggestion");
+  Check([controller.openedURL.absoluteString isEqual:@"https://netflix.com"] && chat.queuedPrompts.count == 2 && runner.stopCount == 0,
+    @"opening a site by keyboard leaves the running response and queue intact");
+  chat.promptTextView.string = @"example.com";
+  [controller renderSlashCommandList];
+  chat.slashCommandScrollView.activationHandler(0);
+  Check(controller.openedCount == 2 && [controller.openedURL.host isEqual:@"example.com"], @"clicking Open site works during generation");
+  chat.promptTextView.string = @"netflix.com";
+  [controller renderSlashCommandList];
+  Check([controller performInputSuggestionAtIndex:1] && chat.queuedPrompts.count == 3 &&
+    [chat.queuedPrompts.lastObject.text isEqual:@"netflix.com"] && controller.openedCount == 2,
+    @"choosing Send message queues the URL as text instead of opening a browser");
+  chat.promptTextView.string = @"another.example";
+  [controller sendMessage:nil];
+  Check([controller.openedURL.host isEqual:@"another.example"] && chat.queuedPrompts.count == 3,
+    @"direct URL submission retains automatic browser routing while queued");
+  [controller setValue:@[@{@"kind":@"hermes", @"command":@"/help", @"title":@"Help", @"icon":@"terminal"}] forKey:@"hermesCommands"];
+  chat.promptTextView.string = @"/help";
+  [controller renderSlashCommandList];
+  Check([controller performInputSuggestionAtIndex:0] && [chat.queuedPrompts.lastObject.text isEqual:@"/help"],
+    @"Hermes suggestions enqueue commands behind the current turn");
+  [runners removeAllObjects]; chat.queuePaused = YES;
+  chat.promptTextView.string = @"netflix.com";
+  [controller renderSlashCommandList]; [controller updateControlStates];
+  Check(!chat.slashCommandListView.hidden && [controller performInputSuggestionAtIndex:0], @"website suggestions also work with a paused queue");
+  chat.editingQueuedPrompt = chat.queuedPrompts.firstObject;
+  chat.promptTextView.string = @"netflix.com";
+  [controller renderSlashCommandList];
+  Check(chat.slashCommandListView.hidden && ![controller performInputSuggestionAtIndex:0], @"editing a queued prompt cannot accidentally navigate away");
+  [window close];
+}
+
 static void TestSuggestionTypingAndVirtualization(void) {
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500, 600)
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
@@ -2935,8 +3431,12 @@ static void TestRunningAgentRepairAction(void) {
 @interface TLHistorySelectionProbe : NSObject <TLHistoryPanelControllerDelegate>
 @property NSInteger selected;
 @property NSInteger deleted;
+@property NSInteger deletedVisit;
+@property NSURL *openedURL;
 @end
 @implementation TLHistorySelectionProbe
+- (void)historyPanelController:(TLHistoryPanelController *)controller didSelectBrowserURL:(NSURL *)URL { self.openedURL = URL; }
+- (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteBrowserVisitID:(NSInteger)visitID { self.deletedVisit = visitID; }
 - (void)historyPanelController:(TLHistoryPanelController *)controller didSelectChatID:(NSInteger)chatID { self.selected = chatID; }
 - (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteChatID:(NSInteger)chatID { self.deleted = chatID; }
 @end
@@ -2969,15 +3469,56 @@ static void TestHermesHistorySearchAndLayout(void) {
   Check(probe.deleted == 20, @"filtered deletion targets its actual session");
   search.stringValue = @"missing";
   [controller reloadData];
-  Check(table.numberOfRows == 0 && [status.stringValue isEqualToString:@"No matching sessions"], @"search has an empty result state");
+  Check(table.numberOfRows == 0 && [status.stringValue isEqualToString:@"No matching history"], @"search has an empty result state");
   controller.loading = YES;
-  Check(!table.enabled && [status.stringValue containsString:@"Loading"], @"loading disables row actions");
+  Check(table.enabled && [status.stringValue containsString:@"Loading"], @"loading chats leaves browsing accessible");
   controller.loading = NO;
   controller.statusMessage = @"Hermes unavailable";
   Check([status.stringValue isEqualToString:@"Hermes unavailable"], @"history exposes gateway errors");
   controller.statusMessage = @"";
   search.stringValue = @"";
   [controller reloadData];
+  TLBrowserHistoryEntry *visit = [TLBrowserHistoryEntry new];
+  visit.visitID = 10; visit.title = @"Café guide"; visit.URLString = @"https://example.com/caf%C3%A9";
+  visit.visitedAt = @"2026-09-06 10:00:00";
+  visit.faviconData = [NSData dataWithContentsOfFile:@"assets/browser-bookmarks/github.png"];
+  controller.browsingHistory = @[visit];
+  [controller reloadData];
+  Check(table.numberOfRows == 3, @"All includes both chats and browsing visits");
+  [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  Check([probe.openedURL.absoluteString isEqual:visit.URLString], @"newest browsing visit sorts before chats and opens its URL");
+  [controller selectChatWithID:10];
+  Check(table.selectedRow == 1, @"chat selection ignores colliding browser visit IDs");
+  search.stringValue = @"CAFE";
+  [controller reloadData];
+  Check(table.numberOfRows == 2, @"shared search matches chat and browsing titles without case or accents");
+  NSArray<TLThemedButton *> *filters = [controller valueForKey:@"filterButtons"];
+  [filters[1] performClick:nil];
+  Check(controller.filter == TLHistoryFilterChats && table.numberOfRows == 1, @"Chats filter retains the shared query");
+  [filters[2] performClick:nil];
+  Check(controller.filter == TLHistoryFilterBrowsing && table.numberOfRows == 1, @"Browsing filter retains the shared query");
+  search.stringValue = @"EXAMPLE.COM";
+  [controller reloadData];
+  Check(table.numberOfRows == 1, @"browsing search matches URLs");
+  controller.loading = YES;
+  controller.statusMessage = @"Hermes unavailable";
+  Check(status.hidden && table.enabled, @"Browsing hides chat loading/errors and stays interactive");
+  probe.openedURL = nil;
+  [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  Check(probe.openedURL != nil, @"browsing entries open while Hermes is loading");
+  [table setValue:@0 forKey:@"contextMenuRow"];
+  [table.menu update];
+  Check([deleteItem.title isEqual:@"Delete Browsing Entry"], @"context action describes a browsing entry");
+  [NSApp sendAction:deleteItem.action to:deleteItem.target from:deleteItem];
+  Check(probe.deletedVisit == 10 && probe.deleted == 20, @"browsing deletion never targets a chat with the same ID");
+  [filters[1] performClick:nil];
+  search.stringValue = @"";
+  [controller reloadData];
+  probe.selected = 0;
+  [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  Check(probe.selected == 0, @"chat actions remain blocked during a Hermes refresh");
+  controller.loading = NO; controller.statusMessage = @"";
+  [filters[0] performClick:nil];
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1200, 600)
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
@@ -3003,10 +3544,48 @@ static void TestHermesHistorySearchAndLayout(void) {
             @"history column matches chat width and fits narrow windows");
       Check(NSWidth(search.frame) > 0 && NSMaxX([search convertRect:search.bounds toView:panel]) <= width.doubleValue,
             @"history search fits inside narrow windows");
+      NSTableCellView *browserCell = [table viewAtColumn:0 row:0 makeIfNecessary:YES];
+      TLTabIconView *browserIcon = (TLTabIconView *)browserCell.subviews.firstObject;
+      Check(browserIcon.image != nil && browserIcon.palette == palette, @"history displays the persisted favicon in both themes");
+      NSImageView *renderedIcon = [browserIcon valueForKey:@"systemIconView"];
+      Check(!renderedIcon.hidden && !renderedIcon.contentTintColor && renderedIcon.image == browserIcon.image,
+        @"favicon retains the site's original image colors");
+      NSTableCellView *chatCell = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
+      TLTabIconView *chatIcon = (TLTabIconView *)chatCell.subviews.firstObject;
+      Check(chatIcon.image == nil && chatIcon.icon.length, @"chat rows retain their conversation icons");
+      for (TLThemedButton *button in filters) {
+        NSRect frame = [button convertRect:button.bounds toView:panel];
+        Check(NSMinX(frame) >= 0 && NSMaxX(frame) <= width.doubleValue, @"all three filters fit within the minimum window width");
+        CGFloat textWidth = [button.title sizeWithAttributes:@{NSFontAttributeName:button.font}].width;
+        Check(NSWidth(button.bounds) >= textWidth + 8, @"filter labels fit without truncation");
+      }
       NSBitmapImageRep *image = [panel bitmapImageRepForCachingDisplayInRect:panel.bounds];
       [panel cacheDisplayInRect:panel.bounds toBitmapImageRep:image];
       [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
         writeToFile:[NSString stringWithFormat:@"build/history-%@-%@.png", theme, width] atomically:YES];
+      for (TLThemedButton *button in filters) {
+        for (NSString *state in @[@"normal", @"hover", @"pressed", @"disabled", @"focused"]) {
+          button.enabled = ![state isEqual:@"disabled"];
+          [button setValue:@([state isEqual:@"hover"]) forKey:@"hovered"];
+          [button highlight:[state isEqual:@"pressed"]];
+          [window makeFirstResponder:[state isEqual:@"focused"] ? button : nil];
+          NSBitmapImageRep *bitmap = RenderThemedButton(button);
+          CGFloat surface[3], unusedAlpha;
+          RGBComponents(palette.tabBackground, surface, &unusedAlpha);
+          CGFloat opacity = button.enabled ? 1 : palette.disabledOpacity;
+          CompositeColor(button.primary ? palette.primaryActionSurface : palette.secondaryActionSurface, opacity, surface);
+          if ([state isEqual:@"hover"] || [state isEqual:@"pressed"]) CompositeColor(palette.chromeHoverSurface, 1, surface);
+          Check(PixelMatches(bitmap, 5, NSHeight(button.bounds) / 2, surface), @"history filter renders the selected/unselected theme surface");
+          CGFloat foreground[3] = {surface[0], surface[1], surface[2]};
+          CompositeColor(button.primary ? palette.primaryActionText : palette.secondaryActionText, opacity, foreground);
+          NSUInteger ink = 0;
+          for (NSInteger y = 4; y < bitmap.pixelsHigh - 4; y++) for (NSInteger x = 8; x < bitmap.pixelsWide - 8; x++)
+            if (PixelMatches(bitmap, x, y, foreground)) ink++;
+          Check(ink > 3, @"history filter renders paired label colors across themes and interaction states");
+        }
+        button.enabled = YES; [button highlight:NO]; [button setValue:@NO forKey:@"hovered"];
+      }
+      [window makeFirstResponder:nil];
     }
   }
   [window close];
@@ -3015,6 +3594,23 @@ static void TestHermesHistorySearchAndLayout(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_TEST_BROWSER_IMPORT_ONLY")) {
+      TestThemedButtonRenderedColors();
+      TestBrowserImportSettings();
+      NSLog(@"Browser import UI tests passed");
+      return 0;
+    }
+    TestQueuedFollowUps();
+    TestSendQueuedPromptNow();
+    TestPromptQueueLayout();
+    TestSuggestionsWithQueuedPrompts();
+    if (getenv("TL_QUEUE_TESTS_ONLY")) {
+      TestThemedButtonRenderedColors();
+      TestConcurrentChatStreams();
+      TestStreamingComposerStopButton();
+      NSLog(@"Queued follow-up tests passed");
+      return 0;
+    }
     TestItemHoverRenderedColors();
     TestHermesHistorySearchAndLayout();
     TestNativeEmojiInput();
@@ -3035,6 +3631,7 @@ int main(void) {
     TestTerminalRequiresRunningVM();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserPreferencePersistenceAndValidation();
+    TestBrowserImportSettings();
     TestSettingsNavigationCredentialsAndResponsiveLayout();
     TestNativeGlobalShortcutRegistration();
     TestComposerModelButtonLayout();

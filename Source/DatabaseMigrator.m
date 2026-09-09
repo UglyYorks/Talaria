@@ -90,8 +90,7 @@ static BOOL TLEnsureAgentProfiles(TLSQLiteConnection *connection, NSError **erro
   return [connection executeSQL:"CREATE UNIQUE INDEX IF NOT EXISTS agents_vm_directory ON agents(vm_directory)" error:error];
 }
 
-// Browser history used versions 9 and 10 independently of bookmarks. Its
-// separate table is additive; accept only its known shape and the v8 core.
+// Validate the known browser-history schema before combining it with bookmarks.
 static BOOL TLDatabaseHasBrowserHistorySchema(TLSQLiteConnection *connection) {
   NSDictionary *types = @{@"id":@"INTEGER", @"url":@"TEXT", @"title":@"TEXT", @"visited_at":@"TEXT", @"favicon":@"BLOB"};
   TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(browser_history)" error:nil];
@@ -131,21 +130,6 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
   // INSERT/UPDATE statements preserve that column; never downgrade its version.
   if (version == 8 && targetVersion == 7 && TLDatabaseHasCompatibleAdditiveSchema(connection, YES)) {
     return YES;
-  }
-
-  if (targetVersion == 9 && (version == 9 || version == 10)) {
-    return [connection performTransaction:^BOOL(NSError **transactionError) {
-      NSInteger currentVersion = TLDatabaseSchemaVersion(connection, transactionError);
-      if ((currentVersion != 9 && currentVersion != 10) ||
-          !TLDatabaseHasCompatibleAdditiveSchema(connection, YES) ||
-          (currentVersion == 10 && !TLDatabaseHasBrowserHistorySchema(connection))) {
-        [connection setError:transactionError message:@"Unrecognized database schema for bookmark compatibility."];
-        return NO;
-      }
-      // Ensure this feature even when another worktree already advanced the
-      // shared version. Never downgrade it or rewrite the other feature's data.
-      return TLEnsureBookmarks(connection, transactionError);
-    } error:error];
   }
 
   if (version > targetVersion) {
@@ -297,10 +281,49 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
   }
   if (version < 9 && targetVersion >= 9) {
     BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
-      return TLEnsureBookmarks(connection, transactionError) && TLDatabaseSetSchemaVersion(connection, 9, transactionError);
+      return [connection executeSQL:
+        "CREATE TABLE IF NOT EXISTS browser_history ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, title TEXT NOT NULL,"
+        "visited_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        "CREATE INDEX IF NOT EXISTS browser_history_recent ON browser_history(visited_at DESC, id DESC);"
+        error:transactionError] && TLDatabaseSetSchemaVersion(connection, 9, transactionError);
     } error:error];
     if (!migrated) return NO;
     version = 9;
+  }
+  if (version < 10 && targetVersion >= 10) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      if (![connection executeSQL:
+        "CREATE TABLE IF NOT EXISTS browser_history ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, title TEXT NOT NULL,"
+        "visited_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        "CREATE INDEX IF NOT EXISTS browser_history_recent ON browser_history(visited_at DESC, id DESC);"
+        error:transactionError]) return NO;
+      TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(browser_history)" error:transactionError];
+      if (!columns) return NO;
+      BOOL exists = NO;
+      int result;
+      while ((result = [columns step]) == SQLITE_ROW) {
+        if ([[columns stringAtColumn:1] isEqualToString:@"favicon"]) exists = YES;
+      }
+      if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
+      columns = nil;
+      return (exists || [connection executeSQL:"ALTER TABLE browser_history ADD COLUMN favicon BLOB" error:transactionError]) &&
+        TLDatabaseSetSchemaVersion(connection, 10, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 10;
+  }
+  if (version < 11 && targetVersion >= 11) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      if (!TLDatabaseHasCompatibleAdditiveSchema(connection, YES) || !TLDatabaseHasBrowserHistorySchema(connection)) {
+        [connection setError:transactionError message:@"Unrecognized database schema before bookmark migration."];
+        return NO;
+      }
+      return TLEnsureBookmarks(connection, transactionError) && TLDatabaseSetSchemaVersion(connection, 11, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 11;
   }
   return version == targetVersion;
 }
