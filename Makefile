@@ -328,7 +328,7 @@ $(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES)
 $(BUILD_DIR)/MarkdownMathTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Tests/MarkdownMathTests.m Tests/Fixtures/latex-formulas.md $(MARKDOWN_RESOURCES_STAMP)
 	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
 
-$(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/FeatureControllerTests: | $(MARKDOWN_RESOURCES_STAMP)
+$(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/MarkdownLinkContextTests: | $(MARKDOWN_RESOURCES_STAMP)
 
 $(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLAttachmentChipView.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/design_system/TLToolActivityView.m Source/design_system/TLApprovalCardView.m Source/design_system/TLThemedButton.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
 	mkdir -p "$(BUILD_DIR)"

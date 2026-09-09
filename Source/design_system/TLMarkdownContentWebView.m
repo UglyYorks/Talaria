@@ -38,6 +38,8 @@
   [super willOpenMenu:menu withEvent:event];
   NSDictionary *context = self.linkContext;
   self.linkContext = nil;
+  NSMenu *fallbackMenu = self.fallbackContextMenu;
+  self.fallbackContextMenu = nil;
   NSString *value = context[@"url"];
   NSURL *URL = [value isKindOfClass:NSString.class] && value.length ? [NSURL URLWithString:value] : nil;
   NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
@@ -45,6 +47,16 @@
   BOOL clickedLink = self.linkContextMenuHandler && URL && NSProcessInfo.processInfo.systemUptime - self.linkContextTime <= 1 &&
     fabs(point.x - [context[@"x"] doubleValue]) <= 4 && fabs(topY - [context[@"y"] doubleValue]) <= 4;
   if (!clickedLink) {
+    if (fallbackMenu) {
+      [menu removeAllItems];
+      menu.title = fallbackMenu.title;
+      menu.autoenablesItems = fallbackMenu.autoenablesItems;
+      for (NSMenuItem *item in fallbackMenu.itemArray) {
+        [fallbackMenu removeItem:item];
+        [menu addItem:item];
+      }
+      return;
+    }
     // Keep the pre-existing selected-text/background menu. The extra developer
     // action above is exposed only through the shared link menu.
     for (NSMenuItem *item in menu.itemArray) {

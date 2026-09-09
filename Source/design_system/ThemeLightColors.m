@@ -7,6 +7,7 @@ void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.appBackground = palette.transparentSurface;
   palette.appContentBackground = palette.white;
   palette.tabBackground = palette.appContentBackground;
+  palette.itemHighlightSurface = TLColorWithAlpha(palette.black, 0.08);
   palette.frostedOverlay = palette.transparentSurface;
   palette.chromeHoverSurface = TLColorWithAlpha(palette.gray300, 0.30);
   palette.taskStatusPillSurface = TLColorWithAlpha(palette.gray300, 0.14);
