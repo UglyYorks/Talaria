@@ -281,6 +281,7 @@ test: $(BUILD_DIR)/BookmarkTests $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/Brow
 	"$(BUILD_DIR)/AppStateManagerTests"
 	"$(BUILD_DIR)/WorkspaceSessionTests"
 	"$(BUILD_DIR)/WorkspaceRestoreTests"
+	"$(BUILD_DIR)/AppStartupTests"
 	"$(BUILD_DIR)/TransitionCoordinatorTests"
 	"$(BUILD_DIR)/FeatureControllerTests"
 	"$(BUILD_DIR)/TabShortcutTests"
@@ -298,6 +299,7 @@ test: $(BUILD_DIR)/QuickInputTests
 
 test: $(BUILD_DIR)/AutomationsTests
 test: $(BUILD_DIR)/WorkspaceSessionTests $(BUILD_DIR)/WorkspaceRestoreTests
+test: $(BUILD_DIR)/AppStartupTests
 test-automations: $(BUILD_DIR)/AutomationsTests
 	"$(BUILD_DIR)/AutomationsTests"
 
@@ -385,6 +387,9 @@ $(BUILD_DIR)/WorkspaceSessionTests: Source/WorkspaceState.m Source/AppStateManag
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
 
 $(BUILD_DIR)/WorkspaceRestoreTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/WorkspaceRestoreTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+
+$(BUILD_DIR)/AppStartupTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/AppStartupTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 $(BUILD_DIR)/TransitionCoordinatorTests: Source/design_system/TLTransitionCoordinator.m Tests/TransitionCoordinatorTests.m
