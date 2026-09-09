@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) TLChatRecord *chat;
 @property (nonatomic, strong) NSMutableArray<TLQueuedPrompt *> *queuedPrompts;
 @property (nonatomic, strong) TLPromptQueueView *promptQueueView;
+@property (nonatomic, strong) NSLayoutConstraint *promptQueueBottomConstraint;
 @property (nonatomic) BOOL queuePaused;
 @property (nonatomic) BOOL queueInterruptPending;
 @property (nonatomic, strong, nullable) TLQueuedPrompt *editingQueuedPrompt;

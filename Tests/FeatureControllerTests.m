@@ -2912,6 +2912,124 @@ static void DrainSuggestionTimer(void) {
   while (deadline.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runUntilDate:deadline];
 }
 
+@interface TalariaWindowController (QueuedSuggestionTests)
+- (NSView *)buildChatWorkspace;
+- (void)updateControlStates;
+- (void)renderSlashCommandList;
+- (void)hideSlashCommandList;
+- (BOOL)performInputSuggestionAtIndex:(NSUInteger)index;
+- (void)sendMessage:(id)sender;
+@end
+
+@interface TLQueuedSuggestionController : TalariaWindowController
+@property (nonatomic, strong) NSURL *openedURL;
+@property (nonatomic) NSUInteger openedCount;
+@end
+@implementation TLQueuedSuggestionController
+- (BOOL)isChatWorkspaceActive { return YES; }
+- (BOOL)isChatPresentationVisible { return YES; }
+- (void)styleSidebarActionButtons {}
+- (void)updateAgentControlStates {}
+- (void)refreshHermesCommandsIfNeeded {}
+- (void)updateWorkspaceMode {}
+- (void)reloadWorkspaceTabs {}
+- (void)renderMessages {}
+- (void)openBrowserTabWithURL:(NSURL *)URL { self.openedURL = URL; self.openedCount++; }
+@end
+
+static void TestSuggestionsWithQueuedPrompts(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 650, 600)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLQueuedSuggestionController *controller = [[TLQueuedSuggestionController alloc] initWithWindow:window];
+  TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
+  [controller setValue:palette forKey:@"palette"];
+  [controller setValue:window.contentView forKey:@"rootView"];
+  TLChatRecord *record = [TLChatRecord new]; record.chatID = 17;
+  [controller setValue:record forKey:@"activeChat"];
+  TLAppSettings *settings = [TLAppSettings defaultSettings];
+  settings.openRouterToken = @"test-token"; settings.selectedModel = @"test-model";
+  [controller setValue:settings forKey:@"settings"];
+  NSView *workspace = [controller buildChatWorkspace];
+  [controller setValue:workspace forKey:@"chatWorkspace"];
+  [window.contentView addSubview:workspace];
+  [NSLayoutConstraint activateConstraints:@[
+    [workspace.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [workspace.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [workspace.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [workspace.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor]]];
+  TLChatPresentation *chat = [controller valueForKey:@"chatPresentation"];
+  [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Summarize it" attachmentURLs:@[]]];
+  [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Summarize it again" attachmentURLs:@[]]];
+  TLStopTestRunner *runner = [[TLStopTestRunner alloc] initWithMessageStore:(id)[NSObject new] streaming:(id)[NSObject new]];
+  NSMutableDictionary *runners = [NSMutableDictionary dictionaryWithObject:runner forKey:@17];
+  [controller setValue:runners forKey:@"turnRunners"];
+  [window.contentView layoutSubtreeIfNeeded];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [controller setValue:palette forKey:@"palette"];
+    chat.messageInput.palette = palette;
+    for (NSNumber *width in @[@650, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 600)];
+      chat.messageInputWidthConstraint.constant = width.doubleValue - palette.space5 * 2;
+      [window.contentView layoutSubtreeIfNeeded];
+      chat.promptTextView.string = @"netflix.com";
+      [controller textDidChange:nil];
+      DrainSuggestionTimer();
+      Check(!chat.slashCommandListView.hidden && chat.visibleSlashCommands.count == 2 &&
+        [chat.visibleSlashCommands[0][@"kind"] isEqual:@"web"] && [chat.visibleSlashCommands[1][@"kind"] isEqual:@"prompt"],
+        @"a streaming chat with queued prompts still offers Open site and Send message");
+      [controller updateControlStates];
+      Check(!chat.slashCommandListView.hidden, @"streaming control updates cannot hide active suggestions");
+      NSRect queueRect = chat.promptQueueView.frame;
+      NSRect suggestions = chat.slashCommandListView.frame;
+      Check(NSMinY(queueRect) >= NSMaxY(suggestions) && NSMinY(suggestions) >= NSMaxY(chat.messageInput.frame),
+        @"queue, suggestions, and composer occupy separate vertical space at every width");
+      Check(-chat.messageStackBottomConstraint.constant > NSMaxY(queueRect), @"transcript inset clears both the suggestions and queue");
+      NSRect crop = NSMakeRect(0, 0, NSWidth(workspace.bounds), NSMaxY(queueRect) + palette.space5);
+      NSBitmapImageRep *bitmap = [workspace bitmapImageRepForCachingDisplayInRect:crop];
+      [workspace cacheDisplayInRect:crop toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithFormat:@"build/queued-suggestions-%@-%@.png", theme, width] atomically:YES];
+      [controller hideSlashCommandList];
+      Check(fabs(NSMinY(chat.promptQueueView.frame) - NSMaxY(chat.messageInput.frame) - palette.space3) < 1,
+        @"dismissing suggestions returns the queue to the composer without an empty gap");
+    }
+  }
+  chat.promptTextView.string = @"netflix.com";
+  [controller textDidChange:nil];
+  Check([controller textView:chat.promptTextView doCommandBySelector:@selector(insertNewline:)], @"Enter activates the pending website suggestion");
+  Check([controller.openedURL.absoluteString isEqual:@"https://netflix.com"] && chat.queuedPrompts.count == 2 && runner.stopCount == 0,
+    @"opening a site by keyboard leaves the running response and queue intact");
+  chat.promptTextView.string = @"example.com";
+  [controller renderSlashCommandList];
+  chat.slashCommandScrollView.activationHandler(0);
+  Check(controller.openedCount == 2 && [controller.openedURL.host isEqual:@"example.com"], @"clicking Open site works during generation");
+  chat.promptTextView.string = @"netflix.com";
+  [controller renderSlashCommandList];
+  Check([controller performInputSuggestionAtIndex:1] && chat.queuedPrompts.count == 3 &&
+    [chat.queuedPrompts.lastObject.text isEqual:@"netflix.com"] && controller.openedCount == 2,
+    @"choosing Send message queues the URL as text instead of opening a browser");
+  chat.promptTextView.string = @"another.example";
+  [controller sendMessage:nil];
+  Check([controller.openedURL.host isEqual:@"another.example"] && chat.queuedPrompts.count == 3,
+    @"direct URL submission retains automatic browser routing while queued");
+  [controller setValue:@[@{@"kind":@"hermes", @"command":@"/help", @"title":@"Help", @"icon":@"terminal"}] forKey:@"hermesCommands"];
+  chat.promptTextView.string = @"/help";
+  [controller renderSlashCommandList];
+  Check([controller performInputSuggestionAtIndex:0] && [chat.queuedPrompts.lastObject.text isEqual:@"/help"],
+    @"Hermes suggestions enqueue commands behind the current turn");
+  [runners removeAllObjects]; chat.queuePaused = YES;
+  chat.promptTextView.string = @"netflix.com";
+  [controller renderSlashCommandList]; [controller updateControlStates];
+  Check(!chat.slashCommandListView.hidden && [controller performInputSuggestionAtIndex:0], @"website suggestions also work with a paused queue");
+  chat.editingQueuedPrompt = chat.queuedPrompts.firstObject;
+  chat.promptTextView.string = @"netflix.com";
+  [controller renderSlashCommandList];
+  Check(chat.slashCommandListView.hidden && ![controller performInputSuggestionAtIndex:0], @"editing a queued prompt cannot accidentally navigate away");
+  [window close];
+}
+
 static void TestSuggestionTypingAndVirtualization(void) {
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500, 600)
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
@@ -3268,6 +3386,7 @@ int main(void) {
     TestQueuedFollowUps();
     TestSendQueuedPromptNow();
     TestPromptQueueLayout();
+    TestSuggestionsWithQueuedPrompts();
     if (getenv("TL_QUEUE_TESTS_ONLY")) {
       TestThemedButtonRenderedColors();
       TestConcurrentChatStreams();

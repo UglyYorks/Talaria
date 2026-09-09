@@ -1351,10 +1351,12 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   presentation.promptQueueView.cancelEditHandler = ^{
     [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf finishQueuedPromptEditingSaving:NO]; }];
   };
+  presentation.promptQueueBottomConstraint = [presentation.promptQueueView.bottomAnchor
+    constraintEqualToAnchor:self.messageInput.topAnchor constant:-self.palette.space3];
   [NSLayoutConstraint activateConstraints:@[
     [presentation.promptQueueView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor],
     [presentation.promptQueueView.trailingAnchor constraintEqualToAnchor:self.messageInput.trailingAnchor],
-    [presentation.promptQueueView.bottomAnchor constraintEqualToAnchor:self.messageInput.topAnchor constant:-self.palette.space3],
+    presentation.promptQueueBottomConstraint,
   ]];
 
   NSLayoutConstraint *messageInputLeadingConstraint = [self.messageInput.leadingAnchor constraintGreaterThanOrEqualToAnchor:chatWorkspace.leadingAnchor
@@ -2696,10 +2698,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)sendMessage:(id)sender {
-  if (self.isSending || self.chatPresentation.queuedPrompts.count) {
-    [self sendMessage:sender allowAutomaticRouting:NO];
-    return;
-  }
   [self flushSlashCommandUpdate];
   if (!self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) {
     return;
@@ -2719,6 +2717,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self finishQueuedPromptEditingSaving:YES];
     return;
   }
+  NSURL *browserURL = allowAutomaticRouting ? [self browserURLFromPromptString:nextPrompt] : nil;
+  if (browserURL) {
+    self.promptTextView.string = @"";
+    [self.messageInput recalculateHeight];
+    [self updateMessageScrollInsets];
+    [self updateSlashCommandList];
+    [self openBrowserTabWithURL:browserURL];
+    return;
+  }
+
   if (self.isSending || self.chatPresentation.queuedPrompts.count) {
     [self.chatPresentation.queuedPrompts addObject:[TLQueuedPrompt promptWithText:nextPrompt attachmentURLs:sourceURLs]];
     self.promptTextView.string = @"";
@@ -2732,15 +2740,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     TLPromptBuilder *builder = [[TLPromptBuilder alloc] init];
     nextPrompt = [[builder addPartWithContent:@"Please inspect the attached files and folders." importance:TLPromptImportanceRequired
                                     strategy:TLPromptCompactionStrategyWhole name:@"file-only-request"] build];
-  }
-  NSURL *browserURL = allowAutomaticRouting ? [self browserURLFromPromptString:nextPrompt] : nil;
-  if (browserURL) {
-    self.promptTextView.string = @"";
-    [self.messageInput recalculateHeight];
-    [self updateMessageScrollInsets];
-    [self updateSlashCommandList];
-    [self openBrowserTabWithURL:browserURL];
-    return;
   }
 
   if (model.length == 0) {
@@ -3087,7 +3086,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (BOOL)performInputSuggestionAtIndex:(NSUInteger)index {
-  if (self.isSending || index >= self.visibleSlashCommands.count || ![self.slashCommandScrollView isSuggestionEnabledAtIndex:index]) {
+  if (self.preparingAttachments || self.chatPresentation.editingQueuedPrompt || self.messageInput.attachmentURLs.count ||
+      index >= self.visibleSlashCommands.count || ![self.slashCommandScrollView isSuggestionEnabledAtIndex:index]) {
     return NO;
   }
   NSDictionary<NSString *, NSString *> *suggestion = self.visibleSlashCommands[index];
@@ -3257,7 +3257,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)renderSlashCommandList {
-  if (self.isSending || self.messageInput.attachmentURLs.count || ![self isChatWorkspaceActive] || !self.messageInput.window || NSIsEmptyRect(self.messageInput.bounds)) {
+  if (self.preparingAttachments || self.chatPresentation.editingQueuedPrompt || self.messageInput.attachmentURLs.count || ![self isChatWorkspaceActive] || !self.messageInput.window || NSIsEmptyRect(self.messageInput.bounds)) {
     [self hideSlashCommandList];
     return;
   }
@@ -4323,7 +4323,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (commandSelector == @selector(insertNewline:)) {
     BOOL shiftPressed = (NSApp.currentEvent.modifierFlags & NSEventModifierFlagShift) == NSEventModifierFlagShift;
     if (!shiftPressed) {
-      if (!self.isSending && !self.chatPresentation.queuedPrompts.count && !self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) return YES;
+      if (!self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) return YES;
       [self sendMessage:textView];
       return YES;
     }
@@ -4586,11 +4586,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)updateMessageScrollInsets {
-  [self.messageInput.superview layoutSubtreeIfNeeded];
-  CGFloat inputHeight = NSHeight(self.messageInput.frame) > 0.0 ? NSHeight(self.messageInput.frame) : self.palette.composerButtonHeight;
   CGFloat slashCommandListHeight = (!self.slashCommandListView.hidden && self.slashCommandListHeightConstraint.constant > self.palette.space0)
     ? self.slashCommandListHeightConstraint.constant + self.palette.space5
     : self.palette.space0;
+  // Suggestions remain nearest the input; move the queue above their panel.
+  self.chatPresentation.promptQueueBottomConstraint.constant = -self.palette.space3 - slashCommandListHeight;
+  [self.messageInput.superview layoutSubtreeIfNeeded];
+  CGFloat inputHeight = NSHeight(self.messageInput.frame) > 0.0 ? NSHeight(self.messageInput.frame) : self.palette.composerButtonHeight;
   CGFloat queueHeight = self.chatPresentation.promptQueueView.preferredHeight;
   CGFloat bottomClearance = inputHeight + (queueHeight > 0 ? queueHeight + self.palette.space3 : 0) + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
   self.messageScrollView.contentInsets = NSEdgeInsetsMake(self.palette.space0,
@@ -6217,7 +6219,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   NSString *prompt = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   BOOL chatActive = [self isChatPresentationVisible];
-  if (!chatActive || prompt.length == 0 || self.isSending || self.chatPresentation.queuedPrompts.count) {
+  if (!chatActive || prompt.length == 0 || self.preparingAttachments || self.chatPresentation.editingQueuedPrompt || self.messageInput.attachmentURLs.count) {
     [self hideSlashCommandList];
   }
   self.createChatButton.enabled = YES;
