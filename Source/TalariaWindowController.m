@@ -2203,11 +2203,35 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)openBrowserTabWithURL:(NSURL *)URL {
+  [self openBrowserTabWithURL:URL replacingChatTab:nil];
+}
+
+- (void)openBrowserURLFromChatInput:(NSURL *)URL {
+  TLWorkspaceTab *source = [self activeWorkspaceTab];
+  BOOL emptyChat = source && source.kind == TLWorkspaceTabKindChat && self.activeChat &&
+    source.tabID == self.activeChat.chatID && !self.messages.count && !self.activeChat.messages.count &&
+    !self.isSending && !self.isLoading && !self.messageInput.attachmentURLs.count;
+  [self openBrowserTabWithURL:URL replacingChatTab:emptyChat ? source : nil];
+}
+
+- (void)openBrowserTabWithURL:(NSURL *)URL replacingChatTab:(TLWorkspaceTab *)source {
   if (![self isBrowserURL:URL]) return;
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser
     tabID:self.nextBrowserTabID++ title:[self browserTabTitleForURL:URL]
     toolTip:URL.absoluteString URL:URL closeable:YES];
-  [self.appStateManager addWorkspaceTab:tab activate:YES];
+  if (source) {
+    // Replacement retains the tab's position and presentation identity, which
+    // also keeps an existing split attached to the same pane.
+    [self.appStateManager replaceWorkspaceTabWithKind:source.kind tabID:source.tabID withTab:tab activate:YES];
+    [self.chatPresentation.slashCommandUpdateTimer invalidate];
+    [self removeRuntimeForKind:source.kind tabID:source.tabID];
+    [self.modelDraftChats removeObjectForKey:@(source.tabID)];
+    [self.attachmentDrafts removeObjectForKey:@(source.tabID)];
+    [self.attachmentPromptDrafts removeObjectForKey:@(source.tabID)];
+    self.chatPresentation = nil;
+  } else {
+    [self.appStateManager addWorkspaceTab:tab activate:YES];
+  }
   [self ensureBrowserRuntimeForTab:tab];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -2569,7 +2593,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self.messageInput recalculateHeight];
     [self updateMessageScrollInsets];
     [self updateSlashCommandList];
-    [self openBrowserTabWithURL:browserURL];
+    [self openBrowserURLFromChatInput:browserURL];
     return;
   }
 
@@ -2923,7 +2947,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     self.promptTextView.string = @"";
     [self.messageInput recalculateHeight];
     [self hideSlashCommandList];
-    [self openBrowserTabWithURL:URL];
+    [self openBrowserURLFromChatInput:URL];
     return YES;
   }
   if ([suggestion[@"kind"] isEqualToString:@"prompt"]) {
