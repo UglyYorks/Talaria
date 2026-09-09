@@ -438,7 +438,7 @@ static void TestBrowserHistoryCompatibility(void) {
       Check([database saveBookmark:bookmark error:&error] && [database listBookmarks:&error].count == 1, @"bookmarks work alongside browser history and survive repeated opening");
       database = nil;
       TLSQLiteStatement *storedVersion = [fixture prepareSQL:"PRAGMA user_version" error:&error];
-      Check([storedVersion step] == SQLITE_ROW && sqlite3_column_int(storedVersion.handle,0) == 11, @"upgrade both feature schemas without losing their data");
+      Check([storedVersion step] == SQLITE_ROW && sqlite3_column_int(storedVersion.handle,0) == 12, @"upgrade both feature schemas without losing their data");
       TLSQLiteStatement *history = [fixture prepareSQL:"SELECT url,title,visited_at FROM browser_history" error:&error];
       Check([history step] == SQLITE_ROW && [[history stringAtColumn:0] isEqual:@"https://example.com/kept"] &&
         [[history stringAtColumn:1] isEqual:@"Kept page"] && [[history stringAtColumn:2] isEqual:@"2026-09-09 00:00:00"], @"history row is untouched");
@@ -447,7 +447,7 @@ static void TestBrowserHistoryCompatibility(void) {
         Check([icon step] == SQLITE_ROW && [[icon stringAtColumn:0] isEqual:@"012345"], @"favicon bytes remain intact");
       }
     }
-    Check([fixture executeSQL:"PRAGMA user_version=12" error:&error], @"prepare unknown future version");
+    Check([fixture executeSQL:"PRAGMA user_version=13" error:&error], @"prepare unknown future version");
     error = nil;
     Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error, @"unknown future versions remain rejected");
     if (version.integerValue == 10) {

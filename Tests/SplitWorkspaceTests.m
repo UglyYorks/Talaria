@@ -349,7 +349,7 @@ static void TestRealWorkspace(void) {
   NSUInteger beforeSplitLink = state.snapshot.workspaceTabs.count;
   NSURL *linkedURL = [NSURL URLWithString:@"https://example.com/linked-page"];
   [owner openLinkURL:linkedURL inSplitBesideBrowserTabID:browser.tabID]; Drain();
-  TLWorkspaceTab *linked = state.snapshot.workspaceTabs.lastObject;
+  TLWorkspaceTab *linked = [state workspaceTabWithKind:state.snapshot.activeTabKind tabID:state.snapshot.activeTabID];
   TLWorkspaceSplitGroup *linkedGroup = [splits groupForTab:browser];
   Check(state.snapshot.workspaceTabs.count == beforeSplitLink + 1 && [linked.URL isEqual:linkedURL], @"split link creates a browser tab for the clicked URL");
   Check([linkedGroup.leftIdentity isEqual:TLWorkspaceTabIdentity(browser)] &&
@@ -360,7 +360,7 @@ static void TestRealWorkspace(void) {
   [owner openLinkURL:[NSURL URLWithString:@"javascript:alert(1)"] inSplitBesideBrowserTabID:browser.tabID];
   Check(state.snapshot.workspaceTabs.count == beforeSplitLink + 1, @"closed sources and unsupported URLs cannot create split tabs");
   [owner handleContextLinkURL:linkedURL destination:TLBrowserLinkSplitView sourceIdentity:TLWorkspaceTabIdentity(c)]; Drain();
-  TLWorkspaceTab *chatLink = state.snapshot.workspaceTabs.lastObject;
+  TLWorkspaceTab *chatLink = [state workspaceTabWithKind:state.snapshot.activeTabKind tabID:state.snapshot.activeTabID];
   Check([[splits groupForTab:c].rightIdentity isEqual:TLWorkspaceTabIdentity(chatLink)] &&
     [[splits groupForTab:c].leftIdentity isEqual:TLWorkspaceTabIdentity(c)], @"chat answers use the same split routing beside their originating chat");
   TestChatInputNavigation(owner, state);

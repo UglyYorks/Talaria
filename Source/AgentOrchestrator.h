@@ -45,6 +45,11 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 
 - (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID token:(NSString *)token
         completion:(TLAgentStreamCompletionHandler)completion;
+- (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID agentID:(NSInteger)agentID token:(NSString *)token
+        completion:(TLAgentStreamCompletionHandler)completion;
+- (void)streamChatWithAgentID:(NSInteger)agentID requestID:(NSString *)requestID sessionID:(NSString *)sessionID
+                       token:(NSString *)token model:(NSString *)model messages:(NSArray<TLChatMessage *> *)messages
+                       delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion;
 - (void)cancelChatWithRequestID:(NSString *)requestID;
 
 - (void)streamChatWithDefaultAgentRequestID:(NSString *)requestID
@@ -55,6 +60,8 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                                       delta:(TLAgentStreamDeltaHandler)delta
                                  completion:(TLAgentStreamCompletionHandler)completion;
 - (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID
+                  completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *_Nullable attachments, NSError *_Nullable error))completion;
+- (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID agentID:(NSInteger)agentID
                   completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *_Nullable attachments, NSError *_Nullable error))completion;
 - (BOOL)removeAttachmentsForSessionID:(NSString *)sessionID error:(NSError **)error;
 - (nullable NSURL *)fileURLForAttachment:(NSDictionary *)attachment sessionID:(NSString *)sessionID;
@@ -85,6 +92,12 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 - (void)hermesAutomationsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
                                   token:(NSString *)token model:(NSString *)model
                              completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
+- (void)hermesPluginsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
+                                    token:(NSString *)token model:(NSString *)model
+                               completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
+- (void)hermesNotificationsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
+                                    token:(NSString *)token model:(NSString *)model
+                               completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 
 - (void)hermesHistoryWithAction:(NSString *)action sessionID:(NSString *)sessionID
                          token:(NSString *)token model:(NSString *)model

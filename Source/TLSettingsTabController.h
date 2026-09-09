@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^settingsSavedHandler)(TLAppSettings *settings);
 @property (nonatomic, copy, nullable) void (^skillsSavedHandler)(NSInteger agentID);
 @property (nonatomic, copy, nullable) void (^errorHandler)(NSString *message);
+- (void)refreshPluginsForSelectedAgent;
 - (instancetype)initWithSettings:(TLAppSettings *)settings
                        database:(TLDatabase *)database
                    orchestrator:(TLAgentOrchestrator *)orchestrator

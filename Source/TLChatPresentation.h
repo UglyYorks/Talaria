@@ -61,5 +61,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) NSUInteger streamingRenderGeneration;
 @property (nonatomic, strong) TLGlassButton *sendButton;
 @property (nonatomic, strong, nullable) TLASCIIPlanetScreensaverView *screensaverView;
+// Explicit source navigation survives streaming and asynchronous Markdown layout.
+@property (nonatomic, copy, nullable) NSString *notificationTargetMessageID;
+@property (nonatomic, copy, nullable) NSString *notificationTargetToolCallID;
+@property (nonatomic) BOOL suppressAutomaticScroll;
+@property (nonatomic) NSUInteger notificationNavigationGeneration;
+@property (nonatomic, copy, nullable) void (^notificationDidReveal)(void);
 @end
 NS_ASSUME_NONNULL_END

@@ -31,6 +31,8 @@ def main():
             credentials = gateway.call("talaria.credentials.list")
             assert isinstance(credentials["entries"], list)
             assert all("value" not in item for item in credentials["entries"])
+            gateway.call("talaria.notifications.sync", {
+                "notification_tool_description": "Native TLPromptBuilder notification policy fixture."})
             initial = call("list")
             assert initial["jobs"] == []
             assert {"script", "no_agent", "model", "context_from"} <= {field["key"] for field in initial["fields"]}

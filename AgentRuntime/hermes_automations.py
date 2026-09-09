@@ -20,6 +20,7 @@ class Automations:
         self.thread = None
         self.scheduler_error = ""
         self.preference = self.home / "talaria-scheduler-enabled"
+        self.can_dispatch = lambda: True
 
     def scheduler_status(self):
         from cron.jobs import get_ticker_last_error, get_ticker_heartbeat_age
@@ -30,7 +31,8 @@ class Automations:
         return {"running": own or external, "owned": own, "external": external,
                 "provider": resolve_cron_scheduler().name,
                 "heartbeat_age": get_ticker_heartbeat_age(),
-                "error": self.scheduler_error or get_ticker_last_error() or ""}
+                "error": self.scheduler_error or get_ticker_last_error() or
+                         ("Notifications are initializing; scheduled dispatch is waiting." if not self.can_dispatch() else "")}
 
     def set_scheduler(self, enabled, persist=True):
         from cron.scheduler_provider import resolve_cron_scheduler
@@ -39,6 +41,8 @@ class Automations:
                 status = self.scheduler_status()
                 if status["external"]:
                     raise ValueError("A Hermes gateway already owns scheduling. Manage that gateway separately.")
+                if persist and not self.can_dispatch():
+                    raise ValueError("Notifications are not ready. Refresh Notifications in Talaria before starting the scheduler.")
                 scheduler = resolve_cron_scheduler()
                 if scheduler.name != "builtin":
                     raise ValueError("This Hermes installation uses a managed scheduler. Manage it through its provider.")
@@ -50,7 +54,7 @@ class Automations:
                     self.scheduler_error = ""
                     def run():
                         try:
-                            scheduler.start(self.stop_event, can_dispatch=lambda: not self.stop_event.is_set())
+                            scheduler.start(self.stop_event, can_dispatch=lambda: not self.stop_event.is_set() and self.can_dispatch())
                         except BaseException as exc:
                             self.scheduler_error = str(exc)
                     self.thread = threading.Thread(target=run, daemon=True, name="talaria-hermes-cron")
@@ -129,6 +133,11 @@ class Automations:
                 raise ValueError("This Hermes version does not support: " + ", ".join(sorted(set(values) - allowed)))
             if action != "create":
                 self.require_job(params.get("job_id"))
+            if action in {"create", "update"}:
+                from hermes_notifications import DESCRIPTION_FILE, TOOLSET
+                selected = values.get("enabled_toolsets")
+                if (self.home / DESCRIPTION_FILE).exists() and isinstance(selected, list) and selected and TOOLSET not in selected:
+                    values = {**values, "enabled_toolsets": [*selected, TOOLSET]}
             result = json.loads(cronjob(action=action, job_id=params.get("job_id"), **values))
             if not isinstance(result, dict) or not result.get("success"):
                 raise ValueError(result.get("error", "Hermes could not complete the operation."))
@@ -188,8 +197,10 @@ class Automations:
         return directory
 
 
-def register(server, home):
+def register(server, home, can_dispatch=None):
     automations = Automations(home)
+    if can_dispatch is not None:
+        automations.can_dispatch = can_dispatch
     # Hermes's pool keeps slow disk operations and manual runs off the RPC reader.
     server._LONG_HANDLERS = server._LONG_HANDLERS | {METHOD}
     @server.method(METHOD)
