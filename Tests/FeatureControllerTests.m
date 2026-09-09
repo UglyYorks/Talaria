@@ -32,6 +32,7 @@
 #import "design_system/TLButton.h"
 #import "design_system/TLThemedButton.h"
 #import "TLHistoryPanelController.h"
+#import "design_system/TLTabIconView.h"
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLWorkspaceOutlineView.h"
 #import "design_system/TLChromeTabView.h"
@@ -1529,6 +1530,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error;
 @end
 @implementation TLFeatureSettingsStoreMock
+- (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error { return 0; }
 - (TLAppSettings *)appSettings:(NSError **)error { return self.savedSettings; }
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error {
   self.savedSettings = [settings copy];
@@ -3359,8 +3361,12 @@ static void TestRunningAgentRepairAction(void) {
 @interface TLHistorySelectionProbe : NSObject <TLHistoryPanelControllerDelegate>
 @property NSInteger selected;
 @property NSInteger deleted;
+@property NSInteger deletedVisit;
+@property NSURL *openedURL;
 @end
 @implementation TLHistorySelectionProbe
+- (void)historyPanelController:(TLHistoryPanelController *)controller didSelectBrowserURL:(NSURL *)URL { self.openedURL = URL; }
+- (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteBrowserVisitID:(NSInteger)visitID { self.deletedVisit = visitID; }
 - (void)historyPanelController:(TLHistoryPanelController *)controller didSelectChatID:(NSInteger)chatID { self.selected = chatID; }
 - (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteChatID:(NSInteger)chatID { self.deleted = chatID; }
 @end
@@ -3393,15 +3399,56 @@ static void TestHermesHistorySearchAndLayout(void) {
   Check(probe.deleted == 20, @"filtered deletion targets its actual session");
   search.stringValue = @"missing";
   [controller reloadData];
-  Check(table.numberOfRows == 0 && [status.stringValue isEqualToString:@"No matching sessions"], @"search has an empty result state");
+  Check(table.numberOfRows == 0 && [status.stringValue isEqualToString:@"No matching history"], @"search has an empty result state");
   controller.loading = YES;
-  Check(!table.enabled && [status.stringValue containsString:@"Loading"], @"loading disables row actions");
+  Check(table.enabled && [status.stringValue containsString:@"Loading"], @"loading chats leaves browsing accessible");
   controller.loading = NO;
   controller.statusMessage = @"Hermes unavailable";
   Check([status.stringValue isEqualToString:@"Hermes unavailable"], @"history exposes gateway errors");
   controller.statusMessage = @"";
   search.stringValue = @"";
   [controller reloadData];
+  TLBrowserHistoryEntry *visit = [TLBrowserHistoryEntry new];
+  visit.visitID = 10; visit.title = @"Café guide"; visit.URLString = @"https://example.com/caf%C3%A9";
+  visit.visitedAt = @"2026-09-06 10:00:00";
+  visit.faviconData = [NSData dataWithContentsOfFile:@"assets/browser-bookmarks/github.png"];
+  controller.browsingHistory = @[visit];
+  [controller reloadData];
+  Check(table.numberOfRows == 3, @"All includes both chats and browsing visits");
+  [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  Check([probe.openedURL.absoluteString isEqual:visit.URLString], @"newest browsing visit sorts before chats and opens its URL");
+  [controller selectChatWithID:10];
+  Check(table.selectedRow == 1, @"chat selection ignores colliding browser visit IDs");
+  search.stringValue = @"CAFE";
+  [controller reloadData];
+  Check(table.numberOfRows == 2, @"shared search matches chat and browsing titles without case or accents");
+  NSArray<TLThemedButton *> *filters = [controller valueForKey:@"filterButtons"];
+  [filters[1] performClick:nil];
+  Check(controller.filter == TLHistoryFilterChats && table.numberOfRows == 1, @"Chats filter retains the shared query");
+  [filters[2] performClick:nil];
+  Check(controller.filter == TLHistoryFilterBrowsing && table.numberOfRows == 1, @"Browsing filter retains the shared query");
+  search.stringValue = @"EXAMPLE.COM";
+  [controller reloadData];
+  Check(table.numberOfRows == 1, @"browsing search matches URLs");
+  controller.loading = YES;
+  controller.statusMessage = @"Hermes unavailable";
+  Check(status.hidden && table.enabled, @"Browsing hides chat loading/errors and stays interactive");
+  probe.openedURL = nil;
+  [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  Check(probe.openedURL != nil, @"browsing entries open while Hermes is loading");
+  [table setValue:@0 forKey:@"contextMenuRow"];
+  [table.menu update];
+  Check([deleteItem.title isEqual:@"Delete Browsing Entry"], @"context action describes a browsing entry");
+  [NSApp sendAction:deleteItem.action to:deleteItem.target from:deleteItem];
+  Check(probe.deletedVisit == 10 && probe.deleted == 20, @"browsing deletion never targets a chat with the same ID");
+  [filters[1] performClick:nil];
+  search.stringValue = @"";
+  [controller reloadData];
+  probe.selected = 0;
+  [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  Check(probe.selected == 0, @"chat actions remain blocked during a Hermes refresh");
+  controller.loading = NO; controller.statusMessage = @"";
+  [filters[0] performClick:nil];
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1200, 600)
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
@@ -3427,10 +3474,48 @@ static void TestHermesHistorySearchAndLayout(void) {
             @"history column matches chat width and fits narrow windows");
       Check(NSWidth(search.frame) > 0 && NSMaxX([search convertRect:search.bounds toView:panel]) <= width.doubleValue,
             @"history search fits inside narrow windows");
+      NSTableCellView *browserCell = [table viewAtColumn:0 row:0 makeIfNecessary:YES];
+      TLTabIconView *browserIcon = (TLTabIconView *)browserCell.subviews.firstObject;
+      Check(browserIcon.image != nil && browserIcon.palette == palette, @"history displays the persisted favicon in both themes");
+      NSImageView *renderedIcon = [browserIcon valueForKey:@"systemIconView"];
+      Check(!renderedIcon.hidden && !renderedIcon.contentTintColor && renderedIcon.image == browserIcon.image,
+        @"favicon retains the site's original image colors");
+      NSTableCellView *chatCell = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
+      TLTabIconView *chatIcon = (TLTabIconView *)chatCell.subviews.firstObject;
+      Check(chatIcon.image == nil && chatIcon.icon.length, @"chat rows retain their conversation icons");
+      for (TLThemedButton *button in filters) {
+        NSRect frame = [button convertRect:button.bounds toView:panel];
+        Check(NSMinX(frame) >= 0 && NSMaxX(frame) <= width.doubleValue, @"all three filters fit within the minimum window width");
+        CGFloat textWidth = [button.title sizeWithAttributes:@{NSFontAttributeName:button.font}].width;
+        Check(NSWidth(button.bounds) >= textWidth + 8, @"filter labels fit without truncation");
+      }
       NSBitmapImageRep *image = [panel bitmapImageRepForCachingDisplayInRect:panel.bounds];
       [panel cacheDisplayInRect:panel.bounds toBitmapImageRep:image];
       [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
         writeToFile:[NSString stringWithFormat:@"build/history-%@-%@.png", theme, width] atomically:YES];
+      for (TLThemedButton *button in filters) {
+        for (NSString *state in @[@"normal", @"hover", @"pressed", @"disabled", @"focused"]) {
+          button.enabled = ![state isEqual:@"disabled"];
+          [button setValue:@([state isEqual:@"hover"]) forKey:@"hovered"];
+          [button highlight:[state isEqual:@"pressed"]];
+          [window makeFirstResponder:[state isEqual:@"focused"] ? button : nil];
+          NSBitmapImageRep *bitmap = RenderThemedButton(button);
+          CGFloat surface[3], unusedAlpha;
+          RGBComponents(palette.tabBackground, surface, &unusedAlpha);
+          CGFloat opacity = button.enabled ? 1 : palette.disabledOpacity;
+          CompositeColor(button.primary ? palette.primaryActionSurface : palette.secondaryActionSurface, opacity, surface);
+          if ([state isEqual:@"hover"] || [state isEqual:@"pressed"]) CompositeColor(palette.chromeHoverSurface, 1, surface);
+          Check(PixelMatches(bitmap, 5, NSHeight(button.bounds) / 2, surface), @"history filter renders the selected/unselected theme surface");
+          CGFloat foreground[3] = {surface[0], surface[1], surface[2]};
+          CompositeColor(button.primary ? palette.primaryActionText : palette.secondaryActionText, opacity, foreground);
+          NSUInteger ink = 0;
+          for (NSInteger y = 4; y < bitmap.pixelsHigh - 4; y++) for (NSInteger x = 8; x < bitmap.pixelsWide - 8; x++)
+            if (PixelMatches(bitmap, x, y, foreground)) ink++;
+          Check(ink > 3, @"history filter renders paired label colors across themes and interaction states");
+        }
+        button.enabled = YES; [button highlight:NO]; [button setValue:@NO forKey:@"hovered"];
+      }
+      [window makeFirstResponder:nil];
     }
   }
   [window close];

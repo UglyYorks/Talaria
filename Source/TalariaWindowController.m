@@ -2321,6 +2321,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     updatedTab.toolTip = updatedURL.absoluteString ?: title;
     [windowController.appStateManager upsertWorkspaceTab:updatedTab activate:[windowController isWorkspaceTabActive:updatedTab]];
   };
+  controller.historyChangedHandler = ^{ [weakSelf reloadHistoryPanel]; };
   controller.faviconChangedHandler = ^{ [weakSelf reloadWorkspaceTabs]; };
   controller.headerColorChangedHandler = ^{ [weakSelf.workspaceTabsController refreshContentColorsAnimated:YES]; };
   controller.linkHandler = ^(NSURL *linkedURL, NSEventModifierFlags flags) {
@@ -6457,6 +6458,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self updateControlStates];
 }
 
+- (void)historyPanelController:(TLHistoryPanelController *)controller didSelectBrowserURL:(NSURL *)URL {
+  [self openBrowserTabWithURL:URL];
+}
+
+- (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteBrowserVisitID:(NSInteger)visitID {
+  NSError *error = nil;
+  if (![self.database deleteBrowserVisitWithID:visitID error:&error]) { [NSApp presentError:error]; return; }
+  [self reloadHistoryPanel];
+}
+
 - (void)historyPanelControllerDidRequestRefresh:(TLHistoryPanelController *)controller {
   [self refreshHermesHistory];
 }
@@ -6515,6 +6526,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)reloadHistoryPanel {
+  if (!self.historyPanelController) return;
+  NSError *error = nil;
+  self.historyPanelController.browsingHistory = [self.database listBrowserHistory:&error] ?: @[];
+  self.historyPanelController.browsingStatusMessage = error ? [NSString stringWithFormat:@"Browsing history unavailable: %@", error.localizedDescription] : @"";
   self.historyPanelController.chats = self.widgetbookMode ? (self.chats ?: @[]) : (self.hermesHistoryChats ?: @[]);
   [self.historyPanelController reloadData];
 }

@@ -2,7 +2,7 @@
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 
-static NSInteger const TLDatabaseSchemaVersion = 8;
+static NSInteger const TLDatabaseSchemaVersion = 10;
 
 typedef BOOL (^TLDatabaseTransactionBlock)(NSError **error);
 
@@ -263,6 +263,86 @@ static NSString *TLTitleFromMessage(NSString *content) {
       return YES;
     } error:error];
     return saved ? [self loadChatWithID:chatID error:error] : nil;
+  }
+}
+
+- (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error {
+  NSString *scheme = URL.scheme.lowercaseString;
+  if ((![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) || !URL.host.length) return 0;
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "INSERT INTO browser_history (url, title, favicon) VALUES (?1, ?2, "
+      "(SELECT favicon FROM browser_history WHERE url = ?1 AND favicon IS NOT NULL ORDER BY id DESC LIMIT 1))" error:error];
+    if (!statement) return 0;
+    [statement bindText:URL.absoluteString atIndex:1];
+    [statement bindText:title.length ? title : URL.absoluteString atIndex:2];
+    return [statement stepDone:error] ? self.sqliteConnection.lastInsertRowID : 0;
+  }
+}
+
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID title:(NSString *)title error:(NSError **)error {
+  if (visitID <= 0 || !title.length) return YES;
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "UPDATE browser_history SET title = ?1 WHERE id = ?2" error:error];
+    if (!statement) return NO;
+    [statement bindText:title atIndex:1];
+    [statement bindInt64:visitID atIndex:2];
+    return [statement stepDone:error];
+  }
+}
+
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID faviconData:(NSData *)data error:(NSError **)error {
+  if (visitID <= 0 || !data.length) return YES;
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "UPDATE browser_history SET favicon = ?1 WHERE id = ?2" error:error];
+    if (!statement) return NO;
+    sqlite3_bind_blob64(statement.handle, 1, data.bytes, data.length, SQLITE_TRANSIENT);
+    [statement bindInt64:visitID atIndex:2];
+    return [statement stepDone:error];
+  }
+}
+
+- (NSArray<TLBrowserHistoryEntry *> *)listBrowserHistory:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "SELECT id, url, title, visited_at, favicon FROM browser_history ORDER BY visited_at DESC, id DESC" error:error];
+    if (!statement) return nil;
+    NSMutableArray<TLBrowserHistoryEntry *> *entries = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSData *> *siteIcons = [NSMutableDictionary dictionary];
+    int result;
+    while ((result = [statement step]) == SQLITE_ROW) {
+      TLBrowserHistoryEntry *entry = [TLBrowserHistoryEntry new];
+      entry.visitID = sqlite3_column_int64(statement.handle, 0);
+      entry.URLString = [statement stringAtColumn:1];
+      entry.title = [statement stringAtColumn:2];
+      entry.visitedAt = [statement stringAtColumn:3];
+      int length = sqlite3_column_bytes(statement.handle, 4);
+      if (length > 0) {
+        entry.faviconData = [NSData dataWithBytes:sqlite3_column_blob(statement.handle, 4) length:(NSUInteger)length];
+        NSString *origin = TLBrowserHistoryOrigin([NSURL URLWithString:entry.URLString]);
+        if (origin && !siteIcons[origin]) siteIcons[origin] = entry.faviconData;
+      }
+      [entries addObject:entry];
+    }
+    if (result != SQLITE_DONE) { [self.sqliteConnection setCurrentError:error]; return nil; }
+    // Older visits can use the newest saved icon from the same website. Preserve
+    // page-specific icons when present, and never fetch icons while reading history.
+    for (TLBrowserHistoryEntry *entry in entries) {
+      NSString *origin = TLBrowserHistoryOrigin([NSURL URLWithString:entry.URLString]);
+      if (!entry.faviconData && origin) entry.faviconData = siteIcons[origin];
+    }
+    return entries;
+  }
+}
+
+- (BOOL)deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM browser_history WHERE id = ?1" error:error];
+    if (!statement) return NO;
+    [statement bindInt64:visitID atIndex:1];
+    return [statement stepDone:error];
   }
 }
 

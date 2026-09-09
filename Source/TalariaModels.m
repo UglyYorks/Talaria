@@ -318,3 +318,13 @@ NSString *TLAgentDisplayStatus(NSString *status) {
 }
 
 @end
+
+@implementation TLBrowserHistoryEntry
+@end
+
+NSString *TLBrowserHistoryOrigin(NSURL *URL) {
+  NSString *scheme = URL.scheme.lowercaseString;
+  if (!URL.host.length || (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"])) return nil;
+  return [NSString stringWithFormat:@"%@://%@:%@", scheme, URL.host.lowercaseString,
+          URL.port ?: ([scheme isEqualToString:@"https"] ? @443 : @80)];
+}

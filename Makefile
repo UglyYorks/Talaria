@@ -257,6 +257,7 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
 test: $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/BrowserDownloadTests test-browser-overlay $(BUILD_DIR)/BrowserOverlayPolicyTests $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+	"$(BUILD_DIR)/BrowserHistoryTests"
 	"$(BUILD_DIR)/BrowserDownloadTests"
 	"$(BUILD_DIR)/AgentVMLockTests"
 	"$(BUILD_DIR)/AutomationsTests"
@@ -495,4 +496,10 @@ $(BUILD_DIR)/AgentVMLockTests: Source/TLAgentVMLock.m Source/AgentVMService.m So
 # Native transcript search plus real WebKit rendering, without network or an AI runtime.
 test: $(BUILD_DIR)/ChatFindTests
 $(BUILD_DIR)/ChatFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/ChatFindTests.m | $(MARKDOWN_RESOURCES_STAMP)
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+
+# Browsing history migration, persistence and native navigation callback routing.
+test: $(BUILD_DIR)/BrowserHistoryTests
+
+$(BUILD_DIR)/BrowserHistoryTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/BrowserHistoryTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"

@@ -31,6 +31,16 @@ NSString *TLAgentDisplayGuestKind(NSString *guestKind);
 NSString *TLAgentDisplayRuntime(NSString *runtime);
 NSString *TLAgentDisplayStatus(NSString *status);
 
+NSString * _Nullable TLBrowserHistoryOrigin(NSURL *URL);
+
+@interface TLBrowserHistoryEntry : NSObject
+@property (nonatomic) NSInteger visitID;
+@property (nonatomic, copy) NSString *URLString;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *visitedAt;
+@property (nonatomic, copy, nullable) NSData *faviconData;
+@end
+
 @interface TLChatMessage : NSObject <NSCopying>
 
 @property (nonatomic, copy) NSString *role;
