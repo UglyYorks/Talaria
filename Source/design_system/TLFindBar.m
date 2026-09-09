@@ -21,7 +21,8 @@
   _searchField.cell.scrollable = YES;
   _searchField.delegate = self;
   _searchField.wantsLayer = YES;
-  [_searchField setAccessibilityLabel:@"Find in page"];
+  _searchLabel = @"Find";
+  [_searchField setAccessibilityLabel:_searchLabel];
   [_searchSurface addSubview:_searchField];
   _resultLabel = [NSTextField labelWithString:@""];
   _resultLabel.alignment = NSTextAlignmentRight;
@@ -46,6 +47,11 @@
   [self addSubview:button];
   return button;
 }
+- (void)setSearchLabel:(NSString *)searchLabel {
+  _searchLabel = [searchLabel copy];
+  [self.searchField setAccessibilityLabel:searchLabel];
+  if (self.palette) self.palette = self.palette;
+}
 - (void)setPalette:(TLThemePalette *)palette {
   _palette = palette;
   self.layer.backgroundColor = palette.tabBackground.CGColor;
@@ -56,7 +62,7 @@
   self.searchSurface.layer.cornerRadius = palette.radiusMedium;
   self.searchSurface.layer.borderWidth = palette.borderWidth;
   self.searchSurface.layer.borderColor = palette.controlBorder.CGColor;
-  self.searchField.placeholderAttributedString = [[NSAttributedString alloc] initWithString:@"Find in page"
+  self.searchField.placeholderAttributedString = [[NSAttributedString alloc] initWithString:self.searchLabel
     attributes:@{NSForegroundColorAttributeName:palette.textMuted, NSFontAttributeName:palette.bodyFont}];
   self.resultLabel.font = palette.smallFont;
   self.resultLabel.textColor = palette.textMuted;

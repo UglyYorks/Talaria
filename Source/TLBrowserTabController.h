@@ -1,10 +1,11 @@
+#import "design_system/TLFindBar.h"
 #import "TLFeatureTabController.h"
 #import "Database.h"
 #import "ChromiumBrowserController.h"
 
 @class TLAgentOrchestrator;
 NS_ASSUME_NONNULL_BEGIN
-@interface TLBrowserTabController : TLFeatureTabController
+@interface TLBrowserTabController : TLFeatureTabController <TLFindActionTarget>
 @property (nonatomic, strong, readonly, nullable) NSImage *favicon;
 @property (nonatomic, strong, readonly, nullable) NSColor *headerContentColor;
 @property (nonatomic, copy, nullable) void (^headerColorChangedHandler)(void);

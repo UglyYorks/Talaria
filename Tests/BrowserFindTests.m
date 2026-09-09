@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "AppDelegate.h"
+#import "TLChatPresentation.h"
 #import "TalariaWindowController.h"
 #import "WorkspaceTabRuntime.h"
 #import "TLBrowserTabController.h"
@@ -184,15 +185,15 @@ int main(void) {
     runtime.featureController = browser;
     [workspace setRuntime:runtime forTab:tab]; [state addWorkspaceTab:tab activate:YES];
     TLAppDelegate *delegate = [TLAppDelegate new]; [delegate setValue:workspace forKey:@"windowController"];
-    Check([delegate handleBrowserFindShortcutEvent:Key(@"F", NSEventModifierFlagCommand | NSEventModifierFlagCapsLock)] && browser.findBarVisible, @"command-F routes to the active browser");
-    Check(![delegate handleBrowserFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand | NSEventModifierFlagOption)], @"unrelated modifier combinations pass through");
-    Check([delegate handleBrowserFindShortcutEvent:Key(@"g", NSEventModifierFlagCommand | NSEventModifierFlagShift)] && ![service.requests.lastObject[@"forward"] boolValue], @"command-shift-G routes backward");
-    Check([delegate handleBrowserFindShortcutEvent:Key(@"\e", 0)] && !browser.findBarVisible, @"Escape dismisses find from page focus");
-    Check(![delegate handleBrowserFindShortcutEvent:Key(@"\e", 0)], @"Escape passes through when find is closed");
+    Check([delegate handleFindShortcutEvent:Key(@"F", NSEventModifierFlagCommand | NSEventModifierFlagCapsLock)] && browser.findBarVisible, @"command-F routes to the active browser");
+    Check(![delegate handleFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand | NSEventModifierFlagOption)], @"unrelated modifier combinations pass through");
+    Check([delegate handleFindShortcutEvent:Key(@"g", NSEventModifierFlagCommand | NSEventModifierFlagShift)] && ![service.requests.lastObject[@"forward"] boolValue], @"command-shift-G routes backward");
+    Check([delegate handleFindShortcutEvent:Key(@"\e", 0)] && !browser.findBarVisible, @"Escape dismisses find from page focus");
+    Check(![delegate handleFindShortcutEvent:Key(@"\e", 0)], @"Escape passes through when find is closed");
     app.testModalWindow = window;
-    Check(![delegate handleBrowserFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand)], @"modal windows block find shortcuts");
+    Check(![delegate handleFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand)], @"modal windows block find shortcuts");
     app.testModalWindow = nil; app.testKeyWindow = nil;
-    Check(![delegate handleBrowserFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand)], @"other windows keep their own find behavior");
+    Check(![delegate handleFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand)], @"other windows keep their own find behavior");
     app.testKeyWindow = window;
     TLFindTestBrowser *otherService = [TLFindTestBrowser new];
     TLBrowserTabController *other = Browser(otherService);
@@ -200,11 +201,17 @@ int main(void) {
     TLWorkspaceTabRuntime *otherRuntime = [TLWorkspaceTabRuntime runtimeWithContentView:other.view openAction:@selector(description) closeAction:@selector(description)];
     otherRuntime.featureController = other; [workspace setRuntime:otherRuntime forTab:otherTab];
     [state addWorkspaceTab:otherTab activate:YES];
-    [delegate handleBrowserFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand)];
+    [delegate handleFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand)];
     Check(other.findBarVisible && !browser.findBarVisible, @"active pane owns find independently of the other browser");
     TLWorkspaceTab *chat = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:3 title:@"Chat" toolTip:@"" URL:nil closeable:YES];
     [state addWorkspaceTab:chat activate:YES];
-    Check(![delegate handleBrowserFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand)], @"chat does not open browser find");
+    TLChatPresentation *presentation = [TLChatPresentation new];
+    [presentation installFindBarInView:window.contentView palette:bar.palette];
+    [workspace setValue:[NSMutableDictionary dictionaryWithObject:presentation forKey:@3] forKey:@"chatPresentations"];
+    Check([delegate handleFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand)] && presentation.findBarVisible,
+      @"command-F routes to the active chat through the shared find action");
+    Check([delegate handleFindShortcutEvent:Key(@"\e", 0)] && !presentation.findBarVisible && other.findBarVisible,
+      @"Escape closes only the active chat search");
     TLFindBar *preview = [[TLFindBar alloc] initWithFrame:NSMakeRect(0, 0, 640, 46)];
     [window.contentView addSubview:preview]; preview.searchField.stringValue = @"needle";
     [preview setMatchCount:3 activeMatch:1 searching:NO];

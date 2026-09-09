@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "TalariaModels.h"
+#import "design_system/TLFindBar.h"
 #import "UIComponents.h"
 #import "design_system/TLMessageInput.h"
 #import "design_system/TLGlassButton.h"
@@ -11,7 +12,11 @@
 // scroll position and pending render. The window routes actions to the focused
 // presentation; background rendering explicitly scopes itself to its origin.
 NS_ASSUME_NONNULL_BEGIN
-@interface TLChatPresentation : NSObject
+@interface TLChatPresentation : NSObject <TLFindActionTarget>
+@property (nonatomic, strong, readonly) TLFindBar *findBar;
+- (void)installFindBarInView:(NSView *)view palette:(TLThemePalette *)palette;
+- (void)applyFindPalette:(TLThemePalette *)palette;
+- (void)refreshFindResults;
 @property (nonatomic, strong) TLChatRecord *chat;
 @property (nonatomic, strong) NSMutableArray<TLChatMessage *> *messages;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageRowViews;

@@ -13,8 +13,8 @@ NS_ASSUME_NONNULL_BEGIN
                   appStateManager:(TLAppStateManager *)appStateManager;
 - (BOOL)canPerformTabCommand:(TLTabCommand)command;
 - (void)performTabCommand:(TLTabCommand)command;
-- (BOOL)canPerformBrowserFindAction:(NSTextFinderAction)action;
-- (void)performBrowserFindAction:(NSTextFinderAction)action;
+- (BOOL)canPerformFindAction:(NSTextFinderAction)action;
+- (void)performFindAction:(NSTextFinderAction)action;
 - (void)closeActiveTabOrWindow:(id)sender;
 - (void)showOnboardingDemoWindow:(id)sender;
 

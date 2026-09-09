@@ -256,6 +256,7 @@
 
 - (void)buildFindBar {
   self.findBar = [TLFindBar new];
+  self.findBar.searchLabel = @"Find in page";
   self.findBar.translatesAutoresizingMaskIntoConstraints = NO;
   self.findBar.palette = self.palette;
   self.findBar.hidden = YES;
