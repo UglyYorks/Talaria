@@ -141,12 +141,10 @@ static NSUInteger TLFailureCount = 0;
   delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
   if (self.approvalDelta) {
-    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:self.approvalDelta options:0 error:nil] encoding:NSUTF8StringEncoding];
-    delta(requestID, TLAgentStreamDeltaKindApproval, json);
+    delta(requestID, TLAgentStreamDeltaKindApproval, self.approvalDelta);
   }
   if (self.toolActivityDelta) {
-    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:self.toolActivityDelta options:0 error:nil] encoding:NSUTF8StringEncoding];
-    delta(requestID, TLAgentStreamDeltaKindToolActivity, json);
+    delta(requestID, TLAgentStreamDeltaKindToolActivity, self.toolActivityDelta);
   }
   completion(nil);
 }
@@ -571,7 +569,7 @@ static void TestDatabasePersistence(void) {
                @"deleted chats cannot be loaded");
 
   database = nil;
-  TLAssertTrue(TLReadSQLiteUserVersion(url) == 11, @"sets database schema user_version");
+  TLAssertTrue(TLReadSQLiteUserVersion(url) == 12, @"sets database schema user_version");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
 
@@ -614,7 +612,7 @@ static void TestCompatibleVersion5Database(void) {
       TLAssertEqualObjects([check stringAtColumn:1], @"keep", @"preserves newer agent instructions");
       TLAssertEqualObjects([check stringAtColumn:2], @"[\"/tmp/keep\"]", @"preserves newer agent folders");
     }
-    TLAssertTrue(TLReadSQLiteUserVersion(url) == 11, @"upgrades both version-5 variants without downgrading data");
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 12, @"upgrades both version-5 variants without downgrading data");
     [connection executeSQL:"PRAGMA user_version = 6" error:&error];
     error = nil;
     TLAssertTrue(!TLDatabaseMigrate(connection, 4, &error) && error != nil, @"rejects unknown future versions");
@@ -644,7 +642,7 @@ static void TestHistorySchemaStartupCompatibility(void) {
     if (version == 10) TLAssertTrue([connection executeSQL:"UPDATE browser_history SET favicon = X'010203'" error:&error], @"creates retained favicon fixture");
     TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[TLFakeTestCredentialStore new] error:&error];
     TLAssertTrue(database != nil && error == nil, @"startup accepts known version-8 through version-10 databases");
-    TLAssertTrue(TLReadSQLiteUserVersion(url) == 11, @"startup migrates forward without downgrading the schema");
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 12, @"startup migrates forward without downgrading the schema");
     TLAssertEqualObjects([database chatWithID:1 error:&error].title, @"Retained chat", @"startup preserves existing chats");
     {
       TLSQLiteStatement *bookmark = [connection prepareSQL:"SELECT url FROM bookmarks WHERE id = 1" error:&error];
@@ -658,10 +656,10 @@ static void TestHistorySchemaStartupCompatibility(void) {
       } else TLAssertTrue([history step] == SQLITE_DONE, @"version-8 migration creates the history schema including favicons");
     }
     database = nil;
-    [connection executeSQL:"PRAGMA user_version = 12" error:nil];
+    [connection executeSQL:"PRAGMA user_version = 13" error:nil];
     error = nil;
     database = [[TLDatabase alloc] initWithURL:url credentialStore:[TLFakeTestCredentialStore new] error:&error];
-    TLAssertTrue(database == nil && error != nil && TLReadSQLiteUserVersion(url) == 12, @"unknown future schemas remain protected and are never downgraded");
+    TLAssertTrue(database == nil && error != nil && TLReadSQLiteUserVersion(url) == 13, @"unknown future schemas remain protected and are never downgraded");
     connection = nil;
     [NSFileManager.defaultManager removeItemAtURL:url error:nil];
   }
@@ -808,8 +806,9 @@ static void TestStatusTransport(void) {
   __block BOOL finished = NO;
   NSDictionary *approvalResponse = @{@"request_id":@"approval-id", @"choice":@"deny"};
   [client streamHermesSessionWithAgent:[[TLAgentRecord alloc] init] requestID:@"status" sessionID:@"chat"
-    token:@"token" model:@"model" prompt:@"Deny" approvalResponse:approvalResponse delta:^(NSString *rid, TLAgentStreamDeltaKind kind, NSString *text) {
-      [received addObject:@[@(kind), text]];
+    token:@"token" model:@"model" prompt:@"Deny" approvalResponse:approvalResponse delta:^(NSString *rid, TLAgentStreamDeltaKind kind, id value) {
+
+      [received addObject:@[@(kind), value]];
     } completion:^(NSError *error) { finished = YES; TLAssertTrue(error == nil, @"status transport completes normally"); }];
   int descriptors[2];
   TLAssertTrue(socketpair(AF_UNIX, SOCK_STREAM, 0, descriptors) == 0, @"create status test transport");
@@ -842,7 +841,7 @@ static void TestStatusTransport(void) {
   TLAssertTrue(finished, @"status frames finish within the test deadline");
   TLAssertEqualObjects(received, (@[@[@(TLAgentStreamDeltaKindStatus), @"waiting"],
     @[@(TLAgentStreamDeltaKindStatus), @""], @[@(TLAgentStreamDeltaKindThinking), @"Reasoning"],
-    @[@(TLAgentStreamDeltaKindContent), @"Answer"], @[@(TLAgentStreamDeltaKindToolActivity), activityJSON], @[@(TLAgentStreamDeltaKindApproval), approvalJSON]]),
+    @[@(TLAgentStreamDeltaKindContent), @"Answer"], @[@(TLAgentStreamDeltaKindToolActivity), [NSJSONSerialization JSONObjectWithData:[activityJSON dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]], @[@(TLAgentStreamDeltaKindApproval), [NSJSONSerialization JSONObjectWithData:[approvalJSON dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]]]),
     @"wire transport separates approvals from content and preserves status clears");
   close(descriptors[1]);
 }
@@ -853,7 +852,8 @@ static void TestCancellationDuringStartup(void) {
     initWithDatabase:(id)[[NSObject alloc] init] agentClient:fake vmService:[[TLDeferredSocketService alloc] init]];
   __block NSUInteger completions = 0;
   [orchestrator streamChatWithDefaultAgentRequestID:@"pending" sessionID:@"chat" token:@"token" model:@"model"
-    messages:@[] delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {
+    messages:@[] delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, id value) {
+
       TLAssertTrue(NO, @"cancelled pending request never emits a delta");
     } completion:^(NSError *error) {
       completions++;
@@ -869,7 +869,8 @@ static void TestCancellationDuringStartup(void) {
     TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:vm];
     __block NSUInteger socketCompletions = 0;
     [client streamHermesSessionWithAgent:[[TLAgentRecord alloc] init] requestID:@"socket" sessionID:@"chat"
-      token:@"token" model:@"model" prompt:@"Hello" delta:^(NSString *rid, TLAgentStreamDeltaKind kind, NSString *text) {}
+      token:@"token" model:@"model" prompt:@"Hello" delta:^(NSString *rid, TLAgentStreamDeltaKind kind, id value) {
+    }
       completion:^(NSError *error) { socketCompletions++; TLAssertTrue(error.code == NSURLErrorCancelled,
         @"socket cancellation reports cancellation"); }];
     int descriptors[2];

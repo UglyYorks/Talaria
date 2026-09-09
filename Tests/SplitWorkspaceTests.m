@@ -1,7 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "TalariaWindowController.h"
 #import "TLMainWindow.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import "TLWorkspaceSplitState.h"
 #import "TLWorkspaceTabsController.h"
 #import "design_system/TLSplitWorkspaceView.h"
@@ -30,7 +30,6 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 - (void)applyTheme;
 - (void)closeChatTabWithID:(NSInteger)chatID;
 - (BOOL)persistActiveDraftChatWithModel:(NSString *)model;
-- (void)withChatPresentation:(TLChatPresentation *)presentation perform:(void (^)(void))block;
 - (void)scheduleStreamingMessageRender;
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom;
 - (void)updateMessageScrollInsets;
@@ -52,7 +51,7 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 
 // Real native workspace and action routing, with no VM, network, credentials or user data.
 @interface TLSplitTestController : TalariaWindowController
-@property (nonatomic, strong) TLChatPresentation *lastScrollPresentation;
+@property (nonatomic, strong) TLChatTabController *lastScrollPresentation;
 @end
 @implementation TLSplitTestController
 - (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab {
@@ -153,11 +152,11 @@ static void TestChatInputNavigation(TLSplitTestController *owner, TLAppStateMana
   NSURL *URL = [NSURL URLWithString:@"https://www.example.com/page?q=hello#section"];
   [owner startNewChatWithModel:@"test-model" focus:NO];
   TLWorkspaceTab *neighbor = state.snapshot.workspaceTabs.lastObject;
-  TLChatPresentation *neighborPresentation = [owner valueForKey:@"chatPresentation"];
+  TLChatTabController *neighborPresentation = [owner valueForKey:@"chatPresentation"];
   neighborPresentation.promptTextView.string = @"Keep this draft";
   [owner startNewChatWithModel:@"test-model" focus:NO];
   TLWorkspaceTab *empty = state.snapshot.workspaceTabs.lastObject;
-  TLChatPresentation *retired = [owner valueForKey:@"chatPresentation"];
+  TLChatTabController *retired = [owner valueForKey:@"chatPresentation"];
   [state moveWorkspaceTabWithKind:empty.kind tabID:empty.tabID toIndex:1];
   [owner splitTab:empty besideTab:neighbor onLeft:YES];
   [owner focusSplitPane:NO];
@@ -187,7 +186,7 @@ static void TestChatInputNavigation(TLSplitTestController *owner, TLAppStateMana
   [owner startNewChatWithModel:@"test-model" focus:NO];
   Check(![owner valueForKey:@"modelDraftChats"][@(empty.tabID)], @"opening another chat does not resurrect the converted draft");
   empty = state.snapshot.workspaceTabs.lastObject;
-  TLChatPresentation *presentation = [owner valueForKey:@"chatPresentation"];
+  TLChatTabController *presentation = [owner valueForKey:@"chatPresentation"];
   presentation.promptTextView.string = URL.absoluteString;
   [owner updateSlashCommandList]; [owner flushSlashCommandUpdate];
   count = state.snapshot.workspaceTabs.count;
@@ -250,12 +249,12 @@ static void TestRealWorkspace(void) {
   [owner buildInterface]; [owner installAppStateBindings];
   [owner startNewChatWithModel:@"test-model" focus:NO];
   TLWorkspaceTab *a = state.snapshot.workspaceTabs.lastObject;
-  TLChatPresentation *pa = [owner valueForKey:@"chatPresentation"];
+  TLChatTabController *pa = [owner valueForKey:@"chatPresentation"];
   pa.promptTextView.string = @"Unsent left draft";
   pa.messageInput.attachmentURLs = @[[NSURL fileURLWithPath:@"/tmp/left.txt"]];
   [owner startNewChatWithModel:@"test-model" focus:NO];
   TLWorkspaceTab *b = state.snapshot.workspaceTabs.lastObject;
-  TLChatPresentation *pb = [owner valueForKey:@"chatPresentation"];
+  TLChatTabController *pb = [owner valueForKey:@"chatPresentation"];
   pb.promptTextView.string = @"Unsent right draft";
   Check(pa != pb && pa.chatWorkspace != pb.chatWorkspace && pa.promptTextView != pb.promptTextView, @"chats own independent live views and composers");
   [owner splitTab:a besideTab:b onLeft:YES]; Drain();
@@ -274,11 +273,13 @@ static void TestRealWorkspace(void) {
   Check(state.snapshot.activeTabID == b.tabID && [owner valueForKey:@"chatPresentation"] == pb, @"pane click routes shortcuts and composer actions to its chat");
   Check([pa.promptTextView.string isEqual:@"Unsent left draft"] && [pb.promptTextView.string isEqual:@"Unsent right draft"] && pa.messageInput.attachmentURLs.count == 1, @"focus changes preserve both drafts and attachments");
   pa.messages = [NSMutableArray arrayWithObject:[TLChatMessage messageWithRole:TLRoleUser content:@"Background transcript" thinking:nil]];
-  [owner withChatPresentation:pa perform:^{ [owner scheduleStreamingMessageRender]; }]; Drain();
+  [pa scheduleStreamingMessageRender]; Drain();
   Check([owner valueForKey:@"chatPresentation"] == pb && state.snapshot.activeTabID == b.tabID && pa.renderedMessages.count == 1, @"background render targets the originating pane without changing focus");
-  [owner withChatPresentation:pa perform:^{ [owner renderMessagesScrollingToBottom:NO]; }];
-  owner.lastScrollPresentation = nil; Drain();
-  Check(owner.lastScrollPresentation == pa && [owner valueForKey:@"chatPresentation"] == pb,
+  pa.messageStackBottomConstraint.constant = 0;
+  CGFloat rightInset = pb.messageStackBottomConstraint.constant;
+  [pa renderMessagesScrollingToBottom:NO];
+  Drain();
+  Check(pa.messageStackBottomConstraint.constant < 0 && pb.messageStackBottomConstraint.constant == rightInset && [owner valueForKey:@"chatPresentation"] == pb,
     @"deferred scroll layout belongs to the rendered chat after focus changes");
   [owner restoreAttachmentDraft:@[] prompt:@"Restored left draft" chatID:a.tabID];
   Check([pa.promptTextView.string isEqual:@"Restored left draft"] && [pb.promptTextView.string isEqual:@"Unsent right draft"],
@@ -323,7 +324,7 @@ static void TestRealWorkspace(void) {
     Drain();
     Check(window.appearance == nil, @"the app window inherits the system color scheme without a manual override");
     Check(workspace.palette.dark == (theme.integerValue == TLThemePreferenceDark), @"system appearance changes reach existing split chrome despite a legacy theme preference");
-    for (TLChatPresentation *presentation in [[owner valueForKey:@"chatPresentations"] allValues])
+    for (TLChatTabController *presentation in [[owner valueForKey:@"chatPresentations"] allValues])
       Check(presentation.messageInput.palette.dark == workspace.palette.dark, @"theme reaches every cached composer");
   }
   NSApp.appearance = originalAppearance; Drain();
@@ -341,7 +342,7 @@ static void TestRealWorkspace(void) {
   [state addWorkspaceTab:browser activate:YES]; Drain();
   [owner splitTab:browser besideTab:c onLeft:YES]; Drain();
   [owner focusSplitPane:YES]; Drain();
-  TLChatPresentation *chat = [owner valueForKey:@"chatPresentation"];
+  TLChatTabController *chat = [owner valueForKey:@"chatPresentation"];
   Check(chat.promptTextView.editable && [window makeFirstResponder:chat.promptTextView], @"chat beside browser accepts keyboard focus");
   NSPoint editorPoint = [chat.promptTextView convertPoint:NSMakePoint(NSMidX(chat.promptTextView.bounds),NSMidY(chat.promptTextView.bounds)) toView:window.contentView.superview];
   NSView *hit = [window.contentView hitTest:editorPoint];
@@ -349,7 +350,7 @@ static void TestRealWorkspace(void) {
   NSUInteger beforeSplitLink = state.snapshot.workspaceTabs.count;
   NSURL *linkedURL = [NSURL URLWithString:@"https://example.com/linked-page"];
   [owner openLinkURL:linkedURL inSplitBesideBrowserTabID:browser.tabID]; Drain();
-  TLWorkspaceTab *linked = state.snapshot.workspaceTabs.lastObject;
+  TLWorkspaceTab *linked = [state workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:state.snapshot.activeTabID];
   TLWorkspaceSplitGroup *linkedGroup = [splits groupForTab:browser];
   Check(state.snapshot.workspaceTabs.count == beforeSplitLink + 1 && [linked.URL isEqual:linkedURL], @"split link creates a browser tab for the clicked URL");
   Check([linkedGroup.leftIdentity isEqual:TLWorkspaceTabIdentity(browser)] &&
@@ -360,7 +361,7 @@ static void TestRealWorkspace(void) {
   [owner openLinkURL:[NSURL URLWithString:@"javascript:alert(1)"] inSplitBesideBrowserTabID:browser.tabID];
   Check(state.snapshot.workspaceTabs.count == beforeSplitLink + 1, @"closed sources and unsupported URLs cannot create split tabs");
   [owner handleContextLinkURL:linkedURL destination:TLBrowserLinkSplitView sourceIdentity:TLWorkspaceTabIdentity(c)]; Drain();
-  TLWorkspaceTab *chatLink = state.snapshot.workspaceTabs.lastObject;
+  TLWorkspaceTab *chatLink = [state workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:state.snapshot.activeTabID];
   Check([[splits groupForTab:c].rightIdentity isEqual:TLWorkspaceTabIdentity(chatLink)] &&
     [[splits groupForTab:c].leftIdentity isEqual:TLWorkspaceTabIdentity(c)], @"chat answers use the same split routing beside their originating chat");
   TestChatInputNavigation(owner, state);

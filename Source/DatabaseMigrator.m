@@ -1,4 +1,5 @@
 #import "DatabaseMigrator.h"
+#import "TalariaModels.h"
 
 static NSInteger TLDatabaseSchemaVersion(TLSQLiteConnection *connection, NSError **error) {
   TLSQLiteStatement *statement = [connection prepareSQL:"PRAGMA user_version" error:error];
@@ -44,6 +45,10 @@ static BOOL TLDatabaseHasCompatibleAdditiveSchema(TLSQLiteConnection *connection
     int result;
     while ((result = [columns step]) == SQLITE_ROW) {
       NSString *name = [columns stringAtColumn:1];
+      if ([table isEqualToString:@"messages"] && [name isEqualToString:@"position"]) {
+        if (![[columns stringAtColumn:2] isEqualToString:@"INTEGER"] || ![[columns stringAtColumn:4] isEqualToString:@"0"]) return NO;
+        continue;
+      }
       BOOL required = [missing containsObject:name];
       [missing removeObject:name];
       NSString *expectedDefault = knownAdditions[table][name];
@@ -99,6 +104,7 @@ static BOOL TLDatabaseHasBrowserHistorySchema(TLSQLiteConnection *connection) {
   int result;
   while ((result = [columns step]) == SQLITE_ROW) {
     NSString *name = [columns stringAtColumn:1];
+    if ([name isEqualToString:@"origin"] && [[columns stringAtColumn:2] isEqualToString:@"TEXT"]) continue;
     if (![types[name] isEqual:[[columns stringAtColumn:2] uppercaseString]]) return NO;
     [missing removeObject:name];
   }
@@ -324,6 +330,48 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     } error:error];
     if (!migrated) return NO;
     version = 11;
+  }
+  if (version < 12 && targetVersion >= 12) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(messages)" error:transactionError];
+      if (!columns) return NO;
+      BOOL exists = NO;
+      int result;
+      while ((result = [columns step]) == SQLITE_ROW) {
+        if ([[columns stringAtColumn:1] isEqualToString:@"position"]) exists = YES;
+      }
+      if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
+      columns = nil;
+      if (!exists && ![connection executeSQL:
+          "ALTER TABLE messages ADD COLUMN position INTEGER NOT NULL DEFAULT 0;"
+          "UPDATE messages SET position = id;" error:transactionError]) return NO;
+      TLSQLiteStatement *historyColumns = [connection prepareSQL:"PRAGMA table_info(browser_history)" error:transactionError];
+      if (!historyColumns) return NO;
+      BOOL hasOrigin = NO;
+      while ((result = [historyColumns step]) == SQLITE_ROW) if ([[historyColumns stringAtColumn:1] isEqualToString:@"origin"]) hasOrigin = YES;
+      if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
+      historyColumns = nil;
+      if (!hasOrigin) {
+        if (![connection executeSQL:"ALTER TABLE browser_history ADD COLUMN origin TEXT NOT NULL DEFAULT ''" error:transactionError]) return NO;
+        TLSQLiteStatement *visits = [connection prepareSQL:"SELECT id, url FROM browser_history" error:transactionError];
+        TLSQLiteStatement *update = [connection prepareSQL:"UPDATE browser_history SET origin=?1 WHERE id=?2" error:transactionError];
+        if (!visits || !update) return NO;
+        while ((result = [visits step]) == SQLITE_ROW) {
+          sqlite3_reset(update.handle); sqlite3_clear_bindings(update.handle);
+          [update bindText:TLBrowserHistoryOrigin([NSURL URLWithString:[visits stringAtColumn:1]]) ?: @"" atIndex:1];
+          [update bindInt64:sqlite3_column_int64(visits.handle, 0) atIndex:2];
+          if (![update stepDone:transactionError]) return NO;
+        }
+        if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
+      }
+      return [connection executeSQL:
+        "CREATE INDEX IF NOT EXISTS messages_chat_position ON messages(chat_id, position, id);"
+        "CREATE INDEX IF NOT EXISTS browser_history_origin_icon ON browser_history(origin, visited_at DESC, id DESC) WHERE favicon IS NOT NULL;"
+        "CREATE INDEX IF NOT EXISTS browser_history_url_icon ON browser_history(url, id DESC) WHERE favicon IS NOT NULL;"
+        error:transactionError] && TLDatabaseSetSchemaVersion(connection, 12, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 12;
   }
   return version == targetVersion;
 }

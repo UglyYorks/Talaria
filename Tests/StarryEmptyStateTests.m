@@ -1,6 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "TalariaWindowController.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import "TLEmptyStateTips.h"
 
 static void Check(BOOL value, NSString *message) { if (!value) { NSLog(@"FAIL: %@", message); exit(1); } }
@@ -74,7 +74,7 @@ int main(void) {
       window.releasedWhenClosed = NO;
       TalariaWindowController *owner = [[TalariaWindowController alloc] initWithWindow:window];
       [owner setValue:palette forKey:@"palette"];
-      TLChatPresentation *chat = [TLChatPresentation new];
+      TLChatTabController *chat = [TLChatTabController new];
       chat.chat = [TLChatRecord new];
       [owner setValue:chat forKey:@"chatPresentation"];
       chat.chatWorkspace = [owner buildChatWorkspace];

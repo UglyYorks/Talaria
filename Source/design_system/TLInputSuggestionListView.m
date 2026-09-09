@@ -119,6 +119,19 @@
   [self.contentView scrollToPoint:NSZeroPoint];
 }
 
+- (BOOL)moveSelectionByOffset:(NSInteger)offset {
+  NSInteger count = self.suggestions.count;
+  NSInteger index = self.selectedIndex;
+  if (!count || !offset) return NO;
+  NSInteger direction = offset < 0 ? -1 : 1;
+  for (NSInteger attempt = 0; attempt < count; attempt++) {
+    index = index < 0 ? (direction < 0 ? count - 1 : 0) : (index + direction + count) % count;
+    if ([self isSuggestionEnabledAtIndex:index]) { self.selectedIndex = index; return YES; }
+  }
+  self.selectedIndex = -1;
+  return NO;
+}
+
 - (BOOL)isSuggestionEnabledAtIndex:(NSUInteger)index {
   if (index >= self.suggestions.count) return NO;
   NSDictionary *item = self.suggestions[index];

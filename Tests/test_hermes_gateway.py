@@ -372,7 +372,7 @@ class GatewayTests(unittest.TestCase):
             if len(chunks) == len(frames):
                 self.gateway.listeners['runtime'].put({'type': 'message.complete', 'payload': {'text': 'Done'}})
         self.gateway.run('chat', 'model', 'hello', delta)
-        activities = [json.loads(text) for kind, text in chunks if kind == 'tool_activity']
+        activities = [text for kind, text in chunks if kind == 'tool_activity']
         self.assertEqual([a['state'] for a in activities], ['preparing', 'running', 'running', 'failed', 'completed'])
         self.assertEqual([a['id'] for a in activities], ['preparing:terminal', 'a', 'b', 'a', 'b'])
         self.assertEqual(activities[1]['detail'], 'pwd')
@@ -414,7 +414,7 @@ class GatewayTests(unittest.TestCase):
         self.gateway.call.side_effect = call
         output = []
         self.gateway.run('chat', 'model', 'do work', lambda kind, text: output.append(text))
-        self.assertEqual(json.loads(output[0])['request_id'], 'approval')
+        self.assertEqual(output[0]['request_id'], 'approval')
         with self.assertRaisesRegex(RuntimeError, 'Reply /approve or /deny'):
             self.gateway.run('chat', 'model', 'unrelated message', lambda *_: None)
         self.gateway.run('chat', 'model', '/deny', lambda kind, text: output.append(text))
@@ -440,7 +440,7 @@ class GatewayTests(unittest.TestCase):
         output = []
         self.gateway.run('chat', 'model', 'research', lambda kind, text: output.append((kind, text)))
         self.assertEqual(output[0][0], 'approval')
-        self.assertEqual(json.loads(output[0][1]), payload)
+        self.assertEqual(output[0][1], payload)
         for response in [{'request_id': 'stale-id', 'choice': 'once'},
                          {'request_id': 'exact-id', 'choice': 'always'}]:
             with self.assertRaises(RuntimeError):
@@ -470,7 +470,7 @@ class GatewayTests(unittest.TestCase):
             get_gateway.return_value.catalog.return_value = self.catalogue(['/help', '/new-skill'])
             worker.handle_request({'operation': 'hermes_commands', 'request_id': 'req'}, output)
         events = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual(json.loads(events[0]['text'])['pairs'][1][0], '/new-skill')
+        self.assertEqual(events[0]['result']['pairs'][1][0], '/new-skill')
         self.assertEqual(events[-1]['type'], 'complete')
 
     def test_worker_command_failure_is_terminal_error(self):
@@ -691,8 +691,8 @@ class SkillsSettingsTests(unittest.TestCase):
                 worker.handle_request(request, output)
                 get.assert_called_once_with()
                 events = [json.loads(line) for line in output.getvalue().splitlines()]
-                self.assertEqual([event['type'] for event in events], ['delta', 'complete'])
-                self.assertEqual(len(json.loads(events[0]['text'])['skills']), 4)
+                self.assertEqual([event['type'] for event in events], ['result', 'complete'])
+                self.assertEqual(len(events[0]['result']['skills']), 4)
 
 
 class TransportTests(unittest.TestCase):
@@ -739,18 +739,21 @@ for line in sys.stdin:
 class TUIOnlyTests(unittest.TestCase):
     def test_model_discovery_uses_tui_rpc(self):
         gateway = HermesGateway.__new__(HermesGateway)
+        gateway.lock = threading.RLock()
         gateway.call = Mock(return_value={'providers': [{'slug': 'openrouter', 'models': ['test']}]})
         self.assertEqual(gateway.model_options()['providers'][0]['models'], ['test'])
         gateway.call.assert_called_once_with('model.options', {'explicit_only': True})
 
     def test_invalid_model_catalogue_reports_an_error(self):
         gateway = HermesGateway.__new__(HermesGateway)
+        gateway.lock = threading.RLock()
         gateway.call = Mock(return_value={'models': []})
         with self.assertRaisesRegex(RuntimeError, 'invalid model catalogue'):
             gateway.model_options()
 
     def test_missing_helper_session_never_runs_inference(self):
         gateway = HermesGateway.__new__(HermesGateway)
+        gateway.lock = threading.RLock()
         gateway.call = Mock(return_value={})
         with self.assertRaisesRegex(RuntimeError, 'did not create'):
             gateway.generate_text('support/model', 'instructions', 'input')
@@ -758,6 +761,7 @@ class TUIOnlyTests(unittest.TestCase):
 
     def test_auxiliary_request_uses_selected_model_without_chat_history(self):
         gateway = HermesGateway.__new__(HermesGateway)
+        gateway.lock = threading.RLock()
         gateway.call = Mock(side_effect=[{'session_id': 'helper'}, {}, {'text': 'test response'}, {}])
         self.assertEqual(gateway.generate_text('support/model', 'Native instructions', 'Native input'), 'test response')
         from unittest.mock import call
@@ -769,6 +773,7 @@ class TUIOnlyTests(unittest.TestCase):
 
     def test_auxiliary_failure_closes_runtime_without_http_fallback(self):
         gateway = HermesGateway.__new__(HermesGateway)
+        gateway.lock = threading.RLock()
         gateway.call = Mock(side_effect=[{'session_id': 'helper'}, {}, RPCError({'code': -32601, 'message': 'method unavailable'}), {}])
         with self.assertRaisesRegex(RPCError, 'method unavailable'):
             gateway.generate_text('support/model', 'instructions', 'input')
@@ -867,6 +872,7 @@ class CredentialRPCTests(unittest.TestCase):
 
     def test_gateway_uses_only_credential_rpc(self):
         gateway = HermesGateway.__new__(HermesGateway)
+        gateway.lock = threading.RLock()
         gateway.call = Mock(return_value={"ok": True})
         gateway.credentials("set", "SEARCH_API_KEY", "test-secret")
         gateway.call.assert_called_once_with("talaria.credentials.set", {"key": "SEARCH_API_KEY", "value": "test-secret"})
@@ -918,7 +924,7 @@ class CredentialRPCTests(unittest.TestCase):
         with patch.object(worker, "tui_gateway", return_value=gateway):
             worker.handle_request({"operation": "hermes_credentials", "request_id": "keys", "action": "list"}, output)
         frames = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual(json.loads(frames[0]["text"]), {"entries": []})
+        self.assertEqual(frames[0]["result"], {"entries": []})
         self.assertEqual(frames[-1]["type"], "complete")
 
 

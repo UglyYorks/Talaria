@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "TalariaModels.h"
 #import "Theme.h"
+#import "TLHistoryRepository.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -25,6 +26,8 @@ typedef NS_ENUM(NSInteger, TLHistoryFilter) {
 @interface TLHistoryPanelController : NSObject
 
 @property (nonatomic, strong, readonly) TLTokenView *panelView;
+@property (nonatomic, strong, nullable) id<TLHistoryReading> repository;
+@property (nonatomic, getter=isVisible) BOOL visible;
 @property (nonatomic, copy) NSArray<TLChatSummary *> *chats;
 @property (nonatomic, copy) NSArray<TLBrowserHistoryEntry *> *browsingHistory;
 @property (nonatomic) TLHistoryFilter filter;

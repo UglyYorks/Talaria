@@ -52,6 +52,7 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
 @interface TLAssistantTurnRunner : NSObject
 
 @property (nonatomic, readonly) BOOL running;
+@property (nonatomic, strong, readonly, nullable) TLChatMessage *streamingMessage;
 // Stops generation and saves any partial response. Safe to call repeatedly.
 - (void)cancel;
 // Reference context is sent to the model, never displayed or stored as the user's message.

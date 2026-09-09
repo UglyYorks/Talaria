@@ -187,6 +187,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
 - (id)copyWithZone:(NSZone *)zone {
   TLStoredChatMessage *copy = [super copyWithZone:zone];
   copy.messageID = self.messageID;
+  copy.position = self.position;
   copy.createdAt = self.createdAt;
   return copy;
 }

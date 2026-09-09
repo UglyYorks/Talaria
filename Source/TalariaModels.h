@@ -72,6 +72,7 @@ NSString * _Nullable TLBrowserHistoryOrigin(NSURL *URL);
 @end
 
 @interface TLStoredChatMessage : TLChatMessage
+@property (nonatomic) NSInteger position;
 
 @property (nonatomic) NSInteger messageID;
 @property (nonatomic, copy) NSString *createdAt;

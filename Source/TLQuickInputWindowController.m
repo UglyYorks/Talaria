@@ -446,17 +446,7 @@
 }
 
 - (BOOL)moveSelection:(NSInteger)offset {
-  NSInteger count = self.suggestionList.suggestions.count;
-  if (!count) return NO;
-  NSInteger index = self.suggestionList.selectedIndex;
-  for (NSInteger attempt = 0; attempt < count; attempt++) {
-    index = index < 0 ? (offset < 0 ? count - 1 : 0) : (index + offset + count) % count;
-    if ([self.suggestionList isSuggestionEnabledAtIndex:index]) {
-      self.suggestionList.selectedIndex = index;
-      break;
-    }
-  }
-  return YES;
+  return [self.suggestionList moveSelectionByOffset:offset];
 }
 
 - (BOOL)performSuggestionAtIndex:(NSUInteger)index completing:(BOOL)completing {

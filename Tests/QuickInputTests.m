@@ -3,7 +3,7 @@
 #import "TalariaWindowController.h"
 #import "TLMainWindow.h"
 #import "NotchOverlayController.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLScreenRegionSelectionView.h"
 #import "TLScreenCapture.h"
@@ -343,7 +343,7 @@ static void TestNotchPresentationAndCapture(void) {
 - (void)refreshHermesHistory {}
 - (void)sendMessage:(id)sender allowAutomaticRouting:(BOOL)allowAutomaticRouting {
   self.sendCount++;
-  TLChatPresentation *presentation = [self valueForKey:@"chatPresentation"];
+  TLChatTabController *presentation = [self valueForKey:@"chatPresentation"];
   self.submittedText = presentation.promptTextView.string;
   self.submittedFiles = presentation.messageInput.attachmentURLs;
 }
@@ -474,7 +474,7 @@ static void TestWorkspaceHandoff(void) {
   [owner setValue:notch forKey:@"notchOverlayController"];
   [notch startTracking];
   [owner startNewChatWithModel:@"existing-model" focus:NO];
-  TLChatPresentation *existing = [owner valueForKey:@"chatPresentation"];
+  TLChatTabController *existing = [owner valueForKey:@"chatPresentation"];
   existing.promptTextView.string = @"Existing unsent draft";
   NSURL *file = [NSURL fileURLWithPath:@"/tmp/quick-input-attachment.txt"];
   existing.messageInput.attachmentURLs = @[file];
@@ -504,7 +504,7 @@ static void TestWorkspaceHandoff(void) {
   Submit(quick); Drain();
   Check([notch valueForKey:@"trackingTimer"] != nil, @"submission restores normal notch tracking");
   Check(window.visible && !quick.window.visible && state.snapshot.workspaceTabs.count == 2 && owner.sendCount == 1, @"submission opens the main window and a new chat");
-  TLChatPresentation *fresh = [owner valueForKey:@"chatPresentation"];
+  TLChatTabController *fresh = [owner valueForKey:@"chatPresentation"];
   Check(fresh != existing && [owner.submittedText isEqual:@"New request"], @"handoff sends the entered text in a separate chat");
   Check([fresh.chat.model isEqual:@"chosen-large"] && [fresh.chat.supportingModel isEqual:@"chosen-small"], @"model selection follows the new chat");
   Check([existing.promptTextView.string isEqual:@"Existing unsent draft"] && existing.messageInput.attachmentURLs.count == 1,

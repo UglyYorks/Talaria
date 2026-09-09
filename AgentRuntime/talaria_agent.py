@@ -253,8 +253,7 @@ def hermes_automations(request, output=None):
             raise ValueError("Automation parameters must be an object.")
         result = tui_gateway(trim(request.get("token")), trim(request.get("model"))).call(
             "talaria.automations", params, timeout=600)
-        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
-              "text": json.dumps(result)}, output)
+        emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError) as exc:
         error(f"Could not manage Hermes automations: {exc}", output)
@@ -272,8 +271,7 @@ def hermes_history(request, output=None):
             result = gateway.delete_history_session(trim(request.get("session_id")))
         else:
             raise RuntimeError("Unknown Hermes history action.")
-        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
-              "text": json.dumps(result)}, output)
+        emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError) as exc:
         error(f"Could not {request.get('action', 'load')} Hermes history: {exc}", output)
@@ -282,8 +280,7 @@ def hermes_history(request, output=None):
 def fetch_hermes_commands(request, output=None):
     try:
         catalogue = tui_gateway(trim(request.get("token")), trim(request.get("model"))).catalog()
-        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
-              "text": json.dumps(catalogue)}, output)
+        emit({"type": "result", "request_id": request["request_id"], "result": catalogue}, output)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError) as exc:
         error(f"Could not load Hermes commands: {exc}", output)
@@ -339,7 +336,8 @@ def stream_hermes_session(request, output=None, cancellation=None):
         save_agent_soul(request)
         gateway = tui_gateway(token, model)
         gateway.run(session_id, model, prompt, lambda kind, text: emit(
-            {"type": "delta", "request_id": request_id, "kind": kind, "text": text}, output),
+            {"type": "delta", "request_id": request_id, "kind": kind,
+             ("payload" if isinstance(text, dict) else "text"): text}, output),
             cancellation=cancellation, approval_response=request.get("approval_response"),
             wait_for_previous_turn=request.get("wait_for_previous_turn") is True)
         cancellation.finish()
@@ -391,8 +389,7 @@ def hermes_providers(request, output=None):
         result = tui_gateway().providers(request.get("params", {}))
         if request.get("params", {}).get("action") == "select" and result.get("ok"):
             (HERMES_HOME / "talaria-provider-configured").touch()
-        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
-              "text": json.dumps(result)}, output)
+        emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError):
         error("Could not configure this Hermes provider. Check your entries and update Hermes if needed, then retry.", output)
@@ -402,8 +399,7 @@ def hermes_credentials(request, output=None):
     try:
         result = tui_gateway(trim(request.get("token"))).credentials(
             request.get("action"), request.get("key", ""), request.get("value", ""))
-        emit({"type": "delta", "request_id": request["request_id"], "kind": "content",
-              "text": json.dumps(result)}, output)
+        emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError):
         error("Could not access Hermes tool credentials. Check that Hermes is installed and up to date, then retry.", output)
@@ -412,8 +408,7 @@ def hermes_credentials(request, output=None):
 def manage_hermes_skills(request, output=None):
     try:
         result = tui_gateway().manage_skills(request.get("changes"))
-        emit({"type": "delta", "request_id": request.get("request_id", ""),
-              "kind": "content", "text": json.dumps(result, ensure_ascii=False)}, output)
+        emit({"type": "result", "request_id": request.get("request_id", ""), "result": result}, output)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError) as exc:
         error(f"Could not manage Hermes skills: {exc}", output)

@@ -1,5 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "TalariaModels.h"
+#import "TLFeatureTabController.h"
+#import "TLAttachmentViewerWindowController.h"
 #import "TLQueuedPrompt.h"
 #import "design_system/TLPromptQueueView.h"
 #import "design_system/TLFindBar.h"
@@ -13,9 +15,38 @@
 
 // UI state belongs to a chat, including its live transcript, draft, selection,
 // scroll position and pending render. The window routes actions to the focused
-// presentation; background rendering explicitly scopes itself to its origin.
+// controller; background work receives its originating controller explicitly.
 NS_ASSUME_NONNULL_BEGIN
-@interface TLChatPresentation : NSObject <TLFindActionTarget>
+@interface TLChatTabController : TLFeatureTabController <TLFindActionTarget>
+@property (nonatomic, weak, nullable) id composerTarget;
+@property (nonatomic, weak, nullable) id<NSTextViewDelegate> composerDelegate;
+@property (nonatomic) SEL sendAction;
+@property (nonatomic) SEL settingsAction;
+@property (nonatomic, copy, nullable) dispatch_block_t attachmentsChangedHandler;
+@property (nonatomic, copy, nullable) void (^suggestionActivationHandler)(NSUInteger index);
+@property (nonatomic, copy, nullable) void (^queueSendNowHandler)(NSUInteger index);
+@property (nonatomic, copy, nullable) void (^queueEditHandler)(NSUInteger index);
+@property (nonatomic, copy, nullable) void (^queueRemoveHandler)(NSUInteger index);
+@property (nonatomic, copy, nullable) dispatch_block_t queueResumeHandler;
+@property (nonatomic, copy, nullable) dispatch_block_t queueCancelEditHandler;
+- (NSView *)buildChatWorkspace;
+- (NSView *)buildMessagesView;
+- (NSView *)buildMessageInput;
+- (NSView *)buildSlashCommandListView;
+@property (nonatomic, copy, nullable) NSString *agentAvatar;
+@property (nonatomic, copy, nullable) TLAttachmentPreviewItem *(^previewItemProvider)(NSDictionary *attachment);
+@property (nonatomic, copy, nullable) void (^attachmentPreviewHandler)(TLChatMessage *message, NSUInteger index);
+@property (nonatomic, copy, nullable) BOOL (^approvalHandler)(NSString *requestID, NSString *choice);
+@property (nonatomic, copy, nullable) void (^linkHandler)(NSURL *URL, NSEventModifierFlags flags);
+@property (nonatomic, copy, nullable) dispatch_block_t _Nullable (^linkContextMenuHandler)(NSURL *URL, NSMenu *menu, NSView *view, NSPoint point);
+@property (nonatomic, copy, nullable) BOOL (^streamingProvider)(void);
+@property (nonatomic, copy, nullable) dispatch_block_t intentHandler;
+- (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom;
+- (void)scheduleStreamingMessageRender;
+- (void)markMessageDirty:(nullable TLChatMessage *)message;
+- (void)updateMessageScrollInsets;
+- (void)resetMessageRowCache;
+- (void)detachMessageRowFromStack:(NSView *)row;
 @property (nonatomic, strong, readonly) TLFindBar *findBar;
 - (void)installFindBarInView:(NSView *)view palette:(TLThemePalette *)palette;
 - (void)applyFindPalette:(TLThemePalette *)palette;
@@ -50,7 +81,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) NSTextView *promptTextView;
 @property (nonatomic, strong) TLInputSuggestionPanelView *slashCommandListView;
 @property (nonatomic, strong) TLInputSuggestionListView *slashCommandScrollView;
-@property (nonatomic, strong) NSTimer *slashCommandUpdateTimer;
+@property (nonatomic, strong, nullable) NSTimer *slashCommandUpdateTimer;
 @property (nonatomic) BOOL renderingSlashCommands;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *visibleSlashCommands;
 @property (nonatomic) NSInteger selectedSlashCommandIndex;
