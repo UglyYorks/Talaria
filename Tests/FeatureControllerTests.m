@@ -179,7 +179,7 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
   window.testPointer = [button convertPoint:outerHitPoint toView:nil];
   [button updateTrackingAreas];
   Check(hovered && surface.opacity == 1, @"invisible margin still activates hover");
-  Check(CGColorEqualToColor(surface.backgroundColor, TLCGColor(button.palette.secondaryActionSurface)),
+  Check(CGColorEqualToColor(surface.backgroundColor, TLCGColor(button.palette.itemHighlightSurface)),
         @"button hover uses the same surface color as tabs");
   if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
     CABasicAnimation *fade = (CABasicAnimation *)[surface animationForKey:@"tab-decoration-fade"];
@@ -431,6 +431,62 @@ static NSBitmapImageRep *RenderThemedButton(TLThemedButton *button) {
   [button.cell drawWithFrame:button.bounds inView:button];
   [NSGraphicsContext restoreGraphicsState];
   return bitmap;
+}
+
+static void TestItemHoverRenderedColors(void) {
+  TLButtonPointerWindow *window = [[TLButtonPointerWindow alloc] initWithContentRect:NSMakeRect(0, 0, 260, 50)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  window.testVisible = YES;
+  TLButton *plus = [TLButton new];
+  plus.translatesAutoresizingMaskIntoConstraints = YES;
+  plus.style = TLButtonStyleCompactMinimal;
+  plus.image = [NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:nil];
+  plus.frame = NSMakeRect(0, 0, 40, 40);
+  TLSidebarNavigationButton *row = [TLSidebarNavigationButton new];
+  row.translatesAutoresizingMaskIntoConstraints = YES;
+  row.frame = NSMakeRect(50, 0, 200, 40);
+  row.title = @"History";
+  [window.contentView addSubview:plus];
+  [window.contentView addSubview:row];
+  window.testPointer = [plus convertPoint:NSMakePoint(20, 20) toView:nil];
+  NSEvent *hoverEvent = [NSEvent enterExitEventWithType:NSEventTypeMouseEntered location:NSZeroPoint
+    modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 trackingNumber:0 userData:NULL];
+  // Reuse both controls to exercise live theme switching while hovered.
+  for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    plus.palette = palette;
+    row.palette = palette;
+    [plus updateTrackingAreas];
+    [row mouseEntered:hoverEvent];
+    [window.contentView layoutSubtreeIfNeeded];
+    for (NSView *view in @[plus, row]) {
+      CALayer *surface = view == plus ? [plus valueForKey:@"hoverBackgroundLayer"] : nil;
+      [surface removeAllAnimations];
+      NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+      [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+      CGFloat scale = bitmap.pixelsWide / NSWidth(view.bounds);
+      CGFloat x = surface ? NSMinX(surface.frame) + 3 : NSWidth(view.bounds) - 10;
+      NSColor *pixel = [[bitmap colorAtX:lrint(x * scale) y:bitmap.pixelsHigh / 2]
+        colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+      CGFloat ink = palette.dark ? 1 : 0, alpha = palette.dark ? 0.14 : 0.08;
+      Check(fabs(pixel.redComponent - ink) < 0.02 && fabs(pixel.greenComponent - ink) < 0.02 &&
+        fabs(pixel.blueComponent - ink) < 0.02 && fabs(pixel.alphaComponent - alpha) < 0.01,
+        @"plus and sidebar hover render the shared translucent white/black surface");
+      CGFloat foreground[3], foregroundAlpha;
+      NSColor *textColor = view == plus ? palette.labelText : ((NSTextField *)[row valueForKey:@"titleLabel"]).textColor;
+      RGBComponents(textColor, foreground, &foregroundAlpha);
+      NSUInteger inkPixels = 0;
+      for (NSInteger y = 0; y < bitmap.pixelsHigh; y++) for (NSInteger x = 0; x < bitmap.pixelsWide; x++) {
+        if ([bitmap colorAtX:x y:y].alphaComponent > 0.9 && PixelMatches(bitmap, x, y, foreground)) inkPixels++;
+      }
+      Check(inkPixels > 2, @"plus glyph and sidebar text retain their rendered theme foreground");
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithFormat:@"build/hover-%@-%@.png", view == plus ? @"plus" : @"sidebar", theme] atomically:YES];
+    }
+  }
+  [window close];
 }
 
 static void TestApprovalCard(void) {
@@ -2959,6 +3015,7 @@ static void TestHermesHistorySearchAndLayout(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestItemHoverRenderedColors();
     TestHermesHistorySearchAndLayout();
     TestNativeEmojiInput();
     TestFolderAccessTable();

@@ -246,6 +246,21 @@ static void TestHermesSuggestions(void) {
 }
 
 static void TestURLSuggestions(void) {
+  NSDictionary *labels = @{
+    @"https://www.example.com/path?q=1#top": @"Open example.com",
+    @"www.example.com": @"Open example.com",
+    @"HTTP://WWW.EXAMPLE.COM:8080/page": @"Open example.com",
+    @"https://docs.example.com/guide": @"Open docs.example.com",
+    @"https://www2.example.com": @"Open www2.example.com",
+    @"localhost:3000/path": @"Open localhost",
+    @"127.0.0.1:8080/path": @"Open 127.0.0.1",
+  };
+  for (NSString *input in labels) {
+    NSDictionary *suggestion = [TLInputSuggestions webSuggestionsForInput:input].firstObject;
+    Check([suggestion[@"command"] isEqualToString:labels[input]], @"Open label shows only the host without a leading www.");
+    Check([suggestion[@"URL"] isEqualToString:[TLInputSuggestions browserURLForInput:input].absoluteString] &&
+      [suggestion[@"value"] isEqualToString:input], @"shortening the label preserves the full navigation destination and input");
+  }
   for (NSString *input in @[@"https://example.com/path?q=1#top", @"example.com", @"www.example.com",
                             @"localhost:3000", @"127.0.0.1:8080/path", @"HTTP://EXAMPLE.COM", @"example.c"]) {
     NSArray *suggestions = [TLInputSuggestions webSuggestionsForInput:input];

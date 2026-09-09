@@ -799,7 +799,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  self.inactiveHoverBackgroundLayer.backgroundColor = TLCGColor(self.palette.secondaryActionSurface);
+  self.inactiveHoverBackgroundLayer.backgroundColor = TLCGColor(self.palette.itemHighlightSurface);
   self.leadingSeparatorLayer.backgroundColor = TLCGColor(self.palette.tabBorder);
   self.trailingSeparatorLayer.backgroundColor = TLCGColor(self.palette.tabBorder);
   [CATransaction commit];

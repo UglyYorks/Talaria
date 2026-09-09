@@ -36,6 +36,11 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 - (void)updateMessageScrollInsets;
 - (void)restoreAttachmentDraft:(NSArray<NSURL *> *)URLs prompt:(NSString *)prompt chatID:(NSInteger)chatID;
 - (void)openBrowserTab:(id)sender;
+- (void)openBrowserTabWithURL:(NSURL *)URL;
+- (void)sendMessage:(id)sender allowAutomaticRouting:(BOOL)allowAutomaticRouting;
+- (BOOL)performInputSuggestionAtIndex:(NSUInteger)index;
+- (void)updateSlashCommandList;
+- (void)flushSlashCommandUpdate;
 - (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab;
 - (void)openLinkURL:(NSURL *)URL inSplitBesideBrowserTabID:(NSInteger)tabID;
 - (void)handleContextLinkURL:(NSURL *)URL destination:(TLBrowserLinkDestination)destination sourceIdentity:(NSString *)identity;
@@ -139,6 +144,74 @@ static void TestPaneGeometry(void) {
   }
   view.split = NO; [view layoutSubtreeIfNeeded];
   Check(NSWidth(view.leftHost.frame) == 1000 && view.rightHost.hidden, @"unsplit restores full content width");
+}
+
+static void TestChatInputNavigation(TLSplitTestController *owner, TLAppStateManager *state) {
+  [owner setValue:@1000 forKey:@"nextBrowserTabID"];
+  NSURL *URL = [NSURL URLWithString:@"https://www.example.com/page?q=hello#section"];
+  [owner startNewChatWithModel:@"test-model" focus:NO];
+  TLWorkspaceTab *neighbor = state.snapshot.workspaceTabs.lastObject;
+  TLChatPresentation *neighborPresentation = [owner valueForKey:@"chatPresentation"];
+  neighborPresentation.promptTextView.string = @"Keep this draft";
+  [owner startNewChatWithModel:@"test-model" focus:NO];
+  TLWorkspaceTab *empty = state.snapshot.workspaceTabs.lastObject;
+  TLChatPresentation *retired = [owner valueForKey:@"chatPresentation"];
+  [state moveWorkspaceTabWithKind:empty.kind tabID:empty.tabID toIndex:1];
+  [owner splitTab:empty besideTab:neighbor onLeft:YES];
+  [owner focusSplitPane:NO];
+  TLWorkspaceSplitState *splits = [owner valueForKey:@"splitState"];
+  [splits groupForTab:empty].fraction = 0.6;
+  NSUInteger count = state.snapshot.workspaceTabs.count;
+  retired.promptTextView.string = URL.absoluteString;
+  [owner sendMessage:nil allowAutomaticRouting:YES]; Drain();
+  TLWorkspaceTab *browser = state.snapshot.workspaceTabs[1];
+  Check(state.snapshot.workspaceTabs.count == count && browser.kind == TLWorkspaceTabKindBrowser &&
+    [browser.URL isEqual:URL] && state.snapshot.activeTabID == browser.tabID,
+    @"Enter replaces the empty chat at the same index and preserves the full URL");
+  Check([TLWorkspaceTabIdentity(browser) isEqual:TLWorkspaceTabIdentity(empty)] &&
+    [[splits groupForTab:browser].leftIdentity isEqual:TLWorkspaceTabIdentity(browser)] &&
+    [[splits groupForTab:browser].rightIdentity isEqual:TLWorkspaceTabIdentity(neighbor)] &&
+    [splits groupForTab:browser].fraction == 0.6, @"conversion preserves split identity, side and divider");
+  TLSplitWorkspaceView *workspace = [owner valueForKey:@"splitWorkspace"];
+  TLWorkspaceTabRuntime *runtime = [owner valueForKey:@"workspaceTabRuntimes"][TLWorkspaceTabRuntimeKey(browser.kind,browser.tabID)];
+  Check(runtime.contentView.superview == workspace.leftHost &&
+    neighborPresentation.chatWorkspace.superview == workspace.rightHost &&
+    [neighborPresentation.promptTextView.string isEqual:@"Keep this draft"],
+    @"the browser replaces only its pane and retains the neighboring draft");
+  Check(![state workspaceTabWithKind:empty.kind tabID:empty.tabID] && !retired.chatWorkspace.superview &&
+    ![owner valueForKey:@"workspaceTabRuntimes"][TLWorkspaceTabRuntimeKey(empty.kind,empty.tabID)] &&
+    ![owner valueForKey:@"modelDraftChats"][@(empty.tabID)], @"conversion retires the empty draft and runtime");
+
+  [owner startNewChatWithModel:@"test-model" focus:NO];
+  Check(![owner valueForKey:@"modelDraftChats"][@(empty.tabID)], @"opening another chat does not resurrect the converted draft");
+  empty = state.snapshot.workspaceTabs.lastObject;
+  TLChatPresentation *presentation = [owner valueForKey:@"chatPresentation"];
+  presentation.promptTextView.string = URL.absoluteString;
+  [owner updateSlashCommandList]; [owner flushSlashCommandUpdate];
+  count = state.snapshot.workspaceTabs.count;
+  Check([owner performInputSuggestionAtIndex:0], @"Open suggestion accepts the URL"); Drain();
+  browser = state.snapshot.workspaceTabs.lastObject;
+  Check(state.snapshot.workspaceTabs.count == count && browser.kind == TLWorkspaceTabKindBrowser &&
+    [browser.URL isEqual:URL] && [TLWorkspaceTabIdentity(browser) isEqual:TLWorkspaceTabIdentity(empty)],
+    @"Open suggestion also converts an empty chat without adding a tab");
+
+  [owner startNewChatWithModel:@"test-model" focus:NO];
+  TLWorkspaceTab *nonempty = state.snapshot.workspaceTabs.lastObject;
+  presentation = [owner valueForKey:@"chatPresentation"];
+  [presentation.messages addObject:[TLChatMessage messageWithRole:TLRoleUser content:@"Keep this conversation" thinking:nil]];
+  presentation.promptTextView.string = URL.absoluteString;
+  count = state.snapshot.workspaceTabs.count;
+  [owner sendMessage:nil allowAutomaticRouting:YES]; Drain();
+  Check(state.snapshot.workspaceTabs.count == count + 1 &&
+    [state workspaceTabWithKind:nonempty.kind tabID:nonempty.tabID] && presentation.messages.count == 1,
+    @"URL submission preserves chats that already contain messages");
+
+  [owner startNewChatWithModel:@"test-model" focus:NO];
+  empty = state.snapshot.workspaceTabs.lastObject;
+  count = state.snapshot.workspaceTabs.count;
+  [owner openBrowserTabWithURL:URL]; Drain();
+  Check(state.snapshot.workspaceTabs.count == count + 1 && [state workspaceTabWithKind:empty.kind tabID:empty.tabID],
+    @"explicit new-tab actions still retain an empty chat");
 }
 
 static void TestRealWorkspace(void) {
@@ -276,6 +349,7 @@ static void TestRealWorkspace(void) {
   TLWorkspaceTab *chatLink = state.snapshot.workspaceTabs.lastObject;
   Check([[splits groupForTab:c].rightIdentity isEqual:TLWorkspaceTabIdentity(chatLink)] &&
     [[splits groupForTab:c].leftIdentity isEqual:TLWorkspaceTabIdentity(c)], @"chat answers use the same split routing beside their originating chat");
+  TestChatInputNavigation(owner, state);
   [window close];
 }
 int main(void) { @autoreleasepool {
