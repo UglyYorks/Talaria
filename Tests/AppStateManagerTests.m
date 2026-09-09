@@ -179,6 +179,47 @@ static void TestReentrantNotificationOrdering(void) {
   for (TLAppStateSubscription *subscription in subscriptions) { [subscription cancel]; }
 }
 
+static void TestAdjacentTabInsertion(void) {
+  for (NSUInteger index = 0; index < 3; index++) {
+    TLAppStateManager *manager = TLMixedWorkspace(index);
+    NSArray<TLWorkspaceTab *> *original = manager.snapshot.workspaceTabs;
+    TLWorkspaceTab *source = original[index];
+    TLWorkspaceTab *linked = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:8
+      title:@"Linked page" toolTip:nil URL:[NSURL URLWithString:@"https://example.com"] closeable:YES];
+    NSUInteger revision = manager.snapshot.revision;
+    __block NSUInteger notifications = 0;
+    TLAppStateSubscription *subscription = [manager subscribeToSignal:TLAppSignalWorkspaceTabAdded
+      handler:^(TLAppSignal *signal, TLAppStateSnapshot *snapshot) {
+        notifications++;
+        TLAssert(snapshot.workspaceTabs[index + 1].tabID == linked.tabID &&
+          snapshot.activeTabKind == linked.kind && snapshot.activeTabID == linked.tabID,
+          @"observers see adjacent insertion and selection in the same snapshot");
+      }];
+    [manager addWorkspaceTab:linked afterTab:source activate:YES];
+    TLAssert(manager.snapshot.revision == revision + 1 && notifications == 1,
+      @"inserting beside first, middle, or last tab publishes one revision");
+    NSMutableArray *expected = [original mutableCopy];
+    [expected insertObject:linked atIndex:index + 1];
+    TLAssert([[manager.snapshot.workspaceTabs valueForKey:@"presentationIdentity"]
+      isEqual:[expected valueForKey:@"presentationIdentity"]], @"adjacent insertion preserves all existing tab order");
+    [subscription cancel];
+    [manager addWorkspaceTab:linked afterTab:source activate:YES];
+    TLAssert(manager.snapshot.workspaceTabs.count == 4, @"adding the same linked tab cannot duplicate it");
+  }
+  TLAppStateManager *manager = TLMixedWorkspace(0);
+  TLWorkspaceTab *missing = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:99
+    title:@"Closed source" toolTip:nil URL:nil closeable:YES];
+  TLWorkspaceTab *linked = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:8
+    title:@"Linked page" toolTip:nil URL:nil closeable:YES];
+  [manager addWorkspaceTab:linked afterTab:missing activate:NO];
+  TLAssert(manager.snapshot.workspaceTabs.lastObject.tabID == 8 && manager.snapshot.activeTabKind == TLWorkspaceTabKindChat,
+    @"missing source falls back to the end without changing selection for a background insertion");
+  manager = [TLAppStateManager new];
+  [manager addWorkspaceTab:linked afterTab:nil activate:YES];
+  TLAssert(manager.snapshot.workspaceTabs.count == 1 && manager.snapshot.activeTabID == 8,
+    @"insertion also works in an empty workspace");
+}
+
 int main(void) {
   @autoreleasepool {
     TLAppStateManager *manager = [[TLAppStateManager alloc] init];
@@ -197,6 +238,7 @@ int main(void) {
     TestActiveTabFallback();
     TestInactiveAndFinalTabClosure();
     TestReentrantNotificationOrdering();
+    TestAdjacentTabInsertion();
     NSLog(@"AppStateManagerTests passed");
   }
   return 0;

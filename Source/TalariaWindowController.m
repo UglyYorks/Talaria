@@ -2264,7 +2264,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self.attachmentPromptDrafts removeObjectForKey:@(source.tabID)];
     self.chatPresentation = nil;
   } else {
-    [self.appStateManager addWorkspaceTab:tab activate:YES];
+    [self.appStateManager addWorkspaceTab:tab afterTab:[self activeWorkspaceTab] activate:YES];
   }
   [self ensureBrowserRuntimeForTab:tab];
   [self updateWorkspaceMode];

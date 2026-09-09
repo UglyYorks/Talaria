@@ -296,6 +296,10 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
 }
 
 - (void)addWorkspaceTab:(TLWorkspaceTab *)tab activate:(BOOL)activate {
+  [self addWorkspaceTab:tab afterTab:nil activate:activate];
+}
+
+- (void)addWorkspaceTab:(TLWorkspaceTab *)tab afterTab:(TLWorkspaceTab *)source activate:(BOOL)activate {
   if (!tab) {
     return;
   }
@@ -305,7 +309,9 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
     if (TLWorkspaceTabInTabs(storedTab.kind, storedTab.tabID, draft.workspaceTabs)) {
       return;
     }
-    [draft.workspaceTabs addObject:storedTab];
+    NSUInteger sourceIndex = source ? TLIndexOfWorkspaceTabInTabs(source.kind, source.tabID, draft.workspaceTabs) : NSNotFound;
+    NSUInteger insertionIndex = sourceIndex == NSNotFound ? draft.workspaceTabs.count : sourceIndex + 1;
+    [draft.workspaceTabs insertObject:storedTab atIndex:insertionIndex];
     if (activate) {
       draft.activeTabKind = storedTab.kind;
       draft.activeTabID = storedTab.tabID;

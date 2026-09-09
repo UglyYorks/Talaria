@@ -29,6 +29,7 @@
 #import "design_system/TLFolderAccessPicker.h"
 #import "design_system/TLSkillsPicker.h"
 #import "TLWorkspaceTabsController.h"
+#import "TLWorkspaceSplitState.h"
 #import "design_system/TLButton.h"
 #import "design_system/TLThemedButton.h"
 #import "TLHistoryPanelController.h"
@@ -3591,9 +3592,55 @@ static void TestHermesHistorySearchAndLayout(void) {
   [window close];
 }
 
+@interface TalariaWindowController (LinkInsertionTests)
+- (void)handleLinkURL:(NSURL *)URL modifierFlags:(NSEventModifierFlags)flags;
+- (void)handleBrowserTabRequestURL:(NSURL *)URL modifierFlags:(NSEventModifierFlags)flags;
+- (void)handleContextLinkURL:(NSURL *)URL destination:(TLBrowserLinkDestination)destination sourceIdentity:(NSString *)identity;
+@end
+
+// Keep real link routing and state mutations while omitting browser processes.
+@interface TLLinkInsertionController : TalariaWindowController
+@end
+@implementation TLLinkInsertionController
+- (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab {}
+- (void)updateWorkspaceMode {}
+- (void)reloadWorkspaceTabs {}
+- (void)updateControlStates {}
+@end
+
+static void TestLinkTabInsertion(void) {
+  for (NSUInteger route = 0; route < 3; route++) {
+    for (NSUInteger index = 0; index < 3; index++) {
+      TLLinkInsertionController *controller = [[TLLinkInsertionController alloc] initWithWindow:nil];
+      TLAppStateManager *state = [TLAppStateManager new];
+      [controller setValue:state forKey:@"appStateManager"];
+      [controller setValue:@100 forKey:@"nextBrowserTabID"];
+      for (NSUInteger tabIndex = 0; tabIndex < 3; tabIndex++) {
+        TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:route == 0 ? TLWorkspaceTabKindChat : TLWorkspaceTabKindBrowser
+          tabID:tabIndex + 1 title:@"Existing" toolTip:nil URL:nil closeable:YES];
+        [state addWorkspaceTab:tab activate:tabIndex == index];
+      }
+      TLWorkspaceTab *source = state.snapshot.workspaceTabs[index];
+      NSURL *URL = [NSURL URLWithString:@"https://example.com/linked"];
+      if (route == 0) [controller handleLinkURL:URL modifierFlags:0];
+      else if (route == 1) [controller handleBrowserTabRequestURL:URL modifierFlags:NSEventModifierFlagCommand];
+      else [controller handleContextLinkURL:URL destination:TLBrowserLinkNewTab sourceIdentity:TLWorkspaceTabIdentity(source)];
+      TLWorkspaceTab *opened = state.snapshot.workspaceTabs[index + 1];
+      Check(state.snapshot.workspaceTabs.count == 4 && opened.tabID == 100 && [opened.URL isEqual:URL],
+        @"chat links, browser new-tab requests, and context-menu links open immediately right of the current tab");
+      Check(state.snapshot.activeTabKind == TLWorkspaceTabKindBrowser && state.snapshot.activeTabID == opened.tabID,
+        @"the adjacent linked tab becomes active");
+      [controller handleBrowserTabRequestURL:URL modifierFlags:0];
+      Check(state.snapshot.workspaceTabs[index + 2].tabID == 101,
+        @"a subsequent link opens right of the newly current tab");
+    }
+  }
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestLinkTabInsertion();
     if (getenv("TL_TEST_BROWSER_IMPORT_ONLY")) {
       TestThemedButtonRenderedColors();
       TestBrowserImportSettings();

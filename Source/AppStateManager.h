@@ -77,6 +77,7 @@ typedef void (^TLAppStateMutation)(TLMutableAppState *draft);
 - (nullable TLWorkspaceTab *)workspaceTabWithKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID;
 - (BOOL)hasWorkspaceTabWithKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID;
 - (void)addWorkspaceTab:(TLWorkspaceTab *)tab activate:(BOOL)activate;
+- (void)addWorkspaceTab:(TLWorkspaceTab *)tab afterTab:(nullable TLWorkspaceTab *)source activate:(BOOL)activate;
 - (void)upsertWorkspaceTab:(TLWorkspaceTab *)tab activate:(BOOL)activate;
 - (void)replaceWorkspaceTabWithKind:(TLWorkspaceTabKind)kind
                                tabID:(NSInteger)tabID
