@@ -93,9 +93,11 @@
   if (!URL && !protocolPrefix && ![lowercase isEqualToString:@"www"] && !domainPrefix) {
     return @[];
   }
+  NSString *displayHost = host.lowercaseString;
+  if ([displayHost hasPrefix:@"www."] && displayHost.length > 4) displayHost = [displayHost substringFromIndex:4];
   return @[
     @{@"kind": @"web", @"value": text, @"URL": URL.absoluteString ?: @"",
-      @"command": [@"Open " stringByAppendingString:text], @"title": @"Open web page", @"icon": @"safari"},
+      @"command": [@"Open " stringByAppendingString:displayHost.length ? displayHost : text], @"title": @"Open web page", @"icon": @"safari"},
     @{@"kind": @"prompt", @"value": text,
       @"command": @"Send message", @"title": @"Send message", @"icon": @"text.bubble"},
   ];
