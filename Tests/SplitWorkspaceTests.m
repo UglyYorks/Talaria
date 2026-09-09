@@ -71,6 +71,7 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 @interface TLSplitTestDatabase : NSObject
 @end
 @implementation TLSplitTestDatabase
+- (NSArray *)listBookmarks:(NSError **)error { return @[]; }
 - (NSInteger)currentAgentID { return 0; }
 - (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supporting error:(NSError **)error {
   TLChatRecord *chat = [TLChatRecord new]; chat.chatID = 123; chat.model = model; chat.title = @"Saved chat"; chat.messages = @[]; return chat;

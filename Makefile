@@ -256,7 +256,8 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	test -s "$(AGENT_LINUX_INITRD)"
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
-test: $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/BrowserDownloadTests test-browser-overlay $(BUILD_DIR)/BrowserOverlayPolicyTests $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+test: $(BUILD_DIR)/BookmarkTests $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/BrowserDownloadTests test-browser-overlay $(BUILD_DIR)/BrowserOverlayPolicyTests $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
+	"$(BUILD_DIR)/BookmarkTests"
 	"$(BUILD_DIR)/BrowserDownloadTests"
 	"$(BUILD_DIR)/AgentVMLockTests"
 	"$(BUILD_DIR)/AutomationsTests"
@@ -330,7 +331,7 @@ $(BUILD_DIR)/MarkdownMathTests: Source/Theme.m Source/design_system/ThemeSharedC
 
 $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/MarkdownLinkContextTests: | $(MARKDOWN_RESOURCES_STAMP)
 
-$(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLAttachmentChipView.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/design_system/TLToolActivityView.m Source/design_system/TLApprovalCardView.m Source/design_system/TLThemedButton.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
+$(GLASS_PANE_TEST_EXECUTABLE): Source/design_system/TLButton.m Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLAttachmentChipView.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/design_system/TLToolActivityView.m Source/design_system/TLApprovalCardView.m Source/design_system/TLThemedButton.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
 	mkdir -p "$(BUILD_DIR)"
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -framework WebKit -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -o "$@"
@@ -495,4 +496,7 @@ $(BUILD_DIR)/AgentVMLockTests: Source/TLAgentVMLock.m Source/AgentVMService.m So
 # Native transcript search plus real WebKit rendering, without network or an AI runtime.
 test: $(BUILD_DIR)/ChatFindTests
 $(BUILD_DIR)/ChatFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/ChatFindTests.m | $(MARKDOWN_RESOURCES_STAMP)
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+
+$(BUILD_DIR)/BookmarkTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/BookmarkTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"

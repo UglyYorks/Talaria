@@ -1,3 +1,4 @@
+#import "TLBookmarkEditorController.h"
 #import "TLBrowserImageActions.h"
 #import "TLBrowserLinkActions.h"
 #import "TLAutomationsTabController.h"
@@ -146,6 +147,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong) NSView *sidebarAgentPaneSurface;
 @property (nonatomic, strong) NSStackView *sidebarInboxStack;
 @property (nonatomic, strong) TLSidebarShortcutsView *sidebarShortcutsView;
+@property (nonatomic, copy) NSArray<TLBookmark *> *bookmarks;
+@property (nonatomic, strong) NSPopover *bookmarkPopover;
+@property (nonatomic, strong) TLBookmarkEditorController *bookmarkEditor;
 @property (nonatomic, strong) TLSidebarInboxPaneView *sidebarInboxPaneView;
 @property (nonatomic, strong) TLSidebarInboxStackView *gmailInboxStackView;
 @property (nonatomic, strong) TLSidebarInboxStackView *slackInboxStackView;
@@ -1153,24 +1157,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.sidebarShortcutsView = [[TLSidebarShortcutsView alloc] init];
   self.sidebarShortcutsView.palette = self.palette;
 
-  NSArray<NSDictionary<NSString *, NSString *> *> *bookmarks = @[
-    @{@"title": @"Google", @"icon": @"google", @"URL": @"https://www.google.com/"},
-    @{@"title": @"GitHub", @"icon": @"github", @"URL": @"https://github.com/"},
-    @{@"title": @"Wikipedia", @"icon": @"wikipedia", @"URL": @"https://www.wikipedia.org/"},
-    @{@"title": @"Hacker News", @"icon": @"hacker-news", @"URL": @"https://news.ycombinator.com/"},
-  ];
-  for (NSDictionary<NSString *, NSString *> *bookmark in bookmarks) {
-    TLSidebarShortcutButton *button = [[TLSidebarShortcutButton alloc] init];
-    button.palette = self.palette;
-    button.title = bookmark[@"title"];
-    button.image = [self browserBookmarkIconNamed:bookmark[@"icon"]];
-    button.roundsImageCorners = [bookmark[@"icon"] isEqualToString:@"wikipedia"];
-    button.URL = [NSURL URLWithString:bookmark[@"URL"]];
-    button.shortcutKind = TLSidebarShortcutKindWebsite;
-    button.target = self;
-    button.action = @selector(openSidebarBookmark:);
-    [self.sidebarShortcutsView addShortcutButton:button];
-  }
+  self.sidebarShortcutsView.addButton.target = self;
+  self.sidebarShortcutsView.addButton.action = @selector(showAddBookmark:);
+  [self reloadBookmarks];
 
   self.gmailInboxStackView = [self sidebarInboxStackViewWithTitle:@"Payment pending"
                                                          subtitle:@"Daily Email Summary"
@@ -1298,18 +1287,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     return nil;
   }
 
-  NSImage *image = [[NSImage alloc] initWithContentsOfURL:iconURL];
-  image.template = NO;
-  return image;
-}
-
-- (nullable NSImage *)browserBookmarkIconNamed:(NSString *)name {
-  NSURL *iconURL = [NSBundle.mainBundle URLForResource:name
-                                         withExtension:@"png"
-                                          subdirectory:@"browser-bookmarks"];
-  if (!iconURL) {
-    return nil;
-  }
   NSImage *image = [[NSImage alloc] initWithContentsOfURL:iconURL];
   image.template = NO;
   return image;
@@ -2302,14 +2279,123 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [controller startInWindow:self.window];
 }
 
-- (void)openSidebarBookmark:(TLSidebarShortcutButton *)sender {
-  if (!sender.URL) {
-    NSBeep();
-    return;
+- (void)reloadBookmarks {
+  if (!self.sidebarShortcutsView) return;
+  NSError *error = nil;
+  NSArray *bookmarks = [self.database listBookmarks:&error];
+  if (!bookmarks && error) { [self presentErrorMessage:error.localizedDescription]; return; }
+  self.bookmarks = bookmarks ?: @[];
+  [self.sidebarShortcutsView removeAllShortcutButtons];
+  for (TLBookmark *bookmark in self.bookmarks) {
+    TLSidebarShortcutButton *button = [TLSidebarShortcutButton new];
+    button.palette = self.palette;
+    button.title = bookmark.name;
+    button.tag = bookmark.bookmarkID;
+    button.URL = bookmark.URL;
+    if (bookmark.chatID > 0) {
+      NSString *emoji = bookmark.emoji.length ? bookmark.emoji : TLDefaultChatIcon();
+      NSFont *font = self.palette.titleFont;
+      CGFloat size = self.palette.sidebarBookmarkIconSize;
+      button.image = [NSImage imageWithSize:NSMakeSize(size, size) flipped:NO drawingHandler:^BOOL(NSRect bounds) {
+        NSAttributedString *text = [[NSAttributedString alloc] initWithString:emoji attributes:@{NSFontAttributeName:font}];
+        [text drawAtPoint:NSMakePoint((NSWidth(bounds) - text.size.width) / 2, (NSHeight(bounds) - text.size.height) / 2)];
+        return YES;
+      }];
+    } else {
+      button.image = bookmark.faviconData ? [[NSImage alloc] initWithData:bookmark.faviconData] : nil;
+      if (!button.image) button.systemIconName = @"globe";
+    }
+    button.target = self;
+    button.action = @selector(openSidebarBookmark:);
+    NSMenu *menu = [NSMenu new];
+    NSMenuItem *remove = [[NSMenuItem alloc] initWithTitle:@"Remove bookmark" action:@selector(removeBookmark:) keyEquivalent:@""];
+    remove.target = self;
+    remove.tag = bookmark.bookmarkID;
+    [menu addItem:remove];
+    button.menu = menu;
+    [self.sidebarShortcutsView addShortcutButton:button];
   }
-  [self openBrowserTabWithURL:sender.URL];
 }
 
+- (TLBookmark *)bookmarkForCurrentPage {
+  TLWorkspaceTab *tab = [self activeWorkspaceTab];
+  if (!tab || (tab.kind != TLWorkspaceTabKindBrowser && tab.kind != TLWorkspaceTabKindChat)) return nil;
+  TLBookmark *bookmark = [TLBookmark new];
+  bookmark.name = tab.title ?: @"";
+  if (tab.kind == TLWorkspaceTabKindBrowser) {
+    bookmark.URL = tab.URL;
+    if (![TLBookmark normalizedURL:tab.URL.absoluteString]) return nil;
+    TLBrowserTabController *browser = (TLBrowserTabController *)[self runtimeForTab:tab].featureController;
+    NSImage *favicon = browser.favicon;
+    if (favicon) {
+      CGFloat size = self.palette.sidebarBookmarkButtonSize;
+      NSImage *thumbnail = [NSImage imageWithSize:NSMakeSize(size, size) flipped:NO drawingHandler:^BOOL(NSRect bounds) {
+        [favicon drawInRect:bounds]; return YES;
+      }];
+      NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithData:thumbnail.TIFFRepresentation];
+      bookmark.faviconData = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    }
+  } else {
+    if (!self.activeChat) return nil;
+    bookmark.chatID = self.activeChat.chatID;
+    bookmark.name = self.activeChat.title.length ? self.activeChat.title : @"New chat";
+    bookmark.emoji = self.activeChat.icon.length ? self.activeChat.icon : TLDefaultChatIcon();
+  }
+  return bookmark;
+}
+
+- (void)showAddBookmark:(id)sender {
+  if (self.bookmarkPopover.shown) { [self.bookmarkPopover close]; return; }
+  TLBookmark *bookmark = [self bookmarkForCurrentPage];
+  if (!bookmark) return;
+  NSString *sourceIdentity = TLWorkspaceTabIdentity([self activeWorkspaceTab]);
+  self.bookmarkEditor = [[TLBookmarkEditorController alloc] initWithBookmark:bookmark palette:self.palette];
+  self.bookmarkPopover = [NSPopover new];
+  // Keep the editor open while the system emoji panel accepts input.
+  self.bookmarkPopover.behavior = NSPopoverBehaviorSemitransient;
+  __weak typeof(self) weakSelf = self;
+  self.bookmarkEditor.contentSizeChangedHandler = ^(NSSize size) { weakSelf.bookmarkPopover.contentSize = size; };
+  self.bookmarkPopover.contentViewController = self.bookmarkEditor;
+  self.bookmarkPopover.appearance = self.bookmarkEditor.view.appearance;
+  self.bookmarkEditor.saveHandler = ^BOOL(TLBookmark *entry, NSError **error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner) return NO;
+    if (entry.chatID < 0) {
+      TLWorkspaceTab *source = [owner tabWithPresentationIdentity:sourceIdentity];
+      if (source.tabID > 0) entry.chatID = source.tabID;
+      else if (source && [owner isWorkspaceTabActive:source] &&
+               [owner persistActiveDraftChatWithModel:owner.activeChat.model]) entry.chatID = owner.activeChat.chatID;
+      else {
+        if (error) *error = [NSError errorWithDomain:@"TLBookmarks" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Return to this conversation to bookmark it."}];
+        return NO;
+      }
+    }
+    if (![owner.database saveBookmark:entry error:error]) return NO;
+    [owner reloadBookmarks];
+    return YES;
+  };
+  self.bookmarkEditor.closeHandler = ^{ [weakSelf.bookmarkPopover close]; };
+  NSView *anchor = self.sidebarShortcutsView.addButton;
+  [self.bookmarkPopover showRelativeToRect:anchor.bounds ofView:anchor preferredEdge:NSRectEdgeMaxY];
+}
+
+- (void)openSidebarBookmark:(TLSidebarShortcutButton *)sender {
+  for (TLBookmark *bookmark in self.bookmarks) {
+    if (bookmark.bookmarkID != sender.tag) continue;
+    if (bookmark.chatID > 0) [self openChatTabWithID:bookmark.chatID];
+    else if (bookmark.URL) [self openBrowserTabWithURL:bookmark.URL];
+    return;
+  }
+}
+
+- (void)removeBookmark:(NSMenuItem *)sender {
+  NSError *error = nil;
+  if (![self.database deleteBookmarkWithID:sender.tag error:&error]) {
+    [self presentErrorMessage:error.localizedDescription ?: @"Could not remove bookmark."];
+    return;
+  }
+  [self reloadBookmarks];
+}
 
 - (nullable NSURL *)browserURLFromPromptString:(NSString *)promptString {
   return [TLInputSuggestions browserURLForInput:promptString];
@@ -5912,6 +5998,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.agentFolderAccessWindowController applyPalette:self.palette];
   [self.agentSettingsWindowController applyPalette:self.palette];
   [self.modelSelectionController applyPalette:self.palette];
+  [self.bookmarkEditor applyPalette:self.palette];
+  self.bookmarkPopover.appearance = self.bookmarkEditor.view.appearance;
   [self styleSidebarActionButtons];
 }
 
@@ -6042,6 +6130,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)updateControlStates {
+  TLWorkspaceTab *bookmarkTab = [self activeWorkspaceTab];
+  self.sidebarShortcutsView.addButton.enabled = !self.widgetbookMode && bookmarkTab &&
+    (bookmarkTab.kind == TLWorkspaceTabKindChat ||
+      (bookmarkTab.kind == TLWorkspaceTabKindBrowser && [TLBookmark normalizedURL:bookmarkTab.URL.absoluteString]));
   [self.messageInput recalculateHeight];
   [self updateMessageScrollInsets];
 
@@ -6216,6 +6308,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self removeRuntimeForKind:TLWorkspaceTabKindChat tabID:chatID];
   }
 
+  [self reloadBookmarks];
   NSArray<TLChatSummary *> *nextChats = [self.database listChats:&error];
   if (!nextChats) {
     [self presentErrorMessage:error.localizedDescription ?: @"Could not refresh conversations."];

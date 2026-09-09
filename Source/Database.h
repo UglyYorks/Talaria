@@ -18,6 +18,10 @@ NS_ASSUME_NONNULL_BEGIN
                                    messages:(nullable NSArray<NSDictionary *> *)messages
                                       error:(NSError **)error;
 
+- (nullable NSArray<TLBookmark *> *)listBookmarks:(NSError **)error;
+- (BOOL)saveBookmark:(TLBookmark *)bookmark error:(NSError **)error;
+- (BOOL)deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error;
+
 - (nullable NSArray<TLChatSummary *> *)listChats:(NSError **)error;
 - (nullable TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error;
 // Saves only model choices/defaults; credentials and appearance are untouched.

@@ -318,3 +318,17 @@ NSString *TLAgentDisplayStatus(NSString *status) {
 }
 
 @end
+
+@implementation TLBookmark
+- (instancetype)init {
+  if ((self = [super init])) { _name = @""; _emoji = TLDefaultChatIcon(); }
+  return self;
+}
++ (NSURL *)normalizedURL:(NSString *)value {
+  NSString *text = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (!text.length || [text rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) return nil;
+  if ([text rangeOfString:@"://"].location == NSNotFound) text = [@"https://" stringByAppendingString:text];
+  NSURL *URL = [NSURL URLWithString:text];
+  return URL.host.length && [@[@"http", @"https"] containsObject:URL.scheme.lowercaseString] && !URL.user && !URL.password ? URL : nil;
+}
+@end

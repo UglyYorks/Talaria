@@ -1,3 +1,4 @@
+#import "TLButton.h"
 #import "UIComponents.h"
 #import "InputSuggestions.h"
 #import <QuartzCore/QuartzCore.h>
@@ -2138,7 +2139,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 - (void)applyCurrentState {
   TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
-  BOOL usesSystemIcon = self.shortcutKind != TLSidebarShortcutKindWebsite;
+  BOOL usesSystemIcon = self.systemIconName.length > 0 || self.shortcutKind != TLSidebarShortcutKindWebsite;
   self.imageView.image = usesSystemIcon ? [self systemImageNamed:self.systemIconName] : self.image;
   self.imageView.contentTintColor = usesSystemIcon ? [self shortcutIconColor] : nil;
   self.toolTip = nil;
@@ -2186,117 +2187,120 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 @interface TLSidebarShortcutsView ()
 @property (nonatomic, strong) NSTextField *titleLabel;
 @property (nonatomic, strong) NSStackView *stackView;
+@property (nonatomic, strong, readwrite) TLButton *addButton;
 @property (nonatomic, strong) NSMutableArray<TLSidebarShortcutButton *> *mutableShortcutButtons;
-@property (nonatomic, strong) NSLayoutConstraint *stackLeadingConstraint;
-@property (nonatomic, strong) NSLayoutConstraint *stackTrailingConstraint;
-@property (nonatomic, strong) NSLayoutConstraint *stackTopConstraint;
-- (void)applyPalette;
+@property (nonatomic) NSUInteger columnCount;
 @end
 
 @implementation TLSidebarShortcutsView
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
-  self = [super initWithFrame:frameRect];
-  if (self) {
+  if ((self = [super initWithFrame:frameRect])) {
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _mutableShortcutButtons = [NSMutableArray array];
     self.translatesAutoresizingMaskIntoConstraints = NO;
-
-    _titleLabel = [NSTextField labelWithString:@"Shortcuts"];
+    _titleLabel = [NSTextField labelWithString:@"Bookmarks"];
     _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _titleLabel.alignment = NSTextAlignmentLeft;
+    _addButton = [TLButton new];
+    _addButton.style = TLButtonStyleCompactMinimal;
+    _addButton.image = [NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:@"Add bookmark"];
+    _addButton.toolTip = @"Add bookmark";
+    [_addButton setAccessibilityLabel:@"Add bookmark"];
     [self addSubview:_titleLabel];
-
-    _stackView = [[NSStackView alloc] init];
+    [self addSubview:_addButton];
+    _stackView = [NSStackView new];
     _stackView.translatesAutoresizingMaskIntoConstraints = NO;
-    _stackView.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    _stackView.alignment = NSLayoutAttributeCenterY;
-    _stackView.distribution = NSStackViewDistributionFill;
+    _stackView.orientation = NSUserInterfaceLayoutOrientationVertical;
+    _stackView.alignment = NSLayoutAttributeLeading;
     [self addSubview:_stackView];
-
-    _stackLeadingConstraint = [_stackView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
-                                                                        constant:_palette.sidebarInboxItemHorizontalInset + _palette.sidebarInboxItemLeadingOffset];
-    _stackTrailingConstraint = [_stackView.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor
-                                                                                   constant:-_palette.sidebarInboxItemHorizontalInset];
-    _stackTopConstraint = [_stackView.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor
-                                                               constant:_palette.sidebarInboxHeaderItemGap];
+    CGFloat inset = _palette.sidebarInboxItemHorizontalInset + _palette.sidebarInboxItemLeadingOffset;
     [NSLayoutConstraint activateConstraints:@[
-      [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
-                                                constant:_palette.sidebarInboxItemHorizontalInset + _palette.sidebarInboxItemLeadingOffset],
-      [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor
-                                                           constant:-_palette.sidebarInboxItemHorizontalInset],
-      [_titleLabel.topAnchor constraintEqualToAnchor:self.topAnchor],
-      _stackLeadingConstraint,
-      _stackTrailingConstraint,
-      _stackTopConstraint,
-      [_stackView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+      [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:inset],
+      [_titleLabel.centerYAnchor constraintEqualToAnchor:_addButton.centerYAnchor],
+      [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_addButton.leadingAnchor constant:-_palette.space3],
+      [_addButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-_palette.sidebarInboxItemHorizontalInset],
+      [_addButton.topAnchor constraintEqualToAnchor:self.topAnchor],
+      [_stackView.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
+      [_stackView.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor constant:-_palette.sidebarInboxItemHorizontalInset],
+      [_stackView.topAnchor constraintEqualToAnchor:_addButton.bottomAnchor constant:_palette.sidebarInboxHeaderItemGap],
     ]];
-    [self applyPalette];
+    [self setPalette:_palette];
   }
   return self;
 }
 
+- (NSUInteger)columnsForWidth {
+  CGFloat available = NSWidth(self.bounds) - self.palette.sidebarInboxItemHorizontalInset * 2 - self.palette.sidebarInboxItemLeadingOffset;
+  return MAX(1, (NSInteger)floor((available + self.palette.sidebarBookmarkSpacing) /
+    (self.palette.sidebarBookmarkButtonSize + self.palette.sidebarBookmarkSpacing)));
+}
+
 - (NSSize)intrinsicContentSize {
-  CGFloat height = self.titleLabel.intrinsicContentSize.height +
-    self.palette.sidebarInboxHeaderItemGap + self.palette.sidebarBookmarkButtonSize;
+  NSUInteger columns = [self columnsForWidth];
+  NSUInteger rows = (self.mutableShortcutButtons.count + columns - 1) / columns;
+  CGFloat height = self.addButton.intrinsicContentSize.height;
+  if (rows) height += self.palette.sidebarInboxHeaderItemGap + rows * self.palette.sidebarBookmarkButtonSize +
+    (rows - 1) * self.palette.sidebarBookmarkSpacing;
   return NSMakeSize(NSViewNoIntrinsicMetric, height);
 }
 
-- (NSArray<TLSidebarShortcutButton *> *)shortcutButtons {
-  return [self.mutableShortcutButtons copy];
-}
+- (NSArray<TLSidebarShortcutButton *> *)shortcutButtons { return self.mutableShortcutButtons.copy; }
 
 - (void)addShortcutButton:(TLSidebarShortcutButton *)button {
-  if (!button) {
-    return;
-  }
   button.palette = self.palette;
   [self.mutableShortcutButtons addObject:button];
-  [self.stackView addArrangedSubview:button];
-  [self setNeedsLayout:YES];
+  self.columnCount = 0;
+  [self invalidateIntrinsicContentSize];
+  self.needsLayout = YES;
+}
+
+- (void)removeAllShortcutButtons {
+  for (TLSidebarShortcutButton *button in self.mutableShortcutButtons) [button removeFromSuperview];
+  [self.mutableShortcutButtons removeAllObjects];
+  self.columnCount = 0;
+  [self invalidateIntrinsicContentSize];
+  self.needsLayout = YES;
 }
 
 - (void)layout {
+  NSUInteger columns = [self columnsForWidth];
+  if (columns != self.columnCount) {
+    self.columnCount = columns;
+    for (NSStackView *row in self.stackView.arrangedSubviews.copy) {
+      for (NSView *button in row.arrangedSubviews.copy) {
+        [row removeArrangedSubview:button];
+        [button removeFromSuperview];
+      }
+      [self.stackView removeArrangedSubview:row];
+      [row removeFromSuperview];
+    }
+    NSStackView *row;
+    NSUInteger index = 0;
+    for (TLSidebarShortcutButton *button in self.mutableShortcutButtons) {
+      if (index++ % columns == 0) {
+        row = [NSStackView new];
+        row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        row.spacing = self.palette.sidebarBookmarkSpacing;
+        [self.stackView addArrangedSubview:row];
+      }
+      [button setDisplaySize:self.palette.sidebarBookmarkButtonSize];
+      [row addArrangedSubview:button];
+    }
+    [self invalidateIntrinsicContentSize];
+  }
   [super layout];
-  NSUInteger buttonCount = self.mutableShortcutButtons.count;
-  if (buttonCount == 0) {
-    return;
-  }
-  CGFloat horizontalInsets = self.stackLeadingConstraint.constant - self.stackTrailingConstraint.constant;
-  CGFloat availableWidth = MAX(self.palette.space0, NSWidth(self.bounds) - horizontalInsets);
-  CGFloat gapCount = buttonCount > 1 ? buttonCount - 1 : self.palette.space0;
-  CGFloat spacing = self.palette.sidebarBookmarkSpacing;
-  CGFloat minimumButtonSize = self.palette.space9;
-  if (gapCount > 0 && (minimumButtonSize * buttonCount) + (spacing * gapCount) > availableWidth) {
-    spacing = MAX(self.palette.space0, floor((availableWidth - (minimumButtonSize * buttonCount)) / gapCount));
-  }
-  CGFloat totalSpacing = spacing * gapCount;
-  CGFloat availableButtonWidth = floor((availableWidth - totalSpacing) / buttonCount);
-  CGFloat buttonSize = MIN(self.palette.sidebarBookmarkButtonSize, MAX(1.0, availableButtonWidth));
-  self.stackView.spacing = spacing;
-  for (TLSidebarShortcutButton *button in self.mutableShortcutButtons) {
-    [button setDisplaySize:buttonSize];
-  }
 }
 
 - (void)setPalette:(TLThemePalette *)palette {
-  _palette = palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
-  [self applyPalette];
-}
-
-- (void)applyPalette {
-  self.titleLabel.stringValue = @"Shortcuts";
-  self.titleLabel.font = self.palette.smallFont;
-  self.titleLabel.textColor = self.palette.textMuted;
-  self.stackView.spacing = self.palette.sidebarBookmarkSpacing;
-  self.stackLeadingConstraint.constant = self.palette.sidebarInboxItemHorizontalInset + self.palette.sidebarInboxItemLeadingOffset;
-  self.stackTrailingConstraint.constant = -self.palette.sidebarInboxItemHorizontalInset;
-  self.stackTopConstraint.constant = self.palette.sidebarInboxHeaderItemGap;
-  for (TLSidebarShortcutButton *button in self.mutableShortcutButtons) {
-    button.palette = self.palette;
-  }
+  _palette = palette;
+  self.titleLabel.font = palette.smallFont;
+  self.titleLabel.textColor = palette.textMuted;
+  self.addButton.palette = palette;
+  self.stackView.spacing = palette.sidebarBookmarkSpacing;
+  for (TLSidebarShortcutButton *button in self.mutableShortcutButtons) button.palette = palette;
+  self.columnCount = 0;
   [self invalidateIntrinsicContentSize];
-  [self setNeedsLayout:YES];
+  self.needsLayout = YES;
 }
 
 @end

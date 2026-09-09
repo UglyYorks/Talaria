@@ -90,10 +90,13 @@ typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {
 @property (nonatomic) TLSidebarShortcutKind shortcutKind;
 @end
 
+@class TLButton;
 @interface TLSidebarShortcutsView : NSView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong, readonly) NSArray<TLSidebarShortcutButton *> *shortcutButtons;
+@property (nonatomic, strong, readonly) TLButton *addButton;
 - (void)addShortcutButton:(TLSidebarShortcutButton *)button;
+- (void)removeAllShortcutButtons;
 @end
 
 @interface TLFlippedView : NSView

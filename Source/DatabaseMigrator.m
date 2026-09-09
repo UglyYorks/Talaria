@@ -254,5 +254,18 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     if (!migrated) return NO;
     version = 8;
   }
+  if (version < 9 && targetVersion >= 9) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      return [connection executeSQL:
+        "CREATE TABLE IF NOT EXISTS bookmarks ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, url TEXT UNIQUE, "
+        "chat_id INTEGER UNIQUE REFERENCES chats(id) ON DELETE CASCADE, "
+        "emoji TEXT NOT NULL DEFAULT '', favicon TEXT NOT NULL DEFAULT '', "
+        "CHECK ((url IS NOT NULL AND chat_id IS NULL) OR (url IS NULL AND chat_id IS NOT NULL)));"
+        error:transactionError] && TLDatabaseSetSchemaVersion(connection, 9, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 9;
+  }
   return version == targetVersion;
 }
