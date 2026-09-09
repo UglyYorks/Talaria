@@ -254,5 +254,34 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     if (!migrated) return NO;
     version = 8;
   }
+  if (version < 9 && targetVersion >= 9) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      return [connection executeSQL:
+        "CREATE TABLE IF NOT EXISTS browser_history ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, title TEXT NOT NULL,"
+        "visited_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        "CREATE INDEX IF NOT EXISTS browser_history_recent ON browser_history(visited_at DESC, id DESC);"
+        error:transactionError] && TLDatabaseSetSchemaVersion(connection, 9, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 9;
+  }
+  if (version < 10 && targetVersion >= 10) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(browser_history)" error:transactionError];
+      if (!columns) return NO;
+      BOOL exists = NO;
+      int result;
+      while ((result = [columns step]) == SQLITE_ROW) {
+        if ([[columns stringAtColumn:1] isEqualToString:@"favicon"]) exists = YES;
+      }
+      if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
+      columns = nil;
+      return (exists || [connection executeSQL:"ALTER TABLE browser_history ADD COLUMN favicon BLOB" error:transactionError]) &&
+        TLDatabaseSetSchemaVersion(connection, 10, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 10;
+  }
   return version == targetVersion;
 }

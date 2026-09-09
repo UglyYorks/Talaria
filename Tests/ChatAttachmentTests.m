@@ -121,7 +121,7 @@ static void TestProfileSchemaCompatibility(void) {
     database = nil;
     fixture = [TLSQLiteConnection openURL:URL error:&error];
     TLSQLiteStatement *version = [fixture prepareSQL:"PRAGMA user_version" error:&error];
-    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 8, @"upgrades profile schema without downgrading its data");
+    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 10, @"upgrades profile schema without downgrading its data");
     version = nil;
     TLSQLiteStatement *profile = [fixture prepareSQL:"SELECT soul FROM agents" error:&error];
     Check([profile step] == SQLITE_ROW && [[profile stringAtColumn:0] isEqual:@"Keep profile"], @"preserves agent profile data");
@@ -129,7 +129,7 @@ static void TestProfileSchemaCompatibility(void) {
     fixture = nil;
   }
   fixture = [TLSQLiteConnection openURL:URL error:&error];
-  Check([fixture executeSQL:"PRAGMA user_version = 9" error:&error], @"prepares unknown future schema");
+  Check([fixture executeSQL:"PRAGMA user_version = 11" error:&error], @"prepares unknown future schema");
   fixture = nil;
   error = nil;
   Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"still rejects unknown future schema versions");
@@ -150,7 +150,7 @@ static void TestVersion8Compatibility(void) {
   [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Preserved history" thinking:nil] chatID:chat.chatID error:&error];
   database = nil;
   TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
-  Check([fixture executeSQL:"UPDATE chats SET supporting_model = 'test/saved-model'" error:&error], @"populates the version-8 supporting model");
+  Check([fixture executeSQL:"PRAGMA user_version = 8; UPDATE chats SET supporting_model = 'test/saved-model'" error:&error], @"populates the version-8 supporting model");
   Check(TLDatabaseMigrate(fixture, 7, &error), @"version-7 clients accept the known additive version-8 schema");
   fixture = nil;
   database = [[TLDatabase alloc] initWithURL:URL error:&error];
@@ -161,13 +161,13 @@ static void TestVersion8Compatibility(void) {
   database = nil;
   fixture = [TLSQLiteConnection openURL:URL error:&error];
   TLSQLiteStatement *version = [fixture prepareSQL:"PRAGMA user_version" error:&error];
-  Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 8, @"never downgrades the database version");
+  Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 10, @"never downgrades the database version");
   version = nil;
   TLSQLiteStatement *model = [fixture prepareSQL:"SELECT supporting_model FROM chats ORDER BY id" error:&error];
   Check([model step] == SQLITE_ROW && [[model stringAtColumn:0] isEqual:@"test/saved-model"], @"preserves model data owned by the newer build");
   Check([model step] == SQLITE_ROW && [[model stringAtColumn:0] isEqual:@"openrouter/auto"], @"new column default is retained");
   model = nil;
-  Check([fixture executeSQL:"PRAGMA user_version = 9" error:&error], @"prepares an unknown future version");
+  Check([fixture executeSQL:"PRAGMA user_version = 11" error:&error], @"prepares an unknown future version");
   fixture = nil; error = nil;
   Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"unknown future versions still fail closed");
   fixture = [TLSQLiteConnection openURL:URL error:&error];
