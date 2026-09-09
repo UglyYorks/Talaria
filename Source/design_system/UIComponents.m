@@ -2222,7 +2222,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
       [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:inset],
       [_titleLabel.centerYAnchor constraintEqualToAnchor:_addButton.centerYAnchor],
       [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_addButton.leadingAnchor constant:-_palette.space3],
-      [_addButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-_palette.sidebarInboxItemHorizontalInset],
+      [_addButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
       [_addButton.topAnchor constraintEqualToAnchor:self.topAnchor],
       [_stackView.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
       [_stackView.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor constant:-_palette.sidebarInboxItemHorizontalInset],
