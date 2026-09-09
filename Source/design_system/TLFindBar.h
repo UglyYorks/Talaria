@@ -3,8 +3,16 @@
 #import "TLThemedButton.h"
 
 NS_ASSUME_NONNULL_BEGIN
+@protocol TLFindActionTarget <NSObject>
+@property (nonatomic, readonly) BOOL findBarVisible;
+- (void)showFindBar;
+- (void)findNext:(BOOL)forward;
+- (void)hideFindBar;
+@end
+
 @interface TLFindBar : NSView <NSTextFieldDelegate>
 @property (nonatomic, strong) TLThemePalette *palette;
+@property (nonatomic, copy) NSString *searchLabel;
 @property (nonatomic, strong, readonly) NSTextField *searchField;
 @property (nonatomic, strong, readonly) NSTextField *resultLabel;
 @property (nonatomic, strong, readonly) TLThemedButton *previousButton;

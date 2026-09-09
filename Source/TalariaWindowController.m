@@ -704,15 +704,21 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   id controller = [self runtimeForTab:tab].featureController;
   return [controller isKindOfClass:TLBrowserTabController.class] && ![controller isClosed] ? controller : nil;
 }
-- (BOOL)canPerformBrowserFindAction:(NSTextFinderAction)action {
-  TLBrowserTabController *controller = [self activeBrowserController];
+- (id<TLFindActionTarget>)activeFindTarget {
+  TLWorkspaceTab *tab = [self activeWorkspaceTab];
+  if (self.widgetbookMode) return nil;
+  if (tab.kind == TLWorkspaceTabKindChat) return self.chatPresentations[@(tab.tabID)];
+  return [self activeBrowserController];
+}
+- (BOOL)canPerformFindAction:(NSTextFinderAction)action {
+  id<TLFindActionTarget> controller = [self activeFindTarget];
   if (!controller) return NO;
   if (action == NSTextFinderActionHideFindInterface) return controller.findBarVisible;
   return action == NSTextFinderActionShowFindInterface || action == NSTextFinderActionNextMatch || action == NSTextFinderActionPreviousMatch;
 }
-- (void)performBrowserFindAction:(NSTextFinderAction)action {
-  if (![self canPerformBrowserFindAction:action]) return;
-  TLBrowserTabController *controller = [self activeBrowserController];
+- (void)performFindAction:(NSTextFinderAction)action {
+  if (![self canPerformFindAction:action]) return;
+  id<TLFindActionTarget> controller = [self activeFindTarget];
   switch (action) {
     case NSTextFinderActionShowFindInterface: [controller showFindBar]; break;
     case NSTextFinderActionNextMatch: [controller findNext:YES]; break;
@@ -1324,6 +1330,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   NSView *messagesView = [self buildMessagesView];
   [chatWorkspace addSubview:messagesView];
+  [self.chatPresentation installFindBarInView:chatWorkspace palette:self.palette];
   [chatWorkspace addSubview:[self buildSlashCommandListView]];
   [chatWorkspace addSubview:[self buildMessageInput]];
 
@@ -1346,7 +1353,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [NSLayoutConstraint activateConstraints:@[
     [messagesView.leadingAnchor constraintEqualToAnchor:chatWorkspace.leadingAnchor],
     [messagesView.trailingAnchor constraintEqualToAnchor:chatWorkspace.trailingAnchor],
-    [messagesView.topAnchor constraintEqualToAnchor:chatWorkspace.topAnchor],
+    [messagesView.topAnchor constraintEqualToAnchor:self.chatPresentation.findBar.bottomAnchor],
     [messagesView.bottomAnchor constraintEqualToAnchor:chatWorkspace.bottomAnchor],
     [self.messageInput.centerXAnchor constraintEqualToAnchor:chatWorkspace.centerXAnchor],
     [self.slashCommandListView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor constant:self.palette.space4],
@@ -4263,6 +4270,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
+  if (self.chatPresentation.findBarVisible) scrollToBottom = NO;
   // Completion, navigation and theme changes render immediately and supersede a pending batch.
   self.streamingRenderScheduled = NO;
   self.streamingRenderGeneration += 1;
@@ -4310,6 +4318,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     NSView *emptyState = [self emptyStateView];
     [self addMessageRowToStack:emptyState];
     [self pinMessageRowToStackWidth:emptyState];
+    [self.chatPresentation refreshFindResults];
     return;
   }
 
@@ -4340,6 +4349,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     }
   }
 
+  [self.chatPresentation refreshFindResults];
   TLChatPresentation *presentation = self.chatPresentation;
   dispatch_async(dispatch_get_main_queue(), ^{
     [self withChatPresentation:presentation perform:^{
@@ -4624,8 +4634,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                              forOrientation:NSLayoutConstraintOrientationHorizontal];
     [contentLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                            forOrientation:NSLayoutConstraintOrientationHorizontal];
-    if (hasResponseContent) [stack addArrangedSubview:contentLabel];
-    else contentLabel = nil;
+    if (hasResponseContent) {
+      [stack addArrangedSubview:contentLabel];
+      [self.messageMarkdownViews setObject:contentLabel forKey:message];
+    } else contentLabel = nil;
   } else if (hasResponseContent || (!message.approvalRequest && !message.attachments.count && !message.toolActivities.count)) {
     NSString *content = hasResponseContent ? message.content : @"...";
     if ([self messageShowsAWSOutageIntent:message]) {
@@ -4780,7 +4792,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   __block __weak NSView *weakView = nil;
   renderer.heightChangeHandler = ^{
     TalariaWindowController *controller = weakSelf;
-    if (!origin || !controller.turnRunners[@(origin.chat.chatID)] || ![weakView isDescendantOf:origin.messageStack]) return;
+    if (!origin || origin.findBarVisible || !controller.turnRunners[@(origin.chat.chatID)] || ![weakView isDescendantOf:origin.messageStack]) return;
     [origin.messageDocumentView layoutSubtreeIfNeeded];
     NSRect bottom = NSMakeRect(0, MAX(0, NSHeight(origin.messageDocumentView.bounds) - 1), 1, 1);
     [origin.messageDocumentView scrollRectToVisible:bottom];
@@ -5804,6 +5816,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.screensaverView updateBackgroundColor:self.palette.messagesSurface artColor:self.palette.textMuted];
   self.messageStack.spacing = self.palette.messageVerticalSpacing;
   self.messageInput.palette = self.palette;
+  [self.chatPresentation applyFindPalette:self.palette];
   [self.onboardingDemoWindowController updatePalette:self.palette];
   [self applySlashCommandListPalette];
   if (!self.slashCommandListView.hidden) {
@@ -5865,6 +5878,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       self.messagesBackground.fillColor = self.palette.tabBackground;
       self.messageStack.spacing = self.palette.messageVerticalSpacing;
       self.messageInput.palette = self.palette;
+      [self.chatPresentation applyFindPalette:self.palette];
       [self applySlashCommandListPalette];
       [self.screensaverView updateBackgroundColor:self.palette.messagesSurface artColor:self.palette.textMuted];
       [self resetMessageRowCache];
