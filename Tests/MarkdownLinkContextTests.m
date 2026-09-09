@@ -13,10 +13,21 @@
 @end
 @interface TLContextMenuTestController : TalariaWindowController
 @property BOOL sending;
+@property TLChatMessage *regeneratedPrompt;
+@property TLChatMessage *regeneratedAnswer;
+@property NSString *regenerationText;
 @end
 @implementation TLContextMenuTestController
 - (BOOL)isChatWorkspaceActive { return YES; }
 - (BOOL)isSending { return self.sending; }
+- (void)beginPreparedTurnWithChat:(TLChatRecord *)chat messages:(NSMutableArray *)messages token:(NSString *)token model:(NSString *)model
+                         prompt:(NSString *)prompt attachments:(NSArray *)attachments sourceURLs:(NSArray *)sourceURLs
+               approvalResponse:(NSDictionary *)approvalResponse regenerationPrompt:(TLChatMessage *)regenerationPrompt
+            regenerationMessage:(TLChatMessage *)regenerationMessage {
+  self.regeneratedPrompt = regenerationPrompt;
+  self.regeneratedAnswer = regenerationMessage;
+  self.regenerationText = prompt;
+}
 @end
 
 static NSEvent *(^MessageMonitor)(NSEvent *);
@@ -57,7 +68,8 @@ static void TestMessageMenuRouting(NSWindow *window, NSView *row, TLMarkdownCont
   presentation.chat = [TLChatRecord new]; presentation.chat.chatID = 42;
   presentation.chatWorkspace = window.contentView;
   TLChatMessage *message = [TLChatMessage messageWithRole:TLRoleAssistant content:@"A message with a link" thinking:nil];
-  presentation.messages = [NSMutableArray arrayWithObject:message];
+  TLChatMessage *prompt = [TLChatMessage messageWithRole:TLRoleUser content:@"Explain this link" thinking:nil];
+  presentation.messages = [NSMutableArray arrayWithObjects:prompt, message, nil];
   [presentation.messageRowViews setObject:row forKey:message];
   [controller setValue:presentation forKey:@"chatPresentation"];
   Method addMonitor = class_getClassMethod(NSEvent.class, @selector(addLocalMonitorForEventsMatchingMask:handler:));
@@ -94,6 +106,9 @@ static void TestMessageMenuRouting(NSWindow *window, NSView *row, TLMarkdownCont
     [web willOpenMenu:menu withEvent:event];
     NSMenuItem *copy = [menu itemWithTitle:@"Copy message"];
     NSMenuItem *delete = [menu itemWithTitle:@"Delete message"];
+    NSMenuItem *regenerate = [menu itemWithTitle:@"Regenerate"];
+    Check(regenerate && regenerate.target == controller && regenerate.representedObject[@"message"] == message &&
+      regenerate.enabled == !controller.sending, @"Regenerate targets the clicked answer and is disabled during streaming");
     Check(copy.target == controller && copy.representedObject[@"message"] == message &&
       [copy.representedObject[@"chatID"] integerValue] == 42, @"non-link menu retains the correct message, chat, and action target");
     Check(delete && delete.enabled == !controller.sending && !menu.autoenablesItems,
@@ -102,6 +117,24 @@ static void TestMessageMenuRouting(NSWindow *window, NSView *row, TLMarkdownCont
       @"ordinary content does not retain actions from the previous link");
     [web didCloseMenu:menu withEvent:event];
   }
+  controller.sending = NO;
+  TLAppSettings *settings = [TLAppSettings new];
+  [controller setValue:settings forKey:@"settings"];
+  [settings setValue:@"test-token" forKey:@"openRouterToken"];
+  [settings setValue:@"test-model" forKey:@"selectedModel"];
+  NSMenuItem *regenerate = [[NSMenuItem alloc] initWithTitle:@"Regenerate" action:NSSelectorFromString(@"regenerateChatMessage:") keyEquivalent:@""];
+  regenerate.representedObject = @{@"message":message, @"chatID":@42};
+  [NSApp sendAction:regenerate.action to:controller from:regenerate];
+  Check(controller.regeneratedPrompt == prompt && controller.regeneratedAnswer == message &&
+    [controller.regenerationText containsString:prompt.content], @"regenerating an answer reuses its original prompt");
+  controller.regeneratedPrompt = nil;
+  regenerate.representedObject = @{@"message":prompt, @"chatID":@42};
+  [NSApp sendAction:regenerate.action to:controller from:regenerate];
+  Check(controller.regeneratedPrompt == prompt && controller.regeneratedAnswer == message, @"regenerating a user message targets its answer");
+  controller.regeneratedPrompt = nil;
+  regenerate.representedObject = @{@"message":message, @"chatID":@99};
+  [NSApp sendAction:regenerate.action to:controller from:regenerate];
+  Check(!controller.regeneratedPrompt, @"stale context menus cannot regenerate in another chat");
   method_exchangeImplementations(popup, testPopup);
 
   // Deliver an actual native click through WebKit as well: no injected URL or

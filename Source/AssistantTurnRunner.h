@@ -34,6 +34,8 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
 
 @protocol TLAssistantTurnMessageStore <NSObject>
 - (nullable TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error;
+@optional
+- (nullable TLStoredChatMessage *)replaceMessage:(TLChatMessage *)message messageID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error;
 @end
 
 @protocol TLAssistantTurnStreaming <NSObject>
@@ -58,6 +60,9 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
 // Defaults to YES so each answer delta is visible, including unfinished Markdown.
 @property (nonatomic) BOOL streamsPartialContent;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *attachments;
+// Regeneration reuses the existing prompt and replaces only its selected answer.
+@property (nonatomic, strong, nullable) TLChatMessage *regenerationPrompt;
+@property (nonatomic, strong, nullable) TLChatMessage *regenerationMessage;
 
 - (instancetype)initWithDatabase:(TLDatabase *)database agentOrchestrator:(TLAgentOrchestrator *)agentOrchestrator;
 - (instancetype)initWithMessageStore:(id<TLAssistantTurnMessageStore>)messageStore

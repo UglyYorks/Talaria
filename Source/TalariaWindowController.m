@@ -1652,6 +1652,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       copyItem.target = controller;
       copyItem.representedObject = context;
       [menu addItem:copyItem];
+      NSMenuItem *regenerateItem = [[NSMenuItem alloc] initWithTitle:@"Regenerate"
+        action:@selector(regenerateChatMessage:) keyEquivalent:@""];
+      regenerateItem.target = controller;
+      regenerateItem.representedObject = context;
+      regenerateItem.enabled = [controller canRegenerateChatMessage:message];
+      regenerateItem.image = [NSImage imageWithSystemSymbolName:@"arrow.clockwise" accessibilityDescription:nil];
+      [menu addItem:regenerateItem];
       [menu addItem:NSMenuItem.separatorItem];
       NSMenuItem *deleteItem = [[NSMenuItem alloc] initWithTitle:@"Delete message"
         action:@selector(deleteChatMessage:) keyEquivalent:@""];
@@ -1679,6 +1686,54 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLChatMessage *message = sender.representedObject[@"message"];
   [NSPasteboard.generalPasteboard clearContents];
   [NSPasteboard.generalPasteboard setString:message.content ?: @"" forType:NSPasteboardTypeString];
+}
+
+- (TLChatMessage *)promptForRegeneratingMessage:(TLChatMessage *)message {
+  NSUInteger index = [self.messages indexOfObjectIdenticalTo:message];
+  if (index == NSNotFound) return nil;
+  if (![message.role isEqual:TLRoleUser] && ![message.role isEqual:TLRoleAssistant]) return nil;
+  for (NSInteger i = (NSInteger)index; i >= 0; i--) {
+    TLChatMessage *candidate = self.messages[i];
+    if ([candidate.role isEqual:TLRoleUser]) return candidate;
+  }
+  return nil;
+}
+
+- (BOOL)canRegenerateChatMessage:(TLChatMessage *)message {
+  if (self.isSending || self.preparingAttachments || self.chatPresentation.queuedPrompts.count ||
+      self.chatPresentation.editingQueuedPrompt) return NO;
+  for (TLChatMessage *candidate in self.messages) if (candidate.approvalRequest) return NO;
+  TLChatMessage *prompt = [self promptForRegeneratingMessage:message];
+  return prompt && (prompt.content.length || prompt.attachments.count);
+}
+
+- (void)regenerateChatMessage:(NSMenuItem *)sender {
+  TLChatMessage *message = sender.representedObject[@"message"];
+  NSInteger chatID = [sender.representedObject[@"chatID"] integerValue];
+  if (self.activeChat.chatID != chatID || ![self canRegenerateChatMessage:message]) return;
+  NSString *token = self.settings.openRouterToken;
+  NSString *model = self.activeChat.model ?: self.settings.selectedModel;
+  if (!token.length || !model.length) {
+    [self presentErrorMessage:@"Configure your token and model before regenerating an answer."];
+    return;
+  }
+  TLChatMessage *prompt = [self promptForRegeneratingMessage:message];
+  TLChatMessage *answer = [message.role isEqual:TLRoleAssistant] ? message : nil;
+  if (!answer) {
+    NSUInteger index = [self.messages indexOfObjectIdenticalTo:prompt];
+    for (NSUInteger i = index + 1; i < self.messages.count; i++) {
+      TLChatMessage *candidate = self.messages[i];
+      if ([candidate.role isEqual:TLRoleUser]) break;
+      if ([candidate.role isEqual:TLRoleAssistant]) { answer = candidate; break; }
+    }
+  }
+  TLPromptBuilder *builder = [[TLPromptBuilder alloc] init];
+  [builder addPartWithContent:@"Regenerate your answer to the following earlier user request. Give a fresh, complete answer to that request."
+    importance:TLPromptImportanceRequired strategy:TLPromptCompactionStrategyWhole name:@"regeneration"];
+  [builder addPartWithContent:prompt.content importance:TLPromptImportanceRequired
+    strategy:TLPromptCompactionStrategyWhole name:@"original-request"];
+  [self beginPreparedTurnWithChat:self.activeChat messages:self.messages token:token model:model prompt:[builder build]
+    attachments:prompt.attachments sourceURLs:@[] approvalResponse:nil regenerationPrompt:prompt regenerationMessage:answer];
 }
 
 - (void)deleteChatMessage:(NSMenuItem *)sender {
@@ -3001,7 +3056,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                           token:(NSString *)token model:(NSString *)model prompt:(NSString *)nextPrompt
                     attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs
                approvalResponse:(NSDictionary *)approvalResponse {
-  if (!approvalResponse && !self.chatPresentations[@(chat.chatID)].queuedPromptInFlight) {
+  [self beginPreparedTurnWithChat:chat messages:turnMessages token:token model:model prompt:nextPrompt
+    attachments:attachments sourceURLs:sourceURLs approvalResponse:approvalResponse regenerationPrompt:nil regenerationMessage:nil];
+}
+
+- (void)beginPreparedTurnWithChat:(TLChatRecord *)chat messages:(NSMutableArray<TLChatMessage *> *)turnMessages
+                          token:(NSString *)token model:(NSString *)model prompt:(NSString *)nextPrompt
+                    attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs
+               approvalResponse:(NSDictionary *)approvalResponse regenerationPrompt:(TLChatMessage *)regenerationPrompt
+            regenerationMessage:(TLChatMessage *)regenerationMessage {
+  if (!regenerationPrompt && !approvalResponse && !self.chatPresentations[@(chat.chatID)].queuedPromptInFlight) {
     self.attachmentDrafts[@(chat.chatID)] = @[];
     self.attachmentPromptDrafts[@(chat.chatID)] = @"";
     [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{
@@ -3019,6 +3083,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.turnMessagesByChat[@(chat.chatID)] = turnMessages;
   runner.attachments = attachments;
   runner.approvalResponse = approvalResponse;
+  runner.regenerationPrompt = regenerationPrompt;
+  runner.regenerationMessage = regenerationMessage;
   __weak typeof(self) weakSelf = self;
 
   NSError *startError = nil;
@@ -3053,10 +3119,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     for (TLChatMessage *message in turnMessages) if (message.approvalRequest) hasApproval = YES;
     if (!hasApproval) [strongSelf.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
     BOOL showingOrigin = strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive];
-    if (!approvalResponse && !strongSelf.chatPresentations[@(chat.chatID)].queuedPromptInFlight && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+    if (!regenerationPrompt && !approvalResponse && !strongSelf.chatPresentations[@(chat.chatID)].queuedPromptInFlight && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       [strongSelf restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     }
-    if (!approvalResponse && !strongSelf.chatPresentations[@(chat.chatID)].queuedPromptInFlight && showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+    if (!regenerationPrompt && !approvalResponse && !strongSelf.chatPresentations[@(chat.chatID)].queuedPromptInFlight && showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       strongSelf.promptTextView.string = result.userMessage.content;
       [strongSelf.messageInput recalculateHeight];
       [strongSelf updateMessageScrollInsets];
@@ -3107,7 +3173,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (approvalResponse) [self restorePendingApproval:approvalResponse inMessages:turnMessages];
     if (!approvalResponse) {
       [self.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
-      if (!self.chatPresentations[@(chat.chatID)].queuedPromptInFlight)
+      if (!regenerationPrompt && !self.chatPresentations[@(chat.chatID)].queuedPromptInFlight)
         [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     }
     [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{ [self pausePromptQueueRestoringInFlight:YES]; }];
@@ -4845,9 +4911,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self detachMessageRowFromStack:row];
   }
 
+  BOOL activityExpanded = [(TLToolActivityView *)[self.chatPresentation.messageActivityViews objectForKey:message] isExpanded];
   [self.messageMarkdownViews removeObjectForKey:message];
   [self.chatPresentation.messageActivityViews removeObjectForKey:message];
   row = [self rowForMessage:message showsOutgoingTail:showsOutgoingTail];
+  [(TLToolActivityView *)[self.chatPresentation.messageActivityViews objectForKey:message] setExpanded:activityExpanded];
   [self.messageRowViews setObject:row forKey:message];
   [self.messageRowSignatures setObject:signature forKey:message];
   return row;
@@ -5047,7 +5115,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     TLToolActivityView *activity = [[TLToolActivityView alloc] init];
     activity.palette = self.palette;
     activity.activities = message.toolActivities;
-    [stack addArrangedSubview:activity];
+    [stack insertArrangedSubview:activity atIndex:0];
     [activity.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [self.chatPresentation.messageActivityViews setObject:activity forKey:message];
   }

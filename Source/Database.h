@@ -38,6 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable TLChatSummary *)saveChatIcon:(NSString *)icon chatID:(NSInteger)chatID error:(NSError **)error;
 - (nullable TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error;
 - (BOOL)deleteMessageWithID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error;
+- (nullable TLStoredChatMessage *)replaceMessage:(TLChatMessage *)message messageID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error;
 - (nullable TLChatRecord *)clearChatWithID:(NSInteger)chatID error:(NSError **)error;
 - (BOOL)deleteChatWithID:(NSInteger)chatID error:(NSError **)error;
 - (nullable NSArray<TLAgentRecord *> *)listAgents:(NSError **)error;

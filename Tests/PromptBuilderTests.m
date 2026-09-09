@@ -649,6 +649,33 @@ static void TestHistorySchemaStartupCompatibility(void) {
   }
 }
 
+static void TestMessageReplacement(void) {
+  NSURL *url = TLTemporaryDatabaseURL(@"TalariaMessageReplacementTests");
+  NSError *error = nil;
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[TLFakeTestCredentialStore new] error:&error];
+  TLChatRecord *chat = [database createChatWithModel:@"test-model" error:&error];
+  TLChatRecord *other = [database createChatWithModel:@"test-model" error:&error];
+  TLStoredChatMessage *prompt = [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Question" thinking:nil] chatID:chat.chatID error:&error];
+  TLStoredChatMessage *answer = [database saveMessage:[TLChatMessage messageWithRole:TLRoleAssistant content:@"Old answer" thinking:nil] chatID:chat.chatID error:&error];
+  TLStoredChatMessage *later = [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Later question" thinking:nil] chatID:chat.chatID error:&error];
+  TLChatMessage *replacement = [TLChatMessage messageWithRole:TLRoleAssistant content:@"New answer" thinking:@"New reasoning"];
+  TLStoredChatMessage *saved = [database replaceMessage:replacement messageID:answer.messageID chatID:chat.chatID error:&error];
+  TLAssertTrue(saved && !error && saved.messageID == answer.messageID, @"replacement retains the answer identity");
+  TLAssertTrue(![database replaceMessage:replacement messageID:answer.messageID chatID:other.chatID error:&error], @"replacement rejects another chat");
+  error = nil;
+  TLAssertTrue(![database replaceMessage:replacement messageID:prompt.messageID chatID:chat.chatID error:&error], @"replacement cannot overwrite a user message");
+  database = nil;
+  error = nil;
+  database = [[TLDatabase alloc] initWithURL:url credentialStore:[TLFakeTestCredentialStore new] error:&error];
+  TLChatRecord *loaded = [database chatWithID:chat.chatID error:&error];
+  TLAssertTrue(loaded.messages.count == 3 && loaded.messages[0].messageID == prompt.messageID && loaded.messages[2].messageID == later.messageID,
+    @"regeneration preserves transcript order after reopening");
+  TLAssertEqualObjects(loaded.messages[1].content, @"New answer", @"regenerated answer persists");
+  TLAssertEqualObjects(loaded.messages[1].thinking, @"New reasoning", @"regenerated reasoning persists");
+  database = nil;
+  [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+}
+
 static void TestMessageDeletion(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaMessageDeletionTests");
   NSError *error = nil;
@@ -1477,6 +1504,7 @@ int main(int argc, const char *argv[]) {
     TestCompatibleVersion5Database();
     TestHistorySchemaStartupCompatibility();
     TestMessageDeletion();
+    TestMessageReplacement();
     TestChatIconGenerator();
     TestCancellationDuringStartup();
     TestStatusTransport();
