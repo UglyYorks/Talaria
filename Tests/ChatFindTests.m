@@ -16,6 +16,11 @@ static id JS(WKWebView *web, NSString *script) {
   [web evaluateJavaScript:script completionHandler:^(id result, NSError *error) { value = result; failure = error; done = YES; }];
   Wait(^BOOL { return done; }); Check(!failure, failure.description); return value;
 }
+static NSString *CSSColor(NSColor *color) {
+  NSColor *rgb = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  return [NSString stringWithFormat:@"rgb(%ld, %ld, %ld)",
+    (long)lrint(rgb.redComponent * 255), (long)lrint(rgb.greenComponent * 255), (long)lrint(rgb.blueComponent * 255)];
+}
 static void Query(TLChatPresentation *chat, NSString *query, NSString *result) {
   stage = [NSString stringWithFormat:@"query %@ expected %@", query, result];
   chat.findBar.searchField.stringValue = query;
@@ -59,14 +64,18 @@ int main(void) {
       Query(chat, @"needle", @"1/6");
       Check([chat.findBar.searchField.accessibilityLabel isEqual:@"Find in chat"], @"shared bar identifies the chat surface");
       Check(window.firstResponder == chat.findBar.searchField.currentEditor, @"search keeps keyboard focus in its field");
-      Check([[label.attributedStringValue attribute:NSBackgroundColorAttributeName atIndex:0 effectiveRange:NULL] isEqual:palette.primaryActionSurface], @"native active highlight uses theme surface");
-      Check([[label.attributedStringValue attribute:NSForegroundColorAttributeName atIndex:0 effectiveRange:NULL] isEqual:palette.primaryActionText], @"native active highlight uses matching text");
+      Check([[label.attributedStringValue attribute:NSBackgroundColorAttributeName atIndex:0 effectiveRange:NULL] isEqual:palette.findActiveMatchSurface], @"native active highlight uses theme surface");
+      Check([[label.attributedStringValue attribute:NSForegroundColorAttributeName atIndex:0 effectiveRange:NULL] isEqual:palette.findMatchText], @"native active highlight uses matching text");
       Check([JS(web,@"document.querySelectorAll('mark[data-talaria-find]').length") integerValue] == 5, @"Markdown highlights include inline-spanning match, link, code and table");
+      Check([[label.attributedStringValue attribute:NSBackgroundColorAttributeName atIndex:11 effectiveRange:NULL] isEqual:palette.findMatchSurface], @"native inactive matches use yellow");
+      Check([JS(web,@"getComputedStyle(document.querySelector('mark[data-talaria-find]')).backgroundColor") isEqual:CSSColor(palette.findMatchSurface)], @"rendered inactive matches are yellow in both themes");
+      Check([JS(web,@"getComputedStyle(document.querySelector('mark[data-talaria-find]')).color") isEqual:CSSColor(palette.findMatchText)], @"rendered matches keep black text in both themes");
       Check([JS(web,@"document.querySelector('code').textContent") isEqual:@"const needle = 'value';\n"], @"highlighting preserves copyable code");
       [chat findNext:NO]; Check([chat.findBar.resultLabel.stringValue isEqual:@"6/6"], @"previous wraps to last message");
       [chat findNext:YES]; Check([chat.findBar.resultLabel.stringValue isEqual:@"1/6"], @"next wraps to first message");
       [chat findNext:YES]; [chat findNext:YES];
       Check([chat.findBar.resultLabel.stringValue isEqual:@"3/6"], @"navigation moves from native text into Markdown");
+      Check([JS(web,@"getComputedStyle(document.querySelector('mark[data-talaria-find]')).backgroundColor") isEqual:CSSColor(palette.findActiveMatchSurface)], @"rendered active match uses gold in both themes");
       [chat showFindBar]; Check([chat.findBar.resultLabel.stringValue isEqual:@"3/6"], @"reopening visible find preserves the selected match");
       [chat hideFindBar]; [chat showFindBar];
       Wait(^BOOL { return [chat.findBar.resultLabel.stringValue isEqual:@"1/6"]; });

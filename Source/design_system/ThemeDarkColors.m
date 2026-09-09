@@ -80,6 +80,9 @@ void TLApplyDarkThemeColors(TLThemePalette *palette) {
   palette.messageInputSendButtonSurface = palette.white;
   palette.messageInputSendButtonDisabledSurface = palette.gray600;
   palette.messageInputSendButtonText = palette.gray950;
+  palette.findMatchSurface = TLColorFromHex(0xffff00);
+  palette.findActiveMatchSurface = TLColorFromHex(0xffcc00);
+  palette.findMatchText = palette.black;
   palette.primaryActionSurface = palette.gray300;
   palette.primaryActionText = palette.gray950;
   palette.secondaryActionSurface = TLColorWithAlpha(palette.gray700, 0.72);

@@ -196,8 +196,8 @@
       NSArray<NSValue *> *ranges = [self rangesForText:text.string];
       TLThemePalette *palette = self.findBar.palette;
       [ranges enumerateObjectsUsingBlock:^(NSValue *value, NSUInteger index, BOOL *stop) {
-        [text addAttributes:@{NSBackgroundColorAttributeName:(NSInteger)index == local ? palette.primaryActionSurface : palette.secondaryActionSurface,
-          NSForegroundColorAttributeName:(NSInteger)index == local ? palette.primaryActionText : palette.secondaryActionText} range:value.rangeValue];
+        [text addAttributes:@{NSBackgroundColorAttributeName:(NSInteger)index == local ? palette.findActiveMatchSurface : palette.findMatchSurface,
+          NSForegroundColorAttributeName:palette.findMatchText} range:value.rangeValue];
       }];
       label.attributedStringValue = text;
       if (reveal && local >= 0) {

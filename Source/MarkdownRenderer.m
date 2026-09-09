@@ -95,8 +95,8 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
   if (![view isKindOfClass:TLMarkdownWebView.class] || !((TLMarkdownWebView *)view).documentReady) { completion(0); return; }
   TLMarkdownWebView *document = (id)view;
   TLThemePalette *palette = document.palette;
-  NSDictionary *colors = @{@"surface":TLCSSColor(palette.secondaryActionSurface), @"text":TLCSSColor(palette.secondaryActionText),
-    @"activeSurface":TLCSSColor(palette.primaryActionSurface), @"activeText":TLCSSColor(palette.primaryActionText)};
+  NSDictionary *colors = @{@"surface":TLCSSColor(palette.findMatchSurface), @"text":TLCSSColor(palette.findMatchText),
+    @"activeSurface":TLCSSColor(palette.findActiveMatchSurface), @"activeText":TLCSSColor(palette.findMatchText)};
   NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:colors options:0 error:nil] encoding:NSUTF8StringEncoding];
   NSString *script = [NSString stringWithFormat:@"window.talariaFind(%@,%@)", TLJSONString(query), json];
   [document.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) { completion(error ? 0 : [result integerValue]); }];
