@@ -1655,7 +1655,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       copyItem.target = controller;
       copyItem.representedObject = context;
       [menu addItem:copyItem];
-      NSMenuItem *regenerateItem = [[NSMenuItem alloc] initWithTitle:@"Regenerate"
+      NSString *regenerateTitle = [message.role isEqualToString:TLRoleUser] ? @"Regenerate response" : @"Regenerate";
+      NSMenuItem *regenerateItem = [[NSMenuItem alloc] initWithTitle:regenerateTitle
         action:@selector(regenerateChatMessage:) keyEquivalent:@""];
       regenerateItem.target = controller;
       regenerateItem.representedObject = context;
