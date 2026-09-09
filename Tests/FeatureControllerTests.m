@@ -1002,6 +1002,7 @@ static void TestConcurrentChatStreams(void) {
 }
 
 @interface TalariaWindowController (QueueTests)
+- (void)sendQueuedPromptNowAtIndex:(NSUInteger)index;
 - (void)editQueuedPromptAtIndex:(NSUInteger)index;
 - (void)removeQueuedPromptAtIndex:(NSUInteger)index;
 - (void)finishQueuedPromptEditingSaving:(BOOL)save;
@@ -1149,6 +1150,75 @@ static void TestQueuedFollowUps(void) {
   Check(controller.stream.requests.count == requestCount, @"even Resume cannot bypass an unresolved approval");
 }
 
+static void TestSendQueuedPromptNow(void) {
+  TLQueueTestController *controller = QueueController();
+  TLChatPresentation *chat = [controller valueForKey:@"chatPresentation"];
+  QueueSend(controller, @"Original task");
+  TLConcurrentTestRequest *original = controller.stream.requests.lastObject;
+  original.delta(original.requestID, TLAgentStreamDeltaKindContent, @"Partial response");
+  QueueSend(controller, @"First queued");
+  QueueSend(controller, @"Selected queued");
+  QueueSend(controller, @"Last queued");
+  chat.promptTextView.string = @"Keep this draft";
+  [controller sendQueuedPromptNowAtIndex:1];
+  Check([controller.stream.cancelledRequests isEqual:@[original.requestID]] && controller.stream.requests.count == 1,
+    @"Send now cancels the active response before submitting its replacement");
+  [controller sendQueuedPromptNowAtIndex:2];
+  Check(chat.queueInterruptPending && [chat.queuedPrompts.firstObject.text isEqual:@"Selected queued"],
+    @"a second click cannot replace the pending Send now selection");
+  QueueDrain();
+  Check(controller.stream.requests.count == 2 && [controller.stream.requests.lastObject.sentMessages.lastObject.content isEqual:@"Selected queued"],
+    @"Send now dispatches the selected prompt exactly once");
+  Check([chat.queuedPrompts[0].text isEqual:@"First queued"] && [chat.queuedPrompts[1].text isEqual:@"Last queued"] &&
+    [chat.promptTextView.string isEqual:@"Keep this draft"], @"Send now preserves the remaining queue order and composer draft");
+  Check([chat.messages[1].content isEqual:@"Partial response"], @"interrupted output is retained in the transcript");
+  original.delta(original.requestID, TLAgentStreamDeltaKindContent, @"stale output");
+  original.completion(nil);
+  Check(controller.stream.requests.count == 2 && [chat.messages[1].content isEqual:@"Partial response"],
+    @"late events from the cancelled request cannot duplicate dispatch or overwrite its saved reply");
+  QueueComplete(controller.stream.requests.lastObject);
+  Check([chat.queuedPromptInFlight.text isEqual:@"First queued"], @"remaining prompts resume FIFO after the selected prompt finishes");
+  [controller sendQueuedPromptNowAtIndex:0];
+  QueueDrain();
+  Check([chat.queuedPromptInFlight.text isEqual:@"Last queued"] && chat.queuedPrompts.count == 0,
+    @"Send now can also interrupt an automatically dispatched queued turn");
+  QueueComplete(controller.stream.requests.lastObject);
+
+  [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Paused first" attachmentURLs:@[]]];
+  [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Paused selected" attachmentURLs:@[]]];
+  chat.queuePaused = YES;
+  [controller sendQueuedPromptNowAtIndex:1];
+  Check([chat.queuedPromptInFlight.text isEqual:@"Paused selected"] && !chat.queuePaused,
+    @"Send now starts a selected prompt from a paused idle queue");
+  QueueComplete(controller.stream.requests.lastObject);
+  [controller editQueuedPromptAtIndex:0]; // No remaining item: safely ignored.
+  QueueComplete(controller.stream.requests.lastObject);
+
+  QueueSend(controller, @"Task with a save error");
+  TLConcurrentTestRequest *saveFailure = controller.stream.requests.lastObject;
+  saveFailure.delta(saveFailure.requestID, TLAgentStreamDeltaKindContent, @"Unsaved partial");
+  QueueSend(controller, @"Keep queued on error");
+  controller.store.failNextSave = YES;
+  NSUInteger count = controller.stream.requests.count;
+  [controller sendQueuedPromptNowAtIndex:0];
+  QueueDrain();
+  Check(chat.queuePaused && !chat.queueInterruptPending && chat.queuedPrompts.count == 1 && controller.stream.requests.count == count,
+    @"a failure saving the interrupted response retains the selected prompt and pauses dispatch");
+
+  TLChatMessage *approval = [TLChatMessage messageWithRole:TLRoleAssistant content:@"Approval needed" thinking:nil];
+  approval.approvalRequest = @{@"request_id": @"pending", @"choices": @[@"once", @"deny"]};
+  [chat.messages addObject:approval];
+  [controller sendQueuedPromptNowAtIndex:0];
+  Check(controller.stream.requests.count == count && chat.queuedPrompts.count == 1,
+    @"Send now cannot bypass an unresolved approval");
+  [chat.messages removeLastObject];
+  [controller editQueuedPromptAtIndex:0];
+  [controller sendQueuedPromptNowAtIndex:0];
+  Check(controller.stream.requests.count == count && chat.editingQueuedPrompt != nil,
+    @"Send now leaves an unfinished edit intact");
+  [controller finishQueuedPromptEditingSaving:NO];
+}
+
 static void TestPromptQueueLayout(void) {
   TLPromptQueueView *queue = [TLPromptQueueView new];
   NSArray *prompts = @[
@@ -1168,17 +1238,60 @@ static void TestPromptQueueLayout(void) {
     TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
     for (NSNumber *width in @[@650, @200]) {
       [window setContentSize:NSMakeSize(width.doubleValue, 260)];
-      [queue updatePrompts:prompts editing:nil paused:YES canResume:YES palette:palette];
+      [queue updatePrompts:prompts editing:nil paused:YES canResume:YES canSendNow:YES palette:palette];
       [window.contentView layoutSubtreeIfNeeded];
       Check(fabs(NSWidth(queue.frame) - width.doubleValue) < 1 && queue.preferredHeight < 220,
         @"queue fits narrow panes and bounds long queues with scrolling");
+      NSScrollView *scroll = nil;
+      for (NSView *view in [[queue valueForKey:@"body"] subviews]) if ([view isKindOfClass:NSScrollView.class]) scroll = (id)view;
+      NSMutableArray<TLHoverIconButton *> *sendButtons = [NSMutableArray array];
+      for (NSView *view in scroll.documentView.subviews) {
+        if ([view isKindOfClass:TLHoverIconButton.class] && [(NSButton *)view action] == NSSelectorFromString(@"sendNow:"))
+          [sendButtons addObject:(id)view];
+      }
+      Check(sendButtons.count == prompts.count, @"every queued prompt has an accessible Send now control");
+      __block NSUInteger selected = NSNotFound;
+      queue.sendNowHandler = ^(NSUInteger index) { selected = index; };
+      [sendButtons[1] performClick:nil];
+      Check(selected == 1, @"the Send now control targets its own queued prompt");
+      TLHoverIconButton *send = sendButtons.firstObject;
+      for (NSString *state in @[@"normal", @"hovered", @"pressed", @"disabled"]) {
+        send.enabled = ![state isEqual:@"disabled"];
+        [send setValue:@([state isEqual:@"hovered"]) forKey:@"hovered"];
+        [send setValue:@([state isEqual:@"pressed"]) forKey:@"pressed"];
+        NSBitmapImageRep *rendered = RenderThemedButton((id)send);
+        CGFloat surface[3], foreground[3], alpha;
+        RGBComponents(palette.tabBackground, surface, &alpha);
+        RGBComponents(([state isEqual:@"hovered"] || [state isEqual:@"pressed"]) ? palette.appText : palette.textMuted, foreground, &alpha);
+        NSUInteger glyphPixels = 0;
+        for (NSInteger y = 0; y < rendered.pixelsHigh; y++) {
+          for (NSInteger x = 0; x < rendered.pixelsWide; x++) {
+            CGFloat actual[3], pixelAlpha;
+            RGBComponents([rendered colorAtX:x y:y], actual, &pixelAlpha);
+            CGFloat numerator = 0, denominator = 0;
+            for (NSUInteger channel = 0; channel < 3; channel++) {
+              numerator += (actual[channel] - surface[channel]) * (foreground[channel] - surface[channel]);
+              denominator += pow(foreground[channel] - surface[channel], 2);
+            }
+            // Thin SF Symbols are antialiased: inspect coverage of the expected
+            // foreground over the surface instead of requiring a solid pixel.
+            CGFloat coverage = denominator > 0 ? numerator / denominator : 0;
+            if (send.enabled ? coverage > 0.25 : !PixelMatches(rendered, x, y, surface)) glyphPixels++;
+          }
+        }
+        Check(glyphPixels > 3, [NSString stringWithFormat:@"Send now renders a readable %@ symbol in theme %@", state, theme]);
+      }
+      send.enabled = YES;
+      [send setValue:@NO forKey:@"hovered"];
+      [send setValue:@NO forKey:@"pressed"];
+
       NSBitmapImageRep *bitmap = [queue bitmapImageRepForCachingDisplayInRect:queue.bounds];
       [queue cacheDisplayInRect:queue.bounds toBitmapImageRep:bitmap];
       [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
         writeToFile:[NSString stringWithFormat:@"build/prompt-queue-%@-%@.png", theme, width] atomically:YES];
     }
   }
-  [queue updatePrompts:@[] editing:nil paused:NO canResume:YES palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
+  [queue updatePrompts:@[] editing:nil paused:NO canResume:YES canSendNow:YES palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
   Check(queue.hidden && queue.preferredHeight == 0, @"an empty queue takes no transcript space");
   [window close];
 }
@@ -3153,6 +3266,7 @@ int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
     TestQueuedFollowUps();
+    TestSendQueuedPromptNow();
     TestPromptQueueLayout();
     if (getenv("TL_QUEUE_TESTS_ONLY")) {
       TestThemedButtonRenderedColors();

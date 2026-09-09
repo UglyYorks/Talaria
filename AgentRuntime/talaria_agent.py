@@ -343,7 +343,8 @@ def stream_hermes_session(request, output=None, cancellation=None):
         gateway = tui_gateway(token, model)
         gateway.run(session_id, model, prompt, lambda kind, text: emit(
             {"type": "delta", "request_id": request_id, "kind": kind, "text": text}, output),
-            cancellation=cancellation, approval_response=request.get("approval_response"))
+            cancellation=cancellation, approval_response=request.get("approval_response"),
+            wait_for_previous_turn=request.get("wait_for_previous_turn") is True)
         cancellation.finish()
         if not cancellation.cancelled():
             emit({"type": "complete"}, output)

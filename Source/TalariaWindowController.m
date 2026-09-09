@@ -1332,6 +1332,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [chatWorkspace addSubview:presentation.promptQueueView];
   __weak typeof(self) weakSelf = self;
   __weak TLChatPresentation *weakPresentation = presentation;
+  presentation.promptQueueView.sendNowHandler = ^(NSUInteger index) {
+    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf sendQueuedPromptNowAtIndex:index]; }];
+  };
   presentation.promptQueueView.editHandler = ^(NSUInteger index) {
     [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf editQueuedPromptAtIndex:index]; }];
   };
@@ -2547,12 +2550,33 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLChatPresentation *presentation = self.chatPresentation;
   if (!presentation.promptQueueView) return;
   [presentation.promptQueueView updatePrompts:presentation.queuedPrompts editing:presentation.editingQueuedPrompt
-    paused:presentation.queuePaused canResume:!self.isSending && ![self hasPendingChatApproval] palette:self.palette];
+    paused:presentation.queuePaused canResume:!self.isSending && ![self hasPendingChatApproval]
+    canSendNow:!self.preparingAttachments && !presentation.queueInterruptPending && ![self hasPendingChatApproval] palette:self.palette];
+}
+
+- (void)sendQueuedPromptNowAtIndex:(NSUInteger)index {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (index >= presentation.queuedPrompts.count || presentation.editingQueuedPrompt ||
+      presentation.queueInterruptPending || self.preparingAttachments || [self hasPendingChatApproval]) return;
+  TLQueuedPrompt *prompt = presentation.queuedPrompts[index];
+  [presentation.queuedPrompts removeObjectAtIndex:index];
+  [presentation.queuedPrompts insertObject:prompt atIndex:0];
+  presentation.queuePaused = NO;
+  TLAssistantTurnRunner *runner = self.turnRunners[@(presentation.chat.chatID)];
+  if (runner) {
+    // Cancellation finalizes the partial reply synchronously. Its completion
+    // schedules dispatch after cancel has also reached the transport.
+    presentation.queueInterruptPending = YES;
+    [self updateControlStates];
+    [runner cancel];
+  } else {
+    [self drainPromptQueue];
+  }
 }
 
 - (void)editQueuedPromptAtIndex:(NSUInteger)index {
   TLChatPresentation *presentation = self.chatPresentation;
-  if (presentation.editingQueuedPrompt || index >= presentation.queuedPrompts.count || self.preparingAttachments) return;
+  if (presentation.editingQueuedPrompt || presentation.queueInterruptPending || index >= presentation.queuedPrompts.count || self.preparingAttachments) return;
   presentation.queueDraft = [TLQueuedPrompt promptWithText:self.promptTextView.string attachmentURLs:self.messageInput.attachmentURLs];
   presentation.editingQueuedPrompt = presentation.queuedPrompts[index];
   self.promptTextView.string = presentation.editingQueuedPrompt.text;
@@ -2580,7 +2604,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)removeQueuedPromptAtIndex:(NSUInteger)index {
   TLChatPresentation *presentation = self.chatPresentation;
-  if (index >= presentation.queuedPrompts.count) return;
+  if (presentation.queueInterruptPending || index >= presentation.queuedPrompts.count) return;
   BOOL editing = presentation.editingQueuedPrompt == presentation.queuedPrompts[index];
   [presentation.queuedPrompts removeObjectAtIndex:index];
   if (editing) [self finishQueuedPromptEditingSaving:NO];
@@ -2591,13 +2615,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLChatPresentation *presentation = self.chatPresentation;
   if (restore && presentation.queuedPromptInFlight) [presentation.queuedPrompts insertObject:presentation.queuedPromptInFlight atIndex:0];
   presentation.queuedPromptInFlight = nil;
+  presentation.queueInterruptPending = NO;
   presentation.queuePaused = YES;
   [self updateControlStates];
 }
 
 - (void)finishQueuedTurnWithResult:(TLAssistantTurnResult *)result {
   TLChatPresentation *presentation = self.chatPresentation;
-  if (result.generationStatus != TLAssistantTurnGenerationStatusSucceeded ||
+  BOOL interruptedForQueuedPrompt = presentation.queueInterruptPending &&
+    result.generationStatus == TLAssistantTurnGenerationStatusCancelled;
+  if ((!interruptedForQueuedPrompt && result.generationStatus != TLAssistantTurnGenerationStatusSucceeded) ||
       result.persistenceStatus != TLAssistantTurnPersistenceStatusSucceeded || result.assistantMessage.approvalRequest) {
     [self pausePromptQueueRestoringInFlight:result.generationStatus == TLAssistantTurnGenerationStatusNotStarted];
     return;
@@ -2616,7 +2643,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       presentation.queuedPromptInFlight || !presentation.queuedPrompts.count || [self hasPendingChatApproval]) return;
   NSString *token = self.settings.openRouterToken ?: @"";
   NSString *model = presentation.chat.model ?: self.settings.selectedModel ?: @"";
-  if (!token.length || !model.length) { presentation.queuePaused = YES; [self updateControlStates]; return; }
+  if (!token.length || !model.length) { presentation.queueInterruptPending = NO; presentation.queuePaused = YES; [self updateControlStates]; return; }
+  presentation.queueInterruptPending = NO;
   TLQueuedPrompt *prompt = presentation.queuedPrompts.firstObject;
   [presentation.queuedPrompts removeObjectAtIndex:0];
   presentation.queuedPromptInFlight = prompt;
@@ -2659,6 +2687,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self focusChatContainingView:sender];
   if (!self.chatPresentation.editingQueuedPrompt && [self canStopResponse]) {
     self.chatPresentation.queuePaused = YES;
+    self.chatPresentation.queueInterruptPending = NO;
     [self updatePromptQueue];
     [self.turnRunners[@(self.activeChat.chatID)] cancel];
   } else {
@@ -5314,6 +5343,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     TLChatPresentation *presentation = self.chatPresentations[@(tabID)];
     if (presentation.queuedPrompts.count || presentation.queuedPromptInFlight) {
       presentation.queuePaused = YES;
+      presentation.queueInterruptPending = NO;
       presentation.chatWorkspace.hidden = YES;
       [self withChatPresentation:presentation perform:^{ [self updatePromptQueue]; }];
     } else {

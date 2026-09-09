@@ -50,8 +50,8 @@
   return button;
 }
 - (void)updatePrompts:(NSArray<TLQueuedPrompt *> *)prompts editing:(TLQueuedPrompt *)editing
-              paused:(BOOL)paused canResume:(BOOL)canResume palette:(TLThemePalette *)palette {
-  NSMutableArray *signature = [NSMutableArray arrayWithArray:@[palette, @(paused), @(canResume), editing ?: NSNull.null]];
+              paused:(BOOL)paused canResume:(BOOL)canResume canSendNow:(BOOL)canSendNow palette:(TLThemePalette *)palette {
+  NSMutableArray *signature = [NSMutableArray arrayWithArray:@[palette, @(paused), @(canResume), @(canSendNow), editing ?: NSNull.null]];
   for (TLQueuedPrompt *prompt in prompts) [signature addObject:@[prompt.text, prompt.attachmentURLs]];
   if ([self.renderSignature isEqual:signature]) return;
   self.renderSignature = signature;
@@ -114,19 +114,24 @@
     NSTextField *label = [self label:[NSString stringWithFormat:@"%lu. %@", (unsigned long)index + 1, text] palette:palette];
     label.textColor = palette.appText;
     label.toolTip = text;
+    TLHoverIconButton *sendNow = [self icon:@"arrow.up" label:@"Send now" index:index action:@selector(sendNow:) palette:palette];
+    sendNow.enabled = canSendNow && !editing;
     TLHoverIconButton *edit = [self icon:@"pencil" label:@"Edit queued prompt" index:index action:@selector(edit:) palette:palette];
     TLHoverIconButton *remove = [self icon:@"xmark" label:@"Remove queued prompt" index:index action:@selector(remove:) palette:palette];
     edit.enabled = !editing;
-    [document addSubview:label]; [document addSubview:edit]; [document addSubview:remove];
+    [document addSubview:label]; [document addSubview:sendNow]; [document addSubview:edit]; [document addSubview:remove];
     [NSLayoutConstraint activateConstraints:@[
       [label.leadingAnchor constraintEqualToAnchor:document.leadingAnchor constant:palette.space6],
       [label.centerYAnchor constraintEqualToAnchor:document.topAnchor constant:(index + 0.5) * rowHeight],
-      [label.trailingAnchor constraintEqualToAnchor:edit.leadingAnchor constant:-palette.space3],
+      [label.trailingAnchor constraintEqualToAnchor:sendNow.leadingAnchor constant:-palette.space3],
+      [sendNow.centerYAnchor constraintEqualToAnchor:label.centerYAnchor],
+      [sendNow.trailingAnchor constraintEqualToAnchor:edit.leadingAnchor constant:-palette.space3],
       [edit.centerYAnchor constraintEqualToAnchor:label.centerYAnchor], [remove.centerYAnchor constraintEqualToAnchor:label.centerYAnchor],
       [edit.trailingAnchor constraintEqualToAnchor:remove.leadingAnchor constant:-palette.space3],
       [remove.trailingAnchor constraintEqualToAnchor:document.trailingAnchor constant:-palette.space5]]];
   }];
 }
+- (void)sendNow:(NSButton *)sender { if (sender.enabled && self.sendNowHandler) self.sendNowHandler(sender.tag); }
 - (void)edit:(NSButton *)sender { if (self.editHandler) self.editHandler(sender.tag); }
 - (void)remove:(NSButton *)sender { if (self.removeHandler) self.removeHandler(sender.tag); }
 - (void)resume:(id)sender { if (self.resumeHandler) self.resumeHandler(); }
