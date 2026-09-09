@@ -7,6 +7,7 @@ void TLApplyDarkThemeColors(TLThemePalette *palette) {
   palette.appBackground = palette.transparentSurface;
   palette.appContentBackground = TLColorFromHex(0x131313);
   palette.tabBackground = palette.appContentBackground;
+  palette.itemHighlightSurface = TLColorWithAlpha(palette.white, 0.14);
   palette.frostedOverlay = palette.transparentSurface;
   palette.chromeHoverSurface = TLColorWithAlpha(palette.gray700, 0.50);
   palette.taskStatusPillSurface = TLColorWithAlpha(palette.gray700, 0.12);
@@ -80,6 +81,9 @@ void TLApplyDarkThemeColors(TLThemePalette *palette) {
   palette.messageInputSendButtonSurface = palette.white;
   palette.messageInputSendButtonDisabledSurface = palette.gray600;
   palette.messageInputSendButtonText = palette.gray950;
+  palette.findMatchSurface = TLColorFromHex(0xffff00);
+  palette.findActiveMatchSurface = TLColorFromHex(0xffcc00);
+  palette.findMatchText = palette.black;
   palette.primaryActionSurface = palette.gray300;
   palette.primaryActionText = palette.gray950;
   palette.secondaryActionSurface = TLColorWithAlpha(palette.gray700, 0.72);

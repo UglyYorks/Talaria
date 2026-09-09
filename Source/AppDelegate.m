@@ -188,7 +188,7 @@
   }
 }
 
-- (BOOL)handleBrowserFindShortcutEvent:(NSEvent *)event {
+- (BOOL)handleFindShortcutEvent:(NSEvent *)event {
   if (event.type != NSEventTypeKeyDown || ![self workspaceAcceptsTabCommands] ||
       (event.window && event.window != self.windowController.window)) return NO;
   NSEventModifierFlags flags = event.modifierFlags & (NSEventModifierFlagCommand |
@@ -200,17 +200,17 @@
   else if (flags == (NSEventModifierFlagCommand | NSEventModifierFlagShift) && [key isEqualToString:@"g"]) action = NSTextFinderActionPreviousMatch;
   else if (!flags && [key isEqualToString:@"\e"]) action = NSTextFinderActionHideFindInterface;
   else return NO;
-  if (![self.windowController canPerformBrowserFindAction:action]) return NO;
+  if (![self.windowController canPerformFindAction:action]) return NO;
   if (!event.isARepeat || action == NSTextFinderActionNextMatch || action == NSTextFinderActionPreviousMatch)
-    [self.windowController performBrowserFindAction:action];
+    [self.windowController performFindAction:action];
   return YES;
 }
-- (void)performBrowserFindMenuAction:(NSMenuItem *)sender {
-  if ([self workspaceAcceptsTabCommands]) [self.windowController performBrowserFindAction:sender.tag];
+- (void)performFindMenuAction:(NSMenuItem *)sender {
+  if ([self workspaceAcceptsTabCommands]) [self.windowController performFindAction:sender.tag];
 }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
-  if (item.action == @selector(performBrowserFindMenuAction:))
-    return [self workspaceAcceptsTabCommands] && [self.windowController canPerformBrowserFindAction:item.tag];
+  if (item.action == @selector(performFindMenuAction:))
+    return [self workspaceAcceptsTabCommands] && [self.windowController canPerformFindAction:item.tag];
   if (item.action == @selector(performTabMenuCommand:)) {
     return [self workspaceAcceptsTabCommands] && [self.windowController canPerformTabCommand:item.tag];
   }
@@ -244,11 +244,11 @@
   [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
   [editMenu addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
   [editMenu addItem:NSMenuItem.separatorItem];
-  NSArray *findItems = @[@[@"Find in Page…", @"f", @(NSTextFinderActionShowFindInterface)],
+  NSArray *findItems = @[@[@"Find…", @"f", @(NSTextFinderActionShowFindInterface)],
                          @[@"Find Next", @"g", @(NSTextFinderActionNextMatch)],
                          @[@"Find Previous", @"g", @(NSTextFinderActionPreviousMatch)]];
   for (NSArray *entry in findItems) {
-    NSMenuItem *item = [editMenu addItemWithTitle:entry[0] action:@selector(performBrowserFindMenuAction:) keyEquivalent:entry[1]];
+    NSMenuItem *item = [editMenu addItemWithTitle:entry[0] action:@selector(performFindMenuAction:) keyEquivalent:entry[1]];
     item.target = self;
     item.tag = [entry[2] integerValue];
     item.keyEquivalentModifierMask = NSEventModifierFlagCommand |

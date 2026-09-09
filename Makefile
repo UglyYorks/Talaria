@@ -38,7 +38,7 @@ GLASS_PANE_TEST_EXECUTABLE := $(BUILD_DIR)/GlassPaneTests
 MARKDOWN_IT := Vendor/markdown-it/markdown-it.min.js
 OVERLAY_PROBE := Source/BrowserOverlayProbe.js
 DOCUMENT_FOOTER := Source/BrowserDocumentFooter.js Source/BrowserFooterColor.js
-CODE_RESOURCES := Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js Vendor/highlight.js/LICENSE
+CODE_RESOURCES := Source/MarkdownFind.js Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js Vendor/highlight.js/LICENSE
 MATH_RESOURCES := Source/MarkdownMath.js $(shell find Vendor/katex -type f)
 MARKDOWN_RESOURCES_STAMP := $(BUILD_DIR)/.markdown-resources.stamp
 READABILITY_FILES := Vendor/readability/Readability.js Vendor/readability/LICENSE.md
@@ -131,7 +131,7 @@ $(APP_BUILD_STAMP): $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFI
 	ditto "assets/browser-bookmarks" "$(APP_BUNDLE)/Contents/Resources/browser-bookmarks"
 	cp "$(MARKDOWN_IT)" "$(APP_BUNDLE)/Contents/Resources/markdown-it.min.js"
 	cp Source/MarkdownMath.js "$(APP_BUNDLE)/Contents/Resources/MarkdownMath.js"
-	cp Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js "$(APP_BUNDLE)/Contents/Resources/"
+	cp Source/MarkdownFind.js Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js "$(APP_BUNDLE)/Contents/Resources/"
 	cp Vendor/highlight.js/LICENSE "$(APP_BUNDLE)/Contents/Resources/highlight-LICENSE"
 	ditto Vendor/katex "$(APP_BUNDLE)/Contents/Resources/katex"
 	cp Vendor/readability/Readability.js "$(APP_BUNDLE)/Contents/Resources/Readability.js"
@@ -280,6 +280,7 @@ test: $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/BrowserDownloadTests test-brows
 	"$(BUILD_DIR)/FeatureControllerTests"
 	"$(BUILD_DIR)/TabShortcutTests"
 	"$(BUILD_DIR)/BrowserFindTests"
+	"$(BUILD_DIR)/ChatFindTests"
 	python3 Tests/AgentRuntimeTests.py
 	"$(BUILD_DIR)/MarkdownMathTests"
 	"$(BUILD_DIR)/MarkdownCodeTests"
@@ -320,14 +321,14 @@ $(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES)
 	mkdir -p "$(BUILD_DIR)"
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
 	cp Source/MarkdownMath.js "$(BUILD_DIR)/MarkdownMath.js"
-	cp Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js "$(BUILD_DIR)/"
+	cp Source/MarkdownFind.js Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js "$(BUILD_DIR)/"
 	ditto Vendor/katex "$(BUILD_DIR)/katex"
 	touch "$@"
 
 $(BUILD_DIR)/MarkdownMathTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Tests/MarkdownMathTests.m Tests/Fixtures/latex-formulas.md $(MARKDOWN_RESOURCES_STAMP)
 	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
 
-$(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/FeatureControllerTests: | $(MARKDOWN_RESOURCES_STAMP)
+$(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/MarkdownLinkContextTests: | $(MARKDOWN_RESOURCES_STAMP)
 
 $(GLASS_PANE_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLAttachmentChipView.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/design_system/TLToolActivityView.m Source/design_system/TLApprovalCardView.m Source/design_system/TLThemedButton.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
 	mkdir -p "$(BUILD_DIR)"
@@ -490,3 +491,8 @@ test-browser-find-cef: build
 $(BUILD_DIR)/AgentVMLockTests: Source/TLAgentVMLock.m Source/AgentVMService.m Source/TalariaModels.m Tests/AgentVMLockTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework AppKit -framework Virtualization -o "$@"
+
+# Native transcript search plus real WebKit rendering, without network or an AI runtime.
+test: $(BUILD_DIR)/ChatFindTests
+$(BUILD_DIR)/ChatFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/ChatFindTests.m | $(MARKDOWN_RESOURCES_STAMP)
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"

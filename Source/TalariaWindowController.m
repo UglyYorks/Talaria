@@ -14,6 +14,7 @@
 #import "AssistantTurnRunner.h"
 #import "ChatIconGenerator.h"
 #import "MarkdownRenderer.h"
+#import "design_system/TLMarkdownContentWebView.h"
 #import "NotchOverlayController.h"
 #import "TLQuickInputWindowController.h"
 #import "InputSuggestions.h"
@@ -705,15 +706,21 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   id controller = [self runtimeForTab:tab].featureController;
   return [controller isKindOfClass:TLBrowserTabController.class] && ![controller isClosed] ? controller : nil;
 }
-- (BOOL)canPerformBrowserFindAction:(NSTextFinderAction)action {
-  TLBrowserTabController *controller = [self activeBrowserController];
+- (id<TLFindActionTarget>)activeFindTarget {
+  TLWorkspaceTab *tab = [self activeWorkspaceTab];
+  if (self.widgetbookMode) return nil;
+  if (tab.kind == TLWorkspaceTabKindChat) return self.chatPresentations[@(tab.tabID)];
+  return [self activeBrowserController];
+}
+- (BOOL)canPerformFindAction:(NSTextFinderAction)action {
+  id<TLFindActionTarget> controller = [self activeFindTarget];
   if (!controller) return NO;
   if (action == NSTextFinderActionHideFindInterface) return controller.findBarVisible;
   return action == NSTextFinderActionShowFindInterface || action == NSTextFinderActionNextMatch || action == NSTextFinderActionPreviousMatch;
 }
-- (void)performBrowserFindAction:(NSTextFinderAction)action {
-  if (![self canPerformBrowserFindAction:action]) return;
-  TLBrowserTabController *controller = [self activeBrowserController];
+- (void)performFindAction:(NSTextFinderAction)action {
+  if (![self canPerformFindAction:action]) return;
+  id<TLFindActionTarget> controller = [self activeFindTarget];
   switch (action) {
     case NSTextFinderActionShowFindInterface: [controller showFindBar]; break;
     case NSTextFinderActionNextMatch: [controller findNext:YES]; break;
@@ -1325,6 +1332,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   NSView *messagesView = [self buildMessagesView];
   [chatWorkspace addSubview:messagesView];
+  [self.chatPresentation installFindBarInView:chatWorkspace palette:self.palette];
   [chatWorkspace addSubview:[self buildSlashCommandListView]];
   [chatWorkspace addSubview:[self buildMessageInput]];
   TLChatPresentation *presentation = self.chatPresentation;
@@ -1378,7 +1386,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [NSLayoutConstraint activateConstraints:@[
     [messagesView.leadingAnchor constraintEqualToAnchor:chatWorkspace.leadingAnchor],
     [messagesView.trailingAnchor constraintEqualToAnchor:chatWorkspace.trailingAnchor],
-    [messagesView.topAnchor constraintEqualToAnchor:chatWorkspace.topAnchor],
+    [messagesView.topAnchor constraintEqualToAnchor:self.chatPresentation.findBar.bottomAnchor],
     [messagesView.bottomAnchor constraintEqualToAnchor:chatWorkspace.bottomAnchor],
     [self.messageInput.centerXAnchor constraintEqualToAnchor:chatWorkspace.centerXAnchor],
     [self.slashCommandListView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor constant:self.palette.space4],
@@ -1659,6 +1667,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       deleteItem.enabled = !controller.isSending;
       deleteItem.image = [NSImage imageWithSystemSymbolName:@"trash" accessibilityDescription:nil];
       [menu addItem:deleteItem];
+      // WebKit must receive the click to identify the link and build its native
+      // menu (including Inspect Element). The row menu is only a fallback.
+      for (NSView *view = hitView; view && view != row; view = view.superview) {
+        if ([view isKindOfClass:TLMarkdownContentWebView.class]) {
+          ((TLMarkdownContentWebView *)view).fallbackContextMenu = menu;
+          return event;
+        }
+      }
       [NSMenu popUpContextMenu:menu withEvent:event forView:row];
       return nil;
     }
@@ -2227,11 +2243,36 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)openBrowserTabWithURL:(NSURL *)URL {
+  [self openBrowserTabWithURL:URL replacingChatTab:nil];
+}
+
+- (void)openBrowserURLFromChatInput:(NSURL *)URL {
+  TLWorkspaceTab *source = [self activeWorkspaceTab];
+  BOOL emptyChat = source && source.kind == TLWorkspaceTabKindChat && self.activeChat &&
+    source.tabID == self.activeChat.chatID && !self.messages.count && !self.activeChat.messages.count &&
+    !self.isSending && !self.isLoading && !self.messageInput.attachmentURLs.count &&
+    !self.chatPresentation.queuedPrompts.count && !self.chatPresentation.queuedPromptInFlight;
+  [self openBrowserTabWithURL:URL replacingChatTab:emptyChat ? source : nil];
+}
+
+- (void)openBrowserTabWithURL:(NSURL *)URL replacingChatTab:(TLWorkspaceTab *)source {
   if (![self isBrowserURL:URL]) return;
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser
     tabID:self.nextBrowserTabID++ title:[self browserTabTitleForURL:URL]
     toolTip:URL.absoluteString URL:URL closeable:YES];
-  [self.appStateManager addWorkspaceTab:tab activate:YES];
+  if (source) {
+    // Replacement retains the tab's position and presentation identity, which
+    // also keeps an existing split attached to the same pane.
+    [self.appStateManager replaceWorkspaceTabWithKind:source.kind tabID:source.tabID withTab:tab activate:YES];
+    [self.chatPresentation.slashCommandUpdateTimer invalidate];
+    [self removeRuntimeForKind:source.kind tabID:source.tabID];
+    [self.modelDraftChats removeObjectForKey:@(source.tabID)];
+    [self.attachmentDrafts removeObjectForKey:@(source.tabID)];
+    [self.attachmentPromptDrafts removeObjectForKey:@(source.tabID)];
+    self.chatPresentation = nil;
+  } else {
+    [self.appStateManager addWorkspaceTab:tab activate:YES];
+  }
   [self ensureBrowserRuntimeForTab:tab];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -2723,7 +2764,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self.messageInput recalculateHeight];
     [self updateMessageScrollInsets];
     [self updateSlashCommandList];
-    [self openBrowserTabWithURL:browserURL];
+    [self openBrowserURLFromChatInput:browserURL];
     return;
   }
 
@@ -3100,7 +3141,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     self.promptTextView.string = @"";
     [self.messageInput recalculateHeight];
     [self hideSlashCommandList];
-    [self openBrowserTabWithURL:URL];
+    [self openBrowserURLFromChatInput:URL];
     return YES;
   }
   if ([suggestion[@"kind"] isEqualToString:@"prompt"]) {
@@ -4417,6 +4458,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
+  if (self.chatPresentation.findBarVisible) scrollToBottom = NO;
   // Completion, navigation and theme changes render immediately and supersede a pending batch.
   self.streamingRenderScheduled = NO;
   self.streamingRenderGeneration += 1;
@@ -4464,6 +4506,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     NSView *emptyState = [self emptyStateView];
     [self addMessageRowToStack:emptyState];
     [self pinMessageRowToStackWidth:emptyState];
+    [self.chatPresentation refreshFindResults];
     return;
   }
 
@@ -4494,6 +4537,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     }
   }
 
+  [self.chatPresentation refreshFindResults];
   TLChatPresentation *presentation = self.chatPresentation;
   dispatch_async(dispatch_get_main_queue(), ^{
     [self withChatPresentation:presentation perform:^{
@@ -4781,8 +4825,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                              forOrientation:NSLayoutConstraintOrientationHorizontal];
     [contentLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                            forOrientation:NSLayoutConstraintOrientationHorizontal];
-    if (hasResponseContent) [stack addArrangedSubview:contentLabel];
-    else contentLabel = nil;
+    if (hasResponseContent) {
+      [stack addArrangedSubview:contentLabel];
+      [self.messageMarkdownViews setObject:contentLabel forKey:message];
+    } else contentLabel = nil;
   } else if (hasResponseContent || (!message.approvalRequest && !message.attachments.count && !message.toolActivities.count)) {
     NSString *content = hasResponseContent ? message.content : @"...";
     if ([self messageShowsAWSOutageIntent:message]) {
@@ -4937,7 +4983,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   __block __weak NSView *weakView = nil;
   renderer.heightChangeHandler = ^{
     TalariaWindowController *controller = weakSelf;
-    if (!origin || !controller.turnRunners[@(origin.chat.chatID)] || ![weakView isDescendantOf:origin.messageStack]) return;
+    if (!origin || origin.findBarVisible || !controller.turnRunners[@(origin.chat.chatID)] || ![weakView isDescendantOf:origin.messageStack]) return;
     [origin.messageDocumentView layoutSubtreeIfNeeded];
     NSRect bottom = NSMakeRect(0, MAX(0, NSHeight(origin.messageDocumentView.bounds) - 1), 1, 1);
     [origin.messageDocumentView scrollRectToVisible:bottom];
@@ -5969,6 +6015,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.screensaverView updateBackgroundColor:self.palette.messagesSurface artColor:self.palette.textMuted];
   self.messageStack.spacing = self.palette.messageVerticalSpacing;
   self.messageInput.palette = self.palette;
+  [self.chatPresentation applyFindPalette:self.palette];
   [self.onboardingDemoWindowController updatePalette:self.palette];
   [self applySlashCommandListPalette];
   if (!self.slashCommandListView.hidden) {
@@ -6031,6 +6078,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       self.messageStack.spacing = self.palette.messageVerticalSpacing;
       self.messageInput.palette = self.palette;
       [self updatePromptQueue];
+      [self.chatPresentation applyFindPalette:self.palette];
       [self applySlashCommandListPalette];
       [self.screensaverView updateBackgroundColor:self.palette.messagesSurface artColor:self.palette.textMuted];
       [self resetMessageRowCache];

@@ -3,6 +3,8 @@
 #import <WebKit/WebKit.h>
 #import "design_system/TLMarkdownContentWebView.h"
 
+NSNotificationName const TLMarkdownContentDidChangeNotification = @"TLMarkdownContentDidChangeNotification";
+
 // A separate handler avoids a retain cycle between the view and its configuration.
 @interface TLMarkdownClipboardHandler : NSObject <WKScriptMessageHandlerWithReply>
 @end
@@ -89,6 +91,26 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
                                  rendersMarkdown:NO];
 }
 
++ (void)findText:(NSString *)query inView:(NSView *)view completion:(void (^)(NSInteger))completion {
+  if (![view isKindOfClass:TLMarkdownWebView.class] || !((TLMarkdownWebView *)view).documentReady) { completion(0); return; }
+  TLMarkdownWebView *document = (id)view;
+  TLThemePalette *palette = document.palette;
+  NSDictionary *colors = @{@"surface":TLCSSColor(palette.findMatchSurface), @"text":TLCSSColor(palette.findMatchText),
+    @"activeSurface":TLCSSColor(palette.findActiveMatchSurface), @"activeText":TLCSSColor(palette.findMatchText)};
+  NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:colors options:0 error:nil] encoding:NSUTF8StringEncoding];
+  NSString *script = [NSString stringWithFormat:@"window.talariaFind(%@,%@)", TLJSONString(query), json];
+  [document.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) { completion(error ? 0 : [result integerValue]); }];
+}
++ (void)selectFindMatch:(NSInteger)index inView:(NSView *)view reveal:(BOOL)reveal completion:(void (^)(NSRect))completion {
+  if (![view isKindOfClass:TLMarkdownWebView.class]) { completion(NSZeroRect); return; }
+  NSString *script = [NSString stringWithFormat:@"window.talariaSelectFindMatch?.(%ld,%@)", (long)index, reveal ? @"true" : @"false"];
+  [((TLMarkdownWebView *)view).webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+    if (error || ![result isKindOfClass:NSDictionary.class]) { completion(NSZeroRect); return; }
+    // The DOM has a top-left origin; the native wrapper uses AppKit coordinates.
+    completion(NSMakeRect([result[@"x"] doubleValue], NSHeight(view.bounds) - [result[@"y"] doubleValue] - [result[@"height"] doubleValue],
+      [result[@"width"] doubleValue], [result[@"height"] doubleValue]));
+  }];
+}
 - (void)updateMarkdown:(NSString *)markdown inView:(NSView *)view {
   if ([view isKindOfClass:TLMarkdownWebView.class] && ![((TLMarkdownWebView *)view).text isEqualToString:markdown]) {
     [(TLMarkdownWebView *)view updateText:markdown];
@@ -119,6 +141,10 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
 
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     configuration.suppressesIncrementalRendering = NO;
+    NSURL *findURL = [NSBundle.mainBundle URLForResource:@"MarkdownFind" withExtension:@"js"];
+    NSString *findScript = findURL ? [NSString stringWithContentsOfURL:findURL encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (findScript) [configuration.userContentController addUserScript:[[WKUserScript alloc] initWithSource:findScript
+      injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES]];
     if (rendersMarkdown) {
       [configuration.userContentController addScriptMessageHandlerWithReply:[[TLMarkdownClipboardHandler alloc] init]
         contentWorld:WKContentWorld.pageWorld name:@"talariaCopyCode"];
@@ -172,6 +198,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
   self.documentReady = YES;
+  [NSNotificationCenter.defaultCenter postNotificationName:TLMarkdownContentDidChangeNotification object:self];
   [self updateText:self.text];
   [self scheduleHeightUpdate];
 }
@@ -192,6 +219,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     [view.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
       if (error && [weakSelf.renderedText isEqualToString:renderedText]) weakSelf.renderedText = nil;
       [weakSelf scheduleHeightUpdate];
+      [NSNotificationCenter.defaultCenter postNotificationName:TLMarkdownContentDidChangeNotification object:weakSelf];
     }];
   });
 }
@@ -247,6 +275,7 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     [self invalidateIntrinsicContentSize];
     [self.superview layoutSubtreeIfNeeded];
     if (self.heightChangeHandler) self.heightChangeHandler();
+    [NSNotificationCenter.defaultCenter postNotificationName:TLMarkdownContentDidChangeNotification object:self];
   }];
 }
 
@@ -320,7 +349,9 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     @"<style>"
     @"html,body{margin:0;padding:0;background:%@;color:%@;font:%.1fpx -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.48;overflow:hidden;word-break:normal;overflow-wrap:anywhere;}"
     @"body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}"
-    @"#content{box-sizing:border-box;width:100%%;max-width:100%%;}"
+    // Contain child margins so the measured height includes the whole message.
+    // A list-only message otherwise shifts down and clips its final underline.
+    @"#content{display:flow-root;box-sizing:border-box;width:100%%;max-width:100%%;}"
     @"#content>:first-child{margin-top:0!important;}"
     @"#content>:last-child{margin-bottom:0!important;}"
     @"p{margin:0 0 %.1fpx 0;}"
