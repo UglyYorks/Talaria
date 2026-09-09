@@ -320,7 +320,9 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
     @"<style>"
     @"html,body{margin:0;padding:0;background:%@;color:%@;font:%.1fpx -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.48;overflow:hidden;word-break:normal;overflow-wrap:anywhere;}"
     @"body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}"
-    @"#content{box-sizing:border-box;width:100%%;max-width:100%%;}"
+    // Contain child margins so the measured height includes the whole message.
+    // A list-only message otherwise shifts down and clips its final underline.
+    @"#content{display:flow-root;box-sizing:border-box;width:100%%;max-width:100%%;}"
     @"#content>:first-child{margin-top:0!important;}"
     @"#content>:last-child{margin-bottom:0!important;}"
     @"p{margin:0 0 %.1fpx 0;}"

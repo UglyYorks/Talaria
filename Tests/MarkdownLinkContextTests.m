@@ -129,8 +129,42 @@ static void TestMessageMenuRouting(NSWindow *window, NSView *row, TLMarkdownCont
     @"native WebKit click opens the shared link menu through the trusted DOM event");
   MessageMonitor = nil;
 }
+static void TestTrailingListLinks(void) {
+  NSString *fixture = @"- [Wikipedia](https://wikipedia.org)\n- [NASA](https://nasa.gov)\n"
+    "- [Internet Archive](https://archive.org)\n- [Project Gutenberg](https://gutenberg.org)\n"
+    "- [OpenStreetMap](https://openstreetmap.org)";
+  for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    TLMarkdownRenderer *renderer = [[TLMarkdownRenderer alloc] initWithPalette:palette];
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, 500)
+      styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed = NO;
+    NSView *view = [renderer viewForMarkdown:fixture textColor:palette.assistantMessageText baseFont:palette.messageBodyFont];
+    [window.contentView addSubview:view];
+    [NSLayoutConstraint activateConstraints:@[[view.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+      [view.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+      [view.topAnchor constraintEqualToAnchor:window.contentView.topAnchor]]];
+    WKWebView *web = [view valueForKey:@"webView"];
+    Wait(^BOOL { return [[view valueForKey:@"documentReady"] boolValue]; });
+    for (NSNumber *width in @[@700, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 500)];
+      [window.contentView layoutSubtreeIfNeeded];
+      for (NSString *text in @[fixture, [fixture stringByAppendingString:@"\n  - [A nested link with a long wrapping title](https://example.com)"]]) {
+        [renderer updateMarkdown:text inView:view];
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+        Check([Eval(web, @"(()=>{const box=document.querySelector('#content').getBoundingClientRect();"
+          "return box.top>=0 && box.bottom<=innerHeight+1 && [...document.querySelectorAll('a')].every(a=>"
+          "a.getBoundingClientRect().bottom<=innerHeight && getComputedStyle(a).textDecorationLine==='underline');})()") boolValue],
+          @"list margins, trailing links, and underlines fit inside the measured message at both widths and themes");
+      }
+    }
+    [window close];
+  }
+}
+
 int main(void) { @autoreleasepool {
   [NSApplication sharedApplication];
+  TestTrailingListLinks();
   TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
   TLMarkdownRenderer *renderer = [[TLMarkdownRenderer alloc] initWithPalette:palette];
   __block NSURL *opened; __block TLBrowserLinkDestination destination; __block NSUInteger contexts=0;
