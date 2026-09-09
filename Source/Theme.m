@@ -251,6 +251,13 @@ CGColorRef TLCGColor(NSColor *color) {
   self.agentTileBadgeHeight = 14.0;
   self.agentTileBadgeIconSize = 12.0;
   self.agentTileBadgeInset = self.space2;
+  self.emptyStateSparkleMinimumOpacity = 0.05;
+  self.emptyStateSparkleMaximumOpacity = 0.34;
+  self.emptyStateSparkleSize = 22.0;
+  self.emptyStateSparkleSpacing = 64.0;
+  self.emptyStateSparkleMinimumScale = 0.22;
+  self.emptyStateSparkleCycleDuration = 5.5;
+  self.emptyStateSparkleFrameInterval = 1.0 / 30.0;
   self.roleOpacity = 0.72;
   self.disabledOpacity = 0.58;
   self.notchOverlayMinimumWidth = 224.0;

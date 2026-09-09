@@ -260,6 +260,7 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 
 test: $(BUILD_DIR)/BookmarkTests $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/BrowserDownloadTests test-browser-overlay $(BUILD_DIR)/BrowserOverlayPolicyTests $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
 	"$(BUILD_DIR)/BookmarkTests"
+	"$(BUILD_DIR)/StarryEmptyStateTests"
 	"$(BUILD_DIR)/BrowserHistoryTests"
 	"$(BUILD_DIR)/BrowserDownloadTests"
 	"$(BUILD_DIR)/AgentVMLockTests"
@@ -510,3 +511,8 @@ $(BUILD_DIR)/BrowserHistoryTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 include Scripts/browser-import.mk
+
+# Empty chat sky rendering, responsive tips and loading/message transitions.
+test: $(BUILD_DIR)/StarryEmptyStateTests
+$(BUILD_DIR)/StarryEmptyStateTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/StarryEmptyStateTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"

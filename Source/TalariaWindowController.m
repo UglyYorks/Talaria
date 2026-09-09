@@ -1,4 +1,5 @@
 #import "TLBookmarkEditorController.h"
+#import "TLEmptyStateTips.h"
 #import "TLBrowserImageActions.h"
 #import "TLBrowserLinkActions.h"
 #import "design_system/TLActionMenuItem.h"
@@ -1314,6 +1315,19 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.chatPresentation installFindBarInView:chatWorkspace palette:self.palette];
   [chatWorkspace addSubview:[self buildSlashCommandListView]];
   [chatWorkspace addSubview:[self buildMessageInput]];
+  TLStarryEmptyStateView *emptyState = [[TLStarryEmptyStateView alloc] init];
+  emptyState.translatesAutoresizingMaskIntoConstraints = NO;
+  emptyState.hidden = YES;
+  NSArray<NSString *> *tips = TLEmptyStateTips();
+  emptyState.tip = tips[arc4random_uniform((uint32_t)tips.count)];
+  self.chatPresentation.emptyStateView = emptyState;
+  [chatWorkspace addSubview:emptyState positioned:NSWindowAbove relativeTo:messagesView];
+  [NSLayoutConstraint activateConstraints:@[
+    [emptyState.leadingAnchor constraintEqualToAnchor:messagesView.leadingAnchor],
+    [emptyState.trailingAnchor constraintEqualToAnchor:messagesView.trailingAnchor],
+    [emptyState.topAnchor constraintEqualToAnchor:messagesView.topAnchor],
+    [emptyState.bottomAnchor constraintEqualToAnchor:self.messageInput.topAnchor constant:-self.palette.space12],
+  ]];
   TLChatPresentation *presentation = self.chatPresentation;
   presentation.promptQueueView = [TLPromptQueueView new];
   [chatWorkspace addSubview:presentation.promptQueueView];
@@ -4647,14 +4661,28 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
   NSArray<NSView *> *previousRows = self.messageStack.arrangedSubviews.copy;
 
+  TLStarryEmptyStateView *emptyStateView = self.chatPresentation.emptyStateView;
+  emptyStateView.palette = self.palette;
+  emptyStateView.availableMessageWidth = self.messageInputWidthConstraint.constant;
+  emptyStateView.hidden = self.isLoading || self.errorMessage.length > 0 || self.messages.count > 0;
+  if (!emptyStateView.hidden) {
+    NSString *avatar = nil;
+    for (TLAgentRecord *agent in self.agents) {
+      if (agent.agentID == self.database.currentAgentID) { avatar = agent.avatar; break; }
+    }
+    emptyStateView.avatar = avatar ?: @"🤖";
+  }
+
   if (self.isLoading || self.errorMessage.length > 0 || self.messages.count == 0) {
     [self resetMessageRowCache];
     for (NSView *view in previousRows) {
       [self detachMessageRowFromStack:view];
     }
-    NSView *emptyState = [self emptyStateView];
-    [self addMessageRowToStack:emptyState];
-    [self pinMessageRowToStackWidth:emptyState];
+    if (self.isLoading || self.errorMessage.length > 0) {
+      NSView *emptyState = [self emptyStateView];
+      [self addMessageRowToStack:emptyState];
+      [self pinMessageRowToStackWidth:emptyState];
+    }
     [self.chatPresentation refreshFindResults];
     return;
   }

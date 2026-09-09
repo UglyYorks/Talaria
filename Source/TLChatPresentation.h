@@ -9,6 +9,7 @@
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLASCIIPlanetScreensaverView.h"
+#import "design_system/TLStarryEmptyStateView.h"
 
 // UI state belongs to a chat, including its live transcript, draft, selection,
 // scroll position and pending render. The window routes actions to the focused
@@ -36,6 +37,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSArray<TLChatMessage *> *renderedMessages;
 @property (nonatomic) BOOL isLoading;
 @property (nonatomic, copy) NSString *errorMessage;
+@property (nonatomic, strong) TLStarryEmptyStateView *emptyStateView;
 @property (nonatomic, strong) TLTokenView *messagesBackground;
 @property (nonatomic, strong) TLMessageInput *messageInput;
 @property (nonatomic, strong) NSView *chatWorkspace;

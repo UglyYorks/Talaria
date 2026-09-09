@@ -151,7 +151,7 @@ static NSPoint TLMessageBubbleReferencePoint(CGFloat x, CGFloat y, NSRect body, 
                      NSMinY(body) + (108.0 - y) * scale);
 }
 
-static NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
+NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds,
                                                        TLThemePalette *palette,
                                                        CGFloat requestedRadius,
                                                        BOOL rendersAsPill) {
