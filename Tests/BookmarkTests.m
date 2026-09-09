@@ -167,9 +167,62 @@ static void TestPopover(TLBookmarkTestController *owner, TLAppStateManager *stat
   [window close];
 }
 
+static void TestBrowserHistoryCompatibility(void) {
+  for (NSNumber *version in @[@9, @10]) {
+    NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+    NSURL *URL = [directory URLByAppendingPathComponent:@"history.sqlite"];
+    NSError *error = nil;
+    TLDatabase *database = [[TLDatabase alloc] initWithURL:URL error:&error];
+    TLChatRecord *chat = [database createChatWithModel:@"test" error:&error];
+    [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Keep conversation" thinking:nil] chatID:chat.chatID error:&error];
+    database = nil;
+    TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
+    Check([fixture executeSQL:
+      "DROP TABLE bookmarks;"
+      "CREATE TABLE browser_history (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, title TEXT NOT NULL, visited_at TEXT NOT NULL DEFAULT (datetime('now')));"
+      "CREATE INDEX browser_history_recent ON browser_history(visited_at DESC, id DESC);"
+      "INSERT INTO browser_history(url,title,visited_at) VALUES('https://example.com/kept','Kept page','2026-09-09 00:00:00');"
+      "PRAGMA user_version=9;" error:&error], @"create independent browser-history version-9 fixture without bookmarks");
+    if (version.integerValue == 10) Check([fixture executeSQL:
+      "ALTER TABLE browser_history ADD COLUMN favicon BLOB; UPDATE browser_history SET favicon=X'012345'; PRAGMA user_version=10;"
+      error:&error], @"create version-10 history with favicon");
+    for (NSUInteger attempt = 0; attempt < 2; attempt++) {
+      database = [[TLDatabase alloc] initWithURL:URL error:&error];
+      Check(database != nil, [NSString stringWithFormat:@"open browser-history schema %@: %@", version, error]);
+      Check([[[database chatWithID:chat.chatID error:&error].messages.firstObject content] isEqual:@"Keep conversation"], @"preserve existing conversation");
+      TLBookmark *bookmark = [TLBookmark new]; bookmark.name = @"Saved conversation"; bookmark.chatID = chat.chatID;
+      Check([database saveBookmark:bookmark error:&error] && [database listBookmarks:&error].count == 1, @"bookmarks work alongside browser history and survive repeated opening");
+      database = nil;
+      TLSQLiteStatement *storedVersion = [fixture prepareSQL:"PRAGMA user_version" error:&error];
+      Check([storedVersion step] == SQLITE_ROW && sqlite3_column_int(storedVersion.handle,0) == version.integerValue, @"never downgrade the other worktree's version");
+      TLSQLiteStatement *history = [fixture prepareSQL:"SELECT url,title,visited_at FROM browser_history" error:&error];
+      Check([history step] == SQLITE_ROW && [[history stringAtColumn:0] isEqual:@"https://example.com/kept"] &&
+        [[history stringAtColumn:1] isEqual:@"Kept page"] && [[history stringAtColumn:2] isEqual:@"2026-09-09 00:00:00"], @"history row is untouched");
+      if (version.integerValue == 10) {
+        TLSQLiteStatement *icon = [fixture prepareSQL:"SELECT hex(favicon) FROM browser_history" error:&error];
+        Check([icon step] == SQLITE_ROW && [[icon stringAtColumn:0] isEqual:@"012345"], @"favicon bytes remain intact");
+      }
+    }
+    Check([fixture executeSQL:"PRAGMA user_version=11" error:&error], @"prepare unknown future version");
+    error = nil;
+    Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error, @"unknown future versions remain rejected");
+    if (version.integerValue == 10) {
+      Check([fixture executeSQL:"PRAGMA user_version=10; ALTER TABLE chats ADD COLUMN unknown_required TEXT NOT NULL DEFAULT 'x'" error:nil], @"prepare incompatible core schema");
+      error = nil;
+      Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error, @"version-10 compatibility requires a recognized core schema");
+      Check([fixture executeSQL:"ALTER TABLE chats DROP COLUMN unknown_required; ALTER TABLE browser_history DROP COLUMN favicon" error:nil], @"prepare unrecognized version-10 history schema");
+      error = nil;
+      Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error, @"unrecognized version-10 history remains rejected");
+    }
+    fixture = nil;
+    [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
+  }
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestBrowserHistoryCompatibility();
     NSURL *base = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
     [NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:nil error:nil];
     NSURL *URL = [base URLByAppendingPathComponent:@"bookmarks.sqlite"];

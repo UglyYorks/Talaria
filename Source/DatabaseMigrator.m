@@ -90,6 +90,32 @@ static BOOL TLEnsureAgentProfiles(TLSQLiteConnection *connection, NSError **erro
   return [connection executeSQL:"CREATE UNIQUE INDEX IF NOT EXISTS agents_vm_directory ON agents(vm_directory)" error:error];
 }
 
+// Browser history used versions 9 and 10 independently of bookmarks. Its
+// separate table is additive; accept only its known shape and the v8 core.
+static BOOL TLDatabaseHasBrowserHistorySchema(TLSQLiteConnection *connection) {
+  NSDictionary *types = @{@"id":@"INTEGER", @"url":@"TEXT", @"title":@"TEXT", @"visited_at":@"TEXT", @"favicon":@"BLOB"};
+  TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(browser_history)" error:nil];
+  if (!columns) return NO;
+  NSMutableSet *missing = [NSMutableSet setWithArray:types.allKeys];
+  int result;
+  while ((result = [columns step]) == SQLITE_ROW) {
+    NSString *name = [columns stringAtColumn:1];
+    if (![types[name] isEqual:[[columns stringAtColumn:2] uppercaseString]]) return NO;
+    [missing removeObject:name];
+  }
+  return result == SQLITE_DONE && missing.count == 0;
+}
+
+static BOOL TLEnsureBookmarks(TLSQLiteConnection *connection, NSError **error) {
+  return [connection executeSQL:
+    "CREATE TABLE IF NOT EXISTS bookmarks ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, url TEXT UNIQUE, "
+    "chat_id INTEGER UNIQUE REFERENCES chats(id) ON DELETE CASCADE, "
+    "emoji TEXT NOT NULL DEFAULT '', favicon TEXT NOT NULL DEFAULT '', "
+    "CHECK ((url IS NOT NULL AND chat_id IS NULL) OR (url IS NULL AND chat_id IS NOT NULL)));"
+    error:error];
+}
+
 BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, NSError **error) {
   NSInteger version = TLDatabaseSchemaVersion(connection, error);
   if (version < 0) {
@@ -105,6 +131,21 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
   // INSERT/UPDATE statements preserve that column; never downgrade its version.
   if (version == 8 && targetVersion == 7 && TLDatabaseHasCompatibleAdditiveSchema(connection, YES)) {
     return YES;
+  }
+
+  if (targetVersion == 9 && (version == 9 || version == 10)) {
+    return [connection performTransaction:^BOOL(NSError **transactionError) {
+      NSInteger currentVersion = TLDatabaseSchemaVersion(connection, transactionError);
+      if ((currentVersion != 9 && currentVersion != 10) ||
+          !TLDatabaseHasCompatibleAdditiveSchema(connection, YES) ||
+          (currentVersion == 10 && !TLDatabaseHasBrowserHistorySchema(connection))) {
+        [connection setError:transactionError message:@"Unrecognized database schema for bookmark compatibility."];
+        return NO;
+      }
+      // Ensure this feature even when another worktree already advanced the
+      // shared version. Never downgrade it or rewrite the other feature's data.
+      return TLEnsureBookmarks(connection, transactionError);
+    } error:error];
   }
 
   if (version > targetVersion) {
@@ -256,13 +297,7 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
   }
   if (version < 9 && targetVersion >= 9) {
     BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
-      return [connection executeSQL:
-        "CREATE TABLE IF NOT EXISTS bookmarks ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, url TEXT UNIQUE, "
-        "chat_id INTEGER UNIQUE REFERENCES chats(id) ON DELETE CASCADE, "
-        "emoji TEXT NOT NULL DEFAULT '', favicon TEXT NOT NULL DEFAULT '', "
-        "CHECK ((url IS NOT NULL AND chat_id IS NULL) OR (url IS NULL AND chat_id IS NOT NULL)));"
-        error:transactionError] && TLDatabaseSetSchemaVersion(connection, 9, transactionError);
+      return TLEnsureBookmarks(connection, transactionError) && TLDatabaseSetSchemaVersion(connection, 9, transactionError);
     } error:error];
     if (!migrated) return NO;
     version = 9;
