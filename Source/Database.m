@@ -604,6 +604,32 @@ static NSString *TLTitleFromMessage(NSString *content) {
   }
 }
 
+- (TLStoredChatMessage *)replaceMessage:(TLChatMessage *)message messageID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
+  @synchronized (self) {
+    __block TLStoredChatMessage *saved = nil;
+    BOOL replaced = [self performTransaction:^BOOL(NSError **transactionError) {
+      TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+        "UPDATE messages SET content = ?1, thinking = ?2 WHERE id = ?3 AND chat_id = ?4 AND role = 'assistant'"
+        error:transactionError];
+      if (!statement) return NO;
+      [statement bindText:message.content atIndex:1];
+      if (message.thinking.length) [statement bindText:message.thinking atIndex:2];
+      else [statement bindNullAtIndex:2];
+      [statement bindInt64:messageID atIndex:3];
+      [statement bindInt64:chatID atIndex:4];
+      if (![statement stepDone:transactionError]) return NO;
+      if (sqlite3_changes(self.sqliteConnection.handle) != 1) {
+        TLSetDatabaseError(transactionError, @"Answer was not found in this chat.");
+        return NO;
+      }
+      if (![self touchChatWithID:chatID error:transactionError]) return NO;
+      saved = [self loadMessageWithID:messageID error:transactionError];
+      return saved != nil;
+    } error:error];
+    return replaced ? saved : nil;
+  }
+}
+
 - (BOOL)deleteMessageWithID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
   @synchronized (self) {
     return [self performTransaction:^BOOL(NSError **transactionError) {

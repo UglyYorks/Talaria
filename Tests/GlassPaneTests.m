@@ -138,6 +138,12 @@ static void TestBrowserChatPane(void) {
     @{@"name":@"web_search", @"state":@"completed", @"detail":@"Hermes gateway tool callbacks", @"summary":@"Did 1 search"}];
   [pane showToolActivities:activities];
   TLToolActivityView *activityView = [pane valueForKey:@"activityView"];
+  NSButton *disclosure = (id)activityView.arrangedSubviews.firstObject;
+  Check(!activityView.expanded && activityView.arrangedSubviews.count == 1,
+    @"tool activity starts collapsed with only its disclosure visible");
+  NSStackView *contentStack = [pane valueForKey:@"contentStack"];
+  Check(contentStack.arrangedSubviews.firstObject == activityView,
+    @"browser tool activity appears above the answer");
   [pane showMarkdown:@"" loading:NO];
   Check(!activityView.hidden && ![[pane valueForKey:@"scrollView"] isHidden], @"tools are visible before answer text arrives");
   [pane showApprovalRequest:@{@"request_id":@"approval", @"command":@"make test", @"choices":@[@"once", @"deny"]}];
@@ -145,6 +151,16 @@ static void TestBrowserChatPane(void) {
   Check([[pane valueForKey:@"approvalCard"] superview] == activityView.superview, @"approval and live tools share the visible transcript");
   [pane showApprovalRequest:nil];
   [pane showMarkdown:@"# Working on your request\n\nI’m checking the results." loading:NO];
+  [window.contentView layoutSubtreeIfNeeded];
+  CGFloat collapsedHeight = NSHeight(activityView.frame);
+  [disclosure performClick:nil];
+  [window.contentView layoutSubtreeIfNeeded];
+  Check(activityView.expanded && NSHeight(activityView.frame) > collapsedHeight,
+    @"expanding tool activity grows the transcript to reveal its details");
+  [pane showToolActivities:[activities arrayByAddingObject:@{@"name":@"web_extract", @"state":@"failed", @"detail":@"Page unavailable"}]];
+  Check(activityView.expanded && activityView.arrangedSubviews.firstObject == disclosure,
+    @"live tool updates preserve expansion and the focused disclosure control");
+  [pane showToolActivities:activities];
   for (NSNumber *width in @[@200, @320, @700]) {
     [window setContentSize:NSMakeSize(width.doubleValue, 500)];
     [window.contentView layoutSubtreeIfNeeded];
@@ -155,7 +171,7 @@ static void TestBrowserChatPane(void) {
     Check(fabs(NSMidY(title.frame) - NSMidY(pane.minimizeButton.frame)) < 1, @"header title is centered opposite minimize control");
     Check(NSWidth(activityView.frame) <= NSWidth(pane.frame) && NSHeight(activityView.frame) > 0,
       @"tool activity stays visible and fits at 200px and wider");
-    for (NSTextField *label in activityView.arrangedSubviews) {
+    for (NSView *label in activityView.arrangedSubviews) {
       Check(NSMaxX([label alignmentRectForFrame:label.frame]) <= NSWidth(activityView.frame) + 1,
         @"tool labels keep their text within the pane, accounting for AppKit text-field optical insets");
     }
@@ -170,18 +186,28 @@ static void TestBrowserChatPane(void) {
     [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
     [window.contentView layoutSubtreeIfNeeded];
     Check([activityView.activities isEqual:activities], @"theme switching preserves live activity");
-    NSTextField *heading = activityView.arrangedSubviews.firstObject;
+    Check(activityView.expanded, @"theme switching preserves disclosure state");
+    NSTextField *heading = (id)activityView.arrangedSubviews[1];
     Check([heading.textColor isEqual:pane.palette.labelText], @"existing activity labels reapply semantic theme colors");
     NSBitmapImageRep *preview = [pane bitmapImageRepForCachingDisplayInRect:pane.bounds];
     [pane cacheDisplayInRect:pane.bounds toBitmapImageRep:preview];
     NSString *path = [NSString stringWithFormat:@"/tmp/talaria-tool-activity-%@.png", pane.palette.dark ? @"dark" : @"light"];
     [[preview representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
   }
+  [disclosure performClick:nil];
+  [window.contentView layoutSubtreeIfNeeded];
+  Check(!activityView.expanded && activityView.arrangedSubviews.count == 1 && NSHeight(activityView.frame) <= collapsedHeight + 1,
+    @"collapsing removes activity details and reclaims their transcript height");
   [window setContentSize:NSMakeSize(700, 500)];
   [window.contentView layoutSubtreeIfNeeded];
   NSBitmapImageRep *bitmap = [pane bitmapImageRepForCachingDisplayInRect:pane.bounds];
   [pane cacheDisplayInRect:pane.bounds toBitmapImageRep:bitmap];
   [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@"/tmp/talaria-browser-chat-pane.png" atomically:YES];
+  [disclosure performClick:nil];
+  [pane showToolActivities:@[]];
+  Check(activityView.hidden && !activityView.expanded, @"clearing a turn hides and resets its disclosure");
+  [pane showToolActivities:activities];
+  Check(!activityView.hidden && !activityView.expanded, @"the next turn starts collapsed again");
 
   NSString *source = [NSString stringWithContentsOfFile:@"Vendor/readability/Readability.js" encoding:NSUTF8StringEncoding error:nil];
   Check(source.length > 0, @"Readability is vendored");

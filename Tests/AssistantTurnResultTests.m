@@ -18,9 +18,16 @@ static NSError *TLTestError(NSString *message) {
 @property NSUInteger saveCount;
 @property NSUInteger failOnSave;
 @property NSError *saveError;
+@property NSUInteger replacementCount;
 @end
 
 @implementation TLTurnTestMessageStore
+- (TLStoredChatMessage *)replaceMessage:(TLChatMessage *)message messageID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
+  self.replacementCount++;
+  TLStoredChatMessage *saved = [self saveMessage:message chatID:chatID error:error];
+  saved.messageID = messageID;
+  return saved;
+}
 - (instancetype)init {
   if ((self = [super init])) _savedMessages = [NSMutableArray array];
   return self;
@@ -464,9 +471,46 @@ static void TestLiveToolActivity(void) {
   }
 }
 
+static void TestRegeneration(void) {
+  for (NSString *outcome in @[@"success", @"failure", @"cancel", @"save-failure"]) {
+    TLTurnTestMessageStore *store = [TLTurnTestMessageStore new];
+    TLTurnTestStream *stream = [TLTurnTestStream new];
+    stream.deferred = YES;
+    TLChatMessage *prompt = [TLChatMessage messageWithRole:TLRoleUser content:@"Explain the image" thinking:nil];
+    prompt.attachments = @[@{@"path":@"/workspace/image.png", @"name":@"image.png"}];
+    TLStoredChatMessage *answer = [TLStoredChatMessage messageWithRole:TLRoleAssistant content:@"Original answer" thinking:nil];
+    answer.messageID = 42;
+    TLChatMessage *later = [TLChatMessage messageWithRole:TLRoleUser content:@"Later question" thinking:nil];
+    NSMutableArray *messages = [NSMutableArray arrayWithObjects:prompt, answer, later, nil];
+    TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+    runner.regenerationPrompt = prompt;
+    runner.regenerationMessage = answer;
+    runner.attachments = prompt.attachments;
+    __block TLAssistantTurnResult *result;
+    TLAssert([runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"Regenerate the earlier answer"
+      updateHandler:nil completionHandler:^(TLAssistantTurnResult *value) { result = value; } error:nil], @"regeneration starts");
+    TLAssert(messages.count == 3 && messages[0] == prompt && messages[2] == later && store.saveCount == 0,
+      @"regeneration replaces only the selected row without duplicating or saving a user prompt");
+    TLAssert([stream.lastMessages.lastObject.content containsString:@"image.png"] &&
+      [stream.lastMessages.lastObject.content containsString:@"attachment"], @"regeneration retains original attachment context");
+    TLTurnTestRequest *request = stream.requests.lastObject;
+    request.delta(request.requestID, TLAgentStreamDeltaKindContent, @"Fresh answer");
+    TLAssert([((TLChatMessage *)messages[1]).content isEqual:@"Fresh answer"], @"regeneration streams into the selected answer's position");
+    if ([outcome isEqual:@"save-failure"]) { store.failOnSave = 1; store.saveError = TLTestError(@"Disk full"); }
+    if ([outcome isEqual:@"cancel"]) [runner cancel];
+    else request.completion([outcome isEqual:@"failure"] ? TLTestError(@"Offline") : nil);
+    if ([outcome isEqual:@"success"]) {
+      TLAssert(((TLStoredChatMessage *)messages[1]).messageID == 42 && store.replacementCount == 1 && store.saveCount == 1,
+        @"successful regeneration updates the same durable answer without adding rows");
+    } else TLAssert(messages[1] == answer, @"failed, cancelled or unsaved regeneration restores the original answer");
+    TLAssert(result && !runner.running && messages.count == 3 && messages[2] == later, @"regeneration completes without discarding later messages");
+  }
+}
+
 int main(void) {
   @autoreleasepool {
     TestAttachmentPrompt();
+    TestRegeneration();
     TestLiveToolActivity();
     TestCancellation();
     TestSuccessfulTurn();

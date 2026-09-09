@@ -6,5 +6,6 @@ NS_ASSUME_NONNULL_BEGIN
 @interface TLToolActivityView : NSStackView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *activities;
+@property (nonatomic, getter=isExpanded) BOOL expanded;
 @end
 NS_ASSUME_NONNULL_END

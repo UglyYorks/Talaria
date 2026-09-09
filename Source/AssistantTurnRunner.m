@@ -90,6 +90,15 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     }
     return NO;
   }
+  TLChatMessage *originalAnswer = self.regenerationMessage;
+  if (self.regenerationPrompt &&
+      ([messages indexOfObjectIdenticalTo:self.regenerationPrompt] == NSNotFound ||
+       (originalAnswer && [messages indexOfObjectIdenticalTo:originalAnswer] == NSNotFound) ||
+       ([originalAnswer isKindOfClass:TLStoredChatMessage.class] &&
+        ![self.messageStore respondsToSelector:@selector(replaceMessage:messageID:chatID:error:)]))) {
+    if (error) *error = TLAssistantTurnError(@"This answer is no longer available to regenerate.");
+    return NO;
+  }
 
   NSMutableArray<TLChatMessage *> *requestMessages = [TLBuildRequestMessages(messages, trimmedPrompt) mutableCopy];
   if (self.referenceContext.length) {
@@ -107,7 +116,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
                       strategy:TLPromptCompactionStrategyWhole name:@"attachments"];
     requestMessages.lastObject.content = [builder build];
   }
-  NSUInteger assistantMessageIndex = messages.count + 1;
+  NSUInteger assistantMessageIndex = messages.count + (self.regenerationPrompt ? 0 : 1);
   requestMessages.lastObject.approvalResponse = self.approvalResponse;
   NSString *requestID = NSUUID.UUID.UUIDString;
   NSMutableString *assistantContent = [NSMutableString string];
@@ -115,11 +124,12 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   TLStreamingBlockBuffer *assistantContentDisplay = [[TLStreamingBlockBuffer alloc] init];
   __block NSString *assistantStatus = @"";
 
-  TLChatMessage *userMessage = [TLChatMessage messageWithRole:TLRoleUser content:trimmedPrompt thinking:nil];
-  userMessage.attachments = attachments;
+  TLChatMessage *userMessage = self.regenerationPrompt ?: [TLChatMessage messageWithRole:TLRoleUser content:trimmedPrompt thinking:nil];
+  if (!self.regenerationPrompt) userMessage.attachments = attachments;
   TLChatMessage *assistantMessage = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
-  [messages addObject:userMessage];
-  [messages addObject:assistantMessage];
+  if (!self.regenerationPrompt) [messages addObject:userMessage];
+  if (originalAnswer) messages[[messages indexOfObjectIdenticalTo:originalAnswer]] = assistantMessage;
+  else [messages addObject:assistantMessage];
   self.running = YES;
   self.activeRequestID = requestID;
   if (updateHandler) {
@@ -127,7 +137,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   }
 
   NSError *saveError = nil;
-  TLStoredChatMessage *savedUser = [self.messageStore saveMessage:userMessage
+  TLChatMessage *savedUser = self.regenerationPrompt ?: [self.messageStore saveMessage:userMessage
                       chatID:chat.chatID
                        error:&saveError];
   if (!savedUser || saveError) {
@@ -141,7 +151,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     [self finishWithResult:result updateHandler:updateHandler completionHandler:completionHandler];
     return YES;
   }
-  messages[assistantMessageIndex - 1] = savedUser;
+  if (!self.regenerationPrompt) messages[assistantMessageIndex - 1] = savedUser;
 
   __weak typeof(self) weakSelf = self;
   self.finishStream = ^(NSError *streamError) {
@@ -161,11 +171,19 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
 
     NSError *assistantSaveError = nil;
     TLChatMessage *resultAssistant = assistantMessage;
-    if (streamError && assistantContent.length == 0 && assistantThinking.length == 0 && !assistantMessage.toolActivities.count) {
+    if (streamError && strongSelf.regenerationPrompt) {
+      NSUInteger currentIndex = [messages indexOfObjectIdenticalTo:assistantMessage];
+      if (originalAnswer && currentIndex != NSNotFound) messages[currentIndex] = originalAnswer;
+      else [messages removeObjectIdenticalTo:assistantMessage];
+      resultAssistant = nil;
+    } else if (streamError && assistantContent.length == 0 && assistantThinking.length == 0 && !assistantMessage.toolActivities.count) {
       [messages removeObjectIdenticalTo:assistantMessage];
       resultAssistant = nil;
     } else {
-      TLStoredChatMessage *savedAssistant = [strongSelf.messageStore saveMessage:assistantMessage
+      TLStoredChatMessage *savedAssistant = [originalAnswer isKindOfClass:TLStoredChatMessage.class]
+        ? [strongSelf.messageStore replaceMessage:assistantMessage messageID:((TLStoredChatMessage *)originalAnswer).messageID
+                                          chatID:chat.chatID error:&assistantSaveError]
+        : [strongSelf.messageStore saveMessage:assistantMessage
                                                                         chatID:chat.chatID
                                                                          error:&assistantSaveError];
       if (!savedAssistant && !assistantSaveError) {
@@ -177,6 +195,9 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
         resultAssistant = savedAssistant;
         NSUInteger currentIndex = [messages indexOfObjectIdenticalTo:assistantMessage];
         if (currentIndex != NSNotFound) messages[currentIndex] = savedAssistant;
+      } else if (originalAnswer) {
+        NSUInteger currentIndex = [messages indexOfObjectIdenticalTo:assistantMessage];
+        if (currentIndex != NSNotFound) messages[currentIndex] = originalAnswer;
       }
     }
     TLAssistantTurnResult *result = [[TLAssistantTurnResult alloc]

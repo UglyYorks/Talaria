@@ -312,17 +312,26 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   [controller setValue:stack forKey:@"messageStack"];
   [controller setValue:stack forKey:@"messageDocumentView"];
   TLChatMessage *user = [TLChatMessage messageWithRole:TLRoleUser content:@"Write a long answer" thinking:nil];
-  TLChatMessage *assistant = [TLChatMessage messageWithRole:TLRoleAssistant content:@"First paragraph.\n\n" thinking:nil];
+  TLChatMessage *assistant = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
   [assistant applyToolActivity:@{@"id":@"tool-1", @"name":@"terminal", @"state":@"running", @"detail":@"make test"}];
   NSMutableArray *messages = [NSMutableArray arrayWithObjects:user, assistant, nil];
   [controller setValue:messages forKey:@"messages"];
   [controller renderMessages];
+  NSMapTable *activityViews = [[controller valueForKey:@"chatPresentation"] valueForKey:@"messageActivityViews"];
+  TLToolActivityView *initialActivity = [activityViews objectForKey:assistant];
+  Check(!initialActivity.expanded && ((NSStackView *)initialActivity.superview).arrangedSubviews.firstObject == initialActivity,
+    @"main chat places collapsed tool activity above the answer");
+  [(NSButton *)initialActivity.arrangedSubviews.firstObject performClick:nil];
+  assistant.content = @"First paragraph.\n\n";
+  [controller renderMessages];
+  stack.removalCount = 0;
   NSArray *rows = stack.arrangedSubviews.copy;
   NSMapTable *markdownViews = [controller valueForKey:@"messageMarkdownViews"];
   NSView *markdown = [markdownViews objectForKey:assistant];
-  NSMapTable *activityViews = [[controller valueForKey:@"chatPresentation"] valueForKey:@"messageActivityViews"];
   TLToolActivityView *activityView = [activityViews objectForKey:assistant];
   Check(activityView && !activityView.hidden && activityView.superview, @"main chat displays tools alongside streamed answer text");
+  Check(activityView.expanded && ((NSStackView *)activityView.superview).arrangedSubviews.firstObject == activityView,
+    @"the first answer token preserves expansion and keeps activity above the answer");
   WKWebView *web = [markdown valueForKey:@"webView"];
   NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
   while (![[markdown valueForKey:@"documentReady"] boolValue] && deadline.timeIntervalSinceNow > 0) {
@@ -350,7 +359,8 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   [assistant applyToolActivity:@{@"id":@"tool-1", @"name":@"terminal", @"state":@"completed", @"summary":@"Tests passed"}];
   [controller renderMessages];
   Check([activityViews objectForKey:assistant] == activityView && [markdownViews objectForKey:assistant] == markdown &&
-    [activityView.activities.firstObject[@"state"] isEqual:@"completed"], @"tool completions update in place without reloading the answer");
+    activityView.expanded && [activityView.activities.firstObject[@"state"] isEqual:@"completed"],
+    @"tool completions preserve expansion and update in place without reloading the answer");
   EvaluateChatScript(web, @"window.domRenderCount = 0; const render = window.talariaRender; window.talariaRender = source => { window.domRenderCount++; render(source); }; true;");
   [controller renderMessages];
   [controller renderMessages];
