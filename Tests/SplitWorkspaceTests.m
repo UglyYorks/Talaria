@@ -207,6 +207,18 @@ static void TestChatInputNavigation(TLSplitTestController *owner, TLAppStateMana
     @"URL submission preserves chats that already contain messages");
 
   [owner startNewChatWithModel:@"test-model" focus:NO];
+  TLWorkspaceTab *queued = state.snapshot.workspaceTabs.lastObject;
+  presentation = [owner valueForKey:@"chatPresentation"];
+  [presentation.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Keep this follow-up" attachmentURLs:@[]]];
+  presentation.queuePaused = YES;
+  presentation.promptTextView.string = URL.absoluteString;
+  count = state.snapshot.workspaceTabs.count;
+  [owner sendMessage:nil allowAutomaticRouting:YES]; Drain();
+  Check(state.snapshot.workspaceTabs.count == count + 1 &&
+    [state workspaceTabWithKind:queued.kind tabID:queued.tabID] && presentation.queuedPrompts.count == 1,
+    @"URL submission retains an otherwise empty chat with queued follow-ups");
+
+  [owner startNewChatWithModel:@"test-model" focus:NO];
   empty = state.snapshot.workspaceTabs.lastObject;
   count = state.snapshot.workspaceTabs.count;
   [owner openBrowserTabWithURL:URL]; Drain();

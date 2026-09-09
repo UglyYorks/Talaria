@@ -83,14 +83,15 @@ class HermesStreamingTests(unittest.TestCase):
         output = FlushedOutput()
         chunks = ["Hello", " 🦊", "\n```swift\n", 'print("hi")']
         gateway = Mock()
-        def run(session, model, prompt, delta, cancellation=None, approval_response=None):
+        def run(session, model, prompt, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False):
+            self.assertTrue(wait_for_previous_turn)
             for index, chunk in enumerate(chunks):
                 delta("content", chunk)
                 self.assertEqual([json.loads(line)["text"] for line in output.flushed.splitlines()], chunks[:index + 1])
         gateway.run.side_effect = run
         with patch.object(runtime, "tui_gateway", return_value=gateway), patch.object(runtime, "save_agent_soul"):
             runtime.stream_hermes_session({"request_id": "r", "session_id": "chat", "token": "test",
-                "model": "test", "prompt": "Hello"}, output)
+                "model": "test", "prompt": "Hello", "wait_for_previous_turn": True}, output)
         events = [json.loads(line) for line in output.flushed.splitlines()]
         self.assertEqual(events[-1], {"type": "complete"})
         self.assertEqual(len(events), len(chunks) + 1)

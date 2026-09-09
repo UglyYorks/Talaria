@@ -487,12 +487,24 @@ class HermesGateway:
             return self.command(chat_id, sid, target + (" " + arg if arg else ""), model, depth + 1)
         return result
 
-    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None):
+    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False):
         if cancellation and cancellation.cancelled():
             return
         with self.lock:
             session_lock = self.session_locks.setdefault(chat_id, threading.Lock())
-        if not session_lock.acquire(blocking=False):
+        acquired = session_lock.acquire(blocking=False)
+        control_command = (text.split(maxsplit=1) or [""])[0].lower() in {"/stop", "/interrupt", "/steer"}
+        if not acquired and wait_for_previous_turn and not control_command and approval_response is None:
+            # The native Stop finishes locally before Hermes emits its terminal
+            # event. Keep the new turn out of that listener until it is drained.
+            deadline = time.monotonic() + 30
+            while not acquired:
+                if cancellation and cancellation.cancelled():
+                    return
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Hermes is still stopping the previous turn. Try sending again.")
+                acquired = session_lock.acquire(timeout=0.1)
+        if not acquired:
             if approval_response is not None:
                 raise RuntimeError("This approval is already being submitted. Wait for the current request.")
             name = text.split(maxsplit=1)[0].lower()

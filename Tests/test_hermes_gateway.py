@@ -247,6 +247,66 @@ class GatewayTests(unittest.TestCase):
         self.assertFalse(threads[1].is_alive())
         self.assertEqual(output, {'a': [], 'b': ['B continues', '']})
 
+    def test_follow_up_waits_for_cancelled_turn_to_drain(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
+        started = threading.Event()
+        interrupted = threading.Event()
+        submitted = threading.Event()
+        cancellation = worker.StreamCancellation()
+        output, failures = [], []
+
+        def rpc(method, params):
+            if method == 'session.interrupt':
+                interrupted.set()  # Terminal event deliberately arrives later.
+            if method == 'prompt.submit':
+                if params['text'] == 'original':
+                    started.set()
+                else:
+                    submitted.set()
+                    self.gateway.listeners['runtime'].put(
+                        {'type': 'message.complete', 'payload': {'text': 'Selected answer'}})
+            return {}
+
+        def run(text, **kwargs):
+            try:
+                self.gateway.run('chat', 'model', text, lambda kind, text: output.append(text), **kwargs)
+            except Exception as exc:
+                failures.append(exc)
+
+        self.gateway.call.side_effect = rpc
+        old = threading.Thread(target=run, args=('original',), kwargs={'cancellation': cancellation}, daemon=True)
+        old.start()
+        self.assertTrue(started.wait(2))
+        cancellation.cancel()
+        self.assertTrue(interrupted.wait(2))
+        listener = self.gateway.listeners['runtime']
+        new = threading.Thread(target=run, args=('selected',), kwargs={'wait_for_previous_turn': True}, daemon=True)
+        new.start()
+        self.assertFalse(submitted.wait(0.05))
+        self.assertIs(self.gateway.listeners['runtime'], listener)
+        listener.put({'type': 'message.delta', 'payload': {'text': 'stale original output'}})
+        listener.put({'type': 'message.complete', 'payload': {}})
+        old.join(2)
+        new.join(2)
+        self.assertFalse(old.is_alive() or new.is_alive())
+        self.assertEqual(failures, [])
+        self.assertTrue(submitted.is_set())
+        self.assertEqual(output, ['Selected answer'])
+
+    def test_waiting_follow_up_can_be_cancelled_without_submitting(self):
+        lock = threading.Lock()
+        lock.acquire()
+        self.gateway.session_locks['chat'] = lock
+        cancellation = worker.StreamCancellation()
+        thread = threading.Thread(target=self.gateway.run, args=('chat', 'model', 'selected', Mock()),
+                                  kwargs={'cancellation': cancellation, 'wait_for_previous_turn': True}, daemon=True)
+        thread.start()
+        cancellation.cancel()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.gateway.call.assert_not_called()
+        lock.release()
+
     def test_stream_filters_reasoning_and_avoids_duplicate_final(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
         def call(method, params):

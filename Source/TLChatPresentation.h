@@ -1,5 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "TalariaModels.h"
+#import "TLQueuedPrompt.h"
+#import "design_system/TLPromptQueueView.h"
 #import "design_system/TLFindBar.h"
 #import "UIComponents.h"
 #import "design_system/TLMessageInput.h"
@@ -18,6 +20,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)applyFindPalette:(TLThemePalette *)palette;
 - (void)refreshFindResults;
 @property (nonatomic, strong) TLChatRecord *chat;
+@property (nonatomic, strong) NSMutableArray<TLQueuedPrompt *> *queuedPrompts;
+@property (nonatomic, strong) TLPromptQueueView *promptQueueView;
+@property (nonatomic, strong) NSLayoutConstraint *promptQueueBottomConstraint;
+@property (nonatomic) BOOL queuePaused;
+@property (nonatomic) BOOL queueInterruptPending;
+@property (nonatomic, strong, nullable) TLQueuedPrompt *editingQueuedPrompt;
+@property (nonatomic, strong, nullable) TLQueuedPrompt *queueDraft;
+@property (nonatomic, strong, nullable) TLQueuedPrompt *queuedPromptInFlight;
 @property (nonatomic, strong) NSMutableArray<TLChatMessage *> *messages;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageRowViews;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSString *> *messageRowSignatures;
