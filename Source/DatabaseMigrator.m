@@ -90,6 +90,31 @@ static BOOL TLEnsureAgentProfiles(TLSQLiteConnection *connection, NSError **erro
   return [connection executeSQL:"CREATE UNIQUE INDEX IF NOT EXISTS agents_vm_directory ON agents(vm_directory)" error:error];
 }
 
+// Validate the known browser-history schema before combining it with bookmarks.
+static BOOL TLDatabaseHasBrowserHistorySchema(TLSQLiteConnection *connection) {
+  NSDictionary *types = @{@"id":@"INTEGER", @"url":@"TEXT", @"title":@"TEXT", @"visited_at":@"TEXT", @"favicon":@"BLOB"};
+  TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(browser_history)" error:nil];
+  if (!columns) return NO;
+  NSMutableSet *missing = [NSMutableSet setWithArray:types.allKeys];
+  int result;
+  while ((result = [columns step]) == SQLITE_ROW) {
+    NSString *name = [columns stringAtColumn:1];
+    if (![types[name] isEqual:[[columns stringAtColumn:2] uppercaseString]]) return NO;
+    [missing removeObject:name];
+  }
+  return result == SQLITE_DONE && missing.count == 0;
+}
+
+static BOOL TLEnsureBookmarks(TLSQLiteConnection *connection, NSError **error) {
+  return [connection executeSQL:
+    "CREATE TABLE IF NOT EXISTS bookmarks ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, url TEXT UNIQUE, "
+    "chat_id INTEGER UNIQUE REFERENCES chats(id) ON DELETE CASCADE, "
+    "emoji TEXT NOT NULL DEFAULT '', favicon TEXT NOT NULL DEFAULT '', "
+    "CHECK ((url IS NOT NULL AND chat_id IS NULL) OR (url IS NULL AND chat_id IS NOT NULL)));"
+    error:error];
+}
+
 BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, NSError **error) {
   NSInteger version = TLDatabaseSchemaVersion(connection, error);
   if (version < 0) {
@@ -253,6 +278,52 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     } error:error];
     if (!migrated) return NO;
     version = 8;
+  }
+  if (version < 9 && targetVersion >= 9) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      return [connection executeSQL:
+        "CREATE TABLE IF NOT EXISTS browser_history ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, title TEXT NOT NULL,"
+        "visited_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        "CREATE INDEX IF NOT EXISTS browser_history_recent ON browser_history(visited_at DESC, id DESC);"
+        error:transactionError] && TLDatabaseSetSchemaVersion(connection, 9, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 9;
+  }
+  if (version < 10 && targetVersion >= 10) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      if (![connection executeSQL:
+        "CREATE TABLE IF NOT EXISTS browser_history ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, title TEXT NOT NULL,"
+        "visited_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        "CREATE INDEX IF NOT EXISTS browser_history_recent ON browser_history(visited_at DESC, id DESC);"
+        error:transactionError]) return NO;
+      TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(browser_history)" error:transactionError];
+      if (!columns) return NO;
+      BOOL exists = NO;
+      int result;
+      while ((result = [columns step]) == SQLITE_ROW) {
+        if ([[columns stringAtColumn:1] isEqualToString:@"favicon"]) exists = YES;
+      }
+      if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
+      columns = nil;
+      return (exists || [connection executeSQL:"ALTER TABLE browser_history ADD COLUMN favicon BLOB" error:transactionError]) &&
+        TLDatabaseSetSchemaVersion(connection, 10, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 10;
+  }
+  if (version < 11 && targetVersion >= 11) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      if (!TLDatabaseHasCompatibleAdditiveSchema(connection, YES) || !TLDatabaseHasBrowserHistorySchema(connection)) {
+        [connection setError:transactionError message:@"Unrecognized database schema before bookmark migration."];
+        return NO;
+      }
+      return TLEnsureBookmarks(connection, transactionError) && TLDatabaseSetSchemaVersion(connection, 11, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 11;
   }
   return version == targetVersion;
 }

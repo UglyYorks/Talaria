@@ -2,7 +2,7 @@
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 
-static NSInteger const TLDatabaseSchemaVersion = 8;
+static NSInteger const TLDatabaseSchemaVersion = 11;
 
 typedef BOOL (^TLDatabaseTransactionBlock)(NSError **error);
 

@@ -121,7 +121,7 @@ static void TestProfileSchemaCompatibility(void) {
     database = nil;
     fixture = [TLSQLiteConnection openURL:URL error:&error];
     TLSQLiteStatement *version = [fixture prepareSQL:"PRAGMA user_version" error:&error];
-    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 8, @"upgrades profile schema without downgrading its data");
+    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 11, @"upgrades profile schema without downgrading its data");
     version = nil;
     TLSQLiteStatement *profile = [fixture prepareSQL:"SELECT soul FROM agents" error:&error];
     Check([profile step] == SQLITE_ROW && [[profile stringAtColumn:0] isEqual:@"Keep profile"], @"preserves agent profile data");
@@ -129,7 +129,7 @@ static void TestProfileSchemaCompatibility(void) {
     fixture = nil;
   }
   fixture = [TLSQLiteConnection openURL:URL error:&error];
-  Check([fixture executeSQL:"PRAGMA user_version = 9" error:&error], @"prepares unknown future schema");
+  Check([fixture executeSQL:"PRAGMA user_version = 12" error:&error], @"prepares unknown future schema");
   fixture = nil;
   error = nil;
   Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"still rejects unknown future schema versions");
@@ -150,7 +150,7 @@ static void TestVersion8Compatibility(void) {
   [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Preserved history" thinking:nil] chatID:chat.chatID error:&error];
   database = nil;
   TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
-  Check([fixture executeSQL:"UPDATE chats SET supporting_model = 'test/saved-model'" error:&error], @"populates the version-8 supporting model");
+  Check([fixture executeSQL:"PRAGMA user_version = 8; UPDATE chats SET supporting_model = 'test/saved-model'" error:&error], @"populates the version-8 supporting model");
   Check(TLDatabaseMigrate(fixture, 7, &error), @"version-7 clients accept the known additive version-8 schema");
   fixture = nil;
   database = [[TLDatabase alloc] initWithURL:URL error:&error];
@@ -161,13 +161,13 @@ static void TestVersion8Compatibility(void) {
   database = nil;
   fixture = [TLSQLiteConnection openURL:URL error:&error];
   TLSQLiteStatement *version = [fixture prepareSQL:"PRAGMA user_version" error:&error];
-  Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 8, @"never downgrades the database version");
+  Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 11, @"never downgrades the database version");
   version = nil;
   TLSQLiteStatement *model = [fixture prepareSQL:"SELECT supporting_model FROM chats ORDER BY id" error:&error];
   Check([model step] == SQLITE_ROW && [[model stringAtColumn:0] isEqual:@"test/saved-model"], @"preserves model data owned by the newer build");
   Check([model step] == SQLITE_ROW && [[model stringAtColumn:0] isEqual:@"openrouter/auto"], @"new column default is retained");
   model = nil;
-  Check([fixture executeSQL:"PRAGMA user_version = 9" error:&error], @"prepares an unknown future version");
+  Check([fixture executeSQL:"PRAGMA user_version = 12" error:&error], @"prepares an unknown future version");
   fixture = nil; error = nil;
   Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error != nil, @"unknown future versions still fail closed");
   fixture = [TLSQLiteConnection openURL:URL error:&error];
@@ -176,6 +176,46 @@ static void TestVersion8Compatibility(void) {
   Check(!TLDatabaseMigrate(fixture, 7, &error) && error != nil, @"version-7 clients reject unrecognized version-8 layouts");
   fixture = nil;
   [NSFileManager.defaultManager removeItemAtURL:base error:nil];
+}
+
+static void TestBrowserSchemaMigrations(void) {
+  for (NSInteger initialVersion = 8; initialVersion <= 11; initialVersion++) {
+    NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    [NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:nil error:nil];
+    NSURL *URL = [base URLByAppendingPathComponent:@"browser.sqlite"];
+    NSError *error = nil;
+    TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
+    Check(TLDatabaseMigrate(fixture, initialVersion, &error), @"creates historical schema");
+    if (initialVersion >= 9) Check([fixture executeSQL:
+      "INSERT INTO browser_history(url, title) VALUES ('https://example.com', 'Saved history')" error:&error], @"seeds browser history");
+    if (initialVersion >= 10) Check([fixture executeSQL:
+      "UPDATE browser_history SET favicon = X'010203'" error:&error], @"seeds favicon");
+    if (initialVersion >= 11) Check([fixture executeSQL:
+      "INSERT INTO bookmarks(name, url) VALUES ('Saved bookmark', 'https://example.com')" error:&error], @"seeds bookmark");
+    fixture = nil;
+    TLDatabase *database = [[TLDatabase alloc] initWithURL:URL error:&error];
+    Check(database != nil, [NSString stringWithFormat:@"opens schema %ld: %@", (long)initialVersion, error]);
+    TLChatRecord *chat = [database createChatWithModel:@"openai::test" error:&error];
+    Check(chat != nil, @"creates chats with browser schema");
+    Check([database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Saved message" thinking:nil]
+      chatID:chat.chatID error:&error] != nil, @"writes messages with browser schema");
+    database = nil;
+    fixture = [TLSQLiteConnection openURL:URL error:&error];
+    TLSQLiteStatement *version = [fixture prepareSQL:"PRAGMA user_version" error:&error];
+    Check([version step] == SQLITE_ROW && sqlite3_column_int(version.handle, 0) == 11, @"uses current schema without downgrading");
+    version = nil;
+    if (initialVersion >= 9) {
+      TLSQLiteStatement *row = [fixture prepareSQL:"SELECT title, hex(favicon) FROM browser_history" error:&error];
+      Check([row step] == SQLITE_ROW && [[row stringAtColumn:0] isEqual:@"Saved history"], @"preserves browser history");
+      if (initialVersion >= 10) Check([[row stringAtColumn:1] isEqual:@"010203"], @"preserves favicon bytes");
+    }
+    if (initialVersion >= 11) {
+      TLSQLiteStatement *row = [fixture prepareSQL:"SELECT name FROM bookmarks" error:&error];
+      Check([row step] == SQLITE_ROW && [[row stringAtColumn:0] isEqual:@"Saved bookmark"], @"preserves bookmarks");
+    }
+    fixture = nil;
+    [NSFileManager.defaultManager removeItemAtURL:base error:nil];
+  }
 }
 
 static void TestStorageAndPersistence(void) {
@@ -562,6 +602,6 @@ static void TestSystemAttachmentThumbnails(void) {
 }
 
 int main(void) {
-  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestVersion8Compatibility(); TestStorageAndPersistence(); TestComposer(); TestAttachmentPasteShortcut(); TestAttachmentReconciliationAndAnimation(); TestAttachmentPickerAppearance(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
+  @autoreleasepool { TestAttachmentMigrationCollision(); TestProfileSchemaCompatibility(); TestVersion8Compatibility(); TestBrowserSchemaMigrations(); TestStorageAndPersistence(); TestComposer(); TestAttachmentPasteShortcut(); TestAttachmentReconciliationAndAnimation(); TestAttachmentPickerAppearance(); TestSystemAttachmentThumbnails(); NSLog(@"ChatAttachmentTests passed"); }
   return 0;
 }
