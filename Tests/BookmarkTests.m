@@ -1,6 +1,8 @@
 #import <AppKit/AppKit.h>
 #import "Database.h"
 #import "TLWorkspaceTabsController.h"
+#import "WorkspaceTabRuntime.h"
+#import "design_system/TLChromeTabView.h"
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 #import "TalariaWindowController.h"
@@ -78,6 +80,45 @@ static void TestBookmarkDrop(void) {
   [owner setValue:@NO forKey:@"sidebarVisible"];
   [owner workspaceTabsController:nil dragTab:page atWindowPoint:NSMakePoint(80,295)];
   Check(!sidebar.dropTargeted, @"collapsed sidebar cannot accept a bookmark drop");
+}
+
+@interface TLTabReloadProbe : TLFeatureTabController
+@property (nonatomic) NSUInteger reloads;
+@end
+@implementation TLTabReloadProbe
+- (void)reloadBrowser:(id)sender { self.reloads++; }
+@end
+
+static void TestTabMenu(TLBookmarkTestController *owner, TLAppStateManager *state, TLWorkspaceTab *browser, TLWorkspaceTab *chat) {
+  TLWorkspaceTabsController *tabs = [[TLWorkspaceTabsController alloc] initWithTabStack:[NSStackView new] target:owner delegate:(id)owner palette:[owner valueForKey:@"palette"]];
+  TLChromeTabView *view = [TLChromeTabView new]; view.dragDelegate = tabs; view.closeable = YES; view.canCloseOtherTabs = YES;
+  for (TLWorkspaceTab *tab in @[browser,chat]) {
+    view.representedObject = tab;
+    NSMenu *menu = [view menuForEvent:nil];
+    NSMutableArray *labels = [NSMutableArray array];
+    for (NSMenuItem *item in menu.itemArray) [labels addObject:item.separatorItem ? @"---" : item.title];
+    NSMutableArray *expected = [NSMutableArray array];
+    if (tab.kind == TLWorkspaceTabKindBrowser) [expected addObject:@"Reload"];
+    [expected addObjectsFromArray:@[@"Pin tab", @"---", @"Open in Split View on Left", @"Open in Split View on Right", @"---", @"Add to bookmarks", @"---", @"Close", @"Close Other Tabs"]];
+    Check([labels isEqual:expected], @"complete tab context menu follows requested order and separators");
+    NSInteger selectedID = state.snapshot.activeTabID;
+    NSMenuItem *pin = [menu itemWithTitle:@"Pin tab"];
+    [NSApp sendAction:pin.action to:pin.target from:pin];
+    TLWorkspaceTab *pinned = [state workspaceTabWithKind:tab.kind tabID:tab.tabID];
+    Check(pinned.pinned && state.snapshot.activeTabID == selectedID, @"pin menu changes the targeted tab without selecting it");
+    NSMenuItem *unpin = [[owner workspaceTabsController:nil contextMenuForTab:pinned] itemWithTitle:@"Unpin tab"];
+    Check(unpin != nil, @"pin menu changes to Unpin tab");
+    [NSApp sendAction:unpin.action to:unpin.target from:unpin];
+    Check(![state workspaceTabWithKind:tab.kind tabID:tab.tabID].pinned, @"Unpin menu clears the flag");
+  }
+  TLTabReloadProbe *probe = [TLTabReloadProbe new];
+  TLWorkspaceTabRuntime *runtime = [TLWorkspaceTabRuntime new]; runtime.featureController = probe;
+  [owner setValue:[NSMutableDictionary dictionaryWithObject:runtime forKey:TLWorkspaceTabRuntimeKey(browser.kind,browser.tabID)] forKey:@"workspaceTabRuntimes"];
+  NSInteger activeID = state.snapshot.activeTabID;
+  NSMenuItem *reload = [[owner workspaceTabsController:nil contextMenuForTab:browser] itemWithTitle:@"Reload"];
+  [NSApp sendAction:reload.action to:reload.target from:reload];
+  Check(probe.reloads == 1 && state.snapshot.activeTabID == activeID, @"Reload dispatches to the target browser without changing selection");
+  [owner setValue:[NSMutableDictionary dictionary] forKey:@"workspaceTabRuntimes"];
 }
 
 static void SavePreview(NSView *view, NSString *name) {
@@ -335,6 +376,7 @@ int main(void) {
       Check(add.enabled && add.representedObject == source && add.target == owner, @"chat and website context menus retain the correct source tab");
     }
     Check(![[owner workspaceTabsController:nil contextMenuForTab:state.snapshot.workspaceTabs.lastObject] itemWithTitle:@"Add to bookmarks"], @"settings menu does not offer bookmarking");
+    TestTabMenu(owner, state, tab, chatTab);
     NSMenuItem *remove = sidebar.shortcutButtons[0].menu.itemArray.firstObject;
     [owner removeBookmark:remove];
     Check([database listBookmarks:nil].count == 1, @"context menu removes only selected bookmark");

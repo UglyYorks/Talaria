@@ -27,6 +27,7 @@
   copy.title = self.title;
   copy.toolTip = self.toolTip;
   copy.closeable = self.closeable;
+  copy.pinned = self.pinned;
   return copy;
 }
 

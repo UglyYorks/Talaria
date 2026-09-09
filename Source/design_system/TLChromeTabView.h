@@ -52,6 +52,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @property (nonatomic) BOOL drawsActiveBackground;
 @property (nonatomic) BOOL animatesDecorationChanges;
 @property (nonatomic) BOOL closeable;
+@property (nonatomic) BOOL pinned;
 @property (nonatomic) BOOL canCloseOtherTabs;
 @property (nonatomic) BOOL showsLeadingSeparator;
 @property (nonatomic) BOOL showsTrailingSeparator;

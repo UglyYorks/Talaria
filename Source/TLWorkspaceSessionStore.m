@@ -59,6 +59,7 @@ static BOOL TLSessionTabKind(id value) {
     NSString *toolTip = [entry[@"toolTip"] isKindOfClass:NSString.class] ? entry[@"toolTip"] : title;
     TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:kind tabID:tabID title:title toolTip:toolTip
       URL:kind == TLWorkspaceTabKindBrowser ? URL : nil closeable:YES];
+    tab.pinned = [entry[@"pinned"] isKindOfClass:NSNumber.class] && [entry[@"pinned"] boolValue];
     [tabs addObject:tab];
     [identities addObject:identity];
   }
@@ -86,7 +87,7 @@ static BOOL TLSessionTabKind(id value) {
     NSMutableArray *tabs = [NSMutableArray array];
     for (TLWorkspaceTab *tab in snapshot.workspaceTabs) {
       NSMutableDictionary *entry = [@{@"kind":@(tab.kind), @"tabID":@(tab.tabID),
-        @"title":tab.title ?: @"", @"toolTip":tab.toolTip ?: @""} mutableCopy];
+        @"title":tab.title ?: @"", @"toolTip":tab.toolTip ?: @"", @"pinned":@(tab.pinned)} mutableCopy];
       if (tab.URL) entry[@"url"] = tab.URL.absoluteString;
       [tabs addObject:entry];
     }

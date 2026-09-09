@@ -161,6 +161,12 @@ int main(void) {
     Check(![noBrowser hasWorkspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:8] && noBrowser.snapshot.workspaceTabs.count == 7 &&
       noBrowser.snapshot.activeTabKind == TLWorkspaceTabKindChat && [[noBrowserOwner valueForKey:@"activeChat"] chatID] == -6,
       @"explicit no-browser preference is honored with a valid fallback selection");
+    TLAppStateManager *pinnedBrowser = Seed();
+    [pinnedBrowser setWorkspaceTabPinned:YES kind:TLWorkspaceTabKindBrowser tabID:8];
+    TLRestoreTestController *pinnedOwner = Load(pinnedBrowser);
+    Check([pinnedBrowser workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:8].pinned &&
+      [pinnedOwner runtimeForTab:[pinnedBrowser workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:8]].contentView != nil,
+      @"pinned browser restores even when startup preference skips ordinary browser tabs");
     method_exchangeImplementations(start, testStart);
     [NSFileManager.defaultManager removeItemAtPath:directory error:nil];
     NSLog(@"Workspace restore tests passed");

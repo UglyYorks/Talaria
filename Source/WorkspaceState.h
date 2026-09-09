@@ -23,6 +23,7 @@ typedef NS_ENUM(NSInteger, TLWorkspaceTabKind) {
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *toolTip;
 @property (nonatomic) BOOL closeable;
+@property (nonatomic) BOOL pinned;
 
 + (instancetype)tabWithKind:(TLWorkspaceTabKind)kind
                       tabID:(NSInteger)tabID

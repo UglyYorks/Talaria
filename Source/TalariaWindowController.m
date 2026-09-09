@@ -1727,7 +1727,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLBrowserPreferences *browserPreferences = TLBrowserPreferences.sharedPreferences;
   if (![[browserPreferences localValue:@"startup"] isEqual:@"restore"]) {
     for (TLWorkspaceTab *tab in self.appStateManager.snapshot.workspaceTabs.copy) {
-      if (tab.kind == TLWorkspaceTabKindBrowser) [self.appStateManager removeWorkspaceTabWithKind:tab.kind tabID:tab.tabID];
+      if (tab.kind == TLWorkspaceTabKindBrowser && !tab.pinned) [self.appStateManager removeWorkspaceTabWithKind:tab.kind tabID:tab.tabID];
     }
   }
   if (self.appStateManager.snapshot.workspaceTabs.count > 0) {
@@ -5774,17 +5774,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 - (NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller contextMenuForTab:(TLWorkspaceTab *)tab {
   NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
-  if (tab.kind == TLWorkspaceTabKindChat || tab.kind == TLWorkspaceTabKindBrowser) {
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Add to bookmarks" action:@selector(addTabToBookmarks:) keyEquivalent:@""];
-    item.target = self; item.representedObject = tab;
-    item.enabled = !self.widgetbookMode && (tab.kind == TLWorkspaceTabKindChat || [TLBookmark normalizedURL:tab.URL.absoluteString] != nil);
-    [menu addItem:item];
-    [menu addItem:NSMenuItem.separatorItem];
+  if (tab.kind == TLWorkspaceTabKindBrowser) {
+    NSMenuItem *reload = [[NSMenuItem alloc] initWithTitle:@"Reload" action:@selector(reloadTabFromMenu:) keyEquivalent:@""];
+    reload.target = self; reload.representedObject = tab; [menu addItem:reload];
   }
-  if ([self.splitState groupForTab:tab]) {
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Separate Split View" action:@selector(separateSplitFromMenu:) keyEquivalent:@""];
-    item.target = self; item.representedObject = tab; [menu addItem:item];
-  }
+  NSMenuItem *pin = [[NSMenuItem alloc] initWithTitle:tab.pinned ? @"Unpin tab" : @"Pin tab" action:@selector(toggleTabPinFromMenu:) keyEquivalent:@""];
+  pin.target = self; pin.representedObject = tab; [menu addItem:pin];
+  [menu addItem:NSMenuItem.separatorItem];
   TLWorkspaceTab *other = [self splitCompanionForTab:tab preferred:[self activeWorkspaceTab]];
   for (NSNumber *left in @[@YES, @NO]) {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:left.boolValue ? @"Open in Split View on Left" : @"Open in Split View on Right"
@@ -5793,7 +5789,25 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     item.representedObject = @{ @"tab":tab, @"left":left };
     [menu addItem:item];
   }
+  if (tab.kind == TLWorkspaceTabKindChat || tab.kind == TLWorkspaceTabKindBrowser) {
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Add to bookmarks" action:@selector(addTabToBookmarks:) keyEquivalent:@""];
+    item.target = self; item.representedObject = tab;
+    item.enabled = !self.widgetbookMode && (tab.kind == TLWorkspaceTabKindChat || [TLBookmark normalizedURL:tab.URL.absoluteString] != nil);
+    [menu addItem:item];
+  }
   return menu;
+}
+- (void)reloadTabFromMenu:(NSMenuItem *)sender {
+  TLWorkspaceTab *tab = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(sender.representedObject)];
+  if (!tab || tab.kind != TLWorkspaceTabKindBrowser) return;
+  [(TLBrowserTabController *)[self runtimeForTab:tab].featureController reloadBrowser:sender];
+}
+- (void)toggleTabPinFromMenu:(NSMenuItem *)sender {
+  TLWorkspaceTab *tab = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(sender.representedObject)];
+  if (!tab) return;
+  [self.appStateManager setWorkspaceTabPinned:!tab.pinned kind:tab.kind tabID:tab.tabID];
+  [self reloadWorkspaceTabs];
 }
 - (void)splitTabFromMenu:(NSMenuItem *)sender {
   TLWorkspaceTab *tab = sender.representedObject[@"tab"];

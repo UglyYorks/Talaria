@@ -82,6 +82,7 @@ typedef void (^TLAppStateMutation)(TLMutableAppState *draft);
                                tabID:(NSInteger)tabID
                              withTab:(TLWorkspaceTab *)replacementTab
                             activate:(BOOL)activate;
+- (void)setWorkspaceTabPinned:(BOOL)pinned kind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID;
 - (void)removeWorkspaceTabWithKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID;
 - (void)moveWorkspaceTabWithKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID toIndex:(NSUInteger)targetIndex;
 

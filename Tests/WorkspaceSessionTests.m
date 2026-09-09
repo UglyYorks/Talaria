@@ -50,6 +50,22 @@ int main(void) {
     TLWorkspaceTab *restoredBrowser = Restore(URL).snapshot.workspaceTabs.firstObject;
     Check([restoredBrowser.URL isEqual:browser.URL] && [restoredBrowser.title isEqual:browser.title] &&
       [restoredBrowser.toolTip isEqual:browser.toolTip], @"background navigation saves the latest page and title");
+    [state setWorkspaceTabPinned:YES kind:TLWorkspaceTabKindBrowser tabID:42];
+    [state setWorkspaceTabPinned:YES kind:TLWorkspaceTabKindChat tabID:-8];
+    Check(Restore(URL).snapshot.workspaceTabs[0].pinned && Restore(URL).snapshot.workspaceTabs[1].pinned,
+      @"pin state and leading order survive relaunch for browser and draft chat");
+    [state upsertWorkspaceTab:Tab(TLWorkspaceTabKindBrowser,42) activate:NO];
+    Check([Restore(URL) workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42].pinned, @"metadata refresh cannot unpin a browser");
+    [state replaceWorkspaceTabWithKind:TLWorkspaceTabKindChat tabID:-8 withTab:Tab(TLWorkspaceTabKindChat,88) activate:NO];
+    Check([Restore(URL) workspaceTabWithKind:TLWorkspaceTabKindChat tabID:88].pinned, @"saving a draft preserves its pin");
+    [state moveWorkspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42 toIndex:8];
+    Check(Restore(URL).snapshot.workspaceTabs[1].pinned, @"dragging a pinned tab keeps it inside the leading group");
+    [state moveWorkspaceTabWithKind:TLWorkspaceTabKindSettings tabID:0 toIndex:0];
+    Check(Restore(URL).snapshot.workspaceTabs[0].pinned && Restore(URL).snapshot.workspaceTabs[1].pinned,
+      @"regular tabs cannot be dragged ahead of pins");
+    [state setWorkspaceTabPinned:NO kind:TLWorkspaceTabKindBrowser tabID:42];
+    Check(![Restore(URL) workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42].pinned &&
+      Restore(URL).snapshot.workspaceTabs[1].kind == TLWorkspaceTabKindBrowser, @"unpin survives relaunch and returns tab after pinned group");
     [state activateWorkspaceTabKind:TLWorkspaceTabKindBrowser tabID:42];
     [state removeWorkspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42];
     TLAppStateSnapshot *closed = Restore(URL).snapshot;
