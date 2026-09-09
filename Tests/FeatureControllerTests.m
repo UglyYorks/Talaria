@@ -1932,6 +1932,9 @@ static void SettingsSnapshot(TLSettingsTabController *controller, NSWindow *wind
 @property NSMutableDictionary *values;
 @property BOOL failSave;
 @property NSUInteger writes;
+@property NSDictionary *importedProfile;
+@property NSDictionary *importedBrowser;
+@property (copy) void (^importCompletion)(NSString *);
 @end
 @implementation TLBrowserPreferencesMock
 - (instancetype)init { if ((self = [super init])) _values = [NSMutableDictionary dictionary]; return self; }
@@ -1943,7 +1946,74 @@ static void SettingsSnapshot(TLSettingsTabController *controller, NSWindow *wind
 }
 - (void)clearData:(NSString *)kind completion:(void (^)(NSError *))completion { completion(nil); }
 - (BOOL)resetDefaults:(NSError **)error { [self.values removeAllObjects]; return YES; }
+- (void)importProfile:(NSDictionary *)profile fromBrowser:(NSDictionary *)browser completion:(void (^)(NSString *))completion { self.importedProfile = profile; self.importedBrowser = browser; self.importCompletion = completion; }
 @end
+@interface TLImportSettingsFixture : TLBrowserSettingsController
+@end
+@implementation TLImportSettingsFixture
+- (NSArray *)detectedImportBrowsers {
+  return @[
+    @{ @"name":@"Google Chrome", @"bundleID":@"test.chrome", @"engine":@"chromium", @"profiles":@[
+      @{ @"name":@"Personal", @"URL":[NSURL fileURLWithPath:@"/tmp/import-ui-fixture/Default"] },
+      @{ @"name":@"Work", @"URL":[NSURL fileURLWithPath:@"/tmp/import-ui-fixture/Profile 1"] }] },
+    @{ @"name":@"Safari", @"bundleID":@"test.safari", @"engine":@"unsupported", @"profiles":@[] },
+    @{ @"name":@"Chrome Beta", @"bundleID":@"test.chrome-denied", @"engine":@"chromium", @"profiles":@[],
+       @"profileRootURL":[NSURL fileURLWithPath:@"/tmp/import-ui-fixture"],
+       @"discoveryError":[NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadNoPermissionError userInfo:nil] },
+    @{ @"name":@"Firefox", @"bundleID":@"test.firefox", @"engine":@"firefox", @"profiles":@[] }];
+}
+@end
+@interface TLImportSettingsShellFixture : TLSettingsTabController
+@end
+@implementation TLImportSettingsShellFixture
+- (NSView *)buildBrowserPage {
+  TLImportSettingsFixture *page = [[TLImportSettingsFixture alloc] initWithPalette:self.palette preferences:self.browserPreferences];
+  [self setValue:page forKey:@"browserSettingsController"];
+  [self addChildViewController:page]; [page prepareInWindow:self.view.window]; return page.view;
+}
+@end
+static void TestBrowserImportSettings(void) {
+  TLBrowserPreferencesMock *preferences = [TLBrowserPreferencesMock new];
+  TLFeatureSettingsStoreMock *store = [TLFeatureSettingsStoreMock new]; store.currentAgentID = 7;
+  TLSettingsCredentialMock *service = [TLSettingsCredentialMock new];
+  TLImportSettingsShellFixture *shell = [[TLImportSettingsShellFixture alloc] initWithSettings:TLAppSettings.defaultSettings database:(id)store orchestrator:(id)service palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  shell.browserPreferences = preferences;
+  NSWindow *window = HostController(shell);
+  NSSegmentedControl *sections = [[shell valueForKey:@"workspace"] sectionTabs];
+  sections.selectedSegment = 1; [NSApp sendAction:sections.action to:sections.target from:sections]; SettingsTick(window);
+  TLBrowserSettingsController *controller = [shell valueForKey:@"browserSettingsController"];
+  controller.selectedCategoryIndex = [TLBrowserPreferences.categories indexOfObject:@"Import profiles"];
+  [controller prepareInWindow:window]; SettingsTick(window);
+  NSDictionary *pickers = [controller valueForKey:@"profilePickers"];
+  Check(pickers.count == 1, @"Only browsers with supported profiles offer an import selector");
+  NSPopUpButton *picker = pickers[@"test.chrome"]; [picker selectItemAtIndex:1];
+  TLThemedButton *import = nil;
+  for (TLThemedButton *button in [controller valueForKey:@"buttons"]) if ([button.identifier isEqual:@"test.chrome"]) import = button;
+  Check(import && import.enabled, @"A supported browser gets a themed Import profile button");
+  TLThemedButton *grant = nil;
+  for (TLThemedButton *button in [controller valueForKey:@"buttons"]) if ([button.identifier isEqual:@"test.chrome-denied"]) grant = button;
+  Check(grant && grant.enabled && [grant.title isEqual:@"Import"] && grant.action == NSSelectorFromString(@"importProfile:"), @"Access-denied browsers use Import without a separate permission action");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    window.appearance = [NSAppearance appearanceNamed:theme.integerValue == TLThemePreferenceDark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [shell applyPalette:[TLThemePalette paletteForPreference:theme.integerValue]];
+    for (NSNumber *width in @[@700,@200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue,900)]; SettingsTick(window);
+      Check(fabs(NSWidth(window.contentView.bounds) - width.doubleValue) < 1 && NSWidth(controller.view.bounds) <= width.doubleValue, [NSString stringWithFormat:@"Import page respects width %@ (page %.0f, window %.0f)",width,NSWidth(controller.view.bounds),NSWidth(window.contentView.bounds)]);
+      Check(NSWidth(import.frame) + 1 >= import.intrinsicContentSize.width && NSWidth(import.frame) <= width.doubleValue, @"Import label fits without truncation in narrow settings windows");
+      Check(NSWidth(grant.frame) + 1 >= grant.intrinsicContentSize.width && NSWidth(grant.frame) <= width.doubleValue, @"Import for a protected browser fits narrow windows in both themes");
+      NSBitmapImageRep *bitmap = [controller.view bitmapImageRepForCachingDisplayInRect:controller.view.bounds];
+      [controller.view cacheDisplayInRect:controller.view.bounds toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[NSString stringWithFormat:@"build/browser-import-%@-%@.png",theme,width] atomically:YES];
+    }
+  }
+  [import performClick:nil];
+  Check([preferences.importedProfile[@"name"] isEqual:@"Work"] && [preferences.importedBrowser[@"name"] isEqual:@"Google Chrome"], @"Import uses the explicitly selected browser profile");
+  Check(!import.enabled && !picker.enabled, @"Import disables repeated actions and profile changes while busy");
+  Check(!grant.enabled, @"Folder grants are disabled while importing");
+  preferences.importCompletion(@"Imported cookies. Restart Talaria to apply local storage.");
+  Check(import.enabled && [[[controller valueForKey:@"status"] stringValue] containsString:@"Restart Talaria"], @"Import completion restores controls and explains restart");
+  [shell close]; [window close];
+}
 static void TestBrowserPreferencePersistenceAndValidation(void) {
   NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
   TLBrowserPreferences *preferences = [[TLBrowserPreferences alloc] initWithProfileURL:directory];
@@ -3524,6 +3594,12 @@ static void TestHermesHistorySearchAndLayout(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_TEST_BROWSER_IMPORT_ONLY")) {
+      TestThemedButtonRenderedColors();
+      TestBrowserImportSettings();
+      NSLog(@"Browser import UI tests passed");
+      return 0;
+    }
     TestQueuedFollowUps();
     TestSendQueuedPromptNow();
     TestPromptQueueLayout();
@@ -3555,6 +3631,7 @@ int main(void) {
     TestTerminalRequiresRunningVM();
     TestSettingsThemeAndLateCatalogue();
     TestBrowserPreferencePersistenceAndValidation();
+    TestBrowserImportSettings();
     TestSettingsNavigationCredentialsAndResponsiveLayout();
     TestNativeGlobalShortcutRegistration();
     TestComposerModelButtonLayout();

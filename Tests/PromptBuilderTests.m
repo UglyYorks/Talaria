@@ -609,6 +609,44 @@ static void TestCompatibleVersion5Database(void) {
   }
 }
 
+static void TestHistorySchemaStartupCompatibility(void) {
+  for (NSInteger version = 8; version <= 10; version++) {
+    NSURL *url = TLTemporaryDatabaseURL(@"TalariaHistorySchemaStartup");
+    NSError *error = nil;
+    TLSQLiteConnection *connection = [TLSQLiteConnection openURL:url error:&error];
+    TLAssertTrue(TLDatabaseMigrate(connection, version, &error), @"creates a known historical schema");
+    TLAssertTrue([connection executeSQL:
+      "INSERT INTO chats(title, model, hermes_session_id) VALUES('Retained chat', 'test-model', 'retained-session');"
+      "CREATE TABLE bookmarks(id INTEGER PRIMARY KEY, url TEXT);"
+      "INSERT INTO bookmarks VALUES(1, 'https://retained.example');" error:&error], @"creates retained user-data fixtures");
+    if (version >= 9) TLAssertTrue([connection executeSQL:
+      "INSERT INTO browser_history(url, title) VALUES('https://history.example', 'Retained history');" error:&error], @"creates history before opening the app");
+    if (version == 10) TLAssertTrue([connection executeSQL:"UPDATE browser_history SET favicon = X'010203'" error:&error], @"creates retained favicon fixture");
+    TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[TLFakeTestCredentialStore new] error:&error];
+    TLAssertTrue(database != nil && error == nil, @"startup accepts known version-8 through version-10 databases");
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 10, @"startup migrates forward without downgrading the schema");
+    TLAssertEqualObjects([database chatWithID:1 error:&error].title, @"Retained chat", @"startup preserves existing chats");
+    {
+      TLSQLiteStatement *bookmark = [connection prepareSQL:"SELECT url FROM bookmarks WHERE id = 1" error:&error];
+      TLAssertTrue([bookmark step] == SQLITE_ROW, @"startup preserves tables owned by other features");
+      TLAssertEqualObjects([bookmark stringAtColumn:0], @"https://retained.example", @"startup preserves existing bookmark data");
+      TLSQLiteStatement *history = [connection prepareSQL:"SELECT title, hex(favicon) FROM browser_history" error:&error];
+      if (version >= 9) {
+        TLAssertTrue([history step] == SQLITE_ROW, @"startup preserves existing browsing history");
+        TLAssertEqualObjects([history stringAtColumn:0], @"Retained history", @"history contents remain unchanged");
+        if (version == 10) TLAssertEqualObjects([history stringAtColumn:1], @"010203", @"startup preserves saved favicons");
+      } else TLAssertTrue([history step] == SQLITE_DONE, @"version-8 migration creates the history schema including favicons");
+    }
+    database = nil;
+    [connection executeSQL:"PRAGMA user_version = 11" error:nil];
+    error = nil;
+    database = [[TLDatabase alloc] initWithURL:url credentialStore:[TLFakeTestCredentialStore new] error:&error];
+    TLAssertTrue(database == nil && error != nil && TLReadSQLiteUserVersion(url) == 11, @"unknown future schemas remain protected and are never downgraded");
+    connection = nil;
+    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  }
+}
+
 static void TestMessageDeletion(void) {
   NSURL *url = TLTemporaryDatabaseURL(@"TalariaMessageDeletionTests");
   NSError *error = nil;
@@ -1435,6 +1473,7 @@ int main(int argc, const char *argv[]) {
     TestDatabasePersistence();
     TestHermesHistoryCache();
     TestCompatibleVersion5Database();
+    TestHistorySchemaStartupCompatibility();
     TestMessageDeletion();
     TestChatIconGenerator();
     TestCancellationDuringStartup();

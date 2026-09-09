@@ -8,6 +8,7 @@ FOUNDATION_EXPORT NSNotificationName const TLBrowserPreferencesDidChangeNotifica
 - (BOOL)saveValue:(id)value forSetting:(NSDictionary *)setting error:(NSError **)error;
 - (void)clearData:(NSString *)kind completion:(void (^)(NSError * _Nullable))completion;
 - (BOOL)resetDefaults:(NSError **)error;
+- (void)importProfile:(NSDictionary *)profile fromBrowser:(NSDictionary *)browser completion:(void (^)(NSString *message))completion;
 @end
 @interface TLBrowserPreferences : NSObject <TLBrowserPreferencesService>
 + (instancetype)sharedPreferences;

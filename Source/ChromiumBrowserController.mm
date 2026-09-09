@@ -9,6 +9,7 @@
 #import "ChromiumNavigationTransition.h"
 #import "BrowserPageContext.h"
 #import "TLBrowserPreferences.h"
+#import "TLBrowserProfileImporter.h"
 #import "TLBrowserDownloadManager.h"
 
 #include <algorithm>
@@ -934,7 +935,53 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
  IMPLEMENT_REFCOUNTING(TLBrowserCookieCompletion);
 };
 
+class TLBrowserCookieImport : public CefSetCookieCallback {
+ public:
+  TLBrowserCookieImport(NSArray *cookies, void (^completion)(NSUInteger, NSUInteger))
+      : cookies_(cookies), completion_([completion copy]) {}
+  void Next() {
+    CEF_REQUIRE_UI_THREAD();
+    auto manager = CefRequestContext::GetGlobalContext()->GetCookieManager(nullptr);
+    while (index_ < cookies_.count) {
+      NSDictionary *entry = cookies_[index_++];
+      NSString *domain = entry[@"domain"];
+      NSString *host = [domain hasPrefix:@"."] ? [domain substringFromIndex:1] : domain;
+      NSString *url = [NSString stringWithFormat:@"%@://%@/", [entry[@"secure"] boolValue] ? @"https" : @"http", host];
+      CefCookie cookie;
+      CefString(&cookie.name) = TLStringFromNSString(entry[@"name"]);
+      CefString(&cookie.value) = TLStringFromNSString(entry[@"value"]);
+      // An empty domain preserves host-only cookies, including __Host- cookies.
+      if ([domain hasPrefix:@"."]) CefString(&cookie.domain) = TLStringFromNSString(domain);
+      CefString(&cookie.path) = TLStringFromNSString(entry[@"path"]);
+      cookie.secure = [entry[@"secure"] boolValue]; cookie.httponly = [entry[@"httpOnly"] boolValue];
+      cookie.has_expires = [entry[@"persistent"] boolValue];
+      cookie.expires.val = ([entry[@"expires"] doubleValue] + 11644473600.0) * 1000000;
+      NSInteger sameSite = [entry[@"sameSite"] integerValue];
+      cookie.same_site = sameSite >= -1 && sameSite <= 2 ? (cef_cookie_same_site_t)(sameSite+1) : CEF_COOKIE_SAME_SITE_UNSPECIFIED;
+      if (manager->SetCookie(TLStringFromNSString(url), cookie, this)) return;
+      failed_++;
+    }
+    NSUInteger imported = imported_, failed = failed_; auto completion = completion_;
+    if (!manager->FlushStore(new TLBrowserCompletion(^(NSError *error) {
+      dispatch_async(dispatch_get_main_queue(), ^{ completion(imported, failed); });
+    }))) completion(0, cookies_.count);
+  }
+  void OnComplete(bool success) override {
+    CefRefPtr<TLBrowserCookieImport> owner = this;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (success) owner->imported_++; else owner->failed_++;
+      owner->Next();
+    });
+  }
+ private:
+  NSArray *cookies_;
+  void (^completion_)(NSUInteger, NSUInteger);
+  NSUInteger index_ = 0, imported_ = 0, failed_ = 0;
+  IMPLEMENT_REFCOUNTING(TLBrowserCookieImport);
+};
+
 @implementation TLChromiumBrowserController {
+  BOOL _restoringImportedCookies;
   CefScopedLibraryLoader *_libraryLoader;
   CefRefPtr<TLChromiumApp> _cefApp;
   std::vector<CefRefPtr<CefBrowser>> _browsers;
@@ -1412,6 +1459,13 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
     [self presentCEFError:@"Talaria could not create its Chromium profile directory." fromWindow:window];
     delete _libraryLoader;
     _libraryLoader = nullptr;
+    return NO;
+  }
+
+  NSError *importError;
+  if (![TLBrowserProfileImporter applyPendingLocalStorageAtProfileURL:[NSURL fileURLWithPath:cachePath] error:&importError]) {
+    [self presentCEFError:importError.localizedDescription fromWindow:window];
+    delete _libraryLoader; _libraryLoader = nullptr;
     return NO;
   }
 
@@ -2054,15 +2108,29 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
   CefRequestContext::GetGlobalContext()->SetChromeColorScheme(_browserDarkAppearance ? CEF_COLOR_VARIANT_DARK : CEF_COLOR_VARIANT_LIGHT, 0);
   [self applyBrowserPreferences];
   _backgroundTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(checkBackgroundBrowsers) userInfo:nil repeats:YES];
-  NSArray *callbacks = _settingsReadyCallbacks.copy;
-  [_settingsReadyCallbacks removeAllObjects];
-  for (void (^completion)(NSError *) in callbacks) completion(nil);
+  void (^finishPreparation)(NSError *) = ^(NSError *error) {
+    self->_restoringImportedCookies = NO;
+    NSArray *callbacks = self->_settingsReadyCallbacks.copy;
+    [self->_settingsReadyCallbacks removeAllObjects];
+    for (void (^completion)(NSError *) in callbacks) completion(error);
+  };
+  NSError *pendingError;
+  NSArray *sessions = [TLBrowserProfileImporter pendingSessionCookiesAtProfileURL:TLBrowserPreferences.profileURL error:&pendingError];
+  if (sessions.count) {
+    _restoringImportedCookies = YES;
+    [self importCookies:sessions completion:^(NSUInteger imported, NSUInteger failed) {
+      NSError *error;
+      if (failed) error = [NSError errorWithDomain:@"Talaria.BrowserImport" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Some imported session cookies could not be restored. Restart Talaria to retry."}];
+      else [TLBrowserProfileImporter clearPendingSessionCookiesAtProfileURL:TLBrowserPreferences.profileURL error:&error];
+      finishPreparation(error);
+    }];
+  } else finishPreparation(pendingError);
 }
 - (void)prepareBrowserSettingsInWindow:(NSWindow *)window completion:(void (^)(NSError *))completion {
   if (![self initializeCEFIfNeededFromWindow:window]) {
     completion([NSError errorWithDomain:@"Talaria.Browser" code:1 userInfo:@{NSLocalizedDescriptionKey:@"The built-in browser could not start."}]); return;
   }
-  if (_browserSettingsReady) completion(nil); else [_settingsReadyCallbacks addObject:[completion copy]];
+  if (_browserSettingsReady && !_restoringImportedCookies) completion(nil); else [_settingsReadyCallbacks addObject:[completion copy]];
 }
 - (NSDictionary *)browserSettingState:(NSDictionary *)setting {
   if (!_browserSettingsReady) return @{@"available":@NO,@"reason":@"The browser is still starting."};
@@ -2146,11 +2214,19 @@ class TLBrowserCookieCompletion : public CefDeleteCookiesCallback {
     if (pause) [_pausedBrowsers addObject:identifier]; else [_pausedBrowsers removeObject:identifier];
   }
 }
+- (void)importCookies:(NSArray<NSDictionary *> *)cookies completion:(void (^)(NSUInteger, NSUInteger))completion {
+  if (!_browserSettingsReady || _shuttingDown) { completion(0, cookies.count); return; }
+  if (!cookies.count) { completion(0, 0); return; }
+  CefRefPtr<TLBrowserCookieImport> importer = new TLBrowserCookieImport(cookies, completion);
+  importer->Next();
+}
 - (void)clearBrowserData:(NSString *)kind completion:(void (^)(NSError *))completion {
   if (!_browserSettingsReady) { completion([NSError errorWithDomain:@"Talaria.Browser" code:3 userInfo:@{NSLocalizedDescriptionKey:@"The browser is not ready."}]); return; }
   auto context = CefRequestContext::GetGlobalContext();
   if ([kind isEqual:@"cache"]) context->ClearHttpCache(new TLBrowserCompletion(completion));
   else if ([kind isEqual:@"cookies"]) {
+    NSError *error;
+    if (![TLBrowserProfileImporter clearPendingSessionCookiesAtProfileURL:TLBrowserPreferences.profileURL error:&error]) { completion(error); return; }
     if (!context->GetCookieManager(nullptr)->DeleteCookies("", "", new TLBrowserCookieCompletion(completion)))
       completion([NSError errorWithDomain:@"Talaria.Browser" code:4 userInfo:@{NSLocalizedDescriptionKey:@"The browser could not delete cookies."}]);
   } else if ([kind isEqual:@"permissions"]) {

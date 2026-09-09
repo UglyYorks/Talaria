@@ -1,5 +1,6 @@
 #import "TLBrowserPreferences.h"
 #import "ChromiumBrowserController.h"
+#import "TLBrowserProfileImporter.h"
 NSNotificationName const TLBrowserPreferencesDidChangeNotification = @"TLBrowserPreferencesDidChange";
 static NSError *TLBrowserPreferenceError(NSString *message) {
   return [NSError errorWithDomain:@"Talaria.BrowserPreferences" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
@@ -34,7 +35,29 @@ static NSError *TLBrowserPreferenceError(NSString *message) {
   return self;
 }
 + (NSArray<NSString *> *)categories {
-  return @[@"Privacy & security", @"Site permissions", @"Autofill & passwords", @"Search engine", @"Appearance", @"On startup", @"Performance", @"Languages", @"Downloads", @"Accessibility", @"System", @"Reset settings"];
+  return @[@"Privacy & security", @"Site permissions", @"Autofill & passwords", @"Search engine", @"Appearance", @"On startup", @"Performance", @"Languages", @"Downloads", @"Accessibility", @"System", @"Reset settings", @"Import profiles"];
+}
+- (void)importProfile:(NSDictionary *)profile fromBrowser:(NSDictionary *)browser completion:(void (^)(NSString *))completion {
+  static dispatch_queue_t queue; static dispatch_once_t once;
+  dispatch_once(&once, ^{ queue = dispatch_queue_create("Talaria.BrowserProfileImport", DISPATCH_QUEUE_SERIAL); });
+  dispatch_async(queue, ^{
+    NSError *error;
+    NSDictionary *data = [TLBrowserProfileImporter readProfile:profile browser:browser error:&error];
+    NSMutableArray *sessions = [NSMutableArray array];
+    if ([data[@"storage"] count]) for (NSDictionary *cookie in data[@"cookies"]) if (![cookie[@"persistent"] boolValue]) [sessions addObject:cookie];
+    BOOL staged = data && [TLBrowserProfileImporter stageLocalStorage:data[@"storage"] sessionCookies:sessions profileURL:self.class.profileURL error:&error];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!staged) { completion(error.localizedDescription ?: @"The browser profile could not be imported."); return; }
+      [[TLChromiumBrowserController sharedController] importCookies:data[@"cookies"] completion:^(NSUInteger imported, NSUInteger failed) {
+        NSUInteger storage = [data[@"storage"] count], skipped = [data[@"skipped"] unsignedIntegerValue];
+        NSMutableString *message = [NSMutableString stringWithFormat:@"Imported %lu cookies from %@ — %@.", (unsigned long)imported, browser[@"name"], profile[@"name"]];
+        if (storage) [message appendFormat:@" Restart Talaria to apply %lu local storage entries.", (unsigned long)storage];
+        if (skipped) [message appendFormat:@" Skipped %lu expired or isolated items (partitions, containers, or non-web origins).", (unsigned long)skipped];
+        if (failed) [message appendFormat:@" %lu cookies could not be saved; retry the import after restarting Talaria.", (unsigned long)failed];
+        completion(message);
+      }];
+    });
+  });
 }
 + (NSArray<NSDictionary *> *)catalogue {
   static NSArray *catalogue; static dispatch_once_t once;
