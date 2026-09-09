@@ -38,14 +38,75 @@ static void Check(BOOL value, NSString *message) {
 @interface TLBookmarkTestController : TalariaWindowController
 @property (nonatomic, strong) NSURL *openedURL;
 @property (nonatomic) NSInteger openedChatID;
+@property (nonatomic) NSUInteger openedURLCount;
+@property (nonatomic) NSUInteger openedChatCount;
 @end
 @implementation TLBookmarkTestController
 - (void)showChatWorkspace {}
 - (void)reloadWorkspaceTabs {}
 - (void)updateControlStates {}
-- (void)openBrowserTabWithURL:(NSURL *)URL { self.openedURL = URL; }
-- (void)openChatTabWithID:(NSInteger)chatID { self.openedChatID = chatID; }
+- (void)openBrowserTabWithURL:(NSURL *)URL { self.openedURL = URL; self.openedURLCount++; }
+- (void)openChatTabWithID:(NSInteger)chatID { self.openedChatID = chatID; self.openedChatCount++; }
 @end
+
+static NSEvent *BookmarkMouseEvent(TLSidebarShortcutButton *button, NSEventType type, NSInteger buttonNumber, BOOL inside) {
+  NSPoint local = inside ? NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds)) : NSMakePoint(NSMaxX(button.bounds) + 10, NSMidY(button.bounds));
+  NSEvent *event = [NSEvent mouseEventWithType:type location:[button convertPoint:local toView:nil] modifierFlags:0
+    timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:0 context:nil eventNumber:0 clickCount:1 pressure:1];
+  // AppKit's event factory defaults to button zero even for OtherMouse events.
+  CGEventRef nativeEvent = CGEventCreateCopy(event.CGEvent);
+  CGEventSetIntegerValueField(nativeEvent, kCGMouseEventButtonNumber, buttonNumber);
+  NSEvent *result = [NSEvent eventWithCGEvent:nativeEvent];
+  CFRelease(nativeEvent);
+  return result;
+}
+
+static void TestBookmarkMouseClicks(TLBookmarkTestController *owner, TLSidebarShortcutsView *sidebar, TLBookmark *website, TLBookmark *conversation) {
+  TLSidebarShortcutButton *button = sidebar.shortcutButtons[0];
+  button.frame = NSMakeRect(0, 0, 64, 64);
+  NSEvent *down = BookmarkMouseEvent(button, NSEventTypeOtherMouseDown, 2, YES);
+  NSEvent *up = BookmarkMouseEvent(button, NSEventTypeOtherMouseUp, 2, YES);
+  NSUInteger count = owner.openedURLCount;
+  [button otherMouseUp:up];
+  Check(owner.openedURLCount == count, @"middle release without a bookmark press does not open a tab");
+  [button otherMouseDown:down];
+  Check(owner.openedURLCount == count, @"middle press waits for release before opening a bookmark");
+  [button otherMouseUp:up];
+  Check(owner.openedURLCount == ++count && [owner.openedURL isEqual:website.URL], @"middle click opens the saved website in a new tab exactly once");
+  [button otherMouseUp:up];
+  Check(owner.openedURLCount == count, @"repeated middle release does not reopen the bookmark");
+  [button otherMouseDown:down];
+  [button otherMouseUp:BookmarkMouseEvent(button, NSEventTypeOtherMouseUp, 2, NO)];
+  [button otherMouseUp:up];
+  Check(owner.openedURLCount == count, @"release outside cancels the bookmark click");
+  button.enabled = NO;
+  [button otherMouseDown:down];
+  [button otherMouseUp:up];
+  button.enabled = YES;
+  [button otherMouseUp:up];
+  Check(owner.openedURLCount == count, @"disabled bookmark clicks do not activate after re-enabling");
+  [button otherMouseDown:down];
+  button.enabled = NO;
+  [button otherMouseUp:up];
+  button.enabled = YES;
+  [button otherMouseUp:up];
+  Check(owner.openedURLCount == count, @"disabling during a middle click cancels activation");
+  for (NSNumber *number in @[@3, @4]) {
+    [button otherMouseDown:BookmarkMouseEvent(button, NSEventTypeOtherMouseDown, number.integerValue, YES)];
+    [button otherMouseUp:BookmarkMouseEvent(button, NSEventTypeOtherMouseUp, number.integerValue, YES)];
+  }
+  Check(owner.openedURLCount == count, @"additional mouse buttons do not open bookmarks");
+  [button mouseDown:BookmarkMouseEvent(button, NSEventTypeLeftMouseDown, 0, YES)];
+  [button mouseUp:BookmarkMouseEvent(button, NSEventTypeLeftMouseUp, 0, YES)];
+  Check(owner.openedURLCount == count + 1, @"left click still opens the saved website");
+
+  TLSidebarShortcutButton *chatButton = sidebar.shortcutButtons[1];
+  chatButton.frame = NSMakeRect(0, 0, 64, 64);
+  NSUInteger chatCount = owner.openedChatCount;
+  [chatButton otherMouseDown:BookmarkMouseEvent(chatButton, NSEventTypeOtherMouseDown, 2, YES)];
+  [chatButton otherMouseUp:BookmarkMouseEvent(chatButton, NSEventTypeOtherMouseUp, 2, YES)];
+  Check(owner.openedChatCount == chatCount + 1 && owner.openedChatID == conversation.chatID, @"middle click opens the bookmarked conversation");
+}
 
 // Exercise the real drag routing without opening a popover or changing focus.
 @interface TLBookmarkDropTestController : TLBookmarkTestController
@@ -442,6 +503,7 @@ int main(void) {
     [owner openSidebarBookmark:sidebar.shortcutButtons[0]];
     [owner openSidebarBookmark:sidebar.shortcutButtons[1]];
     Check([owner.openedURL isEqual:website.URL] && owner.openedChatID == chat.chatID, @"buttons reopen their saved website and conversation");
+    TestBookmarkMouseClicks(owner, sidebar, website, conversation);
     TLAppStateManager *state = [TLAppStateManager new]; [owner setValue:state forKey:@"appStateManager"];
     TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:1 title:@"Current page" toolTip:nil URL:website.URL closeable:YES];
     [state addWorkspaceTab:tab activate:YES];
