@@ -165,7 +165,7 @@
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   self.hoverBackgroundLayer.frame = surface;
-  self.hoverBackgroundLayer.backgroundColor = TLCGColor(self.palette.secondaryActionSurface);
+  self.hoverBackgroundLayer.backgroundColor = TLCGColor(self.palette.itemHighlightSurface);
   self.hoverBackgroundLayer.opacity = targetOpacity;
   self.hoverBackgroundLayer.cornerRadius = compact ? self.palette.compactButtonCornerRadius
     : MIN(NSWidth(surface), NSHeight(surface)) * 0.5;

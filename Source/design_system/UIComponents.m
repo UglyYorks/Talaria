@@ -944,7 +944,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
                                                           xRadius:self.palette.radiusMedium
                                                           yRadius:self.palette.radiusMedium];
   if (self.hovered) {
-    [self.palette.chromeHoverSurface setFill];
+    [self.palette.itemHighlightSurface setFill];
     [background fill];
   }
 }
@@ -1109,7 +1109,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
   NSColor *fillColor = self.pressed
     ? palette.sidebarActiveSurface
-    : (self.hovered ? palette.chromeHoverSurface : palette.sidebarHoverSurface);
+    : (self.hovered ? palette.itemHighlightSurface : palette.sidebarHoverSurface);
   if (!self.dashed || self.hovered || self.pressed) {
     [fillColor setFill];
     [path fill];
@@ -1582,7 +1582,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     NSBezierPath *hoverPath = [NSBezierPath bezierPathWithRoundedRect:hoverRect
                                                                xRadius:palette.radiusMedium
                                                                yRadius:palette.radiusMedium];
-    [(self.pressed ? palette.sidebarActiveSurface : palette.chromeHoverSurface) setFill];
+    [(self.pressed ? palette.sidebarActiveSurface : palette.itemHighlightSurface) setFill];
     [hoverPath fill];
   }
 
@@ -1999,7 +1999,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
   NSColor *fillColor = self.pressed
     ? palette.sidebarActiveSurface
-    : (self.hovered ? palette.chromeHoverSurface : palette.composerSurface);
+    : (self.hovered ? palette.itemHighlightSurface : palette.composerSurface);
   CGFloat radius = MIN(palette.sidebarBookmarkCornerRadius, NSHeight(self.bounds) * 0.5);
   NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:radius yRadius:radius];
   [fillColor setFill];
@@ -2836,7 +2836,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rowRect
                                                        xRadius:palette.radiusMedium
                                                        yRadius:palette.radiusMedium];
-  NSColor *fillColor = active ? palette.sidebarActiveSurface : palette.chromeHoverSurface;
+  NSColor *fillColor = active ? palette.sidebarActiveSurface : palette.itemHighlightSurface;
   [fillColor setFill];
   [path fill];
 }
@@ -3171,7 +3171,7 @@ NSImage *TLAvatarImageForDisplayName(NSString *displayName, TLThemePalette *pale
   NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rowRect
                                                        xRadius:palette.radiusMedium
                                                        yRadius:palette.radiusMedium];
-  NSColor *fillColor = self.pressed ? palette.sidebarActiveSurface : palette.chromeHoverSurface;
+  NSColor *fillColor = self.pressed ? palette.sidebarActiveSurface : palette.itemHighlightSurface;
   [fillColor setFill];
   [path fill];
 }
