@@ -35,7 +35,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 - (void)chromeTabViewDidRequestCloseOtherTabs:(TLChromeTabView *)tabView;
 @optional
 - (void)chromeTabViewWillSelect:(TLChromeTabView *)tabView;
-- (nullable NSMenu *)splitMenuForChromeTabView:(TLChromeTabView *)tabView;
+- (nullable NSMenu *)contextMenuForChromeTabView:(TLChromeTabView *)tabView;
 - (BOOL)chromeTabViewShouldOpenContextMenu:(TLChromeTabView *)tabView;
 @end
 
@@ -52,6 +52,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @property (nonatomic) BOOL drawsActiveBackground;
 @property (nonatomic) BOOL animatesDecorationChanges;
 @property (nonatomic) BOOL closeable;
+@property (nonatomic) BOOL pinned;
 @property (nonatomic) BOOL canCloseOtherTabs;
 @property (nonatomic) BOOL showsLeadingSeparator;
 @property (nonatomic) BOOL showsTrailingSeparator;

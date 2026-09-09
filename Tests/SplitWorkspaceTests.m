@@ -71,6 +71,7 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 @interface TLSplitTestDatabase : NSObject
 @end
 @implementation TLSplitTestDatabase
+- (NSArray *)listBookmarks:(NSError **)error { return @[]; }
 - (NSArray *)listBrowserHistory:(NSError **)error { return @[]; }
 - (NSInteger)currentAgentID { return 0; }
 - (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supporting error:(NSError **)error {

@@ -18,6 +18,9 @@ NS_ASSUME_NONNULL_BEGIN
                                    messages:(nullable NSArray<NSDictionary *> *)messages
                                       error:(NSError **)error;
 
+- (nullable NSArray<TLBookmark *> *)listBookmarks:(NSError **)error;
+- (BOOL)saveBookmark:(TLBookmark *)bookmark error:(NSError **)error;
+- (BOOL)deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error;
 // Each committed navigation is a visit; title updates preserve its timestamp.
 - (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error;
 - (BOOL)updateBrowserVisitWithID:(NSInteger)visitID title:(NSString *)title error:(NSError **)error;

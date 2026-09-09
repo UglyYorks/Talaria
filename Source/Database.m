@@ -2,7 +2,7 @@
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 
-static NSInteger const TLDatabaseSchemaVersion = 10;
+static NSInteger const TLDatabaseSchemaVersion = 11;
 
 typedef BOOL (^TLDatabaseTransactionBlock)(NSError **error);
 
@@ -98,6 +98,60 @@ static NSString *TLTitleFromMessage(NSString *content) {
   }
 
   return self;
+}
+
+- (NSArray<TLBookmark *> *)listBookmarks:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "SELECT id, name, url, chat_id, emoji, favicon FROM bookmarks ORDER BY id" error:error];
+    if (!statement) return nil;
+    NSMutableArray *bookmarks = [NSMutableArray array];
+    int result;
+    while ((result = [statement step]) == SQLITE_ROW) {
+      TLBookmark *bookmark = [TLBookmark new];
+      bookmark.bookmarkID = sqlite3_column_int64(statement.handle, 0);
+      bookmark.name = [statement stringAtColumn:1];
+      NSString *address = [statement nullableStringAtColumn:2];
+      bookmark.URL = address.length ? [NSURL URLWithString:address] : nil;
+      bookmark.chatID = sqlite3_column_int64(statement.handle, 3);
+      bookmark.emoji = [statement stringAtColumn:4];
+      bookmark.faviconData = [[NSData alloc] initWithBase64EncodedString:[statement stringAtColumn:5] options:0];
+      [bookmarks addObject:bookmark];
+    }
+    if (result != SQLITE_DONE) { [self.sqliteConnection setCurrentError:error]; return nil; }
+    return bookmarks;
+  }
+}
+
+- (BOOL)saveBookmark:(TLBookmark *)bookmark error:(NSError **)error {
+  @synchronized (self) {
+    NSString *name = TLTrimmedString(bookmark.name);
+    NSURL *URL = bookmark.URL ? [TLBookmark normalizedURL:bookmark.URL.absoluteString] : nil;
+    if (!name.length || (bookmark.chatID <= 0 && !URL) || (bookmark.chatID > 0 && bookmark.URL)) {
+      TLSetDatabaseError(error, @"Enter a name and a valid website address or conversation.");
+      return NO;
+    }
+    // Saving the same destination again updates its label/icon without duplicating it.
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "INSERT INTO bookmarks (name, url, chat_id, emoji, favicon) VALUES (?1, ?2, ?3, ?4, ?5) "
+      "ON CONFLICT DO UPDATE SET name=excluded.name, emoji=excluded.emoji, favicon=excluded.favicon" error:error];
+    if (!statement) return NO;
+    [statement bindText:name atIndex:1];
+    if (URL) [statement bindText:URL.absoluteString atIndex:2]; else [statement bindNullAtIndex:2];
+    if (bookmark.chatID > 0) [statement bindInt64:bookmark.chatID atIndex:3]; else [statement bindNullAtIndex:3];
+    [statement bindText:bookmark.emoji ?: TLDefaultChatIcon() atIndex:4];
+    [statement bindText:[bookmark.faviconData base64EncodedStringWithOptions:0] ?: @"" atIndex:5];
+    return [statement stepDone:error];
+  }
+}
+
+- (BOOL)deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM bookmarks WHERE id=?1" error:error];
+    if (!statement) return NO;
+    [statement bindInt64:bookmarkID atIndex:1];
+    return [statement stepDone:error];
+  }
 }
 
 - (TLAppSettings *)appSettings:(NSError **)error {

@@ -753,6 +753,11 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [self updateHoverStateFromCurrentMouseLocation];
 }
 
+- (void)setPinned:(BOOL)pinned {
+  _pinned = pinned;
+  [self applyCurrentState];
+}
+
 - (void)applyCurrentState {
   if (!self.tabIconView || !self.titleLabel || !self.closeButton) {
     return;
@@ -762,6 +767,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   NSColor *foreground = self.active && self.activeBackgroundColor ? [self.palette textColorForContentBackground:self.activeBackgroundColor] : (highlighted ? self.palette.appText : self.palette.labelText);
   BOOL hasSystemIcon = self.systemIconName.length > 0;
   BOOL hasEmojiIcon = self.icon.length > 0 && !hasSystemIcon;
+  self.titleClipView.hidden = self.pinned;
   self.titleLabel.stringValue = self.title;
   self.titleLabel.font = self.palette.labelFont;
   self.titleLabel.textColor = foreground;
@@ -779,7 +785,7 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.iconSpacingConstraint.constant = self.tabIconView.hasIcon ? self.palette.tabIconTextSpacing : self.palette.space0;
   self.titleClipHeightConstraint.constant = self.palette.tabHeight;
 
-  BOOL closeButtonVisible = self.closeable && self.hovered;
+  BOOL closeButtonVisible = self.closeable && !self.pinned && self.hovered;
   self.closeButton.hidden = !closeButtonVisible;
   self.closeButton.enabled = self.enabled && closeButtonVisible;
   self.closeButton.alphaValue = closeButtonVisible ? 1.0 : 0.0;
@@ -831,6 +837,10 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 }
 
 - (void)updateHorizontalContentInset {
+  if (self.pinned) {
+    self.iconLeadingConstraint.constant = MAX(self.palette.space0, (NSWidth(self.bounds) - self.palette.tabIconSize) / 2);
+    return;
+  }
   CGFloat width = NSWidth(self.bounds);
   CGFloat defaultFlareOutset = width > self.palette.space0
     ? MIN(self.palette.tabFlareRadius, width * 0.18)
@@ -1244,10 +1254,10 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 - (NSMenu *)menuForEvent:(NSEvent *)event {
   if (![self canOpenTabContextMenu]) return nil;
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
-  if ([self.dragDelegate respondsToSelector:@selector(splitMenuForChromeTabView:)]) {
-    NSMenu *splitMenu = [self.dragDelegate splitMenuForChromeTabView:self];
-    for (NSMenuItem *item in splitMenu.itemArray.copy) {
-      [splitMenu removeItem:item]; [menu addItem:item];
+  if ([self.dragDelegate respondsToSelector:@selector(contextMenuForChromeTabView:)]) {
+    NSMenu *tabMenu = [self.dragDelegate contextMenuForChromeTabView:self];
+    for (NSMenuItem *item in tabMenu.itemArray.copy) {
+      [tabMenu removeItem:item]; [menu addItem:item];
     }
     if (menu.numberOfItems) [menu addItem:NSMenuItem.separatorItem];
   }

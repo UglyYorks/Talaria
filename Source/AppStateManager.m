@@ -249,6 +249,11 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
 
   TLMutableAppState *draft = [[TLMutableAppState alloc] initWithSnapshot:self.snapshot];
   mutation(draft);
+  // Keep pinned tabs in a stable leading group, including after restore and drag.
+  NSMutableArray *ordered = [NSMutableArray array];
+  for (TLWorkspaceTab *tab in draft.workspaceTabs) if (tab.pinned) [ordered addObject:tab];
+  for (TLWorkspaceTab *tab in draft.workspaceTabs) if (!tab.pinned) [ordered addObject:tab];
+  draft.workspaceTabs = ordered;
   TLAppSignal *signal = [self nextSignalWithName:signalName payload:payload];
   self.snapshot = [TLAppStateSnapshot snapshotWithDraft:draft
                                               revision:self.snapshot.revision + 1
@@ -314,7 +319,10 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
   }
   TLWorkspaceTab *storedTab = [tab copy];
   TLWorkspaceTab *existing = [self workspaceTabWithKind:tab.kind tabID:tab.tabID];
-  if (existing) storedTab.presentationIdentity = existing.presentationIdentity;
+  if (existing) {
+    storedTab.presentationIdentity = existing.presentationIdentity;
+    storedTab.pinned = existing.pinned;
+  }
   BOOL sameMetadata = existing && [existing.title isEqual:tab.title] &&
     [existing.toolTip isEqual:tab.toolTip] && existing.closeable == tab.closeable &&
     (existing.URL == tab.URL || [existing.URL isEqual:tab.URL]);
@@ -349,6 +357,7 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
     [self upsertWorkspaceTab:storedReplacementTab activate:activate];
     return;
   }
+  storedReplacementTab.pinned = previousTab.pinned;
   storedReplacementTab.presentationIdentity = previousTab.presentationIdentity ?:
     [NSString stringWithFormat:@"%ld:%ld", (long)previousTab.kind, (long)previousTab.tabID];
 
@@ -372,6 +381,19 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
     @"replacedKind": @(kind),
     @"replacedTabID": @(tabID),
   }]];
+}
+
+- (void)setWorkspaceTabPinned:(BOOL)pinned kind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID {
+  TLWorkspaceTab *tab = [self workspaceTabWithKind:kind tabID:tabID];
+  if (!tab || tab.pinned == pinned) return;
+  [self setState:^(TLMutableAppState *draft) {
+    TLWorkspaceTab *target = TLWorkspaceTabInTabs(kind, tabID, draft.workspaceTabs);
+    [draft.workspaceTabs removeObject:target];
+    target.pinned = pinned;
+    NSUInteger boundary = 0;
+    for (TLWorkspaceTab *candidate in draft.workspaceTabs) if (candidate.pinned) boundary++;
+    [draft.workspaceTabs insertObject:target atIndex:boundary];
+  } signal:TLAppSignalWorkspaceTabsChanged payload:[self payloadForTab:tab extra:nil]];
 }
 
 - (void)removeWorkspaceTabWithKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID {

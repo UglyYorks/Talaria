@@ -30,7 +30,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller willSelectTab:(TLWorkspaceTab *)tab;
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller dragTab:(TLWorkspaceTab *)tab atWindowPoint:(NSPoint)point;
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller endDraggingTab:(TLWorkspaceTab *)tab cancelled:(BOOL)cancelled;
-- (nullable NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller splitMenuForTab:(TLWorkspaceTab *)tab;
+- (nullable NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller contextMenuForTab:(TLWorkspaceTab *)tab;
 
 @end
 

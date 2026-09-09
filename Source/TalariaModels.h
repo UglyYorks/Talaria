@@ -31,6 +31,16 @@ NSString *TLAgentDisplayGuestKind(NSString *guestKind);
 NSString *TLAgentDisplayRuntime(NSString *runtime);
 NSString *TLAgentDisplayStatus(NSString *status);
 
+@interface TLBookmark : NSObject
+@property (nonatomic) NSInteger bookmarkID;
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, strong, nullable) NSURL *URL;
+@property (nonatomic) NSInteger chatID;
+@property (nonatomic, copy) NSString *emoji;
+@property (nonatomic, strong, nullable) NSData *faviconData;
++ (nullable NSURL *)normalizedURL:(NSString *)value;
+@end
+
 NSString * _Nullable TLBrowserHistoryOrigin(NSURL *URL);
 
 @interface TLBrowserHistoryEntry : NSObject

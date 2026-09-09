@@ -24,6 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
                 inputWidth:(CGFloat)inputWidth browserService:(TLChromiumBrowserController *)browserService;
 @property (nonatomic, readonly) BOOL findBarVisible;
 - (void)showFindBar;
+- (void)reloadBrowser:(nullable id)sender;
 - (void)findNext:(BOOL)forward;
 - (void)hideFindBar;
 - (void)startInWindow:(nullable NSWindow *)window;
