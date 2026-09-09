@@ -1894,6 +1894,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 @property (nonatomic) CGFloat displaySize;
 @property (nonatomic) BOOL hovered;
 @property (nonatomic) BOOL pressed;
+@property (nonatomic) BOOL middleMousePressed;
 - (void)setDisplaySize:(CGFloat)displaySize;
 - (nullable NSImage *)systemImageNamed:(NSString *)name;
 - (NSColor *)shortcutIconColor;
@@ -1993,6 +1994,28 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   if (inside && self.action) {
     [NSApp sendAction:self.action to:self.target from:self];
   }
+}
+
+- (void)otherMouseDown:(NSEvent *)event {
+  if (event.buttonNumber != 2 || self.shortcutKind != TLSidebarShortcutKindWebsite) {
+    [super otherMouseDown:event];
+    return;
+  }
+  if (!self.enabled) return;
+  self.middleMousePressed = YES;
+  [self mouseDown:event];
+}
+
+- (void)otherMouseUp:(NSEvent *)event {
+  if (event.buttonNumber != 2 || self.shortcutKind != TLSidebarShortcutKindWebsite) {
+    [super otherMouseUp:event];
+    return;
+  }
+  if (!self.middleMousePressed) return;
+  self.middleMousePressed = NO;
+  self.pressed = NO;
+  [self setNeedsDisplay:YES];
+  [self mouseUp:event];
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
