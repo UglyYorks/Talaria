@@ -18,6 +18,7 @@
 #import "TLModelSelectionWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AssistantTurnRunner.h"
+#import "TLChatPresentation.h"
 #import "design_system/ModelPickerView.h"
 #import "UIComponents.h"
 #import "TalariaWindowController.h"
@@ -793,8 +794,8 @@ static void TestStreamingComposerStopButton(void) {
   for (NSString *draft in @[@"Next question", @" "]) {
     input.textView.string = draft;
     [controller updateControlStates];
-    Check(!input.showsStopButton && !input.sendButton.enabled && [input.sendButton.toolTip isEqual:@"Send"],
-      @"any draft restores Send and cannot accidentally stop the response");
+    Check(!input.showsStopButton && input.sendButton.enabled == (draft.length > 1) && [input.sendButton.toolTip isEqual:@"Queue follow-up"],
+      @"a nonblank streaming draft enables Queue and cannot accidentally stop the response");
   }
   input.textView.string = @"";
   chat.chatID = 18;
@@ -851,6 +852,7 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
 @interface TLConcurrentTestRequest : NSObject
 @property NSString *requestID;
 @property NSString *sessionID;
+@property NSArray<TLChatMessage *> *sentMessages;
 @property (copy) TLAgentStreamDeltaHandler delta;
 @property (copy) TLAgentStreamCompletionHandler completion;
 @end
@@ -870,7 +872,7 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
   token:(NSString *)token model:(NSString *)model messages:(NSArray<TLChatMessage *> *)messages
   delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
   TLConcurrentTestRequest *request = [[TLConcurrentTestRequest alloc] init];
-  request.requestID = requestID; request.sessionID = sessionID; request.delta = delta; request.completion = completion;
+  request.requestID = requestID; request.sessionID = sessionID; request.sentMessages = messages; request.delta = delta; request.completion = completion;
   [self.requests addObject:request];
 }
 - (void)cancelChatWithRequestID:(NSString *)requestID { [self.cancelledRequests addObject:requestID]; }
@@ -879,6 +881,7 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
 @interface TLConcurrentTestStore : NSObject <TLAssistantTurnMessageStore>
 @property NSMutableDictionary<NSNumber *, TLChatRecord *> *chats;
 @property NSInteger nextMessageID;
+@property BOOL failNextSave;
 @end
 @implementation TLConcurrentTestStore
 - (instancetype)init {
@@ -886,6 +889,11 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
   return self;
 }
 - (TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error {
+  if (self.failNextSave) {
+    self.failNextSave = NO;
+    if (error) *error = [NSError errorWithDomain:@"queue-test" code:3 userInfo:@{NSLocalizedDescriptionKey:@"Save failed"}];
+    return nil;
+  }
   TLStoredChatMessage *saved = [TLStoredChatMessage messageWithRole:message.role content:message.content thinking:message.thinking];
   saved.messageID = ++self.nextMessageID;
   TLChatRecord *chat = self.chats[@(chatID)];
@@ -953,14 +961,16 @@ static void TestConcurrentChatStreams(void) {
     [((TLChatMessage *)messagesB.lastObject).content isEqual:@"Answer B"], @"interleaved deltas stay in their own chats");
   input.textView.string = @"do not duplicate B";
   [controller sendMessage:nil allowAutomaticRouting:NO];
-  Check(controller.stream.requests.count == 2, @"a second turn in the same busy chat is still blocked");
+  Check(controller.stream.requests.count == 2, @"a follow-up waits for the busy chat to finish");
   [controller loadChatWithID:17];
   input = [controller valueForKey:@"messageInput"];
   Check([controller valueForKey:@"messages"] == messagesA && input.showsStopButton,
     @"returning to a streaming chat restores its live buffer and Stop button");
   [controller loadChatWithID:18];
   input = [controller valueForKey:@"messageInput"];
-  Check([input.textView.string isEqual:@"do not duplicate B"], @"returning to a busy chat preserves its unsent draft");
+  Check(input.textView.string.length == 0 && [[controller valueForKeyPath:@"chatPresentation.queuedPrompts"] count] == 1,
+    @"returning to a busy chat preserves its queued follow-up");
+  [[controller valueForKeyPath:@"chatPresentation.queuedPrompts"] removeAllObjects];
   input.textView.string = @"";
   [controller updateControlStates];
   [controller activateComposerButton:input.sendButton];
@@ -990,6 +1000,189 @@ static void TestConcurrentChatStreams(void) {
   Check([((TLChatMessage *)[[controller valueForKey:@"messages"] lastObject]).content isEqual:@"Second B answer"] &&
     ![[controller valueForKey:@"hasSendingTurns"] boolValue], @"all chats finish independently without stale callbacks");
 }
+
+@interface TalariaWindowController (QueueTests)
+- (void)editQueuedPromptAtIndex:(NSUInteger)index;
+- (void)removeQueuedPromptAtIndex:(NSUInteger)index;
+- (void)finishQueuedPromptEditingSaving:(BOOL)save;
+- (void)drainPromptQueue;
+- (void)removeRuntimeForKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID;
+@end
+
+@interface TLQueueTestController : TLConcurrentChatController
+@property NSString *reportedError;
+@end
+@implementation TLQueueTestController
+- (void)presentErrorMessage:(NSString *)message { self.reportedError = message; }
+@end
+
+static void QueueDrain(void) {
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]];
+}
+static TLQueueTestController *QueueController(void) {
+  TLQueueTestController *controller = [[TLQueueTestController alloc] initWithWindow:nil];
+  controller.store = [TLConcurrentTestStore new];
+  controller.stream = [TLConcurrentTestStream new];
+  [controller setValue:controller.store forKey:@"database"];
+  TLAppSettings *settings = [TLAppSettings defaultSettings];
+  settings.openRouterToken = @"test-token"; settings.selectedModel = @"test-model";
+  [controller setValue:settings forKey:@"settings"];
+  [controller setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
+  [controller setValue:[NSView new] forKey:@"contentHost"];
+  for (NSNumber *chatID in @[@17, @18]) {
+    TLChatRecord *chat = [TLChatRecord new]; chat.chatID = chatID.integerValue;
+    chat.hermesSessionID = chatID.stringValue; chat.model = @"test-model"; chat.messages = @[];
+    controller.store.chats[chatID] = chat;
+  }
+  [controller loadChatWithID:17];
+  return controller;
+}
+static void QueueSend(TLQueueTestController *controller, NSString *text) {
+  TLMessageInput *input = [controller valueForKey:@"messageInput"];
+  input.textView.string = text;
+  [controller sendMessage:nil allowAutomaticRouting:NO];
+}
+static void QueueComplete(TLConcurrentTestRequest *request) {
+  request.delta(request.requestID, TLAgentStreamDeltaKindContent, @"Done");
+  request.completion(nil);
+  QueueDrain();
+}
+static void TestQueuedFollowUps(void) {
+  TLQueueTestController *controller = QueueController();
+  TLChatPresentation *a = [controller valueForKey:@"chatPresentation"];
+  QueueSend(controller, @"First");
+  QueueSend(controller, @"Second");
+  QueueSend(controller, @"Remove this");
+  QueueSend(controller, @"Third");
+  Check(a.queuedPrompts.count == 3 && controller.stream.requests.count == 1 && a.messages.count == 2,
+    @"queued prompts remain outside transcript and gateway history until dispatched");
+  [controller removeQueuedPromptAtIndex:1];
+  a.messageInput.textView.string = @"Keep my draft";
+  [controller editQueuedPromptAtIndex:0];
+  a.messageInput.textView.string = @"Second revised";
+  QueueComplete(controller.stream.requests.firstObject);
+  Check(controller.stream.requests.count == 1 && a.queuedPrompts.count == 2, @"finishing a turn cannot dispatch a prompt being edited");
+  [controller finishQueuedPromptEditingSaving:YES];
+  Check(controller.stream.requests.count == 2 && [a.promptTextView.string isEqual:@"Keep my draft"] &&
+    [a.queuedPromptInFlight.text isEqual:@"Second revised"], @"editing preserves FIFO position and restores an unrelated composer draft");
+  Check([controller.stream.requests.lastObject.sentMessages.lastObject.content isEqual:@"Second revised"], @"the gateway receives the edited prompt");
+  [controller loadChatWithID:18];
+  TLChatPresentation *b = [controller valueForKey:@"chatPresentation"];
+  b.promptTextView.string = @"Other chat draft";
+  QueueComplete(controller.stream.requests[1]);
+  Check(controller.stream.requests.count == 3 && [controller.stream.requests.lastObject.sessionID isEqual:@"17"] &&
+    [b.promptTextView.string isEqual:@"Other chat draft"] && [a.promptTextView.string isEqual:@"Keep my draft"],
+    @"background queue dispatch keeps its session and never overwrites either chat draft");
+  QueueComplete(controller.stream.requests.lastObject);
+  Check(!a.queuedPrompts.count && !a.queuedPromptInFlight && !a.promptQueueView.preferredHeight,
+    @"queue collapses after its final prompt starts");
+  [controller loadChatWithID:17];
+  QueueSend(controller, @"Running");
+  QueueSend(controller, @"Stay queued");
+  [controller updateControlStates];
+  [controller activateComposerButton:a.sendButton];
+  QueueDrain();
+  Check(a.queuePaused && a.queuedPrompts.count == 1 && !a.queuedPromptInFlight, @"Stop pauses remaining follow-ups");
+  NSUInteger requestCount = controller.stream.requests.count;
+  [controller drainPromptQueue];
+  Check(controller.stream.requests.count == requestCount, @"a paused queue never silently restarts");
+  [controller editQueuedPromptAtIndex:0];
+  a.promptTextView.string = @"Discard this edit";
+  [controller finishQueuedPromptEditingSaving:NO];
+  Check([a.queuedPrompts.firstObject.text isEqual:@"Stay queued"], @"cancel editing keeps original queued content");
+  a.queuePaused = NO;
+  [controller drainPromptQueue];
+  TLConcurrentTestRequest *failed = controller.stream.requests.lastObject;
+  failed.completion([NSError errorWithDomain:@"queue-test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Offline"}]);
+  QueueDrain();
+  Check(a.queuePaused && !a.queuedPromptInFlight && controller.reportedError.length, @"gateway failure pauses the queue and surfaces the error");
+
+  // A failed user-message save must put the untouched prompt back at the front.
+  [a.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Retry after save failure" attachmentURLs:@[]]];
+  a.queuePaused = NO;
+  controller.store.failNextSave = YES;
+  a.promptTextView.string = @"Do not replace me";
+  [controller drainPromptQueue];
+  Check(a.queuePaused && a.queuedPrompts.count == 1 && !a.queuedPromptInFlight &&
+    [a.promptTextView.string isEqual:@"Do not replace me"], @"synchronous persistence failure restores the queue without replacing the draft");
+  a.queuePaused = NO;
+  [controller drainPromptQueue];
+  QueueComplete(controller.stream.requests.lastObject);
+
+  TLAttachmentPreparationRecorder *attachments = [TLAttachmentPreparationRecorder new];
+  [controller setValue:attachments forKey:@"agentOrchestrator"];
+  QueueSend(controller, @"Before files");
+  NSURL *file = [NSURL fileURLWithPath:@"/tmp/queued-example.txt"];
+  a.messageInput.attachmentURLs = @[file];
+  QueueSend(controller, @"Review this file");
+  Check(a.queuedPrompts.firstObject.attachmentURLs.count == 1, @"queued prompts retain their attachment URLs");
+  QueueComplete(controller.stream.requests.lastObject);
+  Check([attachments.receivedURLs isEqual:@[file]] && a.queuedPromptInFlight && [[controller valueForKey:@"preparingAttachments"] boolValue],
+    @"attachments are prepared only when their queued prompt is ready");
+  attachments.pendingCompletion(nil, [NSError errorWithDomain:@"queue-test" code:2 userInfo:nil]);
+  Check(a.queuePaused && a.queuedPrompts.count == 1 && !a.queuedPromptInFlight, @"attachment preparation failure restores the queued prompt");
+  a.queuePaused = NO;
+  [controller drainPromptQueue];
+  [controller removeRuntimeForKind:TLWorkspaceTabKindChat tabID:17];
+  NSUInteger beforeClosedCopy = controller.stream.requests.count;
+  attachments.pendingCompletion(@[], nil);
+  Check(a.queuePaused && a.queuedPrompts.count == 1 && !a.queuedPromptInFlight && controller.stream.requests.count == beforeClosedCopy,
+    @"closing a tab during attachment preparation pauses and restores its queued prompt");
+  [controller loadChatWithID:18];
+  [controller loadChatWithID:17];
+  Check([controller valueForKey:@"chatPresentation"] == a && a.queuedPrompts.count == 1,
+    @"reopening a closed chat retains its paused queue");
+  a.queuePaused = NO;
+  [controller drainPromptQueue];
+  attachments.pendingCompletion(@[], nil);
+  Check(a.queuedPromptInFlight != nil, @"retry starts exactly one prepared queued turn");
+  TLConcurrentTestRequest *approval = controller.stream.requests.lastObject;
+  approval.delta(approval.requestID, TLAgentStreamDeltaKindApproval,
+    @"{\"request_id\":\"queued-approval\",\"command\":\"echo hello\",\"choices\":[\"once\",\"deny\"]}");
+  QueueSend(controller, @"Wait for approval");
+  approval.completion(nil);
+  QueueDrain();
+  Check(a.queuePaused && a.queuedPrompts.count == 1, @"approval requests pause queued prompts");
+  a.queuePaused = NO;
+  requestCount = controller.stream.requests.count;
+  [controller drainPromptQueue];
+  Check(controller.stream.requests.count == requestCount, @"even Resume cannot bypass an unresolved approval");
+}
+
+static void TestPromptQueueLayout(void) {
+  TLPromptQueueView *queue = [TLPromptQueueView new];
+  NSArray *prompts = @[
+    [TLQueuedPrompt promptWithText:@"Add tests for the new flow" attachmentURLs:@[]],
+    [TLQueuedPrompt promptWithText:@"Then check the layout in both themes" attachmentURLs:@[]],
+    [TLQueuedPrompt promptWithText:@"Review the attached notes" attachmentURLs:@[[NSURL fileURLWithPath:@"/tmp/notes.txt"]]],
+    [TLQueuedPrompt promptWithText:@"Summarize the changes" attachmentURLs:@[]]];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 650, 260)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  [window.contentView addSubview:queue];
+  [NSLayoutConstraint activateConstraints:@[
+    [queue.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [queue.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [queue.topAnchor constraintEqualToAnchor:window.contentView.topAnchor]]];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    for (NSNumber *width in @[@650, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 260)];
+      [queue updatePrompts:prompts editing:nil paused:YES canResume:YES palette:palette];
+      [window.contentView layoutSubtreeIfNeeded];
+      Check(fabs(NSWidth(queue.frame) - width.doubleValue) < 1 && queue.preferredHeight < 220,
+        @"queue fits narrow panes and bounds long queues with scrolling");
+      NSBitmapImageRep *bitmap = [queue bitmapImageRepForCachingDisplayInRect:queue.bounds];
+      [queue cacheDisplayInRect:queue.bounds toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithFormat:@"build/prompt-queue-%@-%@.png", theme, width] atomically:YES];
+    }
+  }
+  [queue updatePrompts:@[] editing:nil paused:NO canResume:YES palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
+  Check(queue.hidden && queue.preferredHeight == 0, @"an empty queue takes no transcript space");
+  [window close];
+}
+
 
 // Real database and tab metadata paths, with only unrelated UI/services suppressed.
 @interface TLChatTitleTestController : TalariaWindowController
@@ -2959,6 +3152,15 @@ static void TestHermesHistorySearchAndLayout(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestQueuedFollowUps();
+    TestPromptQueueLayout();
+    if (getenv("TL_QUEUE_TESTS_ONLY")) {
+      TestThemedButtonRenderedColors();
+      TestConcurrentChatStreams();
+      TestStreamingComposerStopButton();
+      NSLog(@"Queued follow-up tests passed");
+      return 0;
+    }
     TestHermesHistorySearchAndLayout();
     TestNativeEmojiInput();
     TestFolderAccessTable();

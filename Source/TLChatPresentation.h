@@ -1,5 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "TalariaModels.h"
+#import "TLQueuedPrompt.h"
+#import "design_system/TLPromptQueueView.h"
 #import "UIComponents.h"
 #import "design_system/TLMessageInput.h"
 #import "design_system/TLGlassButton.h"
@@ -13,6 +15,12 @@
 NS_ASSUME_NONNULL_BEGIN
 @interface TLChatPresentation : NSObject
 @property (nonatomic, strong) TLChatRecord *chat;
+@property (nonatomic, strong) NSMutableArray<TLQueuedPrompt *> *queuedPrompts;
+@property (nonatomic, strong) TLPromptQueueView *promptQueueView;
+@property (nonatomic) BOOL queuePaused;
+@property (nonatomic, strong, nullable) TLQueuedPrompt *editingQueuedPrompt;
+@property (nonatomic, strong, nullable) TLQueuedPrompt *queueDraft;
+@property (nonatomic, strong, nullable) TLQueuedPrompt *queuedPromptInFlight;
 @property (nonatomic, strong) NSMutableArray<TLChatMessage *> *messages;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageRowViews;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSString *> *messageRowSignatures;

@@ -375,6 +375,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLChatPresentation *presentation = self.chatPresentations[@(chatID)];
   if (!presentation.chat) return NO;
   self.activeChat = presentation.chat;
+  if (![self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID])
+    [self addChatToSessionIfNeeded:chatID activate:YES];
   [self activateTabKind:TLWorkspaceTabKindChat tabID:chatID];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -1325,6 +1327,32 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [chatWorkspace addSubview:messagesView];
   [chatWorkspace addSubview:[self buildSlashCommandListView]];
   [chatWorkspace addSubview:[self buildMessageInput]];
+  TLChatPresentation *presentation = self.chatPresentation;
+  presentation.promptQueueView = [TLPromptQueueView new];
+  [chatWorkspace addSubview:presentation.promptQueueView];
+  __weak typeof(self) weakSelf = self;
+  __weak TLChatPresentation *weakPresentation = presentation;
+  presentation.promptQueueView.editHandler = ^(NSUInteger index) {
+    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf editQueuedPromptAtIndex:index]; }];
+  };
+  presentation.promptQueueView.removeHandler = ^(NSUInteger index) {
+    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf removeQueuedPromptAtIndex:index]; }];
+  };
+  presentation.promptQueueView.resumeHandler = ^{
+    [weakSelf withChatPresentation:weakPresentation perform:^{
+      weakPresentation.queuePaused = NO;
+      [weakSelf drainPromptQueue];
+      [weakSelf updateControlStates];
+    }];
+  };
+  presentation.promptQueueView.cancelEditHandler = ^{
+    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf finishQueuedPromptEditingSaving:NO]; }];
+  };
+  [NSLayoutConstraint activateConstraints:@[
+    [presentation.promptQueueView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor],
+    [presentation.promptQueueView.trailingAnchor constraintEqualToAnchor:self.messageInput.trailingAnchor],
+    [presentation.promptQueueView.bottomAnchor constraintEqualToAnchor:self.messageInput.topAnchor constant:-self.palette.space3],
+  ]];
 
   NSLayoutConstraint *messageInputLeadingConstraint = [self.messageInput.leadingAnchor constraintGreaterThanOrEqualToAnchor:chatWorkspace.leadingAnchor
                                                                                                                    constant:self.palette.space11];
@@ -2508,9 +2536,130 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [controller presentForWindow:self.window];
 }
 
+- (BOOL)hasPendingChatApproval {
+  for (TLChatMessage *message in self.messages) {
+    if (message.approvalRequest && ![message.approvalRequest[@"submitted"] boolValue]) return YES;
+  }
+  return NO;
+}
+
+- (void)updatePromptQueue {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (!presentation.promptQueueView) return;
+  [presentation.promptQueueView updatePrompts:presentation.queuedPrompts editing:presentation.editingQueuedPrompt
+    paused:presentation.queuePaused canResume:!self.isSending && ![self hasPendingChatApproval] palette:self.palette];
+}
+
+- (void)editQueuedPromptAtIndex:(NSUInteger)index {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (presentation.editingQueuedPrompt || index >= presentation.queuedPrompts.count || self.preparingAttachments) return;
+  presentation.queueDraft = [TLQueuedPrompt promptWithText:self.promptTextView.string attachmentURLs:self.messageInput.attachmentURLs];
+  presentation.editingQueuedPrompt = presentation.queuedPrompts[index];
+  self.promptTextView.string = presentation.editingQueuedPrompt.text;
+  self.messageInput.attachmentURLs = presentation.editingQueuedPrompt.attachmentURLs;
+  [self updateControlStates];
+  [self.window makeFirstResponder:self.promptTextView];
+}
+
+- (void)finishQueuedPromptEditingSaving:(BOOL)save {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (!presentation.editingQueuedPrompt) return;
+  if (save) {
+    NSString *text = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!text.length && !self.messageInput.attachmentURLs.count) return;
+    presentation.editingQueuedPrompt.text = text;
+    presentation.editingQueuedPrompt.attachmentURLs = self.messageInput.attachmentURLs;
+  }
+  self.promptTextView.string = presentation.queueDraft.text ?: @"";
+  self.messageInput.attachmentURLs = presentation.queueDraft.attachmentURLs ?: @[];
+  presentation.queueDraft = nil;
+  presentation.editingQueuedPrompt = nil;
+  [self updateControlStates];
+  [self drainPromptQueue];
+}
+
+- (void)removeQueuedPromptAtIndex:(NSUInteger)index {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (index >= presentation.queuedPrompts.count) return;
+  BOOL editing = presentation.editingQueuedPrompt == presentation.queuedPrompts[index];
+  [presentation.queuedPrompts removeObjectAtIndex:index];
+  if (editing) [self finishQueuedPromptEditingSaving:NO];
+  [self updateControlStates];
+}
+
+- (void)pausePromptQueueRestoringInFlight:(BOOL)restore {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (restore && presentation.queuedPromptInFlight) [presentation.queuedPrompts insertObject:presentation.queuedPromptInFlight atIndex:0];
+  presentation.queuedPromptInFlight = nil;
+  presentation.queuePaused = YES;
+  [self updateControlStates];
+}
+
+- (void)finishQueuedTurnWithResult:(TLAssistantTurnResult *)result {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (result.generationStatus != TLAssistantTurnGenerationStatusSucceeded ||
+      result.persistenceStatus != TLAssistantTurnPersistenceStatusSucceeded || result.assistantMessage.approvalRequest) {
+    [self pausePromptQueueRestoringInFlight:result.generationStatus == TLAssistantTurnGenerationStatusNotStarted];
+    return;
+  }
+  presentation.queuedPromptInFlight = nil;
+  // Leave the completion stack before starting the next turn, including synchronous failures.
+  __weak typeof(self) weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [weakSelf withChatPresentation:presentation perform:^{ [weakSelf drainPromptQueue]; }];
+  });
+}
+
+- (void)drainPromptQueue {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (self.isSending || presentation.queuePaused || presentation.editingQueuedPrompt ||
+      presentation.queuedPromptInFlight || !presentation.queuedPrompts.count || [self hasPendingChatApproval]) return;
+  NSString *token = self.settings.openRouterToken ?: @"";
+  NSString *model = presentation.chat.model ?: self.settings.selectedModel ?: @"";
+  if (!token.length || !model.length) { presentation.queuePaused = YES; [self updateControlStates]; return; }
+  TLQueuedPrompt *prompt = presentation.queuedPrompts.firstObject;
+  [presentation.queuedPrompts removeObjectAtIndex:0];
+  presentation.queuedPromptInFlight = prompt;
+  NSString *text = prompt.text;
+  if (!text.length) {
+    TLPromptBuilder *builder = [TLPromptBuilder new];
+    text = [[builder addPartWithContent:@"Please inspect the attached files and folders." importance:TLPromptImportanceRequired
+      strategy:TLPromptCompactionStrategyWhole name:@"file-only-request"] build];
+  }
+  void (^start)(NSArray *) = ^(NSArray *attachments) {
+    [self withChatPresentation:presentation perform:^{
+      if (presentation.queuePaused) { [self pausePromptQueueRestoringInFlight:YES]; return; }
+      self.errorMessage = @"";
+      [self beginPreparedTurnWithChat:presentation.chat messages:presentation.messages token:token model:model prompt:text
+        attachments:attachments sourceURLs:prompt.attachmentURLs];
+      [self updateControlStates];
+    }];
+  };
+  if (prompt.attachmentURLs.count) {
+    if (!self.preparingAttachmentChats) self.preparingAttachmentChats = [NSMutableSet set];
+    [self.preparingAttachmentChats addObject:@(presentation.chat.chatID)];
+    [self updateControlStates];
+    [self.agentOrchestrator prepareAttachmentURLs:prompt.attachmentURLs sessionID:presentation.chat.hermesSessionID
+      completion:^(NSArray *attachments, NSError *error) {
+        [self.preparingAttachmentChats removeObject:@(presentation.chat.chatID)];
+        if (!attachments) {
+          [self withChatPresentation:presentation perform:^{
+            [self pausePromptQueueRestoringInFlight:YES];
+            self.errorMessage = error.localizedDescription ?: @"Could not copy queued attachments.";
+            [self renderMessages];
+          }];
+          return;
+        }
+        start(attachments);
+      }];
+  } else start(@[]);
+}
+
 - (void)activateComposerButton:(id)sender {
   [self focusChatContainingView:sender];
-  if ([self canStopResponse]) {
+  if (!self.chatPresentation.editingQueuedPrompt && [self canStopResponse]) {
+    self.chatPresentation.queuePaused = YES;
+    [self updatePromptQueue];
     [self.turnRunners[@(self.activeChat.chatID)] cancel];
   } else {
     [self sendMessage:sender];
@@ -2518,6 +2667,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)sendMessage:(id)sender {
+  if (self.isSending || self.chatPresentation.queuedPrompts.count) {
+    [self sendMessage:sender allowAutomaticRouting:NO];
+    return;
+  }
   [self flushSlashCommandUpdate];
   if (!self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) {
     return;
@@ -2533,19 +2686,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   NSArray<NSURL *> *sourceURLs = self.messageInput.attachmentURLs;
   if (sourceURLs.count) allowAutomaticRouting = NO;
   if (self.preparingAttachments || (!nextPrompt.length && !sourceURLs.count)) return;
-  if (self.isSending) {
-    if (sourceURLs.count || ![nextPrompt hasPrefix:@"/"] || !self.activeChat) return;
+  if (self.chatPresentation.editingQueuedPrompt) {
+    [self finishQueuedPromptEditingSaving:YES];
+    return;
+  }
+  if (self.isSending || self.chatPresentation.queuedPrompts.count) {
+    [self.chatPresentation.queuedPrompts addObject:[TLQueuedPrompt promptWithText:nextPrompt attachmentURLs:sourceURLs]];
     self.promptTextView.string = @"";
+    self.messageInput.attachmentURLs = @[];
     [self updateControlStates];
-    __weak typeof(self) weakSelf = self;
-    [self.agentOrchestrator streamChatWithDefaultAgentRequestID:NSUUID.UUID.UUIDString
-                                                      sessionID:self.activeChat.hermesSessionID
-                                                          token:token model:model
-                                                       messages:@[[TLChatMessage messageWithRole:TLRoleUser content:nextPrompt thinking:nil]]
-                                                          delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {
-    } completion:^(NSError *error) {
-      if (error) [weakSelf presentErrorMessage:error.localizedDescription];
-    }];
+    [self drainPromptQueue];
     return;
   }
 
@@ -2583,6 +2733,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     return;
   }
 
+  self.chatPresentation.queuePaused = NO;
   TLChatRecord *chat = self.activeChat;
   NSMutableArray<TLChatMessage *> *turnMessages = self.messages;
   if (sourceURLs.count) {
@@ -2618,7 +2769,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                           token:(NSString *)token model:(NSString *)model prompt:(NSString *)nextPrompt
                     attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs
                approvalResponse:(NSDictionary *)approvalResponse {
-  if (!approvalResponse) {
+  if (!approvalResponse && !self.chatPresentations[@(chat.chatID)].queuedPromptInFlight) {
     self.attachmentDrafts[@(chat.chatID)] = @[];
     self.attachmentPromptDrafts[@(chat.chatID)] = @"";
     [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{
@@ -2670,14 +2821,18 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     for (TLChatMessage *message in turnMessages) if (message.approvalRequest) hasApproval = YES;
     if (!hasApproval) [strongSelf.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
     BOOL showingOrigin = strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive];
-    if (!approvalResponse && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+    if (!approvalResponse && !strongSelf.chatPresentations[@(chat.chatID)].queuedPromptInFlight && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       [strongSelf restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     }
-    if (!approvalResponse && showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+    if (!approvalResponse && !strongSelf.chatPresentations[@(chat.chatID)].queuedPromptInFlight && showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       strongSelf.promptTextView.string = result.userMessage.content;
       [strongSelf.messageInput recalculateHeight];
       [strongSelf updateMessageScrollInsets];
     }
+
+    [strongSelf withChatPresentation:strongSelf.chatPresentations[@(chat.chatID)] perform:^{
+      [strongSelf finishQueuedTurnWithResult:result];
+    }];
 
     if ([nextPrompt hasPrefix:@"/"]) strongSelf.hermesCommandsFetchedAt = nil;
     [strongSelf refreshChatsKeepingActiveSelection];
@@ -2720,8 +2875,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (approvalResponse) [self restorePendingApproval:approvalResponse inMessages:turnMessages];
     if (!approvalResponse) {
       [self.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
-      [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
+      if (!self.chatPresentations[@(chat.chatID)].queuedPromptInFlight)
+        [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     }
+    [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{ [self pausePromptQueueRestoringInFlight:YES]; }];
     [self presentErrorMessage:startError.localizedDescription ?: @"Could not start assistant turn."];
     [self updateControlStates];
   }
@@ -4109,6 +4266,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
   [self focusChatContainingView:textView];
   if (commandSelector == @selector(cancelOperation:)) {
+    if (self.chatPresentation.editingQueuedPrompt) { [self finishQueuedPromptEditingSaving:NO]; return YES; }
     if (self.slashCommandUpdateTimer || !self.slashCommandListView.hidden) { [self hideSlashCommandList]; return YES; }
   }
   if (commandSelector == @selector(insertTab:) || commandSelector == @selector(moveUp:) ||
@@ -4136,7 +4294,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (commandSelector == @selector(insertNewline:)) {
     BOOL shiftPressed = (NSApp.currentEvent.modifierFlags & NSEventModifierFlagShift) == NSEventModifierFlagShift;
     if (!shiftPressed) {
-      if (!self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) return YES;
+      if (!self.isSending && !self.chatPresentation.queuedPrompts.count && !self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) return YES;
       [self sendMessage:textView];
       return YES;
     }
@@ -4404,7 +4562,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   CGFloat slashCommandListHeight = (!self.slashCommandListView.hidden && self.slashCommandListHeightConstraint.constant > self.palette.space0)
     ? self.slashCommandListHeightConstraint.constant + self.palette.space5
     : self.palette.space0;
-  CGFloat bottomClearance = inputHeight + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
+  CGFloat queueHeight = self.chatPresentation.promptQueueView.preferredHeight;
+  CGFloat bottomClearance = inputHeight + (queueHeight > 0 ? queueHeight + self.palette.space3 : 0) + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
   self.messageScrollView.contentInsets = NSEdgeInsetsMake(self.palette.space0,
                                                           self.palette.space0,
                                                           self.palette.space0,
@@ -5152,8 +5311,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)removeRuntimeForKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID {
   if (kind == TLWorkspaceTabKindChat) {
-    [self.chatPresentations[@(tabID)].chatWorkspace removeFromSuperview];
-    [self.chatPresentations removeObjectForKey:@(tabID)];
+    TLChatPresentation *presentation = self.chatPresentations[@(tabID)];
+    if (presentation.queuedPrompts.count || presentation.queuedPromptInFlight) {
+      presentation.queuePaused = YES;
+      presentation.chatWorkspace.hidden = YES;
+      [self withChatPresentation:presentation perform:^{ [self updatePromptQueue]; }];
+    } else {
+      [presentation.chatWorkspace removeFromSuperview];
+      [self.chatPresentations removeObjectForKey:@(tabID)];
+    }
   }
   [self.workspaceTabRuntimes removeObjectForKey:TLWorkspaceTabRuntimeKey(kind, tabID)];
 }
@@ -5832,6 +5998,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       self.messagesBackground.fillColor = self.palette.tabBackground;
       self.messageStack.spacing = self.palette.messageVerticalSpacing;
       self.messageInput.palette = self.palette;
+      [self updatePromptQueue];
       [self applySlashCommandListPalette];
       [self.screensaverView updateBackgroundColor:self.palette.messagesSurface artColor:self.palette.textMuted];
       [self resetMessageRowCache];
@@ -5995,6 +6162,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)updateControlStates {
+  [self updatePromptQueue];
   [self.messageInput recalculateHeight];
   [self updateMessageScrollInsets];
 
@@ -6019,17 +6187,26 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   NSString *prompt = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   BOOL chatActive = [self isChatPresentationVisible];
-  if (!chatActive || prompt.length == 0 || self.isSending) {
+  if (!chatActive || prompt.length == 0 || self.isSending || self.chatPresentation.queuedPrompts.count) {
     [self hideSlashCommandList];
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
   self.sidebarAutomationsButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
-  self.messageInput.showsStopButton = [self canStopResponse];
+  self.messageInput.placeholderText = self.chatPresentation.editingQueuedPrompt ? @"Edit queued prompt" :
+    (self.isSending || self.chatPresentation.queuedPrompts.count) ? @"Queue a follow-up" : @"Give a task or enter a URL";
+  self.messageInput.showsStopButton = !self.chatPresentation.editingQueuedPrompt && [self canStopResponse];
   BOOL hasAttachments = self.messageInput.attachmentURLs.count > 0;
   self.sendButton.enabled = !self.preparingAttachments && (self.messageInput.showsStopButton ||
-    (chatActive && (prompt.length > 0 || hasAttachments) && (!self.isSending || (!hasAttachments && [prompt hasPrefix:@"/"]))));
+    (chatActive && (prompt.length > 0 || hasAttachments)));
+  if (!self.messageInput.showsStopButton) {
+    BOOL editing = self.chatPresentation.editingQueuedPrompt != nil;
+    BOOL queuing = self.isSending || self.chatPresentation.queuedPrompts.count > 0;
+    NSString *label = editing ? @"Save queued prompt" : queuing ? @"Queue follow-up" : @"Send";
+    [self.messageInput.sendButton setImage:[NSImage imageWithSystemSymbolName:editing ? @"checkmark" : queuing ? @"text.badge.plus" : @"arrow.up" accessibilityDescription:label] animated:NO];
+    self.sendButton.toolTip = label;
+  }
   self.messageInput.attachmentsEditable = !self.preparingAttachments && chatActive;
   if (self.preparingAttachments) self.sendButton.toolTip = @"Copying attachments…";
   self.historyPanelController.enabled = YES;
@@ -6157,6 +6334,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     return;
   }
 
+  [self.chatPresentations[@(chatID)].queuedPrompts removeAllObjects];
   [self.turnMessagesByChat removeObjectForKey:@(chatID)];
   NSError *attachmentCleanupError = nil;
   [self.agentOrchestrator removeAttachmentsForSessionID:deletedChat.hermesSessionID error:&attachmentCleanupError];
