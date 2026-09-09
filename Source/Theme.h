@@ -46,6 +46,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic, strong) NSColor *appBackground;
 @property (nonatomic, strong) NSColor *appContentBackground;
 @property (nonatomic, strong) NSColor *tabBackground;
+@property (nonatomic, strong) NSColor *tabHighlightSurface;
 @property (nonatomic, strong) NSColor *transparentSurface;
 @property (nonatomic, strong) NSColor *frostedOverlay;
 @property (nonatomic, strong) NSColor *chromeHoverSurface;
