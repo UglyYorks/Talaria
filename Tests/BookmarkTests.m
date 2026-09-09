@@ -2,6 +2,7 @@
 #import "Database.h"
 #import "TLWorkspaceTabsController.h"
 #import "WorkspaceTabRuntime.h"
+#import "TLBrowserLinkActions.h"
 #import "design_system/TLChromeTabView.h"
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
@@ -21,6 +22,9 @@ static void Check(BOOL value, NSString *message) {
 
 @interface TalariaWindowController (BookmarkTests)
 - (void)reloadBookmarks;
+- (NSMenu *)menuForSidebarBookmark:(TLBookmark *)bookmark button:(TLSidebarShortcutButton *)button;
+- (void)openBookmarkURLInNewWindow:(NSURL *)URL;
+- (void)splitTab:(TLWorkspaceTab *)tab besideTab:(TLWorkspaceTab *)source onLeft:(BOOL)left;
 - (void)openSidebarBookmark:(TLSidebarShortcutButton *)button;
 - (void)removeBookmark:(NSMenuItem *)item;
 - (TLBookmark *)bookmarkForCurrentPage;
@@ -89,12 +93,19 @@ static void TestBookmarkDrop(void) {
 - (void)reloadBrowser:(id)sender { self.reloads++; }
 @end
 
+@interface TLBookmarkMenuTabView : TLChromeTabView
+@end
+@implementation TLBookmarkMenuTabView
+// Menu composition is independent of the user's live mouse state.
+- (BOOL)canOpenTabContextMenu { return YES; }
+@end
+
 static void TestTabMenu(TLBookmarkTestController *owner, TLAppStateManager *state, TLWorkspaceTab *browser, TLWorkspaceTab *chat) {
   TLWorkspaceTabsController *tabs = [[TLWorkspaceTabsController alloc] initWithTabStack:[NSStackView new] target:owner delegate:(id)owner palette:[owner valueForKey:@"palette"]];
-  TLChromeTabView *view = [TLChromeTabView new]; view.dragDelegate = tabs; view.closeable = YES; view.canCloseOtherTabs = YES;
+  TLChromeTabView *view = [TLBookmarkMenuTabView new]; view.dragDelegate = (id)tabs; view.closeable = YES; view.canCloseOtherTabs = YES;
   for (TLWorkspaceTab *tab in @[browser,chat]) {
     view.representedObject = tab;
-    NSMenu *menu = [view menuForEvent:nil];
+    NSMenu *menu = [view menuForEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0]];
     NSMutableArray *labels = [NSMutableArray array];
     for (NSMenuItem *item in menu.itemArray) [labels addObject:item.separatorItem ? @"---" : item.title];
     NSMutableArray *expected = [NSMutableArray array];
@@ -119,6 +130,65 @@ static void TestTabMenu(TLBookmarkTestController *owner, TLAppStateManager *stat
   [NSApp sendAction:reload.action to:reload.target from:reload];
   Check(probe.reloads == 1 && state.snapshot.activeTabID == activeID, @"Reload dispatches to the target browser without changing selection");
   [owner setValue:[NSMutableDictionary dictionary] forKey:@"workspaceTabRuntimes"];
+}
+
+@interface TLBookmarkMenuTestController : TLBookmarkTestController
+@property (nonatomic, strong) NSURL *openedWindowURL;
+@property (nonatomic, strong) TLWorkspaceTab *splitSource;
+@property (nonatomic, strong) TLWorkspaceTab *splitDestination;
+@end
+@implementation TLBookmarkMenuTestController
+- (void)openBrowserTabWithURL:(NSURL *)URL {
+  [super openBrowserTabWithURL:URL];
+  [[self valueForKey:@"appStateManager"] upsertWorkspaceTab:[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:123 title:@"Opened bookmark" toolTip:nil URL:URL closeable:YES] activate:YES];
+}
+- (void)openChatTabWithID:(NSInteger)chatID {
+  [super openChatTabWithID:chatID];
+  [[self valueForKey:@"appStateManager"] upsertWorkspaceTab:[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:chatID title:@"Opened conversation" toolTip:nil URL:nil closeable:YES] activate:YES];
+}
+- (void)openBookmarkURLInNewWindow:(NSURL *)URL { self.openedWindowURL = URL; }
+- (void)splitTab:(TLWorkspaceTab *)tab besideTab:(TLWorkspaceTab *)source onLeft:(BOOL)left {
+  self.splitDestination = tab; self.splitSource = source;
+}
+@end
+
+static void InvokeBookmarkItem(NSMenu *menu, NSString *title) {
+  NSMenuItem *item = [menu itemWithTitle:title];
+  Check(item && item.enabled, [@"bookmark menu enables " stringByAppendingString:title]);
+  [NSApp sendAction:item.action to:item.target from:item];
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+}
+
+static void TestSidebarBookmarkMenus(TLBookmark *website, TLBookmark *conversation) {
+  TLBookmarkMenuTestController *owner = [[TLBookmarkMenuTestController alloc] initWithWindow:nil];
+  TLAppStateManager *state = [TLAppStateManager new]; [owner setValue:state forKey:@"appStateManager"];
+  TLSidebarShortcutButton *button = [TLSidebarShortcutButton new];
+  NSMenu *menu = [owner menuForSidebarBookmark:website button:button];
+  NSMutableArray *labels = [NSMutableArray array];
+  for (NSMenuItem *item in menu.itemArray) [labels addObject:item.separatorItem ? @"---" : item.title];
+  Check([labels isEqual:@[@"Open Link in New Tab", @"Open Link in New Window", @"Open Link in Split View", @"---", @"Copy Link", @"---", @"Share…", @"---", @"Delete bookmark"]], @"sidebar website menu matches requested link actions and delete");
+  Check([menu itemWithTitle:@"Copy Link"].enabled && [menu itemWithTitle:@"Share…"].enabled, @"copy and native sharing are available");
+  InvokeBookmarkItem(menu, @"Open Link in New Tab");
+  Check([owner.openedURL isEqual:website.URL], @"new-tab action opens the bookmarked URL even in an empty workspace");
+  InvokeBookmarkItem(menu, @"Open Link in New Window");
+  Check([owner.openedWindowURL isEqual:website.URL], @"new-window action targets the bookmarked URL");
+  TLWorkspaceTab *source = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:42 title:@"Current chat" toolTip:nil URL:nil closeable:YES];
+  [state addWorkspaceTab:source activate:YES];
+  InvokeBookmarkItem(menu, @"Open Link in Split View");
+  Check(owner.splitSource.tabID == 42 && [owner.splitDestination.URL isEqual:website.URL], @"split uses the page active at invocation, not menu construction");
+  NSMenu *chatMenu = [owner menuForSidebarBookmark:conversation button:button];
+  InvokeBookmarkItem(chatMenu, @"Open Conversation in New Tab");
+  Check(owner.openedChatID == conversation.chatID, @"conversation bookmark opens the saved chat");
+  [state activateWorkspaceTabKind:source.kind tabID:source.tabID];
+  InvokeBookmarkItem(chatMenu, @"Open Conversation in Split View");
+  Check(owner.splitSource.tabID == 42 && owner.splitDestination.tabID == conversation.chatID, @"conversation bookmark splits with the current tab");
+  Check([chatMenu itemWithTitle:@"Delete bookmark"].tag == conversation.bookmarkID && ![chatMenu itemWithTitle:@"Copy Link"], @"conversation has delete without inventing a URL");
+  __weak TLSidebarShortcutButton *releasedButton;
+  @autoreleasepool {
+    TLSidebarShortcutButton *temporary = [TLSidebarShortcutButton new]; releasedButton = temporary;
+    temporary.menu = [owner menuForSidebarBookmark:website button:temporary];
+  }
+  Check(!releasedButton, @"bookmark menus do not retain removed sidebar buttons through Share");
 }
 
 static void SavePreview(NSView *view, NSString *name) {
@@ -377,11 +447,12 @@ int main(void) {
     }
     Check(![[owner workspaceTabsController:nil contextMenuForTab:state.snapshot.workspaceTabs.lastObject] itemWithTitle:@"Add to bookmarks"], @"settings menu does not offer bookmarking");
     TestTabMenu(owner, state, tab, chatTab);
-    NSMenuItem *remove = sidebar.shortcutButtons[0].menu.itemArray.firstObject;
+    NSMenuItem *remove = [sidebar.shortcutButtons[0].menu itemWithTitle:@"Delete bookmark"];
     [owner removeBookmark:remove];
     Check([database listBookmarks:nil].count == 1, @"context menu removes only selected bookmark");
     Check([database deleteChatWithID:chat.chatID error:&error] && [database listBookmarks:nil].count == 0, @"deleted chat leaves no dangling bookmark");
     Check(![database saveBookmark:conversation error:&error], @"missing conversation cannot be bookmarked");
+    TestSidebarBookmarkMenus(website, conversation);
     TestEditor(website); TestEditor(conversation); TestBookmarkDrop();
     TestPopover(owner, state, database);
     // At narrow sidebar widths, bookmarks wrap instead of shrinking to unusable hit targets.

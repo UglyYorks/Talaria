@@ -1,6 +1,7 @@
 #import "TLBookmarkEditorController.h"
 #import "TLBrowserImageActions.h"
 #import "TLBrowserLinkActions.h"
+#import "design_system/TLActionMenuItem.h"
 #import "TLAutomationsTabController.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
@@ -2308,14 +2309,51 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     }
     button.target = self;
     button.action = @selector(openSidebarBookmark:);
-    NSMenu *menu = [NSMenu new];
-    NSMenuItem *remove = [[NSMenuItem alloc] initWithTitle:@"Remove bookmark" action:@selector(removeBookmark:) keyEquivalent:@""];
-    remove.target = self;
-    remove.tag = bookmark.bookmarkID;
-    [menu addItem:remove];
-    button.menu = menu;
+    button.menu = [self menuForSidebarBookmark:bookmark button:button];
     [self.sidebarShortcutsView addShortcutButton:button];
   }
+}
+
+- (NSMenu *)menuForSidebarBookmark:(TLBookmark *)bookmark button:(TLSidebarShortcutButton *)button {
+  __weak typeof(self) weakSelf = self;
+  NSMenu *menu;
+  if (bookmark.URL) {
+    menu = [TLBrowserLinkActions menuForURL:bookmark.URL canSplit:YES view:button
+      point:NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds))
+      open:^(NSURL *URL, TLBrowserLinkDestination destination) {
+        [weakSelf openBookmark:bookmark destination:destination];
+      } inspect:nil imageMenu:nil];
+    // Sidebar shortcuts have no page element to inspect. Keep the separator
+    // after Share for the bookmark-specific action below.
+    [menu removeItem:[menu itemWithTitle:@"Inspect Element"]];
+  } else {
+    menu = [NSMenu new]; menu.autoenablesItems = NO;
+    [menu addItem:[TLActionMenuItem itemWithTitle:@"Open Conversation in New Tab" action:^{
+      [weakSelf openBookmark:bookmark destination:TLBrowserLinkNewTab];
+    }]];
+    [menu addItem:[TLActionMenuItem itemWithTitle:@"Open Conversation in Split View" action:^{
+      [weakSelf openBookmark:bookmark destination:TLBrowserLinkSplitView];
+    }]];
+    [menu addItem:NSMenuItem.separatorItem];
+  }
+  NSMenuItem *remove = [[NSMenuItem alloc] initWithTitle:@"Delete bookmark" action:@selector(removeBookmark:) keyEquivalent:@""];
+  remove.target = self; remove.tag = bookmark.bookmarkID; [menu addItem:remove];
+  return menu;
+}
+
+- (void)openBookmarkURLInNewWindow:(NSURL *)URL {
+  [TLChromiumBrowserController.sharedController openURL:URL fromWindow:self.window modifierFlags:0];
+}
+
+- (void)openBookmark:(TLBookmark *)bookmark destination:(TLBrowserLinkDestination)destination {
+  TLWorkspaceTab *source = [self activeWorkspaceTab];
+  if (bookmark.chatID > 0) [self openChatTabWithID:bookmark.chatID];
+  else if (bookmark.URL) {
+    if (destination == TLBrowserLinkNewWindow) { [self openBookmarkURLInNewWindow:bookmark.URL]; return; }
+    [self openBrowserTabWithURL:bookmark.URL];
+  } else return;
+  if (destination == TLBrowserLinkSplitView && source)
+    [self splitTab:[self activeWorkspaceTab] besideTab:source onLeft:NO];
 }
 
 - (TLBookmark *)bookmarkForCurrentPage {
