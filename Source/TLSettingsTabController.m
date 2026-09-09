@@ -220,7 +220,7 @@
   NSArray *icons = self.sectionIndex == 0 ? @[@"cube", @"key.horizontal", @"sparkles"] :
     @[@"lock.shield", @"hand.raised", @"person.text.rectangle", @"magnifyingglass", @"textformat",
       @"power", @"speedometer", @"character.bubble", @"arrow.down.circle", @"accessibility",
-      @"gearshape", @"arrow.counterclockwise"];
+      @"gearshape", @"arrow.counterclockwise", @"square.and.arrow.down"];
   for (NSUInteger i = 0; i < self.pageNames.count; i++) {
     TLSidebarNavigationButton *button = [[TLSidebarNavigationButton alloc] init];
     button.translatesAutoresizingMaskIntoConstraints = NO;

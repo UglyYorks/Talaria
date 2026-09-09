@@ -1,4 +1,5 @@
 #import "TLBrowserSettingsController.h"
+#import "TLBrowserProfileImporter.h"
 #import "UIComponents.h"
 #import "design_system/TLSettingsRowView.h"
 #import "design_system/TLWrappingActionView.h"
@@ -13,6 +14,8 @@
 @property NSMutableDictionary<NSString *, NSView *> *cards;
 @property NSMutableArray<TLThemedButton *> *buttons;
 @property NSMutableArray<NSDictionary *> *extraRows;
+@property NSMutableDictionary<NSString *, NSDictionary *> *importSources;
+@property NSMutableDictionary<NSString *, NSPopUpButton *> *profilePickers;
 @property BOOL ready;
 @property (nonatomic) BOOL busy;
 @end
@@ -21,6 +24,7 @@
   if (!(self = [super initWithPalette:palette])) return nil;
   _preferences = preferences; _controls = [NSMutableDictionary dictionary]; _cards = [NSMutableDictionary dictionary];
   _buttons = [NSMutableArray array]; _extraRows = [NSMutableArray array];
+  _importSources = [NSMutableDictionary dictionary]; _profilePickers = [NSMutableDictionary dictionary];
   [self buildContent];
   return self;
 }
@@ -121,6 +125,7 @@
     NSView *row = [self card:action[2] detail:action[3] controls:@[button]];
     [self.extraRows addObject:@{@"category":action[1],@"search":[NSString stringWithFormat:@"%@ %@",action[2],action[3]],@"detail":action[3],@"row":row}]; [self addRow:row];
   }
+  [self reloadImportSources:nil];
   self.empty = [self wrappingLabelWithString:@"No matching settings. Try another search." font:self.palette.bodyFont colorToken:@"textMuted"];
   [self addRow:self.empty]; [self filter:nil];
 }
@@ -142,6 +147,98 @@
     self.controls[setting[@"id"]].enabled = !busy && self.ready && [[self.preferences stateForSetting:setting][@"available"] boolValue];
   }
   for (TLThemedButton *button in self.buttons) button.enabled = !busy && self.ready && (button.tag == 1 || !self.controls[button.identifier] || self.controls[button.identifier].enabled);
+  for (NSPopUpButton *picker in self.profilePickers.allValues) picker.enabled = !busy;
+}
+- (NSArray<NSDictionary *> *)detectedImportBrowsers { return [TLBrowserProfileImporter installedBrowsers]; }
+- (void)reloadImportSources:(id)sender {
+  if (self.busy) return;
+  for (NSDictionary *entry in self.extraRows.copy) if ([entry[@"category"] isEqual:@"Import profiles"]) {
+    NSView *row = entry[@"row"];
+    for (TLThemedButton *button in self.buttons.copy) if ([button isDescendantOf:row]) [self.buttons removeObject:button];
+    [self.rows removeArrangedSubview:row]; [row removeFromSuperview]; [self.extraRows removeObject:entry];
+  }
+  [self.importSources removeAllObjects]; [self.profilePickers removeAllObjects];
+  TLThemedButton *refresh = [self button:@"Refresh" action:@selector(reloadImportSources:) identifier:@"refreshBrowsers"];
+  NSView *intro = [self card:@"Import browser profiles" detail:@"Import while your browser stays open. Cookies apply now; local storage applies after restarting Talaria. Imports replace matching site data. macOS may request access when needed." controls:@[refresh]];
+  [self addImportRow:intro search:@"Import browser profiles cookies local storage refresh"];
+  NSArray *browsers = [self detectedImportBrowsers];
+  for (NSDictionary *browser in browsers) {
+    NSString *identifier = browser[@"bundleID"]; NSArray *profiles = browser[@"profiles"];
+    self.importSources[identifier] = browser;
+    NSMutableArray *controls = [NSMutableArray array];
+    NSString *detail = @"Import cookies and local storage from the selected profile.";
+    if ([browser[@"engine"] isEqual:@"unsupported"]) detail = @"Installed. Importing cookies and local storage from this browser is not supported.";
+    else if (browser[@"discoveryError"]) {
+      detail = @"Import cookies and local storage. macOS needs access to this browser’s profile folder to continue.";
+      TLThemedButton *access = [self button:@"Import" action:@selector(importProfile:) identifier:identifier];
+      access.accessibilityLabel = [@"Import profile from " stringByAppendingString:browser[@"name"]];
+      access.toolTip = [browser[@"discoveryError"] localizedDescription];
+      [controls addObject:access];
+    }
+    else if (!profiles.count) detail = @"No profile was found. Open this browser once, then refresh.";
+    else {
+      NSPopUpButton *picker = [[NSPopUpButton alloc] init]; picker.font = self.palette.bodyFont;
+      picker.accessibilityLabel = [browser[@"name"] stringByAppendingString:@" profile"];
+      for (NSDictionary *profile in profiles) {
+        // Distinguish profiles even when users have given them identical names.
+        [picker addItemWithTitle:[NSString stringWithFormat:@"%@ (%@)", profile[@"name"], [profile[@"URL"] lastPathComponent]]];
+        picker.lastItem.representedObject = profile;
+      }
+      self.profilePickers[identifier] = picker; self.importSources[identifier] = browser;
+      TLThemedButton *button = [self button:@"Import" action:@selector(importProfile:) identifier:identifier];
+      button.accessibilityLabel = [@"Import profile from " stringByAppendingString:browser[@"name"]];
+      button.enabled = self.ready;
+      [controls addObjectsFromArray:@[picker,button]];
+    }
+    NSView *row = [self card:browser[@"name"] detail:detail controls:controls];
+    [self addImportRow:row search:[NSString stringWithFormat:@"Import profiles %@ cookies local storage %@",browser[@"name"],detail]];
+  }
+  if (!browsers.count) [self addImportRow:[self card:@"No browsers detected" detail:@"Install or open a supported browser, then refresh this list." controls:@[]] search:@"Import profiles no browsers detected"];
+  [self filter:nil];
+}
+- (void)addImportRow:(NSView *)row search:(NSString *)search {
+  [self.extraRows addObject:@{@"category":@"Import profiles",@"search":search,@"row":row}];
+  [self addRow:row];
+}
+- (void)grantImportAccess:(NSButton *)sender {
+  if(self.busy) return;
+  NSDictionary *browser = self.importSources[sender.identifier];
+  NSURL *root = browser[@"profileRootURL"];
+  if(!root || !self.view.window) return;
+  NSOpenPanel *panel = [NSOpenPanel openPanel];
+  panel.canChooseFiles = NO; panel.canChooseDirectories = YES; panel.canCreateDirectories = NO;
+  panel.allowsMultipleSelection = NO; panel.showsHiddenFiles = YES;
+  panel.directoryURL = root; panel.prompt = @"Continue";
+  panel.message = [NSString stringWithFormat:@"Select the %@ folder to let Talaria find %@ profiles. Cookies and local storage are imported only when you click Import.",root.lastPathComponent,browser[@"name"]];
+  self.busy = YES;
+  __weak typeof(self) weakSelf = self;
+  [panel beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response) {
+    typeof(self) owner = weakSelf; if(!owner || owner.isClosed) return;
+    owner.busy = NO;
+    if(response != NSModalResponseOK) return;
+    NSError *error = nil;
+    if(![TLBrowserProfileImporter grantAccessToBrowser:browser directoryURL:panel.URL error:&error]) {
+      owner.status.stringValue = error.localizedDescription ?: @"Could not access this browser’s profile folder."; return;
+    }
+    [owner reloadImportSources:nil];
+    NSDictionary *updated = owner.importSources[browser[@"bundleID"]];
+    if(updated[@"discoveryError"]) owner.status.stringValue = [updated[@"discoveryError"] localizedDescription];
+    else if([updated[@"profiles"] count]==1) [owner importProfile:sender];
+    else owner.status.stringValue = [updated[@"profiles"] count] ? @"Choose a profile, then click Import." : @"No profile was found. Open the source browser once, then refresh.";
+  }];
+}
+- (void)importProfile:(NSButton *)sender {
+  if (self.busy || !self.ready) return;
+  NSDictionary *browser = self.importSources[sender.identifier];
+  if(browser[@"discoveryError"]) { [self grantImportAccess:sender]; return; }
+  NSDictionary *profile = self.profilePickers[sender.identifier].selectedItem.representedObject;
+  if (!browser || !profile) return;
+  self.busy = YES; self.status.stringValue = [NSString stringWithFormat:@"Importing %@ — %@…",browser[@"name"],profile[@"name"]];
+  __weak typeof(self) weakSelf = self;
+  [self.preferences importProfile:profile fromBrowser:browser completion:^(NSString *message) {
+    typeof(self) owner = weakSelf; if (!owner || owner.isClosed) return;
+    owner.busy = NO; owner.status.stringValue = message;
+  }];
 }
 - (void)refreshControls {
   for (NSDictionary *setting in TLBrowserPreferences.catalogue) {

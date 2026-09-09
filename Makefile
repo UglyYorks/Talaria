@@ -133,6 +133,8 @@ $(APP_BUILD_STAMP): $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFI
 	cp Source/MarkdownMath.js "$(APP_BUNDLE)/Contents/Resources/MarkdownMath.js"
 	cp Source/MarkdownFind.js Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js "$(APP_BUNDLE)/Contents/Resources/"
 	cp Vendor/highlight.js/LICENSE "$(APP_BUNDLE)/Contents/Resources/highlight-LICENSE"
+	cp Vendor/browser-import/leveldb-1.23/LICENSE "$(APP_BUNDLE)/Contents/Resources/leveldb-LICENSE"
+	cp Vendor/browser-import/snappy-1.1.9/COPYING "$(APP_BUNDLE)/Contents/Resources/snappy-LICENSE"
 	ditto Vendor/katex "$(APP_BUNDLE)/Contents/Resources/katex"
 	cp Vendor/readability/Readability.js "$(APP_BUNDLE)/Contents/Resources/Readability.js"
 	cp Vendor/readability/LICENSE.md "$(APP_BUNDLE)/Contents/Resources/Readability-LICENSE.md"
@@ -503,3 +505,5 @@ test: $(BUILD_DIR)/BrowserHistoryTests
 
 $(BUILD_DIR)/BrowserHistoryTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/BrowserHistoryTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+
+include Scripts/browser-import.mk
