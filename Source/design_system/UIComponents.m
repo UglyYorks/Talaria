@@ -2199,6 +2199,10 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _mutableShortcutButtons = [NSMutableArray array];
     self.translatesAutoresizingMaskIntoConstraints = NO;
+    // Bookmark rows occupy only their content height; the notification pane
+    // below receives any spare sidebar space, including when there are no rows.
+    [self setContentHuggingPriority:NSLayoutPriorityRequired
+                   forOrientation:NSLayoutConstraintOrientationVertical];
     _titleLabel = [NSTextField labelWithString:@"Bookmarks"];
     _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _addButton = [TLButton new];
