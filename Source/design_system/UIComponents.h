@@ -38,6 +38,10 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 @property (nonatomic, getter=isSelected) BOOL selected;
 @end
 
+// Shared user-message outline in AppKit's unflipped coordinates.
+NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds, TLThemePalette *palette,
+                                               CGFloat requestedRadius, BOOL rendersAsPill);
+
 @interface TLMessageBubbleView : TLTokenView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic) BOOL drawsOutgoingTail;
