@@ -37,7 +37,7 @@ class TLFooterColorRequest : public CefDevToolsMessageObserver {
       captureView_=view;
       // Bound readback before asking Chromium to encode a full viewport.
       double pixels=[view[0] doubleValue]*[view[1] doubleValue]*pow([captureSample[@"deviceScale"] doubleValue],2);
-      if(!isfinite(pixels) || pixels<=0 || pixels>16*1024*1024){Finish(sample);return;}
+      if(!isfinite(pixels) || pixels<=0 || pixels>TLBrowserContentColorMaximumImagePixels){Finish(sample);return;}
       captureStart_=NSProcessInfo.processInfo.systemUptime;
       // A CDP clip RESIZES the live render widget even with scale:1 and
       // captureBeyondViewport:false. Read the existing viewport without a clip;

@@ -376,12 +376,55 @@
         [self after:0.5 run:^{
           NSColor *header=[self.tab.headerContentColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
           [self check:header && fabs(header.redComponent*255-180)<2 name:@"Browser tab receives the visible top color through the shared polling path"];
-          [self testLivePage];
+          [self testHighResolutionEdgeColors];
         }];
       }];
     }];
     }];
   }];}];
+}
+- (void)testHighResolutionEdgeColors {
+  NSRect previousFrame=self.window.frame;
+  [self.window setContentSize:NSMakeSize(3008,1698)];
+  [self.browser navigateSession:self.session toURL:[NSURL URLWithString:[NSProcessInfo.processInfo.arguments[1] stringByAppendingString:@"/x-like-edge-colors"]]];
+  [self after:0.5 run:^{[self waitForBridge:0 then:^{
+    // Keep the regression above the old 16 Mi pixel limit on every display.
+    // This changes only the disposable fixture's emulated device metrics.
+    CefRefPtr<CefDictionaryValue> metrics=CefDictionaryValue::Create();
+    metrics->SetInt("width",3008);metrics->SetInt("height",1698);
+    metrics->SetDouble("deviceScaleFactor",2);metrics->SetBool("mobile",false);
+    [self cef]->GetHost()->ExecuteDevToolsMethod(0,"Emulation.setDeviceMetricsOverride",metrics);
+    [self after:0.3 run:^{
+      [self.tab setValue:nil forKey:@"headerContentColor"];
+      [self.tab setValue:@1e100 forKey:@"footerColorNext"];
+      [self.tab setValue:@1e100 forKey:@"footerCaptureNext"];
+      [self sampleHighResolutionEdge:0 previousFrame:previousFrame];
+    }];
+  }];}];
+}
+- (void)sampleHighResolutionEdge:(NSUInteger)attempt previousFrame:(NSRect)previousFrame {
+  [self.browser sampleFooterColorInSession:self.session allowCapture:YES completion:^(NSDictionary *sample){
+    NSDictionary *top=sample[@"top"];
+    if(!top[@"rgb"] && attempt<7){[self after:0.25 run:^{[self sampleHighResolutionEdge:attempt+1 previousFrame:previousFrame];}];return;}
+    NSArray *view=top[@"viewState"];
+    double scale=[top[@"deviceScale"] doubleValue];
+    double pixels=view.count==4 ? [view[0] doubleValue]*[view[1] doubleValue]*scale*scale : 0;
+    [self check:pixels>16*1024*1024 && pixels<=32*1024*1024 name:@"X-like fixture exercises a 6K viewport above the former capture limit"];
+    [self check:[top[@"rgb"] isEqual:@[@0,@0,@0]] && [top[@"mode"] isEqual:@"pixels"] && [sample[@"captureMS"] doubleValue]>0 name:@"Transparent relative wrappers receive their rendered black top color at 6K"];
+    [self.results addObject:@{@"name":@"6K edge capture diagnostics",@"passed":@YES,@"sample":sample ?: @{}}];
+    [self.tab setValue:@0 forKey:@"footerColorNext"];
+    [self.tab setValue:@0 forKey:@"footerCaptureNext"];
+    [self awaitHighResolutionHeader:0 previousFrame:previousFrame];
+  }];
+}
+- (void)awaitHighResolutionHeader:(NSUInteger)attempt previousFrame:(NSRect)previousFrame {
+  NSColor *header=[self.tab.headerContentColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  BOOL black=header && header.redComponent==0 && header.greenComponent==0 && header.blueComponent==0;
+  if(!black && attempt<30){[self after:0.1 run:^{[self awaitHighResolutionHeader:attempt+1 previousFrame:previousFrame];}];return;}
+  [self check:black name:@"A cleared browser tab acquires the black X-like page color at 6K"];
+  [self cef]->GetHost()->ExecuteDevToolsMethod(0,"Emulation.clearDeviceMetricsOverride",CefDictionaryValue::Create());
+  [self.window setFrame:previousFrame display:YES];
+  [self after:0.3 run:^{[self testLivePage];}];
 }
 - (void)testLivePage {
   NSArray *args=NSProcessInfo.processInfo.arguments;

@@ -37,7 +37,7 @@ try:
     subprocess.run([
         "xcrun", "clang++", "-fobjc-arc", "-std=c++20", "-fno-exceptions", "-fno-rtti",
         "-mmacosx-version-min=13.0", "-I" + str(cef), "-ISource", "Tests/BrowserDevToolsCEFTests.mm" if DEVTOOLS else "Tests/BrowserFullscreenCEFTests.mm" if FULLSCREEN else "Tests/BrowserDocumentFooterCEFTests.mm" if DOCUMENT_FOOTER else "Tests/BrowserOverlayCEFTests.mm",
-        *objects, "build/libcef_dll_wrapper.a",
+        *objects, "build/libcef_dll_wrapper.a", "build/libbrowser_import.a",
         *[arg for framework in frameworks for arg in ("-framework", framework)],
         "-lsqlite3", "-lpthread", "-o", str(binary)], check=True)
     app = work / "Talaria.app"
@@ -87,6 +87,11 @@ try:
                 body += '<script>requestAnimationFrame(()=>{document.title="viewport-app-visible:layout"})</script>'
             if self.path == "/edge-colors":
                 body = '<style>body{min-height:0;height:100vh;background:linear-gradient(rgb(180,30,20) 20%,rgb(20,30,150) 80%)}</style>'
+            if self.path == "/x-like-edge-colors":
+                # X's transparent relative wrappers require rendered pixels even
+                # though the visible edge is a uniform black body background.
+                body = '<style>html,body{height:100%;min-height:0}body{background:rgb(0,0,0)}.shell{position:relative;height:100%;width:100%}</style>'
+                body += '<div class="shell">' * 8 + '</div>' * 8
             if self.path == "/clear":
                 body = '<p>Normal page</p>'
             if self.path.startswith("/large"):
