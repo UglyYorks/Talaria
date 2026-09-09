@@ -1,5 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "TalariaModels.h"
+#import "TLQueuedPrompt.h"
+#import "design_system/TLPromptQueueView.h"
 #import "design_system/TLFindBar.h"
 #import "UIComponents.h"
 #import "design_system/TLMessageInput.h"
@@ -7,6 +9,7 @@
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLASCIIPlanetScreensaverView.h"
+#import "design_system/TLStarryEmptyStateView.h"
 
 // UI state belongs to a chat, including its live transcript, draft, selection,
 // scroll position and pending render. The window routes actions to the focused
@@ -18,6 +21,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)applyFindPalette:(TLThemePalette *)palette;
 - (void)refreshFindResults;
 @property (nonatomic, strong) TLChatRecord *chat;
+@property (nonatomic, strong) NSMutableArray<TLQueuedPrompt *> *queuedPrompts;
+@property (nonatomic, strong) TLPromptQueueView *promptQueueView;
+@property (nonatomic, strong) NSLayoutConstraint *promptQueueBottomConstraint;
+@property (nonatomic) BOOL queuePaused;
+@property (nonatomic) BOOL queueInterruptPending;
+@property (nonatomic, strong, nullable) TLQueuedPrompt *editingQueuedPrompt;
+@property (nonatomic, strong, nullable) TLQueuedPrompt *queueDraft;
+@property (nonatomic, strong, nullable) TLQueuedPrompt *queuedPromptInFlight;
 @property (nonatomic, strong) NSMutableArray<TLChatMessage *> *messages;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSView *> *messageRowViews;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSString *> *messageRowSignatures;
@@ -26,6 +37,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSArray<TLChatMessage *> *renderedMessages;
 @property (nonatomic) BOOL isLoading;
 @property (nonatomic, copy) NSString *errorMessage;
+@property (nonatomic, strong) TLStarryEmptyStateView *emptyStateView;
 @property (nonatomic, strong) TLTokenView *messagesBackground;
 @property (nonatomic, strong) TLMessageInput *messageInput;
 @property (nonatomic, strong) NSView *chatWorkspace;

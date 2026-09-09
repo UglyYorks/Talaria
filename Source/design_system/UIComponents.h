@@ -38,6 +38,10 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 @property (nonatomic, getter=isSelected) BOOL selected;
 @end
 
+// Shared user-message outline in AppKit's unflipped coordinates.
+NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds, TLThemePalette *palette,
+                                               CGFloat requestedRadius, BOOL rendersAsPill);
+
 @interface TLMessageBubbleView : TLTokenView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic) BOOL drawsOutgoingTail;
@@ -90,10 +94,14 @@ typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {
 @property (nonatomic) TLSidebarShortcutKind shortcutKind;
 @end
 
+@class TLButton;
 @interface TLSidebarShortcutsView : NSView
+@property (nonatomic) BOOL dropTargeted;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong, readonly) NSArray<TLSidebarShortcutButton *> *shortcutButtons;
+@property (nonatomic, strong, readonly) TLButton *addButton;
 - (void)addShortcutButton:(TLSidebarShortcutButton *)button;
+- (void)removeAllShortcutButtons;
 @end
 
 @interface TLFlippedView : NSView

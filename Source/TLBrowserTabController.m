@@ -15,6 +15,10 @@
 @property (nonatomic, strong) NSLayoutConstraint *findBarHeightConstraint;
 @property (nonatomic) BOOL findHasQuery;
 @property (nonatomic, strong) TLDatabase *database;
+@property (nonatomic) NSInteger historyVisitID;
+@property (nonatomic, copy) NSString *historyPageOrigin;
+@property (nonatomic, copy) NSString *historyFaviconOrigin;
+@property (nonatomic, copy) NSData *historyFaviconData;
 @property (nonatomic, strong) TLBrowserPreferences *browserPreferences;
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
 @property (nonatomic, strong) TLChromiumBrowserController *browserService;
@@ -67,6 +71,7 @@
   self = [super initWithPalette:palette];
   if (self) {
     _database = database;
+    _historyPageOrigin = TLBrowserHistoryOrigin(URL);
     _browserPreferences = TLBrowserPreferences.sharedPreferences;
     _agentOrchestrator = orchestrator;
     _browserService = browserService;
@@ -119,6 +124,7 @@
   [self.browserService closeSession:self.browserSession];
   self.browserSession = nil;
   self.metadataChangedHandler = nil;
+  self.historyChangedHandler = nil;
   self.faviconChangedHandler = nil;
   self.headerColorChangedHandler = nil;
   self.linkHandler = nil;
@@ -326,6 +332,12 @@
       TLBrowserTabController *controller = weakSelf;
       if (!controller || controller.isClosed || title.length == 0) return;
       controller.title = title;
+      if (controller.historyVisitID > 0) {
+        NSError *error = nil;
+        if (![controller.database updateBrowserVisitWithID:controller.historyVisitID title:title error:&error]) {
+          NSLog(@"Unable to update browsing history: %@", error.localizedDescription);
+        } else if (controller.historyChangedHandler) controller.historyChangedHandler();
+      }
       [controller publishMetadata];
     } linkHandler:^(NSURL *URL, NSEventModifierFlags flags) {
       TLBrowserTabController *controller = weakSelf;
@@ -333,7 +345,17 @@
     } URLHandler:^(NSURL *URL) {
       TLBrowserTabController *controller = weakSelf;
       NSString *scheme = URL.scheme.lowercaseString;
-      if (!controller || controller.isClosed || !([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"])) return;
+      if (!controller || controller.isClosed) return;
+      controller.historyVisitID = 0;
+      controller.historyPageOrigin = TLBrowserHistoryOrigin(URL);
+      if (!([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"])) return;
+      // CEF's main-frame address callback reports committed navigations, including
+      // back/forward and same-document navigation. Metadata changes do not add visits.
+      NSError *error = nil;
+      controller.historyVisitID = [controller.database recordBrowserVisitToURL:URL title:@"" error:&error];
+      [controller persistHistoryFavicon];
+      if (error) NSLog(@"Unable to save browsing history: %@", error.localizedDescription);
+      else if (controller.historyChangedHandler) controller.historyChangedHandler();
       controller.URL = URL;
       [controller.browserAddressInput updateDisplayedAddress:[controller displayAddressForBrowserURL:URL]];
       controller.browserAddressInput.textView.toolTip = URL.absoluteString;
@@ -342,6 +364,12 @@
       TLBrowserTabController *controller = weakSelf;
       if (!controller || controller.isClosed || controller.favicon == favicon) return;
       controller.favicon = favicon;
+      NSData *TIFF = favicon.TIFFRepresentation;
+      NSBitmapImageRep *bitmap = TIFF ? [NSBitmapImageRep imageRepWithData:TIFF] : nil;
+      controller.historyFaviconData = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+      controller.historyFaviconOrigin = controller.historyFaviconData ? controller.historyPageOrigin : nil;
+      [controller persistHistoryFavicon];
+      if (controller.historyFaviconData && controller.historyChangedHandler) controller.historyChangedHandler();
       if (controller.faviconChangedHandler) controller.faviconChangedHandler();
     } navigationHandler:^(BOOL canGoBack, BOOL canGoForward, BOOL loading) {
       TLBrowserTabController *controller = weakSelf;
@@ -382,6 +410,14 @@
     self.overlayTimer.tolerance = 0.01;
     [NSRunLoop.mainRunLoop addTimer:self.overlayTimer forMode:NSRunLoopCommonModes];
   }
+}
+
+- (void)persistHistoryFavicon {
+  if (self.historyVisitID <= 0 || !self.historyFaviconData.length ||
+      ![self.historyFaviconOrigin isEqualToString:self.historyPageOrigin]) return;
+  NSError *error = nil;
+  if (![self.database updateBrowserVisitWithID:self.historyVisitID faviconData:self.historyFaviconData error:&error])
+    NSLog(@"Unable to save browsing favicon: %@", error.localizedDescription);
 }
 
 - (void)publishMetadata {

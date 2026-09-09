@@ -100,6 +100,60 @@ static NSString *TLTitleFromMessage(NSString *content) {
   return self;
 }
 
+- (NSArray<TLBookmark *> *)listBookmarks:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "SELECT id, name, url, chat_id, emoji, favicon FROM bookmarks ORDER BY id" error:error];
+    if (!statement) return nil;
+    NSMutableArray *bookmarks = [NSMutableArray array];
+    int result;
+    while ((result = [statement step]) == SQLITE_ROW) {
+      TLBookmark *bookmark = [TLBookmark new];
+      bookmark.bookmarkID = sqlite3_column_int64(statement.handle, 0);
+      bookmark.name = [statement stringAtColumn:1];
+      NSString *address = [statement nullableStringAtColumn:2];
+      bookmark.URL = address.length ? [NSURL URLWithString:address] : nil;
+      bookmark.chatID = sqlite3_column_int64(statement.handle, 3);
+      bookmark.emoji = [statement stringAtColumn:4];
+      bookmark.faviconData = [[NSData alloc] initWithBase64EncodedString:[statement stringAtColumn:5] options:0];
+      [bookmarks addObject:bookmark];
+    }
+    if (result != SQLITE_DONE) { [self.sqliteConnection setCurrentError:error]; return nil; }
+    return bookmarks;
+  }
+}
+
+- (BOOL)saveBookmark:(TLBookmark *)bookmark error:(NSError **)error {
+  @synchronized (self) {
+    NSString *name = TLTrimmedString(bookmark.name);
+    NSURL *URL = bookmark.URL ? [TLBookmark normalizedURL:bookmark.URL.absoluteString] : nil;
+    if (!name.length || (bookmark.chatID <= 0 && !URL) || (bookmark.chatID > 0 && bookmark.URL)) {
+      TLSetDatabaseError(error, @"Enter a name and a valid website address or conversation.");
+      return NO;
+    }
+    // Saving the same destination again updates its label/icon without duplicating it.
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "INSERT INTO bookmarks (name, url, chat_id, emoji, favicon) VALUES (?1, ?2, ?3, ?4, ?5) "
+      "ON CONFLICT DO UPDATE SET name=excluded.name, emoji=excluded.emoji, favicon=excluded.favicon" error:error];
+    if (!statement) return NO;
+    [statement bindText:name atIndex:1];
+    if (URL) [statement bindText:URL.absoluteString atIndex:2]; else [statement bindNullAtIndex:2];
+    if (bookmark.chatID > 0) [statement bindInt64:bookmark.chatID atIndex:3]; else [statement bindNullAtIndex:3];
+    [statement bindText:bookmark.emoji ?: TLDefaultChatIcon() atIndex:4];
+    [statement bindText:[bookmark.faviconData base64EncodedStringWithOptions:0] ?: @"" atIndex:5];
+    return [statement stepDone:error];
+  }
+}
+
+- (BOOL)deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM bookmarks WHERE id=?1" error:error];
+    if (!statement) return NO;
+    [statement bindInt64:bookmarkID atIndex:1];
+    return [statement stepDone:error];
+  }
+}
+
 - (TLAppSettings *)appSettings:(NSError **)error {
   @synchronized (self) {
     NSDictionary<NSString *, NSString *> *values = [self storedSettings:error];
@@ -264,6 +318,86 @@ static NSString *TLTitleFromMessage(NSString *content) {
       return YES;
     } error:error];
     return saved ? [self loadChatWithID:chatID error:error] : nil;
+  }
+}
+
+- (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error {
+  NSString *scheme = URL.scheme.lowercaseString;
+  if ((![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) || !URL.host.length) return 0;
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "INSERT INTO browser_history (url, title, favicon) VALUES (?1, ?2, "
+      "(SELECT favicon FROM browser_history WHERE url = ?1 AND favicon IS NOT NULL ORDER BY id DESC LIMIT 1))" error:error];
+    if (!statement) return 0;
+    [statement bindText:URL.absoluteString atIndex:1];
+    [statement bindText:title.length ? title : URL.absoluteString atIndex:2];
+    return [statement stepDone:error] ? self.sqliteConnection.lastInsertRowID : 0;
+  }
+}
+
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID title:(NSString *)title error:(NSError **)error {
+  if (visitID <= 0 || !title.length) return YES;
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "UPDATE browser_history SET title = ?1 WHERE id = ?2" error:error];
+    if (!statement) return NO;
+    [statement bindText:title atIndex:1];
+    [statement bindInt64:visitID atIndex:2];
+    return [statement stepDone:error];
+  }
+}
+
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID faviconData:(NSData *)data error:(NSError **)error {
+  if (visitID <= 0 || !data.length) return YES;
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "UPDATE browser_history SET favicon = ?1 WHERE id = ?2" error:error];
+    if (!statement) return NO;
+    sqlite3_bind_blob64(statement.handle, 1, data.bytes, data.length, SQLITE_TRANSIENT);
+    [statement bindInt64:visitID atIndex:2];
+    return [statement stepDone:error];
+  }
+}
+
+- (NSArray<TLBrowserHistoryEntry *> *)listBrowserHistory:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "SELECT id, url, title, visited_at, favicon FROM browser_history ORDER BY visited_at DESC, id DESC" error:error];
+    if (!statement) return nil;
+    NSMutableArray<TLBrowserHistoryEntry *> *entries = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSData *> *siteIcons = [NSMutableDictionary dictionary];
+    int result;
+    while ((result = [statement step]) == SQLITE_ROW) {
+      TLBrowserHistoryEntry *entry = [TLBrowserHistoryEntry new];
+      entry.visitID = sqlite3_column_int64(statement.handle, 0);
+      entry.URLString = [statement stringAtColumn:1];
+      entry.title = [statement stringAtColumn:2];
+      entry.visitedAt = [statement stringAtColumn:3];
+      int length = sqlite3_column_bytes(statement.handle, 4);
+      if (length > 0) {
+        entry.faviconData = [NSData dataWithBytes:sqlite3_column_blob(statement.handle, 4) length:(NSUInteger)length];
+        NSString *origin = TLBrowserHistoryOrigin([NSURL URLWithString:entry.URLString]);
+        if (origin && !siteIcons[origin]) siteIcons[origin] = entry.faviconData;
+      }
+      [entries addObject:entry];
+    }
+    if (result != SQLITE_DONE) { [self.sqliteConnection setCurrentError:error]; return nil; }
+    // Older visits can use the newest saved icon from the same website. Preserve
+    // page-specific icons when present, and never fetch icons while reading history.
+    for (TLBrowserHistoryEntry *entry in entries) {
+      NSString *origin = TLBrowserHistoryOrigin([NSURL URLWithString:entry.URLString]);
+      if (!entry.faviconData && origin) entry.faviconData = siteIcons[origin];
+    }
+    return entries;
+  }
+}
+
+- (BOOL)deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM browser_history WHERE id = ?1" error:error];
+    if (!statement) return NO;
+    [statement bindInt64:visitID atIndex:1];
+    return [statement stepDone:error];
   }
 }
 
@@ -469,6 +603,32 @@ static NSString *TLTitleFromMessage(NSString *content) {
     }
 
     return savedMessage;
+  }
+}
+
+- (TLStoredChatMessage *)replaceMessage:(TLChatMessage *)message messageID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
+  @synchronized (self) {
+    __block TLStoredChatMessage *saved = nil;
+    BOOL replaced = [self performTransaction:^BOOL(NSError **transactionError) {
+      TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+        "UPDATE messages SET content = ?1, thinking = ?2 WHERE id = ?3 AND chat_id = ?4 AND role = 'assistant'"
+        error:transactionError];
+      if (!statement) return NO;
+      [statement bindText:message.content atIndex:1];
+      if (message.thinking.length) [statement bindText:message.thinking atIndex:2];
+      else [statement bindNullAtIndex:2];
+      [statement bindInt64:messageID atIndex:3];
+      [statement bindInt64:chatID atIndex:4];
+      if (![statement stepDone:transactionError]) return NO;
+      if (sqlite3_changes(self.sqliteConnection.handle) != 1) {
+        TLSetDatabaseError(transactionError, @"Answer was not found in this chat.");
+        return NO;
+      }
+      if (![self touchChatWithID:chatID error:transactionError]) return NO;
+      saved = [self loadMessageWithID:messageID error:transactionError];
+      return saved != nil;
+    } error:error];
+    return replaced ? saved : nil;
   }
 }
 

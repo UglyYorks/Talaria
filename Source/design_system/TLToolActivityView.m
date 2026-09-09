@@ -1,4 +1,9 @@
 #import "TLToolActivityView.h"
+#import "TLThemedButton.h"
+
+@interface TLToolActivityView ()
+@property (nonatomic, strong) TLThemedButton *disclosureButton;
+@end
 
 @implementation TLToolActivityView
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -9,6 +14,15 @@
     self.distribution = NSStackViewDistributionFill;
     _activities = @[];
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
+    _disclosureButton = [[TLThemedButton alloc] init];
+    _disclosureButton.translatesAutoresizingMaskIntoConstraints = NO;
+    _disclosureButton.title = @"Tool activity";
+    _disclosureButton.imagePosition = NSImageLeft;
+    _disclosureButton.target = self;
+    _disclosureButton.action = @selector(toggleExpanded:);
+    [self addArrangedSubview:_disclosureButton];
+    [_disclosureButton.widthAnchor constraintLessThanOrEqualToAnchor:self.widthAnchor].active = YES;
+    [self rebuild];
     self.hidden = YES;
   }
   return self;
@@ -20,7 +34,16 @@
 - (void)setActivities:(NSArray<NSDictionary<NSString *,NSString *> *> *)activities {
   if ([_activities isEqual:activities]) return;
   _activities = [activities copy] ?: @[];
+  if (!_activities.count) _expanded = NO;
   [self rebuild];
+}
+- (void)setExpanded:(BOOL)expanded {
+  if (_expanded == expanded) return;
+  _expanded = expanded;
+  [self rebuild];
+}
+- (void)toggleExpanded:(id)sender {
+  self.expanded = !self.expanded;
 }
 - (NSTextField *)label:(NSString *)text title:(BOOL)title {
   NSTextField *label = [NSTextField wrappingLabelWithString:text];
@@ -38,14 +61,21 @@
 }
 - (void)rebuild {
   for (NSView *view in [self.arrangedSubviews copy]) {
+    if (view == self.disclosureButton) continue;
     [self removeArrangedSubview:view];
     [view removeFromSuperview];
   }
   self.hidden = self.activities.count == 0;
   self.spacing = self.palette.space4;
+  self.disclosureButton.palette = self.palette;
+  self.disclosureButton.image = [NSImage imageWithSystemSymbolName:self.expanded ? @"chevron.down" : @"chevron.right"
+    accessibilityDescription:nil];
+  self.disclosureButton.toolTip = self.expanded ? @"Hide tool activity" : @"Show tool activity";
+  self.disclosureButton.accessibilityLabel = self.disclosureButton.toolTip;
+  self.disclosureButton.accessibilityValue = self.expanded ? @"Expanded" : @"Collapsed";
+  if (!self.expanded) return;
   NSDictionary *states = @{@"preparing":@"Preparing", @"running":@"Running", @"completed":@"Completed",
     @"failed":@"Failed", @"stopped":@"Stopped", @"interrupted":@"Interrupted", @"paused":@"Paused", @"ended":@"Ended"};
-  [self label:@"Tool activity" title:YES];
   for (NSDictionary *activity in self.activities) {
     NSString *title = [NSString stringWithFormat:@"%@ · %@", states[activity[@"state"]] ?: @"Ended", activity[@"name"]];
     [self label:title title:YES];

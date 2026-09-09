@@ -33,6 +33,8 @@
   <string>Copyright (C) 2026 UglyYorks</string>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>Talaria uses Bluetooth when a website you visit requests access to nearby Bluetooth devices.</string>
+  <key>NSAppDataUsageDescription</key>
+  <string>Talaria accesses other browsers’ profile folders to find profiles and import cookies and local storage when you choose Import.</string>
   <key>NSCameraUsageDescription</key>
   <string>Talaria uses your camera only when you allow a website to access it.</string>
   <key>NSMicrophoneUsageDescription</key>

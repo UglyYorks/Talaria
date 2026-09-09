@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong, readonly, nullable) NSColor *headerContentColor;
 @property (nonatomic, copy, nullable) void (^headerColorChangedHandler)(void);
 @property (nonatomic, copy, nullable) void (^metadataChangedHandler)(NSString *title, NSURL *URL);
+@property (nonatomic, copy, nullable) void (^historyChangedHandler)(void);
 @property (nonatomic, copy, nullable) void (^faviconChangedHandler)(void);
 @property (nonatomic, copy, nullable) TLChromiumBrowserLinkHandler linkHandler;
 @property (nonatomic, copy, nullable) TLBrowserLinkOpenHandler contextLinkHandler;
@@ -23,6 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
                 inputWidth:(CGFloat)inputWidth browserService:(TLChromiumBrowserController *)browserService;
 @property (nonatomic, readonly) BOOL findBarVisible;
 - (void)showFindBar;
+- (void)reloadBrowser:(nullable id)sender;
 - (void)findNext:(BOOL)forward;
 - (void)hideFindBar;
 - (void)startInWindow:(nullable NSWindow *)window;

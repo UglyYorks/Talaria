@@ -430,6 +430,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                               delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
   NSMutableDictionary *payload = [@{
     @"operation": @"hermes_session_chat",
+    @"wait_for_previous_turn": @YES,
     @"request_id": requestID ?: @"",
     @"session_id": sessionID ?: @"",
     @"token": token ?: @"",

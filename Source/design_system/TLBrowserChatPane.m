@@ -122,8 +122,8 @@
   };
   self.markdownView = [self.renderer viewForMarkdown:self.markdown ?: @"" textColor:palette.assistantMessageText baseFont:palette.messageBodyFont];
   self.markdownView.hidden = !self.markdown.length;
-  [self.contentStack addArrangedSubview:self.markdownView];
   [self.contentStack addArrangedSubview:self.activityView];
+  [self.contentStack addArrangedSubview:self.markdownView];
   [self.markdownView.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor].active = YES;
   [self.activityView.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor].active = YES;
   NSDictionary *approval = self.approvalRequest;

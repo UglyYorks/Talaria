@@ -105,7 +105,12 @@ BOOL TLBrowserLinkURLIsNavigable(NSURL *URL) {
     }
     return menu;
   }
-  NSMenuItem *share = TLLinkAction(@"Share…", ^{ [TLBrowserImageActions shareURL:URL fromView:view atPoint:point]; });
+  // Sidebar buttons retain their menu; do not let Share retain the button.
+  __weak NSView *weakView = view;
+  NSMenuItem *share = TLLinkAction(@"Share…", ^{
+    NSView *anchor = weakView;
+    if (anchor) [TLBrowserImageActions shareURL:URL fromView:anchor atPoint:point];
+  });
   share.image = [NSImage imageWithSystemSymbolName:@"square.and.arrow.up" accessibilityDescription:nil]; [menu addItem:share];
   [menu addItem:NSMenuItem.separatorItem];
   NSMenuItem *inspector = [TLActionMenuItem itemWithTitle:@"Inspect Element" action:inspect ?: ^{}];

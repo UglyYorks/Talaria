@@ -18,6 +18,16 @@ NS_ASSUME_NONNULL_BEGIN
                                    messages:(nullable NSArray<NSDictionary *> *)messages
                                       error:(NSError **)error;
 
+- (nullable NSArray<TLBookmark *> *)listBookmarks:(NSError **)error;
+- (BOOL)saveBookmark:(TLBookmark *)bookmark error:(NSError **)error;
+- (BOOL)deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error;
+// Each committed navigation is a visit; title updates preserve its timestamp.
+- (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error;
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID title:(NSString *)title error:(NSError **)error;
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID faviconData:(NSData *)data error:(NSError **)error;
+- (nullable NSArray<TLBrowserHistoryEntry *> *)listBrowserHistory:(NSError **)error;
+- (BOOL)deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error;
+
 - (nullable NSArray<TLChatSummary *> *)listChats:(NSError **)error;
 - (nullable TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error;
 // Saves only model choices/defaults; credentials and appearance are untouched.
@@ -28,6 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable TLChatSummary *)saveChatIcon:(NSString *)icon chatID:(NSInteger)chatID error:(NSError **)error;
 - (nullable TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error;
 - (BOOL)deleteMessageWithID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error;
+- (nullable TLStoredChatMessage *)replaceMessage:(TLChatMessage *)message messageID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error;
 - (nullable TLChatRecord *)clearChatWithID:(NSInteger)chatID error:(NSError **)error;
 - (BOOL)deleteChatWithID:(NSInteger)chatID error:(NSError **)error;
 - (nullable NSArray<TLAgentRecord *> *)listAgents:(NSError **)error;

@@ -132,7 +132,8 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   }
   BOOL structureChanged = tabs.count != self.tabViews.count;
   for (NSUInteger index = 0; !structureChanged && index < tabs.count; index += 1) {
-    structureChanged = ![TLTabIdentity(tabs[index]) isEqual:TLTabIdentity(self.tabViews[index].representedObject)];
+    structureChanged = ![TLTabIdentity(tabs[index]) isEqual:TLTabIdentity(self.tabViews[index].representedObject)] ||
+      tabs[index].pinned != self.tabViews[index].pinned;
   }
   NSMapTable<TLChromeTabView *, NSArray<NSNumber *> *> *visibleAppearances = [NSMapTable strongToStrongObjectsMapTable];
   for (TLChromeTabView *view in self.tabViews) {
@@ -530,8 +531,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   tabView.action = [self.delegate workspaceTabsController:self openActionForTab:tab];
   tabView.closeAction = [self.delegate workspaceTabsController:self closeActionForTab:tab];
   tabView.closeable = tab.closeable;
+  tabView.pinned = tab.pinned;
   tabView.canCloseOtherTabs = [tabs indexOfObjectPassingTest:^BOOL(TLWorkspaceTab *candidate, NSUInteger candidateIndex, BOOL *stop) {
-    return candidateIndex != index && candidate.closeable;
+    return candidateIndex != index && candidate.closeable && !candidate.pinned;
   }] != NSNotFound;
   tabView.active = active;
   tabView.splitCompanion = [self.delegate respondsToSelector:@selector(workspaceTabsController:isTabSplitCompanion:)] &&
@@ -650,7 +652,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 
   for (TLWorkspaceTab *tab in tabs) {
     BOOL isRetainedTab = tab.kind == retainedTab.kind && tab.tabID == retainedTab.tabID;
-    if (isRetainedTab || !tab.closeable) {
+    if (isRetainedTab || !tab.closeable || tab.pinned) {
       continue;
     }
 
@@ -692,7 +694,10 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   NSRect area = [self.tabStack convertRect:self.tabStack.bounds toView:host];
   NSPoint point = [host convertPoint:host.window.mouseLocationOutsideOfEventStream fromView:nil];
   if (!NSPointInRect(point, area)) return;
-  self.preservedTabWidth = NSWidth(self.tabViews.firstObject.frame);
+  TLChromeTabView *regularTab = nil;
+  for (TLChromeTabView *view in self.tabViews) if (!view.pinned) { regularTab = view; break; }
+  if (!regularTab) return;
+  self.preservedTabWidth = NSWidth(regularTab.frame);
   self.widthPreservationHost = host;
   // Track the original strip on its stable parent, not the shrinking stack:
   // closing a tab must not itself count as the pointer leaving the area.
@@ -775,6 +780,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   availableWidth = MAX(self.palette.space0, availableWidth);
 
   CGFloat tabCount = (CGFloat)self.tabWidthConstraints.count;
+  NSUInteger pinnedCount = 0;
+  for (NSLayoutConstraint *constraint in self.tabWidthConstraints) if ([(TLChromeTabView *)constraint.firstItem pinned]) pinnedCount++;
+  CGFloat pinnedWidth = self.palette.tabIconSize + self.palette.tabIconLeadingInset * 2;
   CGFloat sharedBoundaryCount = MAX(self.palette.space0, tabCount - 1.0);
   // Solve against the actual overlap function, including its partially
   // compressed flare range, so spacing changes never expand the window.
@@ -782,18 +790,19 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   CGFloat upperWidth = [self preferredTabWidth];
   for (NSUInteger iteration = 0; iteration < 48; iteration++) {
     CGFloat candidate = (lowerWidth + upperWidth) * 0.5;
-    CGFloat occupiedWidth = tabCount * candidate - sharedBoundaryCount *
-      TLChromeTabInterTabOverlapForWidth(candidate, self.palette);
+    CGFloat compactWidth = MIN(candidate, pinnedWidth);
+    CGFloat occupiedWidth = (tabCount - pinnedCount) * candidate + pinnedCount * compactWidth - sharedBoundaryCount *
+      TLChromeTabInterTabOverlapForWidth(pinnedCount ? compactWidth : candidate, self.palette);
     if (occupiedWidth <= availableWidth) lowerWidth = candidate;
     else upperWidth = candidate;
   }
   CGFloat equalWidth = lowerWidth;
   // A smaller window may still compress tabs, but closing tabs cannot grow them.
   if (self.preservedTabWidth > 0) equalWidth = MIN(equalWidth, self.preservedTabWidth);
-  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(equalWidth, self.palette);
+  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(pinnedCount ? MIN(equalWidth, pinnedWidth) : equalWidth, self.palette);
   self.tabStack.spacing = -overlap;
   for (NSLayoutConstraint *constraint in self.tabWidthConstraints) {
-    constraint.constant = equalWidth;
+    constraint.constant = [(TLChromeTabView *)constraint.firstItem pinned] ? MIN(equalWidth, pinnedWidth) : equalWidth;
   }
   return YES;
 }
@@ -1112,9 +1121,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   if ([self.delegate respondsToSelector:@selector(workspaceTabsController:willSelectTab:)])
     [self.delegate workspaceTabsController:self willSelectTab:tabView.representedObject];
 }
-- (NSMenu *)splitMenuForChromeTabView:(TLChromeTabView *)tabView {
-  return [self.delegate respondsToSelector:@selector(workspaceTabsController:splitMenuForTab:)]
-    ? [self.delegate workspaceTabsController:self splitMenuForTab:tabView.representedObject] : nil;
+- (NSMenu *)contextMenuForChromeTabView:(TLChromeTabView *)tabView {
+  return [self.delegate respondsToSelector:@selector(workspaceTabsController:contextMenuForTab:)]
+    ? [self.delegate workspaceTabsController:self contextMenuForTab:tabView.representedObject] : nil;
 }
 
 - (BOOL)chromeTabViewShouldOpenContextMenu:(TLChromeTabView *)tabView {
@@ -1172,7 +1181,10 @@ constrainedHorizontalTranslationForEvent:(NSEvent *)event
     }
   }
 
-  return MIN(targetIndex, self.tabViews.count - 1);
+  NSUInteger pinnedCount = 0;
+  for (TLChromeTabView *view in self.tabViews) if (view.pinned) pinnedCount++;
+  if (draggedTabView.pinned) return MIN(targetIndex, pinnedCount - 1);
+  return MAX(pinnedCount, MIN(targetIndex, self.tabViews.count - 1));
 }
 
 - (void)promoteSelectionAndDraggedTabView:(TLChromeTabView *)draggedTabView {

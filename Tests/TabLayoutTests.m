@@ -229,7 +229,36 @@ static void TestHoveredTabSeparators(TLThemePalette *palette) {
   [window close];
 }
 
+static void TestPinnedLayout(TLThemePalette *palette) {
+  TLTabContextMenuHarness *harness = [TLTabContextMenuHarness new];
+  TLWorkspaceTab *pin = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:1 title:@"Pinned chat" toolTip:nil URL:nil closeable:YES];
+  pin.pinned = YES;
+  TLWorkspaceTab *regular = [pin copy]; regular.pinned = NO; regular.tabID = 2;
+  harness.tabs = @[pin, regular]; harness.activeTabID = 1;
+  NSStackView *stack = [NSStackView new]; stack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,500,80) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  stack.translatesAutoresizingMaskIntoConstraints = NO;
+  [window.contentView addSubview:stack];
+  [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor], [stack.topAnchor constraintEqualToAnchor:window.contentView.topAnchor]]];
+  TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc] initWithTabStack:stack target:harness delegate:(id)harness palette:palette];
+  [controller reloadTabs];
+  [controller updateTabWidthsForAvailableWidth:500];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSArray<TLChromeTabView *> *views = [controller valueForKey:@"tabViews"];
+  if (NSWidth(views[0].frame) >= NSWidth(views[1].frame) || ![[views[0] valueForKey:@"titleClipView"] isHidden]) {
+    NSLog(@"FAIL pinned tabs must be compact and show only their icon: %@ %@ hidden=%d widths=%@", NSStringFromRect(views[0].frame), NSStringFromRect(views[1].frame), [[views[0] valueForKey:@"titleClipView"] isHidden], [[controller valueForKey:@"tabWidthConstraints"] valueForKey:@"constant"]); exit(1);
+  }
+  for (NSNumber *width in @[@50,@150,@500]) {
+    [controller updateTabWidthsForAvailableWidth:width.doubleValue]; [window.contentView layoutSubtreeIfNeeded];
+    CGFloat occupied = NSWidth(views[0].frame) + NSWidth(views[1].frame) + stack.spacing;
+    if (occupied > width.doubleValue + 0.5) { NSLog(@"FAIL pinned tabs exceed available strip width"); exit(1); }
+  }
+  [window close];
+}
+
 static void TestTabContextMenu(TLThemePalette *palette) {
+  TestPinnedLayout(palette);
   TLChromeTabView *tab = [[TLChromeTabView alloc] initWithFrame:NSMakeRect(0, 0, 200, palette.tabHeight)];
   tab.palette = palette;
   tab.closeable = YES;
@@ -285,7 +314,8 @@ static void TestCloseOtherTabsDispatchesExistingActions(TLThemePalette *palette)
                                                               URL:nil
                                                         closeable:NO];
   TLTabContextMenuHarness *harness = [[TLTabContextMenuHarness alloc] init];
-  harness.tabs = @[retainedTab, closedTab, nonCloseableTab];
+  TLWorkspaceTab *pinnedTab = [retainedTab copy]; pinnedTab.tabID = 44; pinnedTab.pinned = YES;
+  harness.tabs = @[pinnedTab, retainedTab, closedTab, nonCloseableTab];
   TLWorkspaceTabsController *controller = [[TLWorkspaceTabsController alloc]
     initWithTabStack:[[NSStackView alloc] init]
               target:harness

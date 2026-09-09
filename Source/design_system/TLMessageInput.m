@@ -183,7 +183,8 @@
   self.textView.textContainer.containerSize = NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
   self.textView.textContainer.lineFragmentPadding = self.palette.space0;
 
-  self.placeholderLabel = [NSTextField labelWithString:@"Give a task or enter a URL"];
+  _placeholderText = @"Give a task or enter a URL";
+  self.placeholderLabel = [NSTextField labelWithString:_placeholderText];
   self.placeholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
   self.placeholderLabel.lineBreakMode = NSLineBreakByTruncatingTail;
   [self.placeholderLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -376,6 +377,11 @@
   self.textTrailingConstraint.active = YES;
   [self applyPalette];
   [self recalculateHeight];
+}
+
+- (void)setPlaceholderText:(NSString *)placeholderText {
+  _placeholderText = [placeholderText copy];
+  self.placeholderLabel.stringValue = placeholderText;
 }
 
 - (void)setShowsStopButton:(BOOL)showsStopButton {

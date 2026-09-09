@@ -44,6 +44,7 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 - (NSDictionary *)browserSettingState:(NSDictionary *)setting;
 - (BOOL)setBrowserSetting:(NSDictionary *)setting value:(nullable id)value error:(NSError **)error;
 - (void)clearBrowserData:(NSString *)kind completion:(void (^)(NSError * _Nullable))completion;
+- (void)importCookies:(NSArray<NSDictionary *> *)cookies completion:(void (^)(NSUInteger imported, NSUInteger failed))completion;
 - (void)applyDarkAppearance:(BOOL)dark;
 - (void)goBackInSession:(nullable TLChromiumBrowserSession *)session;
 - (void)goForwardInSession:(nullable TLChromiumBrowserSession *)session;

@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL singleLine;
 @property (nonatomic, copy, nullable) void (^focusChangeHandler)(BOOL focused);
 @property (nonatomic) BOOL showsStopButton;
+@property (nonatomic, copy) NSString *placeholderText;
 @property (nonatomic, strong, nullable) NSView *backgroundView;
 @property (nonatomic, copy, nullable) void (^textChangeHandler)(void);
 @property (nonatomic, copy, nullable) void (^heightChangeHandler)(CGFloat height);

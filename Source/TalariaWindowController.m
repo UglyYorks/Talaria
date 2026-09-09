@@ -1,6 +1,9 @@
 #import "TLProviderSetupWindowController.h"
+#import "TLBookmarkEditorController.h"
+#import "TLEmptyStateTips.h"
 #import "TLBrowserImageActions.h"
 #import "TLBrowserLinkActions.h"
+#import "design_system/TLActionMenuItem.h"
 #import "TLAutomationsTabController.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
@@ -82,6 +85,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong) TLWorkspaceTab *displayedWorkspaceTab;
 @property (nonatomic, strong) TLWorkspaceTab *tabBeforePointerSelection;
 @property (nonatomic, strong) TLWorkspaceTab *splitDropTarget;
+@property (nonatomic) BOOL bookmarkDropTarget;
 @property (nonatomic) TLSplitDropSide splitDropSide;
 @property (nonatomic, strong) id paneFocusMonitor;
 @property (nonatomic) BOOL updatingSplitLayout;
@@ -147,6 +151,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong) NSView *sidebarAgentPaneSurface;
 @property (nonatomic, strong) NSStackView *sidebarInboxStack;
 @property (nonatomic, strong) TLSidebarShortcutsView *sidebarShortcutsView;
+@property (nonatomic, copy) NSArray<TLBookmark *> *bookmarks;
+@property (nonatomic, strong) NSPopover *bookmarkPopover;
+@property (nonatomic, strong) TLBookmarkEditorController *bookmarkEditor;
 @property (nonatomic, strong) TLSidebarInboxPaneView *sidebarInboxPaneView;
 @property (nonatomic, strong) TLSidebarInboxStackView *gmailInboxStackView;
 @property (nonatomic, strong) TLSidebarInboxStackView *slackInboxStackView;
@@ -378,6 +385,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLChatPresentation *presentation = self.chatPresentations[@(chatID)];
   if (!presentation.chat) return NO;
   self.activeChat = presentation.chat;
+  if (![self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID])
+    [self addChatToSessionIfNeeded:chatID activate:YES];
   [self activateTabKind:TLWorkspaceTabKindChat tabID:chatID];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
@@ -1156,24 +1165,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.sidebarShortcutsView = [[TLSidebarShortcutsView alloc] init];
   self.sidebarShortcutsView.palette = self.palette;
 
-  NSArray<NSDictionary<NSString *, NSString *> *> *bookmarks = @[
-    @{@"title": @"Google", @"icon": @"google", @"URL": @"https://www.google.com/"},
-    @{@"title": @"GitHub", @"icon": @"github", @"URL": @"https://github.com/"},
-    @{@"title": @"Wikipedia", @"icon": @"wikipedia", @"URL": @"https://www.wikipedia.org/"},
-    @{@"title": @"Hacker News", @"icon": @"hacker-news", @"URL": @"https://news.ycombinator.com/"},
-  ];
-  for (NSDictionary<NSString *, NSString *> *bookmark in bookmarks) {
-    TLSidebarShortcutButton *button = [[TLSidebarShortcutButton alloc] init];
-    button.palette = self.palette;
-    button.title = bookmark[@"title"];
-    button.image = [self browserBookmarkIconNamed:bookmark[@"icon"]];
-    button.roundsImageCorners = [bookmark[@"icon"] isEqualToString:@"wikipedia"];
-    button.URL = [NSURL URLWithString:bookmark[@"URL"]];
-    button.shortcutKind = TLSidebarShortcutKindWebsite;
-    button.target = self;
-    button.action = @selector(openSidebarBookmark:);
-    [self.sidebarShortcutsView addShortcutButton:button];
-  }
+  self.sidebarShortcutsView.addButton.target = self;
+  self.sidebarShortcutsView.addButton.action = @selector(showAddBookmark:);
+  [self reloadBookmarks];
 
   self.gmailInboxStackView = [self sidebarInboxStackViewWithTitle:@"Payment pending"
                                                          subtitle:@"Daily Email Summary"
@@ -1306,18 +1300,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return image;
 }
 
-- (nullable NSImage *)browserBookmarkIconNamed:(NSString *)name {
-  NSURL *iconURL = [NSBundle.mainBundle URLForResource:name
-                                         withExtension:@"png"
-                                          subdirectory:@"browser-bookmarks"];
-  if (!iconURL) {
-    return nil;
-  }
-  NSImage *image = [[NSImage alloc] initWithContentsOfURL:iconURL];
-  image.template = NO;
-  return image;
-}
-
 - (nullable NSImage *)sidebarPlanetImage {
   NSURL *planetURL = [NSBundle.mainBundle URLForResource:@"sidebar-planet" withExtension:@"png"];
   if (!planetURL) {
@@ -1336,6 +1318,50 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.chatPresentation installFindBarInView:chatWorkspace palette:self.palette];
   [chatWorkspace addSubview:[self buildSlashCommandListView]];
   [chatWorkspace addSubview:[self buildMessageInput]];
+  TLStarryEmptyStateView *emptyState = [[TLStarryEmptyStateView alloc] init];
+  emptyState.translatesAutoresizingMaskIntoConstraints = NO;
+  emptyState.hidden = YES;
+  NSArray<NSString *> *tips = TLEmptyStateTips();
+  emptyState.tip = tips[arc4random_uniform((uint32_t)tips.count)];
+  self.chatPresentation.emptyStateView = emptyState;
+  [chatWorkspace addSubview:emptyState positioned:NSWindowAbove relativeTo:messagesView];
+  [NSLayoutConstraint activateConstraints:@[
+    [emptyState.leadingAnchor constraintEqualToAnchor:messagesView.leadingAnchor],
+    [emptyState.trailingAnchor constraintEqualToAnchor:messagesView.trailingAnchor],
+    [emptyState.topAnchor constraintEqualToAnchor:messagesView.topAnchor],
+    [emptyState.bottomAnchor constraintEqualToAnchor:self.messageInput.topAnchor constant:-self.palette.space12],
+  ]];
+  TLChatPresentation *presentation = self.chatPresentation;
+  presentation.promptQueueView = [TLPromptQueueView new];
+  [chatWorkspace addSubview:presentation.promptQueueView];
+  __weak typeof(self) weakSelf = self;
+  __weak TLChatPresentation *weakPresentation = presentation;
+  presentation.promptQueueView.sendNowHandler = ^(NSUInteger index) {
+    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf sendQueuedPromptNowAtIndex:index]; }];
+  };
+  presentation.promptQueueView.editHandler = ^(NSUInteger index) {
+    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf editQueuedPromptAtIndex:index]; }];
+  };
+  presentation.promptQueueView.removeHandler = ^(NSUInteger index) {
+    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf removeQueuedPromptAtIndex:index]; }];
+  };
+  presentation.promptQueueView.resumeHandler = ^{
+    [weakSelf withChatPresentation:weakPresentation perform:^{
+      weakPresentation.queuePaused = NO;
+      [weakSelf drainPromptQueue];
+      [weakSelf updateControlStates];
+    }];
+  };
+  presentation.promptQueueView.cancelEditHandler = ^{
+    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf finishQueuedPromptEditingSaving:NO]; }];
+  };
+  presentation.promptQueueBottomConstraint = [presentation.promptQueueView.bottomAnchor
+    constraintEqualToAnchor:self.messageInput.topAnchor constant:-self.palette.space3];
+  [NSLayoutConstraint activateConstraints:@[
+    [presentation.promptQueueView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor],
+    [presentation.promptQueueView.trailingAnchor constraintEqualToAnchor:self.messageInput.trailingAnchor],
+    presentation.promptQueueBottomConstraint,
+  ]];
 
   NSLayoutConstraint *messageInputLeadingConstraint = [self.messageInput.leadingAnchor constraintGreaterThanOrEqualToAnchor:chatWorkspace.leadingAnchor
                                                                                                                    constant:self.palette.space11];
@@ -1629,6 +1655,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       copyItem.target = controller;
       copyItem.representedObject = context;
       [menu addItem:copyItem];
+      NSMenuItem *regenerateItem = [[NSMenuItem alloc] initWithTitle:@"Regenerate"
+        action:@selector(regenerateChatMessage:) keyEquivalent:@""];
+      regenerateItem.target = controller;
+      regenerateItem.representedObject = context;
+      regenerateItem.enabled = [controller canRegenerateChatMessage:message];
+      regenerateItem.image = [NSImage imageWithSystemSymbolName:@"arrow.clockwise" accessibilityDescription:nil];
+      [menu addItem:regenerateItem];
       [menu addItem:NSMenuItem.separatorItem];
       NSMenuItem *deleteItem = [[NSMenuItem alloc] initWithTitle:@"Delete message"
         action:@selector(deleteChatMessage:) keyEquivalent:@""];
@@ -1656,6 +1689,54 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLChatMessage *message = sender.representedObject[@"message"];
   [NSPasteboard.generalPasteboard clearContents];
   [NSPasteboard.generalPasteboard setString:message.content ?: @"" forType:NSPasteboardTypeString];
+}
+
+- (TLChatMessage *)promptForRegeneratingMessage:(TLChatMessage *)message {
+  NSUInteger index = [self.messages indexOfObjectIdenticalTo:message];
+  if (index == NSNotFound) return nil;
+  if (![message.role isEqual:TLRoleUser] && ![message.role isEqual:TLRoleAssistant]) return nil;
+  for (NSInteger i = (NSInteger)index; i >= 0; i--) {
+    TLChatMessage *candidate = self.messages[i];
+    if ([candidate.role isEqual:TLRoleUser]) return candidate;
+  }
+  return nil;
+}
+
+- (BOOL)canRegenerateChatMessage:(TLChatMessage *)message {
+  if (self.isSending || self.preparingAttachments || self.chatPresentation.queuedPrompts.count ||
+      self.chatPresentation.editingQueuedPrompt) return NO;
+  for (TLChatMessage *candidate in self.messages) if (candidate.approvalRequest) return NO;
+  TLChatMessage *prompt = [self promptForRegeneratingMessage:message];
+  return prompt && (prompt.content.length || prompt.attachments.count);
+}
+
+- (void)regenerateChatMessage:(NSMenuItem *)sender {
+  TLChatMessage *message = sender.representedObject[@"message"];
+  NSInteger chatID = [sender.representedObject[@"chatID"] integerValue];
+  if (self.activeChat.chatID != chatID || ![self canRegenerateChatMessage:message]) return;
+  NSString *token = self.settings.openRouterToken;
+  NSString *model = self.activeChat.model ?: self.settings.selectedModel;
+  if (!token.length || !model.length) {
+    [self presentErrorMessage:@"Configure your token and model before regenerating an answer."];
+    return;
+  }
+  TLChatMessage *prompt = [self promptForRegeneratingMessage:message];
+  TLChatMessage *answer = [message.role isEqual:TLRoleAssistant] ? message : nil;
+  if (!answer) {
+    NSUInteger index = [self.messages indexOfObjectIdenticalTo:prompt];
+    for (NSUInteger i = index + 1; i < self.messages.count; i++) {
+      TLChatMessage *candidate = self.messages[i];
+      if ([candidate.role isEqual:TLRoleUser]) break;
+      if ([candidate.role isEqual:TLRoleAssistant]) { answer = candidate; break; }
+    }
+  }
+  TLPromptBuilder *builder = [[TLPromptBuilder alloc] init];
+  [builder addPartWithContent:@"Regenerate your answer to the following earlier user request. Give a fresh, complete answer to that request."
+    importance:TLPromptImportanceRequired strategy:TLPromptCompactionStrategyWhole name:@"regeneration"];
+  [builder addPartWithContent:prompt.content importance:TLPromptImportanceRequired
+    strategy:TLPromptCompactionStrategyWhole name:@"original-request"];
+  [self beginPreparedTurnWithChat:self.activeChat messages:self.messages token:token model:model prompt:[builder build]
+    attachments:prompt.attachments sourceURLs:@[] approvalResponse:nil regenerationPrompt:prompt regenerationMessage:answer];
 }
 
 - (void)deleteChatMessage:(NSMenuItem *)sender {
@@ -1752,7 +1833,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLBrowserPreferences *browserPreferences = TLBrowserPreferences.sharedPreferences;
   if (![[browserPreferences localValue:@"startup"] isEqual:@"restore"]) {
     for (TLWorkspaceTab *tab in self.appStateManager.snapshot.workspaceTabs.copy) {
-      if (tab.kind == TLWorkspaceTabKindBrowser) [self.appStateManager removeWorkspaceTabWithKind:tab.kind tabID:tab.tabID];
+      if (tab.kind == TLWorkspaceTabKindBrowser && !tab.pinned) [self.appStateManager removeWorkspaceTabWithKind:tab.kind tabID:tab.tabID];
     }
   }
   if (self.appStateManager.snapshot.workspaceTabs.count > 0) {
@@ -2220,7 +2301,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLWorkspaceTab *source = [self activeWorkspaceTab];
   BOOL emptyChat = source && source.kind == TLWorkspaceTabKindChat && self.activeChat &&
     source.tabID == self.activeChat.chatID && !self.messages.count && !self.activeChat.messages.count &&
-    !self.isSending && !self.isLoading && !self.messageInput.attachmentURLs.count;
+    !self.isSending && !self.isLoading && !self.messageInput.attachmentURLs.count &&
+    !self.chatPresentation.queuedPrompts.count && !self.chatPresentation.queuedPromptInFlight;
   [self openBrowserTabWithURL:URL replacingChatTab:emptyChat ? source : nil];
 }
 
@@ -2290,6 +2372,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     updatedTab.toolTip = updatedURL.absoluteString ?: title;
     [windowController.appStateManager upsertWorkspaceTab:updatedTab activate:[windowController isWorkspaceTabActive:updatedTab]];
   };
+  controller.historyChangedHandler = ^{ [weakSelf reloadHistoryPanel]; };
   controller.faviconChangedHandler = ^{ [weakSelf reloadWorkspaceTabs]; };
   controller.headerColorChangedHandler = ^{ [weakSelf.workspaceTabsController refreshContentColorsAnimated:YES]; };
   controller.linkHandler = ^(NSURL *linkedURL, NSEventModifierFlags flags) {
@@ -2305,14 +2388,183 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [controller startInWindow:self.window];
 }
 
-- (void)openSidebarBookmark:(TLSidebarShortcutButton *)sender {
-  if (!sender.URL) {
-    NSBeep();
-    return;
+- (void)reloadBookmarks {
+  if (!self.sidebarShortcutsView) return;
+  NSError *error = nil;
+  NSArray *bookmarks = [self.database listBookmarks:&error];
+  if (!bookmarks && error) { [self presentErrorMessage:error.localizedDescription]; return; }
+  self.bookmarks = bookmarks ?: @[];
+  [self.sidebarShortcutsView removeAllShortcutButtons];
+  for (TLBookmark *bookmark in self.bookmarks) {
+    TLSidebarShortcutButton *button = [TLSidebarShortcutButton new];
+    button.palette = self.palette;
+    button.title = bookmark.name;
+    button.tag = bookmark.bookmarkID;
+    button.URL = bookmark.URL;
+    if (bookmark.chatID > 0) {
+      NSString *emoji = bookmark.emoji.length ? bookmark.emoji : TLDefaultChatIcon();
+      NSFont *font = self.palette.titleFont;
+      CGFloat size = self.palette.sidebarBookmarkIconSize;
+      button.image = [NSImage imageWithSize:NSMakeSize(size, size) flipped:NO drawingHandler:^BOOL(NSRect bounds) {
+        NSAttributedString *text = [[NSAttributedString alloc] initWithString:emoji attributes:@{NSFontAttributeName:font}];
+        [text drawAtPoint:NSMakePoint((NSWidth(bounds) - text.size.width) / 2, (NSHeight(bounds) - text.size.height) / 2)];
+        return YES;
+      }];
+    } else {
+      button.image = bookmark.faviconData ? [[NSImage alloc] initWithData:bookmark.faviconData] : nil;
+      if (!button.image) button.systemIconName = @"globe";
+    }
+    button.target = self;
+    button.action = @selector(openSidebarBookmark:);
+    button.menu = [self menuForSidebarBookmark:bookmark button:button];
+    [self.sidebarShortcutsView addShortcutButton:button];
   }
-  [self openBrowserTabWithURL:sender.URL];
 }
 
+- (NSMenu *)menuForSidebarBookmark:(TLBookmark *)bookmark button:(TLSidebarShortcutButton *)button {
+  __weak typeof(self) weakSelf = self;
+  NSMenu *menu;
+  if (bookmark.URL) {
+    menu = [TLBrowserLinkActions menuForURL:bookmark.URL canSplit:YES view:button
+      point:NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds))
+      open:^(NSURL *URL, TLBrowserLinkDestination destination) {
+        [weakSelf openBookmark:bookmark destination:destination];
+      } inspect:nil imageMenu:nil];
+    // Sidebar shortcuts have no page element to inspect. Keep the separator
+    // after Share for the bookmark-specific action below.
+    [menu removeItem:[menu itemWithTitle:@"Inspect Element"]];
+  } else {
+    menu = [NSMenu new]; menu.autoenablesItems = NO;
+    [menu addItem:[TLActionMenuItem itemWithTitle:@"Open Conversation in New Tab" action:^{
+      [weakSelf openBookmark:bookmark destination:TLBrowserLinkNewTab];
+    }]];
+    [menu addItem:[TLActionMenuItem itemWithTitle:@"Open Conversation in Split View" action:^{
+      [weakSelf openBookmark:bookmark destination:TLBrowserLinkSplitView];
+    }]];
+    [menu addItem:NSMenuItem.separatorItem];
+  }
+  NSMenuItem *remove = [[NSMenuItem alloc] initWithTitle:@"Delete bookmark" action:@selector(removeBookmark:) keyEquivalent:@""];
+  remove.target = self; remove.tag = bookmark.bookmarkID; [menu addItem:remove];
+  return menu;
+}
+
+- (void)openBookmarkURLInNewWindow:(NSURL *)URL {
+  [TLChromiumBrowserController.sharedController openURL:URL fromWindow:self.window modifierFlags:0];
+}
+
+- (void)openBookmark:(TLBookmark *)bookmark destination:(TLBrowserLinkDestination)destination {
+  TLWorkspaceTab *source = [self activeWorkspaceTab];
+  if (bookmark.chatID > 0) [self openChatTabWithID:bookmark.chatID];
+  else if (bookmark.URL) {
+    if (destination == TLBrowserLinkNewWindow) { [self openBookmarkURLInNewWindow:bookmark.URL]; return; }
+    [self openBrowserTabWithURL:bookmark.URL];
+  } else return;
+  if (destination == TLBrowserLinkSplitView && source)
+    [self splitTab:[self activeWorkspaceTab] besideTab:source onLeft:NO];
+}
+
+- (TLBookmark *)bookmarkForCurrentPage {
+  return [self bookmarkForTab:[self activeWorkspaceTab]];
+}
+
+- (TLBookmark *)bookmarkForTab:(TLWorkspaceTab *)tab {
+  if (!tab || (tab.kind != TLWorkspaceTabKindBrowser && tab.kind != TLWorkspaceTabKindChat)) return nil;
+  TLBookmark *bookmark = [TLBookmark new];
+  bookmark.name = tab.title ?: @"";
+  if (tab.kind == TLWorkspaceTabKindBrowser) {
+    bookmark.URL = tab.URL;
+    if (![TLBookmark normalizedURL:tab.URL.absoluteString]) return nil;
+    TLBrowserTabController *browser = (TLBrowserTabController *)[self runtimeForTab:tab].featureController;
+    NSImage *favicon = browser.favicon;
+    if (favicon) {
+      CGFloat size = self.palette.sidebarBookmarkButtonSize;
+      NSImage *thumbnail = [NSImage imageWithSize:NSMakeSize(size, size) flipped:NO drawingHandler:^BOOL(NSRect bounds) {
+        [favicon drawInRect:bounds]; return YES;
+      }];
+      NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithData:thumbnail.TIFFRepresentation];
+      bookmark.faviconData = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    }
+  } else {
+    TLChatRecord *chat = self.activeChat.chatID == tab.tabID ? self.activeChat : self.chatPresentations[@(tab.tabID)].chat;
+    if (!chat) chat = self.modelDraftChats[@(tab.tabID)];
+    if (!chat && tab.tabID > 0) chat = [self.database chatWithID:tab.tabID error:nil];
+    bookmark.chatID = tab.tabID;
+    bookmark.name = chat.title.length ? chat.title : (tab.title.length ? tab.title : @"New chat");
+    bookmark.emoji = chat.icon.length ? chat.icon : TLDefaultChatIcon();
+  }
+  return bookmark;
+}
+
+- (void)showAddBookmark:(id)sender {
+  if (self.bookmarkPopover.shown) { [self.bookmarkPopover close]; return; }
+  [self showBookmarkEditorForTab:[self activeWorkspaceTab]];
+}
+
+- (void)addTabToBookmarks:(NSMenuItem *)sender {
+  TLWorkspaceTab *tab = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(sender.representedObject)];
+  [self showBookmarkEditorForTab:tab];
+}
+
+- (void)showBookmarkEditorForTab:(TLWorkspaceTab *)tab {
+  TLBookmark *bookmark = [self bookmarkForTab:tab];
+  if (!bookmark) return;
+  [self.bookmarkPopover close];
+  if (!self.sidebarVisible) {
+    self.sidebarVisible = YES;
+    [self updateSidebarLayoutAnimated:NO];
+    [self.window.contentView layoutSubtreeIfNeeded];
+  }
+  NSString *sourceIdentity = TLWorkspaceTabIdentity(tab);
+  self.bookmarkEditor = [[TLBookmarkEditorController alloc] initWithBookmark:bookmark palette:self.palette];
+  self.bookmarkPopover = [NSPopover new];
+  // Keep the editor open while the system emoji panel accepts input.
+  self.bookmarkPopover.behavior = NSPopoverBehaviorSemitransient;
+  __weak typeof(self) weakSelf = self;
+  self.bookmarkEditor.contentSizeChangedHandler = ^(NSSize size) { weakSelf.bookmarkPopover.contentSize = size; };
+  self.bookmarkPopover.contentViewController = self.bookmarkEditor;
+  self.bookmarkPopover.appearance = self.bookmarkEditor.view.appearance;
+  self.bookmarkEditor.saveHandler = ^BOOL(TLBookmark *entry, NSError **error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner) return NO;
+    if (entry.chatID < 0) {
+      TLWorkspaceTab *source = [owner tabWithPresentationIdentity:sourceIdentity];
+      // A context-menu bookmark may refer to an inactive draft. Activate that
+      // presentation before materializing it so its attachments stay with it.
+      if (source && source.tabID < 0) [owner focusWorkspaceTab:source];
+      if (source.tabID > 0) entry.chatID = source.tabID;
+      else if (source && [owner isWorkspaceTabActive:source] &&
+               [owner persistActiveDraftChatWithModel:owner.activeChat.model]) entry.chatID = owner.activeChat.chatID;
+      else {
+        if (error) *error = [NSError errorWithDomain:@"TLBookmarks" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Return to this conversation to bookmark it."}];
+        return NO;
+      }
+    }
+    if (![owner.database saveBookmark:entry error:error]) return NO;
+    [owner reloadBookmarks];
+    return YES;
+  };
+  self.bookmarkEditor.closeHandler = ^{ [weakSelf.bookmarkPopover close]; };
+  NSView *anchor = self.sidebarShortcutsView.addButton;
+  [self.bookmarkPopover showRelativeToRect:anchor.bounds ofView:anchor preferredEdge:NSRectEdgeMinY];
+}
+
+- (void)openSidebarBookmark:(TLSidebarShortcutButton *)sender {
+  for (TLBookmark *bookmark in self.bookmarks) {
+    if (bookmark.bookmarkID != sender.tag) continue;
+    if (bookmark.chatID > 0) [self openChatTabWithID:bookmark.chatID];
+    else if (bookmark.URL) [self openBrowserTabWithURL:bookmark.URL];
+    return;
+  }
+}
+
+- (void)removeBookmark:(NSMenuItem *)sender {
+  NSError *error = nil;
+  if (![self.database deleteBookmarkWithID:sender.tag error:&error]) {
+    [self presentErrorMessage:error.localizedDescription ?: @"Could not remove bookmark."];
+    return;
+  }
+  [self reloadBookmarks];
+}
 
 - (nullable NSURL *)browserURLFromPromptString:(NSString *)promptString {
   return [TLInputSuggestions browserURLForInput:promptString];
@@ -2551,9 +2803,156 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [controller presentForWindow:self.window];
 }
 
+- (BOOL)hasPendingChatApproval {
+  for (TLChatMessage *message in self.messages) {
+    if (message.approvalRequest && ![message.approvalRequest[@"submitted"] boolValue]) return YES;
+  }
+  return NO;
+}
+
+- (void)updatePromptQueue {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (!presentation.promptQueueView) return;
+  [presentation.promptQueueView updatePrompts:presentation.queuedPrompts editing:presentation.editingQueuedPrompt
+    paused:presentation.queuePaused canResume:!self.isSending && ![self hasPendingChatApproval]
+    canSendNow:!self.preparingAttachments && !presentation.queueInterruptPending && ![self hasPendingChatApproval] palette:self.palette];
+}
+
+- (void)sendQueuedPromptNowAtIndex:(NSUInteger)index {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (index >= presentation.queuedPrompts.count || presentation.editingQueuedPrompt ||
+      presentation.queueInterruptPending || self.preparingAttachments || [self hasPendingChatApproval]) return;
+  TLQueuedPrompt *prompt = presentation.queuedPrompts[index];
+  [presentation.queuedPrompts removeObjectAtIndex:index];
+  [presentation.queuedPrompts insertObject:prompt atIndex:0];
+  presentation.queuePaused = NO;
+  TLAssistantTurnRunner *runner = self.turnRunners[@(presentation.chat.chatID)];
+  if (runner) {
+    // Cancellation finalizes the partial reply synchronously. Its completion
+    // schedules dispatch after cancel has also reached the transport.
+    presentation.queueInterruptPending = YES;
+    [self updateControlStates];
+    [runner cancel];
+  } else {
+    [self drainPromptQueue];
+  }
+}
+
+- (void)editQueuedPromptAtIndex:(NSUInteger)index {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (presentation.editingQueuedPrompt || presentation.queueInterruptPending || index >= presentation.queuedPrompts.count || self.preparingAttachments) return;
+  presentation.queueDraft = [TLQueuedPrompt promptWithText:self.promptTextView.string attachmentURLs:self.messageInput.attachmentURLs];
+  presentation.editingQueuedPrompt = presentation.queuedPrompts[index];
+  self.promptTextView.string = presentation.editingQueuedPrompt.text;
+  self.messageInput.attachmentURLs = presentation.editingQueuedPrompt.attachmentURLs;
+  [self updateControlStates];
+  [self.window makeFirstResponder:self.promptTextView];
+}
+
+- (void)finishQueuedPromptEditingSaving:(BOOL)save {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (!presentation.editingQueuedPrompt) return;
+  if (save) {
+    NSString *text = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!text.length && !self.messageInput.attachmentURLs.count) return;
+    presentation.editingQueuedPrompt.text = text;
+    presentation.editingQueuedPrompt.attachmentURLs = self.messageInput.attachmentURLs;
+  }
+  self.promptTextView.string = presentation.queueDraft.text ?: @"";
+  self.messageInput.attachmentURLs = presentation.queueDraft.attachmentURLs ?: @[];
+  presentation.queueDraft = nil;
+  presentation.editingQueuedPrompt = nil;
+  [self updateControlStates];
+  [self drainPromptQueue];
+}
+
+- (void)removeQueuedPromptAtIndex:(NSUInteger)index {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (presentation.queueInterruptPending || index >= presentation.queuedPrompts.count) return;
+  BOOL editing = presentation.editingQueuedPrompt == presentation.queuedPrompts[index];
+  [presentation.queuedPrompts removeObjectAtIndex:index];
+  if (editing) [self finishQueuedPromptEditingSaving:NO];
+  [self updateControlStates];
+}
+
+- (void)pausePromptQueueRestoringInFlight:(BOOL)restore {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (restore && presentation.queuedPromptInFlight) [presentation.queuedPrompts insertObject:presentation.queuedPromptInFlight atIndex:0];
+  presentation.queuedPromptInFlight = nil;
+  presentation.queueInterruptPending = NO;
+  presentation.queuePaused = YES;
+  [self updateControlStates];
+}
+
+- (void)finishQueuedTurnWithResult:(TLAssistantTurnResult *)result {
+  TLChatPresentation *presentation = self.chatPresentation;
+  BOOL interruptedForQueuedPrompt = presentation.queueInterruptPending &&
+    result.generationStatus == TLAssistantTurnGenerationStatusCancelled;
+  if ((!interruptedForQueuedPrompt && result.generationStatus != TLAssistantTurnGenerationStatusSucceeded) ||
+      result.persistenceStatus != TLAssistantTurnPersistenceStatusSucceeded || result.assistantMessage.approvalRequest) {
+    [self pausePromptQueueRestoringInFlight:result.generationStatus == TLAssistantTurnGenerationStatusNotStarted];
+    return;
+  }
+  presentation.queuedPromptInFlight = nil;
+  // Leave the completion stack before starting the next turn, including synchronous failures.
+  __weak typeof(self) weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [weakSelf withChatPresentation:presentation perform:^{ [weakSelf drainPromptQueue]; }];
+  });
+}
+
+- (void)drainPromptQueue {
+  TLChatPresentation *presentation = self.chatPresentation;
+  if (self.isSending || presentation.queuePaused || presentation.editingQueuedPrompt ||
+      presentation.queuedPromptInFlight || !presentation.queuedPrompts.count || [self hasPendingChatApproval]) return;
+  NSString *token = self.settings.openRouterToken ?: @"";
+  NSString *model = presentation.chat.model ?: self.settings.selectedModel ?: @"";
+  if (!token.length || !model.length) { presentation.queueInterruptPending = NO; presentation.queuePaused = YES; [self updateControlStates]; return; }
+  presentation.queueInterruptPending = NO;
+  TLQueuedPrompt *prompt = presentation.queuedPrompts.firstObject;
+  [presentation.queuedPrompts removeObjectAtIndex:0];
+  presentation.queuedPromptInFlight = prompt;
+  NSString *text = prompt.text;
+  if (!text.length) {
+    TLPromptBuilder *builder = [TLPromptBuilder new];
+    text = [[builder addPartWithContent:@"Please inspect the attached files and folders." importance:TLPromptImportanceRequired
+      strategy:TLPromptCompactionStrategyWhole name:@"file-only-request"] build];
+  }
+  void (^start)(NSArray *) = ^(NSArray *attachments) {
+    [self withChatPresentation:presentation perform:^{
+      if (presentation.queuePaused) { [self pausePromptQueueRestoringInFlight:YES]; return; }
+      self.errorMessage = @"";
+      [self beginPreparedTurnWithChat:presentation.chat messages:presentation.messages token:token model:model prompt:text
+        attachments:attachments sourceURLs:prompt.attachmentURLs];
+      [self updateControlStates];
+    }];
+  };
+  if (prompt.attachmentURLs.count) {
+    if (!self.preparingAttachmentChats) self.preparingAttachmentChats = [NSMutableSet set];
+    [self.preparingAttachmentChats addObject:@(presentation.chat.chatID)];
+    [self updateControlStates];
+    [self.agentOrchestrator prepareAttachmentURLs:prompt.attachmentURLs sessionID:presentation.chat.hermesSessionID
+      completion:^(NSArray *attachments, NSError *error) {
+        [self.preparingAttachmentChats removeObject:@(presentation.chat.chatID)];
+        if (!attachments) {
+          [self withChatPresentation:presentation perform:^{
+            [self pausePromptQueueRestoringInFlight:YES];
+            self.errorMessage = error.localizedDescription ?: @"Could not copy queued attachments.";
+            [self renderMessages];
+          }];
+          return;
+        }
+        start(attachments);
+      }];
+  } else start(@[]);
+}
+
 - (void)activateComposerButton:(id)sender {
   [self focusChatContainingView:sender];
-  if ([self canStopResponse]) {
+  if (!self.chatPresentation.editingQueuedPrompt && [self canStopResponse]) {
+    self.chatPresentation.queuePaused = YES;
+    self.chatPresentation.queueInterruptPending = NO;
+    [self updatePromptQueue];
     [self.turnRunners[@(self.activeChat.chatID)] cancel];
   } else {
     [self sendMessage:sender];
@@ -2576,26 +2975,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   NSArray<NSURL *> *sourceURLs = self.messageInput.attachmentURLs;
   if (sourceURLs.count) allowAutomaticRouting = NO;
   if (self.preparingAttachments || (!nextPrompt.length && !sourceURLs.count)) return;
-  if (self.isSending) {
-    if (sourceURLs.count || ![nextPrompt hasPrefix:@"/"] || !self.activeChat) return;
-    self.promptTextView.string = @"";
-    [self updateControlStates];
-    __weak typeof(self) weakSelf = self;
-    [self.agentOrchestrator streamChatWithDefaultAgentRequestID:NSUUID.UUID.UUIDString
-                                                      sessionID:self.activeChat.hermesSessionID
-                                                          token:token model:model
-                                                       messages:@[[TLChatMessage messageWithRole:TLRoleUser content:nextPrompt thinking:nil]]
-                                                          delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {
-    } completion:^(NSError *error) {
-      if (error) [weakSelf presentErrorMessage:error.localizedDescription];
-    }];
+  if (self.chatPresentation.editingQueuedPrompt) {
+    [self finishQueuedPromptEditingSaving:YES];
     return;
-  }
-
-  if (!nextPrompt.length) {
-    TLPromptBuilder *builder = [[TLPromptBuilder alloc] init];
-    nextPrompt = [[builder addPartWithContent:@"Please inspect the attached files and folders." importance:TLPromptImportanceRequired
-                                    strategy:TLPromptCompactionStrategyWhole name:@"file-only-request"] build];
   }
   NSURL *browserURL = allowAutomaticRouting ? [self browserURLFromPromptString:nextPrompt] : nil;
   if (browserURL) {
@@ -2605,6 +2987,21 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self updateSlashCommandList];
     [self openBrowserURLFromChatInput:browserURL];
     return;
+  }
+
+  if (self.isSending || self.chatPresentation.queuedPrompts.count) {
+    [self.chatPresentation.queuedPrompts addObject:[TLQueuedPrompt promptWithText:nextPrompt attachmentURLs:sourceURLs]];
+    self.promptTextView.string = @"";
+    self.messageInput.attachmentURLs = @[];
+    [self updateControlStates];
+    [self drainPromptQueue];
+    return;
+  }
+
+  if (!nextPrompt.length) {
+    TLPromptBuilder *builder = [[TLPromptBuilder alloc] init];
+    nextPrompt = [[builder addPartWithContent:@"Please inspect the attached files and folders." importance:TLPromptImportanceRequired
+                                    strategy:TLPromptCompactionStrategyWhole name:@"file-only-request"] build];
   }
 
   if (model.length == 0) {
@@ -2620,6 +3017,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     return;
   }
 
+  self.chatPresentation.queuePaused = NO;
   TLChatRecord *chat = self.activeChat;
   NSMutableArray<TLChatMessage *> *turnMessages = self.messages;
   if (sourceURLs.count) {
@@ -2655,7 +3053,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                           token:(NSString *)token model:(NSString *)model prompt:(NSString *)nextPrompt
                     attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs
                approvalResponse:(NSDictionary *)approvalResponse {
-  if (!approvalResponse) {
+  [self beginPreparedTurnWithChat:chat messages:turnMessages token:token model:model prompt:nextPrompt
+    attachments:attachments sourceURLs:sourceURLs approvalResponse:approvalResponse regenerationPrompt:nil regenerationMessage:nil];
+}
+
+- (void)beginPreparedTurnWithChat:(TLChatRecord *)chat messages:(NSMutableArray<TLChatMessage *> *)turnMessages
+                          token:(NSString *)token model:(NSString *)model prompt:(NSString *)nextPrompt
+                    attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs
+               approvalResponse:(NSDictionary *)approvalResponse regenerationPrompt:(TLChatMessage *)regenerationPrompt
+            regenerationMessage:(TLChatMessage *)regenerationMessage {
+  if (!regenerationPrompt && !approvalResponse && !self.chatPresentations[@(chat.chatID)].queuedPromptInFlight) {
     self.attachmentDrafts[@(chat.chatID)] = @[];
     self.attachmentPromptDrafts[@(chat.chatID)] = @"";
     [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{
@@ -2673,6 +3080,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.turnMessagesByChat[@(chat.chatID)] = turnMessages;
   runner.attachments = attachments;
   runner.approvalResponse = approvalResponse;
+  runner.regenerationPrompt = regenerationPrompt;
+  runner.regenerationMessage = regenerationMessage;
   __weak typeof(self) weakSelf = self;
 
   NSError *startError = nil;
@@ -2707,14 +3116,18 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     for (TLChatMessage *message in turnMessages) if (message.approvalRequest) hasApproval = YES;
     if (!hasApproval) [strongSelf.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
     BOOL showingOrigin = strongSelf.activeChat.chatID == chat.chatID && [strongSelf isChatWorkspaceActive];
-    if (!approvalResponse && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+    if (!regenerationPrompt && !approvalResponse && !strongSelf.chatPresentations[@(chat.chatID)].queuedPromptInFlight && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       [strongSelf restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     }
-    if (!approvalResponse && showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
+    if (!regenerationPrompt && !approvalResponse && !strongSelf.chatPresentations[@(chat.chatID)].queuedPromptInFlight && showingOrigin && result.generationStatus == TLAssistantTurnGenerationStatusNotStarted) {
       strongSelf.promptTextView.string = result.userMessage.content;
       [strongSelf.messageInput recalculateHeight];
       [strongSelf updateMessageScrollInsets];
     }
+
+    [strongSelf withChatPresentation:strongSelf.chatPresentations[@(chat.chatID)] perform:^{
+      [strongSelf finishQueuedTurnWithResult:result];
+    }];
 
     if ([nextPrompt hasPrefix:@"/"]) strongSelf.hermesCommandsFetchedAt = nil;
     [strongSelf refreshChatsKeepingActiveSelection];
@@ -2757,8 +3170,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (approvalResponse) [self restorePendingApproval:approvalResponse inMessages:turnMessages];
     if (!approvalResponse) {
       [self.turnMessagesByChat removeObjectForKey:@(chat.chatID)];
-      [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
+      if (!regenerationPrompt && !self.chatPresentations[@(chat.chatID)].queuedPromptInFlight)
+        [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     }
+    [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{ [self pausePromptQueueRestoringInFlight:YES]; }];
     [self presentErrorMessage:startError.localizedDescription ?: @"Could not start assistant turn."];
     [self updateControlStates];
   }
@@ -2938,7 +3353,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (BOOL)performInputSuggestionAtIndex:(NSUInteger)index {
-  if (self.isSending || index >= self.visibleSlashCommands.count || ![self.slashCommandScrollView isSuggestionEnabledAtIndex:index]) {
+  if (self.preparingAttachments || self.chatPresentation.editingQueuedPrompt || self.messageInput.attachmentURLs.count ||
+      index >= self.visibleSlashCommands.count || ![self.slashCommandScrollView isSuggestionEnabledAtIndex:index]) {
     return NO;
   }
   NSDictionary<NSString *, NSString *> *suggestion = self.visibleSlashCommands[index];
@@ -3108,7 +3524,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)renderSlashCommandList {
-  if (self.isSending || self.messageInput.attachmentURLs.count || ![self isChatWorkspaceActive] || !self.messageInput.window || NSIsEmptyRect(self.messageInput.bounds)) {
+  if (self.preparingAttachments || self.chatPresentation.editingQueuedPrompt || self.messageInput.attachmentURLs.count || ![self isChatWorkspaceActive] || !self.messageInput.window || NSIsEmptyRect(self.messageInput.bounds)) {
     [self hideSlashCommandList];
     return;
   }
@@ -4126,6 +4542,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
   [self focusChatContainingView:textView];
   if (commandSelector == @selector(cancelOperation:)) {
+    if (self.chatPresentation.editingQueuedPrompt) { [self finishQueuedPromptEditingSaving:NO]; return YES; }
     if (self.slashCommandUpdateTimer || !self.slashCommandListView.hidden) { [self hideSlashCommandList]; return YES; }
   }
   if (commandSelector == @selector(insertTab:) || commandSelector == @selector(moveUp:) ||
@@ -4287,14 +4704,28 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
   NSArray<NSView *> *previousRows = self.messageStack.arrangedSubviews.copy;
 
+  TLStarryEmptyStateView *emptyStateView = self.chatPresentation.emptyStateView;
+  emptyStateView.palette = self.palette;
+  emptyStateView.availableMessageWidth = self.messageInputWidthConstraint.constant;
+  emptyStateView.hidden = self.isLoading || self.errorMessage.length > 0 || self.messages.count > 0;
+  if (!emptyStateView.hidden) {
+    NSString *avatar = nil;
+    for (TLAgentRecord *agent in self.agents) {
+      if (agent.agentID == self.database.currentAgentID) { avatar = agent.avatar; break; }
+    }
+    emptyStateView.avatar = avatar ?: @"🤖";
+  }
+
   if (self.isLoading || self.errorMessage.length > 0 || self.messages.count == 0) {
     [self resetMessageRowCache];
     for (NSView *view in previousRows) {
       [self detachMessageRowFromStack:view];
     }
-    NSView *emptyState = [self emptyStateView];
-    [self addMessageRowToStack:emptyState];
-    [self pinMessageRowToStackWidth:emptyState];
+    if (self.isLoading || self.errorMessage.length > 0) {
+      NSView *emptyState = [self emptyStateView];
+      [self addMessageRowToStack:emptyState];
+      [self pinMessageRowToStackWidth:emptyState];
+    }
     [self.chatPresentation refreshFindResults];
     return;
   }
@@ -4419,12 +4850,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)updateMessageScrollInsets {
-  [self.messageInput.superview layoutSubtreeIfNeeded];
-  CGFloat inputHeight = NSHeight(self.messageInput.frame) > 0.0 ? NSHeight(self.messageInput.frame) : self.palette.composerButtonHeight;
   CGFloat slashCommandListHeight = (!self.slashCommandListView.hidden && self.slashCommandListHeightConstraint.constant > self.palette.space0)
     ? self.slashCommandListHeightConstraint.constant + self.palette.space5
     : self.palette.space0;
-  CGFloat bottomClearance = inputHeight + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
+  // Suggestions remain nearest the input; move the queue above their panel.
+  self.chatPresentation.promptQueueBottomConstraint.constant = -self.palette.space3 - slashCommandListHeight;
+  [self.messageInput.superview layoutSubtreeIfNeeded];
+  CGFloat inputHeight = NSHeight(self.messageInput.frame) > 0.0 ? NSHeight(self.messageInput.frame) : self.palette.composerButtonHeight;
+  CGFloat queueHeight = self.chatPresentation.promptQueueView.preferredHeight;
+  CGFloat bottomClearance = inputHeight + (queueHeight > 0 ? queueHeight + self.palette.space3 : 0) + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
   self.messageScrollView.contentInsets = NSEdgeInsetsMake(self.palette.space0,
                                                           self.palette.space0,
                                                           self.palette.space0,
@@ -4454,9 +4888,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self detachMessageRowFromStack:row];
   }
 
+  BOOL activityExpanded = [(TLToolActivityView *)[self.chatPresentation.messageActivityViews objectForKey:message] isExpanded];
   [self.messageMarkdownViews removeObjectForKey:message];
   [self.chatPresentation.messageActivityViews removeObjectForKey:message];
   row = [self rowForMessage:message showsOutgoingTail:showsOutgoingTail];
+  [(TLToolActivityView *)[self.chatPresentation.messageActivityViews objectForKey:message] setExpanded:activityExpanded];
   [self.messageRowViews setObject:row forKey:message];
   [self.messageRowSignatures setObject:signature forKey:message];
   return row;
@@ -4656,7 +5092,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     TLToolActivityView *activity = [[TLToolActivityView alloc] init];
     activity.palette = self.palette;
     activity.activities = message.toolActivities;
-    [stack addArrangedSubview:activity];
+    [stack insertArrangedSubview:activity atIndex:0];
     [activity.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [self.chatPresentation.messageActivityViews setObject:activity forKey:message];
   }
@@ -5174,8 +5610,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)removeRuntimeForKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID {
   if (kind == TLWorkspaceTabKindChat) {
-    [self.chatPresentations[@(tabID)].chatWorkspace removeFromSuperview];
-    [self.chatPresentations removeObjectForKey:@(tabID)];
+    TLChatPresentation *presentation = self.chatPresentations[@(tabID)];
+    if (presentation.queuedPrompts.count || presentation.queuedPromptInFlight) {
+      presentation.queuePaused = YES;
+      presentation.queueInterruptPending = NO;
+      presentation.chatWorkspace.hidden = YES;
+      [self withChatPresentation:presentation perform:^{ [self updatePromptQueue]; }];
+    } else {
+      [presentation.chatWorkspace removeFromSuperview];
+      [self.chatPresentations removeObjectForKey:@(tabID)];
+    }
   }
   [self.workspaceTabRuntimes removeObjectForKey:TLWorkspaceTabRuntimeKey(kind, tabID)];
 }
@@ -5600,6 +6044,17 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.tabBeforePointerSelection = [self activeWorkspaceTab];
 }
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller dragTab:(TLWorkspaceTab *)tab atWindowPoint:(NSPoint)point {
+  NSPoint bookmarkPoint = [self.sidebarShortcutsView convertPoint:point fromView:nil];
+  self.bookmarkDropTarget = self.sidebarVisible && !self.sidebarShortcutsView.isHiddenOrHasHiddenAncestor &&
+    (tab.kind == TLWorkspaceTabKindChat || (tab.kind == TLWorkspaceTabKindBrowser && [TLBookmark normalizedURL:tab.URL.absoluteString])) &&
+    NSPointInRect(bookmarkPoint, self.sidebarShortcutsView.bounds);
+  self.sidebarShortcutsView.dropTargeted = self.bookmarkDropTarget;
+  if (self.bookmarkDropTarget) {
+    [self.splitWorkspace clearDropPreview];
+    self.splitDropSide = TLSplitDropSideNone;
+    self.splitDropTarget = nil;
+    return YES;
+  }
   NSPoint topbarPoint = [self.topbar convertPoint:point fromView:nil];
   BOOL outside = !NSPointInRect(topbarPoint, NSInsetRect(self.topbar.bounds, 0, -self.palette.space3));
   if (!outside) {
@@ -5616,20 +6071,27 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return YES;
 }
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller endDraggingTab:(TLWorkspaceTab *)tab cancelled:(BOOL)cancelled {
+  BOOL bookmarkDrop = self.bookmarkDropTarget;
+  self.bookmarkDropTarget = NO;
+  self.sidebarShortcutsView.dropTargeted = NO;
   TLWorkspaceTab *other = self.splitDropTarget;
   TLSplitDropSide side = self.splitDropSide;
   [self.splitWorkspace clearDropPreview];
   self.splitDropTarget = nil; self.splitDropSide = TLSplitDropSideNone;
-  if (!cancelled && side != TLSplitDropSideNone && other) [self splitTab:tab besideTab:other onLeft:side == TLSplitDropSideLeft];
+  if (!cancelled && bookmarkDrop) [self showBookmarkEditorForTab:tab];
+  else if (!cancelled && side != TLSplitDropSideNone && other) [self splitTab:tab besideTab:other onLeft:side == TLSplitDropSideLeft];
   else if (other) [self focusWorkspaceTab:self.tabBeforePointerSelection ?: tab];
   self.tabBeforePointerSelection = nil;
 }
-- (NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller splitMenuForTab:(TLWorkspaceTab *)tab {
+- (NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller contextMenuForTab:(TLWorkspaceTab *)tab {
   NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
-  if ([self.splitState groupForTab:tab]) {
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Separate Split View" action:@selector(separateSplitFromMenu:) keyEquivalent:@""];
-    item.target = self; item.representedObject = tab; [menu addItem:item];
+  if (tab.kind == TLWorkspaceTabKindBrowser) {
+    NSMenuItem *reload = [[NSMenuItem alloc] initWithTitle:@"Reload" action:@selector(reloadTabFromMenu:) keyEquivalent:@""];
+    reload.target = self; reload.representedObject = tab; [menu addItem:reload];
   }
+  NSMenuItem *pin = [[NSMenuItem alloc] initWithTitle:tab.pinned ? @"Unpin tab" : @"Pin tab" action:@selector(toggleTabPinFromMenu:) keyEquivalent:@""];
+  pin.target = self; pin.representedObject = tab; [menu addItem:pin];
+  [menu addItem:NSMenuItem.separatorItem];
   TLWorkspaceTab *other = [self splitCompanionForTab:tab preferred:[self activeWorkspaceTab]];
   for (NSNumber *left in @[@YES, @NO]) {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:left.boolValue ? @"Open in Split View on Left" : @"Open in Split View on Right"
@@ -5638,7 +6100,25 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     item.representedObject = @{ @"tab":tab, @"left":left };
     [menu addItem:item];
   }
+  if (tab.kind == TLWorkspaceTabKindChat || tab.kind == TLWorkspaceTabKindBrowser) {
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Add to bookmarks" action:@selector(addTabToBookmarks:) keyEquivalent:@""];
+    item.target = self; item.representedObject = tab;
+    item.enabled = !self.widgetbookMode && (tab.kind == TLWorkspaceTabKindChat || [TLBookmark normalizedURL:tab.URL.absoluteString] != nil);
+    [menu addItem:item];
+  }
   return menu;
+}
+- (void)reloadTabFromMenu:(NSMenuItem *)sender {
+  TLWorkspaceTab *tab = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(sender.representedObject)];
+  if (!tab || tab.kind != TLWorkspaceTabKindBrowser) return;
+  [(TLBrowserTabController *)[self runtimeForTab:tab].featureController reloadBrowser:sender];
+}
+- (void)toggleTabPinFromMenu:(NSMenuItem *)sender {
+  TLWorkspaceTab *tab = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(sender.representedObject)];
+  if (!tab) return;
+  [self.appStateManager setWorkspaceTabPinned:!tab.pinned kind:tab.kind tabID:tab.tabID];
+  [self reloadWorkspaceTabs];
 }
 - (void)splitTabFromMenu:(NSMenuItem *)sender {
   TLWorkspaceTab *tab = sender.representedObject[@"tab"];
@@ -5856,6 +6336,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       self.messagesBackground.fillColor = self.palette.tabBackground;
       self.messageStack.spacing = self.palette.messageVerticalSpacing;
       self.messageInput.palette = self.palette;
+      [self updatePromptQueue];
       [self.chatPresentation applyFindPalette:self.palette];
       [self applySlashCommandListPalette];
       [self.screensaverView updateBackgroundColor:self.palette.messagesSurface artColor:self.palette.textMuted];
@@ -5890,6 +6371,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.agentFolderAccessWindowController applyPalette:self.palette];
   [self.agentSettingsWindowController applyPalette:self.palette];
   [self.modelSelectionController applyPalette:self.palette];
+  [self.bookmarkEditor applyPalette:self.palette];
+  self.bookmarkPopover.appearance = self.bookmarkEditor.view.appearance;
   [self styleSidebarActionButtons];
 }
 
@@ -6020,6 +6503,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)updateControlStates {
+  TLWorkspaceTab *bookmarkTab = [self activeWorkspaceTab];
+  self.sidebarShortcutsView.addButton.enabled = !self.widgetbookMode && bookmarkTab &&
+    (bookmarkTab.kind == TLWorkspaceTabKindChat ||
+      (bookmarkTab.kind == TLWorkspaceTabKindBrowser && [TLBookmark normalizedURL:bookmarkTab.URL.absoluteString]));
+  [self updatePromptQueue];
   [self.messageInput recalculateHeight];
   [self updateMessageScrollInsets];
 
@@ -6044,17 +6532,26 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   NSString *prompt = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   BOOL chatActive = [self isChatPresentationVisible];
-  if (!chatActive || prompt.length == 0 || self.isSending) {
+  if (!chatActive || prompt.length == 0 || self.preparingAttachments || self.chatPresentation.editingQueuedPrompt || self.messageInput.attachmentURLs.count) {
     [self hideSlashCommandList];
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
   self.sidebarAutomationsButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
-  self.messageInput.showsStopButton = [self canStopResponse];
+  self.messageInput.placeholderText = self.chatPresentation.editingQueuedPrompt ? @"Edit queued prompt" :
+    (self.isSending || self.chatPresentation.queuedPrompts.count) ? @"Queue a follow-up" : @"Give a task or enter a URL";
+  self.messageInput.showsStopButton = !self.chatPresentation.editingQueuedPrompt && [self canStopResponse];
   BOOL hasAttachments = self.messageInput.attachmentURLs.count > 0;
   self.sendButton.enabled = !self.preparingAttachments && (self.messageInput.showsStopButton ||
-    (chatActive && (prompt.length > 0 || hasAttachments) && (!self.isSending || (!hasAttachments && [prompt hasPrefix:@"/"]))));
+    (chatActive && (prompt.length > 0 || hasAttachments)));
+  if (!self.messageInput.showsStopButton) {
+    BOOL editing = self.chatPresentation.editingQueuedPrompt != nil;
+    BOOL queuing = self.isSending || self.chatPresentation.queuedPrompts.count > 0;
+    NSString *label = editing ? @"Save queued prompt" : queuing ? @"Queue follow-up" : @"Send";
+    [self.messageInput.sendButton setImage:[NSImage imageWithSystemSymbolName:editing ? @"checkmark" : queuing ? @"text.badge.plus" : @"arrow.up" accessibilityDescription:label] animated:NO];
+    self.sendButton.toolTip = label;
+  }
   self.messageInput.attachmentsEditable = !self.preparingAttachments && chatActive;
   if (self.preparingAttachments) self.sendButton.toolTip = @"Copying attachments…";
   self.historyPanelController.enabled = YES;
@@ -6182,6 +6679,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     return;
   }
 
+  [self.chatPresentations[@(chatID)].queuedPrompts removeAllObjects];
   [self.turnMessagesByChat removeObjectForKey:@(chatID)];
   NSError *attachmentCleanupError = nil;
   [self.agentOrchestrator removeAttachmentsForSessionID:deletedChat.hermesSessionID error:&attachmentCleanupError];
@@ -6194,6 +6692,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self removeRuntimeForKind:TLWorkspaceTabKindChat tabID:chatID];
   }
 
+  [self reloadBookmarks];
   NSArray<TLChatSummary *> *nextChats = [self.database listChats:&error];
   if (!nextChats) {
     [self presentErrorMessage:error.localizedDescription ?: @"Could not refresh conversations."];
@@ -6222,6 +6721,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self renderMessages];
   }
   [self updateControlStates];
+}
+
+- (void)historyPanelController:(TLHistoryPanelController *)controller didSelectBrowserURL:(NSURL *)URL {
+  [self openBrowserTabWithURL:URL];
+}
+
+- (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteBrowserVisitID:(NSInteger)visitID {
+  NSError *error = nil;
+  if (![self.database deleteBrowserVisitWithID:visitID error:&error]) { [NSApp presentError:error]; return; }
+  [self reloadHistoryPanel];
 }
 
 - (void)historyPanelControllerDidRequestRefresh:(TLHistoryPanelController *)controller {
@@ -6282,6 +6791,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)reloadHistoryPanel {
+  if (!self.historyPanelController) return;
+  NSError *error = nil;
+  self.historyPanelController.browsingHistory = [self.database listBrowserHistory:&error] ?: @[];
+  self.historyPanelController.browsingStatusMessage = error ? [NSString stringWithFormat:@"Browsing history unavailable: %@", error.localizedDescription] : @"";
   self.historyPanelController.chats = self.widgetbookMode ? (self.chats ?: @[]) : (self.hermesHistoryChats ?: @[]);
   [self.historyPanelController reloadData];
 }
