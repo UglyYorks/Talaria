@@ -30,8 +30,8 @@ static BOOL TLDatabaseHasCompatibleAdditiveSchema(TLSQLiteConnection *connection
     @"settings": @[@"key", @"value"],
   };
   NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *knownAdditions = @{
-    @"chats": @{@"supporting_model": @"'openrouter/auto'"},
-    @"messages": @{@"attachments": @"'[]'"},
+    @"chats": @{@"supporting_model": @"'openrouter/auto'", @"source_agent_id": @"0", @"source_session_id": @"''", @"continuation_session_id": @"''"},
+    @"messages": @{@"attachments": @"'[]'", @"source_message_id": @"''", @"source_tool_call_ids": @"'[]'", @"notification": @"'{}'"},
     @"agents": @{@"avatar": @"'🤖'", @"soul": @"''", @"folder_paths": @"'[]'"},
   };
   BOOL hasKnownAddition = NO;
@@ -40,7 +40,10 @@ static BOOL TLDatabaseHasCompatibleAdditiveSchema(TLSQLiteConnection *connection
     TLSQLiteStatement *columns = [connection prepareSQL:sql.UTF8String error:nil];
     if (!columns) return NO;
     NSMutableSet *missing = [NSMutableSet setWithArray:requiredColumns[table]];
-    if (requiresVersion8) [missing addObjectsFromArray:knownAdditions[table].allKeys];
+    if (requiresVersion8) {
+      NSDictionary *version8 = @{@"chats": @[@"supporting_model"], @"messages": @[@"attachments"], @"agents": @[@"avatar", @"soul", @"folder_paths"]};
+      [missing addObjectsFromArray:version8[table] ?: @[]];
+    }
     int result;
     while ((result = [columns step]) == SQLITE_ROW) {
       NSString *name = [columns stringAtColumn:1];
@@ -48,7 +51,8 @@ static BOOL TLDatabaseHasCompatibleAdditiveSchema(TLSQLiteConnection *connection
       [missing removeObject:name];
       NSString *expectedDefault = knownAdditions[table][name];
       if (!expectedDefault) { if (required) continue; return NO; }
-      if ((requiresVersion8 && sqlite3_column_int(columns.handle, 3) != 1) || ![[[columns stringAtColumn:2] uppercaseString] isEqualToString:@"TEXT"] ||
+      NSString *expectedType = [name isEqual:@"source_agent_id"] ? @"INTEGER" : @"TEXT";
+      if ((requiresVersion8 && sqlite3_column_int(columns.handle, 3) != 1) || ![[[columns stringAtColumn:2] uppercaseString] isEqualToString:expectedType] ||
           ![[columns stringAtColumn:4] isEqualToString:expectedDefault]) return NO;
       hasKnownAddition = YES;
     }
@@ -324,6 +328,45 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     } error:error];
     if (!migrated) return NO;
     version = 11;
+  }
+  if (version < 12 && targetVersion >= 12) {
+    BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
+      // v9 was also used by an early notifications build. Reconcile the
+      // concrete schema after preserving browser history and bookmarks.
+      if (!TLDatabaseHasCompatibleAdditiveSchema(connection, YES) || !TLDatabaseHasBrowserHistorySchema(connection)) {
+        [connection setError:transactionError message:@"Unrecognized database schema before notification migration."];
+        return NO;
+      }
+      NSDictionary *additions = @{
+        @"chats": @{@"source_agent_id": @"INTEGER NOT NULL DEFAULT 0", @"source_session_id": @"TEXT NOT NULL DEFAULT ''", @"continuation_session_id": @"TEXT NOT NULL DEFAULT ''"},
+        @"messages": @{@"source_message_id": @"TEXT NOT NULL DEFAULT ''", @"source_tool_call_ids": @"TEXT NOT NULL DEFAULT '[]'", @"notification": @"TEXT NOT NULL DEFAULT '{}'"},
+      };
+      for (NSString *table in additions) {
+        NSString *query = [NSString stringWithFormat:@"PRAGMA table_info(%@)", table];
+        TLSQLiteStatement *columns = [connection prepareSQL:query.UTF8String error:transactionError];
+        if (!columns) return NO;
+        NSMutableSet *names = [NSMutableSet set];
+        int result;
+        while ((result = [columns step]) == SQLITE_ROW) [names addObject:[columns stringAtColumn:1]];
+        if (result != SQLITE_DONE) { [connection setCurrentError:transactionError]; return NO; }
+        columns = nil;
+        for (NSString *column in additions[table]) {
+          if ([names containsObject:column]) continue;
+          NSString *sql = [NSString stringWithFormat:@"ALTER TABLE %@ ADD COLUMN %@ %@", table, column, additions[table][column]];
+          if (![connection executeSQL:sql.UTF8String error:transactionError]) return NO;
+        }
+      }
+      const char *sql =
+        "DROP INDEX IF EXISTS chats_hermes_session_id;"
+        "CREATE UNIQUE INDEX IF NOT EXISTS chats_agent_hermes_session_id ON chats(source_agent_id, hermes_session_id);"
+        "CREATE TABLE IF NOT EXISTS notifications (agent_id INTEGER NOT NULL, notification_id TEXT NOT NULL, "
+        "change_seq INTEGER NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, "
+        "PRIMARY KEY(agent_id, notification_id));"
+        "CREATE TABLE IF NOT EXISTS notification_sync (agent_id INTEGER PRIMARY KEY, generation TEXT NOT NULL, cursor INTEGER NOT NULL);";
+      return [connection executeSQL:sql error:transactionError] && TLDatabaseSetSchemaVersion(connection, 12, transactionError);
+    } error:error];
+    if (!migrated) return NO;
+    version = 12;
   }
   return version == targetVersion;
 }

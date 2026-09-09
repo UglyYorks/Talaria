@@ -264,6 +264,9 @@ test: $(BUILD_DIR)/BookmarkTests $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/Brow
 	"$(BUILD_DIR)/BrowserHistoryTests"
 	"$(BUILD_DIR)/BrowserDownloadTests"
 	"$(BUILD_DIR)/AgentVMLockTests"
+	"$(BUILD_DIR)/NotificationDataTests"
+	"$(BUILD_DIR)/NotificationSidebarTests"
+	"$(BUILD_DIR)/NotificationNavigationTests"
 	"$(BUILD_DIR)/AutomationsTests"
 	"$(BUILD_DIR)/QuickInputTests"
 	"$(BUILD_DIR)/SplitWorkspaceTests"
@@ -300,6 +303,19 @@ test: $(BUILD_DIR)/QuickInputTests
 test: $(BUILD_DIR)/AutomationsTests
 test: $(BUILD_DIR)/WorkspaceSessionTests $(BUILD_DIR)/WorkspaceRestoreTests
 test: $(BUILD_DIR)/AppStartupTests
+test: $(BUILD_DIR)/NotificationDataTests $(BUILD_DIR)/NotificationSidebarTests $(BUILD_DIR)/NotificationNavigationTests
+test-notifications: $(BUILD_DIR)/NotificationDataTests $(BUILD_DIR)/NotificationSidebarTests $(BUILD_DIR)/NotificationNavigationTests test-hermes-gateway
+	"$(BUILD_DIR)/NotificationDataTests"
+	"$(BUILD_DIR)/NotificationSidebarTests"
+	"$(BUILD_DIR)/NotificationNavigationTests"
+
+$(BUILD_DIR)/NotificationDataTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/NotificationDataTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+$(BUILD_DIR)/NotificationSidebarTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/NotificationSidebarTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+$(BUILD_DIR)/NotificationNavigationTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/NotificationNavigationTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+
 test-automations: $(BUILD_DIR)/AutomationsTests
 	"$(BUILD_DIR)/AutomationsTests"
 

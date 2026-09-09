@@ -45,6 +45,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
 @property (nonatomic, strong) id<TLAssistantTurnMessageStore> messageStore;
 @property (nonatomic, strong) id<TLAssistantTurnStreaming> streaming;
 @property (nonatomic, readwrite) BOOL running;
+@property (nonatomic, strong, readwrite) TLChatMessage *activeUserMessage;
 @property (nonatomic, copy) NSString *activeRequestID;
 @property (nonatomic, copy) TLAgentStreamCompletionHandler finishStream;
 @end
@@ -152,6 +153,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     return YES;
   }
   if (!self.regenerationPrompt) messages[assistantMessageIndex - 1] = savedUser;
+  self.activeUserMessage = savedUser;
 
   __weak typeof(self) weakSelf = self;
   self.finishStream = ^(NSError *streamError) {
@@ -206,12 +208,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
       userMessage:savedUser assistantMessage:resultAssistant];
     [strongSelf finishWithResult:result updateHandler:updateHandler completionHandler:completionHandler];
   };
-  [self.streaming streamChatWithDefaultAgentRequestID:requestID
-                                                    sessionID:chat.hermesSessionID
-                                                        token:trimmedToken
-                                                        model:trimmedModel
-                                                     messages:requestMessages
-                                                        delta:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
+  TLAgentStreamDeltaHandler delta = ^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
     TLAssistantTurnRunner *strongSelf = weakSelf;
     if (!strongSelf || !strongSelf.running || ![strongSelf.activeRequestID isEqualToString:requestID] ||
         ![deltaRequestID isEqualToString:requestID] ||
@@ -264,7 +261,19 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     if (displayChanged && updateHandler) {
       updateHandler();
     }
-  } completion:self.finishStream];
+  };
+  NSString *sessionID = chat.continuationSessionID.length ? chat.continuationSessionID : chat.hermesSessionID;
+  if (chat.sourceAgentID > 0) {
+    if ([self.streaming respondsToSelector:@selector(streamChatWithAgentID:requestID:sessionID:token:model:messages:delta:completion:)]) {
+      [self.streaming streamChatWithAgentID:chat.sourceAgentID requestID:requestID sessionID:sessionID
+        token:trimmedToken model:trimmedModel messages:requestMessages delta:delta completion:self.finishStream];
+    } else {
+      self.finishStream(TLAssistantTurnError(@"This runtime cannot route the conversation to its owning agent."));
+    }
+  } else {
+    [self.streaming streamChatWithDefaultAgentRequestID:requestID sessionID:sessionID token:trimmedToken
+      model:trimmedModel messages:requestMessages delta:delta completion:self.finishStream];
+  }
 
   return YES;
 }

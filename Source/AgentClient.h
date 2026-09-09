@@ -49,6 +49,12 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLAgentModel *> *_Nullable 
 - (void)hermesProvidersWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
                        completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 
+- (void)hermesPluginsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
+                              token:(NSString *)token model:(NSString *)model
+                         completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
+- (void)hermesNotificationsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
+                              token:(NSString *)token model:(NSString *)model
+                         completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 - (void)hermesAutomationsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
                             token:(NSString *)token model:(NSString *)model
                        completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;

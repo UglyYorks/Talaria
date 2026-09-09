@@ -571,7 +571,7 @@ static void TestDatabasePersistence(void) {
                @"deleted chats cannot be loaded");
 
   database = nil;
-  TLAssertTrue(TLReadSQLiteUserVersion(url) == 11, @"sets database schema user_version");
+  TLAssertTrue(TLReadSQLiteUserVersion(url) == 12, @"sets database schema user_version");
   [NSFileManager.defaultManager removeItemAtURL:url error:nil];
 }
 
@@ -614,7 +614,7 @@ static void TestCompatibleVersion5Database(void) {
       TLAssertEqualObjects([check stringAtColumn:1], @"keep", @"preserves newer agent instructions");
       TLAssertEqualObjects([check stringAtColumn:2], @"[\"/tmp/keep\"]", @"preserves newer agent folders");
     }
-    TLAssertTrue(TLReadSQLiteUserVersion(url) == 11, @"upgrades both version-5 variants without downgrading data");
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 12, @"upgrades both version-5 variants without downgrading data");
     [connection executeSQL:"PRAGMA user_version = 6" error:&error];
     error = nil;
     TLAssertTrue(!TLDatabaseMigrate(connection, 4, &error) && error != nil, @"rejects unknown future versions");
@@ -644,7 +644,7 @@ static void TestHistorySchemaStartupCompatibility(void) {
     if (version == 10) TLAssertTrue([connection executeSQL:"UPDATE browser_history SET favicon = X'010203'" error:&error], @"creates retained favicon fixture");
     TLDatabase *database = [[TLDatabase alloc] initWithURL:url credentialStore:[TLFakeTestCredentialStore new] error:&error];
     TLAssertTrue(database != nil && error == nil, @"startup accepts known version-8 through version-10 databases");
-    TLAssertTrue(TLReadSQLiteUserVersion(url) == 11, @"startup migrates forward without downgrading the schema");
+    TLAssertTrue(TLReadSQLiteUserVersion(url) == 12, @"startup migrates forward without downgrading the schema");
     TLAssertEqualObjects([database chatWithID:1 error:&error].title, @"Retained chat", @"startup preserves existing chats");
     {
       TLSQLiteStatement *bookmark = [connection prepareSQL:"SELECT url FROM bookmarks WHERE id = 1" error:&error];
@@ -658,10 +658,10 @@ static void TestHistorySchemaStartupCompatibility(void) {
       } else TLAssertTrue([history step] == SQLITE_DONE, @"version-8 migration creates the history schema including favicons");
     }
     database = nil;
-    [connection executeSQL:"PRAGMA user_version = 12" error:nil];
+    [connection executeSQL:"PRAGMA user_version = 13" error:nil];
     error = nil;
     database = [[TLDatabase alloc] initWithURL:url credentialStore:[TLFakeTestCredentialStore new] error:&error];
-    TLAssertTrue(database == nil && error != nil && TLReadSQLiteUserVersion(url) == 12, @"unknown future schemas remain protected and are never downgraded");
+    TLAssertTrue(database == nil && error != nil && TLReadSQLiteUserVersion(url) == 13, @"unknown future schemas remain protected and are never downgraded");
     connection = nil;
     [NSFileManager.defaultManager removeItemAtURL:url error:nil];
   }

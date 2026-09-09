@@ -125,10 +125,24 @@ def main():
     configure_vm_database()
     from tui_gateway import entry
     from hermes_automations import register as register_automations
+    from hermes_notifications import register_rpc as register_notifications, DESCRIPTION_FILE
+    from hermes_plugins import register_rpc as register_plugins
+    from pathlib import Path
     register(entry.server)
     from hermes_providers import register as register_providers
     register_providers(entry.server)
-    automations = register_automations(entry.server, os.environ["HERMES_HOME"])
+    register_plugins(entry.server)
+    notifications = register_notifications(entry.server, os.environ["HERMES_HOME"])
+    description_path = Path(os.environ["HERMES_HOME"]) / DESCRIPTION_FILE
+    if description_path.exists():
+        try:
+            notifications.prepare(description_path.read_text(encoding="utf-8"))
+        except Exception:
+            # The next description-bearing sync reports setup failure to the
+            # user and retries. Existing schedules stay gated until it succeeds.
+            pass
+    automations = register_automations(entry.server, os.environ["HERMES_HOME"],
+                                       can_dispatch=notifications.ready.is_set)
     try:
         entry.main()
     finally:

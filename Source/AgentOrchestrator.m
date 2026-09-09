@@ -66,6 +66,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 @property (nonatomic, strong) NSMutableDictionary<NSString *, TLAgentStreamCompletionHandler> *chatCompletions;
 
 - (void)withDefaultRunningAgent:(TLAgentReadyCompletionHandler)completion;
+- (void)withRunningAgentID:(NSInteger)agentID completion:(TLAgentReadyCompletionHandler)completion;
 - (void)completeDefaultAgent:(TLAgentRecord *)agent
                        error:(NSError *)error
                   completion:(TLAgentReadyCompletionHandler)completion;
@@ -325,7 +326,12 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 
 - (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID token:(NSString *)token
         completion:(TLAgentStreamCompletionHandler)completion {
-  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *error) {
+  [self selectModel:model sessionID:sessionID agentID:0 token:token completion:completion];
+}
+
+- (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID agentID:(NSInteger)agentID token:(NSString *)token
+        completion:(TLAgentStreamCompletionHandler)completion {
+  [self withRunningAgentID:agentID completion:^(TLAgentRecord *agent, NSError *error) {
     if (!agent) { completion(error ?: TLAgentOrchestratorError(@"Could not open the agent VM.")); return; }
     if (![self.agentClient respondsToSelector:@selector(selectHermesModelWithAgent:sessionID:token:model:completion:)]) {
       completion(TLAgentOrchestratorError(@"Update the agent runtime to switch models.")); return;
@@ -341,13 +347,19 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
                                    messages:(NSArray<TLChatMessage *> *)messages
                                       delta:(TLAgentStreamDeltaHandler)delta
                                  completion:(TLAgentStreamCompletionHandler)completion {
+  [self streamChatWithAgentID:0 requestID:requestID sessionID:sessionID token:token model:model messages:messages delta:delta completion:completion];
+}
+
+- (void)streamChatWithAgentID:(NSInteger)agentID requestID:(NSString *)requestID sessionID:(NSString *)sessionID
+                       token:(NSString *)token model:(NSString *)model messages:(NSArray<TLChatMessage *> *)messages
+                       delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
   self.chatCompletions[requestID] = completion;
   TLAgentStreamCompletionHandler finish = ^(NSError *error) {
     TLAgentStreamCompletionHandler callback = self.chatCompletions[requestID];
     [self.chatCompletions removeObjectForKey:requestID];
     if (callback) callback(error);
   };
-  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *agentError) {
+  [self withRunningAgentID:agentID completion:^(TLAgentRecord *agent, NSError *agentError) {
     if (!self.chatCompletions[requestID]) return;
     if (!agent) {
       [self completeStreamWithError:(agentError ?: TLAgentOrchestratorError(@"Could not open an agent VM.")) completion:finish];
@@ -401,8 +413,13 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 
 - (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID
                   completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *, NSError *))completion {
+  [self prepareAttachmentURLs:URLs sessionID:sessionID agentID:0 completion:completion];
+}
+
+- (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID agentID:(NSInteger)agentID
+                  completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *, NSError *))completion {
   NSError *error = nil;
-  TLAgentRecord *agent = [self defaultAgentCreatingIfNeeded:&error];
+  TLAgentRecord *agent = (agentID > 0 ? [self.database agentWithID:agentID error:&error] : [self defaultAgentCreatingIfNeeded:&error]);
   if (!agent || ![self.vmService prepareStorageForAgent:agent error:&error]) {
     completion(nil, error ?: TLAgentOrchestratorError(@"Could not prepare the attachment workspace."));
     return;
@@ -617,6 +634,49 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   }];
 }
 
+- (void)hermesNotificationsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
+                                    token:(NSString *)token model:(NSString *)model
+                               completion:(void (^)(NSDictionary *, NSError *))completion {
+  if (agentID <= 0) { completion(nil, TLAgentOrchestratorError(@"Select an agent to view its notifications.")); return; }
+  NSMutableDictionary *request = [parameters mutableCopy];
+  request[@"notification_tool_description"] = [TLPromptBuilder notificationToolDescription];
+  TLAgentReadyCompletionHandler ready = ^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(hermesNotificationsWithAgent:parameters:token:model:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to use Hermes notifications.")); return;
+    }
+    [self.agentClient hermesNotificationsWithAgent:agent parameters:request token:token model:model completion:completion];
+  };
+  if ([parameters[@"action"] isEqual:@"open_source"]) {
+    [self withRunningAgentID:agentID completion:ready];
+    return;
+  }
+  // Background inbox sync must never start a stopped VM.
+  NSError *error = nil;
+  TLAgentRecord *agent = [self.database agentWithID:agentID error:&error];
+  if (agent && ![self.vmService isAgentRunning:agent]) {
+    error = TLAgentOrchestratorError(@"The agent is stopped. Start it to refresh notifications.");
+    agent = nil;
+  }
+  [self completeDefaultAgent:agent error:error completion:ready];
+}
+
+- (void)hermesPluginsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
+                                  token:(NSString *)token model:(NSString *)model
+                             completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
+  if (agentID <= 0) { completion(nil, TLAgentOrchestratorError(@"Select an agent to view its plugins.")); return; }
+  // Pin every operation to the agent displayed by the tab, even if the current
+  // agent changes while its VM is starting or a request is in flight.
+  [self startAgentWithID:agentID completion:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(hermesPluginsWithAgent:parameters:token:model:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to manage Hermes plugins."));
+      return;
+    }
+    [self.agentClient hermesPluginsWithAgent:agent parameters:parameters token:token model:model completion:completion];
+  }];
+}
+
 - (void)hermesAutomationsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
                                   token:(NSString *)token model:(NSString *)model
                              completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
@@ -673,6 +733,18 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 
     [self.agentClient fetchModelCatalogueWithAgent:agent token:token completion:completion];
   }];
+}
+
+- (void)withRunningAgentID:(NSInteger)agentID completion:(TLAgentReadyCompletionHandler)completion {
+  if (agentID <= 0) { [self withDefaultRunningAgent:completion]; return; }
+  NSError *error = nil;
+  TLAgentRecord *agent = [self.database agentWithID:agentID error:&error];
+  if (!agent) { [self completeDefaultAgent:nil error:error completion:completion]; return; }
+  if ([self isInitializingAgentWithID:agentID]) {
+    [self completeDefaultAgent:nil error:TLAgentOrchestratorError(@"This agent is still initializing.") completion:completion]; return;
+  }
+  if ([self.vmService isAgentRunning:agent]) { [self completeDefaultAgent:agent error:nil completion:completion]; return; }
+  [self startAgentWithID:agentID completion:completion];
 }
 
 - (void)withDefaultRunningAgent:(TLAgentReadyCompletionHandler)completion {

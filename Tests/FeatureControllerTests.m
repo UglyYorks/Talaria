@@ -760,11 +760,15 @@ static void TestApprovalRouting(void) {
 @interface TLAttachmentPreparationRecorder : NSObject
 @property (nonatomic, copy) void (^pendingCompletion)(NSArray *, NSError *);
 @property (nonatomic, copy) NSArray<NSURL *> *receivedURLs;
+@property (nonatomic, copy) NSString *receivedSessionID;
+@property (nonatomic) NSInteger receivedAgentID;
 @end
 @implementation TLAttachmentPreparationRecorder
-- (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID
+- (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID agentID:(NSInteger)agentID
                   completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *, NSError *))completion {
   self.receivedURLs = URLs;
+  self.receivedSessionID = sessionID;
+  self.receivedAgentID = agentID;
   self.pendingCompletion = completion;
 }
 @end
@@ -798,7 +802,8 @@ static void TestAttachmentSendPreparation(void) {
   [controller setValue:input.sendButton forKey:@"sendButton"];
   [controller setValue:input.palette forKey:@"palette"];
   TLChatRecord *chat = [[TLChatRecord alloc] init];
-  chat.chatID = 8; chat.hermesSessionID = @"test-attachment-session";
+  chat.chatID = 8; chat.hermesSessionID = @"test-attachment-session"; chat.sourceAgentID = 9;
+  chat.continuationSessionID = @"test-notification-continuation";
   [controller setValue:chat forKey:@"activeChat"];
   [controller setValue:[NSMutableArray array] forKey:@"messages"];
   TLAppSettings *settings = TLAppSettings.defaultSettings;
@@ -819,6 +824,8 @@ static void TestAttachmentSendPreparation(void) {
   [controller textView:input.textView doCommandBySelector:@selector(insertNewline:)];
   Check(controller.routedCommands == 0 && controller.startedTurns == 0 && agent.pendingCompletion != nil,
         @"Return waits for attachment copies and bypasses automatic command routing");
+  Check(agent.receivedAgentID == 9 && [agent.receivedSessionID isEqual:chat.continuationSessionID],
+        @"attachment preparation follows the chat's owning agent and active continuation session");
   Check([[controller valueForKey:@"preparingAttachments"] boolValue] && !input.attachmentsEditable,
         @"copying locks the submitted attachment selection");
   void (^failedCopy)(NSArray *, NSError *) = agent.pendingCompletion;
@@ -1186,9 +1193,15 @@ static void TestQueuedFollowUps(void) {
   a.messageInput.attachmentURLs = @[file];
   QueueSend(controller, @"Review this file");
   Check(a.queuedPrompts.firstObject.attachmentURLs.count == 1, @"queued prompts retain their attachment URLs");
+  a.chat.sourceAgentID = 9;
+  a.chat.continuationSessionID = @"queued-notification-continuation";
   QueueComplete(controller.stream.requests.lastObject);
   Check([attachments.receivedURLs isEqual:@[file]] && a.queuedPromptInFlight && [[controller valueForKey:@"preparingAttachments"] boolValue],
     @"attachments are prepared only when their queued prompt is ready");
+  Check(attachments.receivedAgentID == 9 && [attachments.receivedSessionID isEqual:a.chat.continuationSessionID],
+    @"queued attachments follow the notification conversation's owning agent and continuation");
+  a.chat.sourceAgentID = 0;
+  a.chat.continuationSessionID = @"";
   attachments.pendingCompletion(nil, [NSError errorWithDomain:@"queue-test" code:2 userInfo:nil]);
   Check(a.queuePaused && a.queuedPrompts.count == 1 && !a.queuedPromptInFlight, @"attachment preparation failure restores the queued prompt");
   a.queuePaused = NO;
@@ -2094,6 +2107,92 @@ static void TestNativeGlobalShortcutRegistration(void) {
   [second registerShortcut:nil error:nil];
 }
 
+@interface TLPluginsServiceMock : NSObject
+@property (nonatomic, copy) void (^pending)(NSDictionary *, NSError *);
+@property NSDictionary *parameters;
+@property NSInteger agentID;
+@end
+@implementation TLPluginsServiceMock
+- (void)hermesPluginsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID token:(NSString *)token
+  model:(NSString *)model completion:(void (^)(NSDictionary *, NSError *))completion {
+  self.parameters = parameters; self.agentID = agentID; self.pending = completion;
+}
+@end
+static NSArray<NSSwitch *> *PluginSwitches(NSView *view) {
+  NSMutableArray *result = [NSMutableArray array];
+  if ([view isKindOfClass:NSSwitch.class]) [result addObject:view];
+  for (NSView *child in view.subviews) [result addObjectsFromArray:PluginSwitches(child)];
+  return result;
+}
+static void WaitForPlugins(TLSettingsTabController *controller, NSWindow *window) {
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+  while ([[controller valueForKey:@"pluginsBusy"] boolValue] && deadline.timeIntervalSinceNow > 0)
+    [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:deadline];
+  [window.contentView layoutSubtreeIfNeeded];
+}
+static void TestPluginsInSettingsWorkspace(void) {
+  TLFeatureSettingsStoreMock *database = [TLFeatureSettingsStoreMock new]; database.currentAgentID = 7;
+  TLPluginsServiceMock *service = [TLPluginsServiceMock new];
+  TLSettingsTabController *controller = [[TLSettingsTabController alloc] initWithSettings:TLAppSettings.defaultSettings
+    database:(id)database orchestrator:(id)service palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  NSWindow *window = HostController(controller);
+  NSArray<TLSidebarNavigationButton *> *nav = [controller valueForKey:@"navigation"];
+  Check(!service.pending, @"opening Model does not load plugins");
+  [nav[3] accessibilityPerformPress];
+  Check(service.agentID == 7 && [service.parameters[@"action"] isEqual:@"list"], @"Plugins loads its displayed agent through the orchestrator");
+  NSMutableDictionary *notification = [@{@"id":@"talaria-notifications", @"name":@"Talaria Notifications", @"description":@"Useful findings from your automations.",
+    @"version":@"1.0.0", @"source":@"user", @"enabled":@YES, @"active":@YES, @"error":@"", @"restart_required":@NO} mutableCopy];
+  NSDictionary *second = @{@"id":@"example", @"name":@"Example Plugin", @"description":@"An installed plugin that is currently disabled.",
+    @"version":@"2.0", @"source":@"bundled", @"enabled":@NO, @"active":@NO, @"error":@"", @"restart_required":@NO};
+  NSDictionary *(^catalogue)(BOOL) = ^NSDictionary *(BOOL managed) { return @{@"plugins":@[[notification copy],second], @"managed":@(managed), @"restart_required":notification[@"restart_required"]}; };
+  service.pending(catalogue(NO),nil); WaitForPlugins(controller,window);
+  NSStackView *rows = [controller valueForKey:@"pluginRows"];
+  Check(PluginSwitches(rows).count == 2 && PluginSwitches(rows)[0].state == NSControlStateValueOn &&
+    PluginSwitches(rows)[1].state == NSControlStateValueOff, @"installed plugins show authoritative enabled states");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue]; [controller applyPalette:palette];
+    for (NSNumber *width in @[@1100,@200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue,780)]; SettingsTick(window);
+      for (NSSwitch *toggle in PluginSwitches(rows)) {
+        NSView *row = toggle.superview.superview;
+        NSRect rect = [toggle convertRect:toggle.bounds toView:row];
+        Check(NSWidth(rect) > 0 && NSContainsRect(row.bounds,rect), @"plugin switches fit narrow and wide rows in both themes");
+      }
+      SettingsSnapshot(controller,window,[NSString stringWithFormat:@"plugins-%@-%@.png",palette.dark ? @"dark" : @"light",width]);
+    }
+  }
+  [window setContentSize:NSMakeSize(1100,780)]; SettingsTick(window);
+  NSSwitch *toggle = PluginSwitches(rows)[0]; toggle.state = NSControlStateValueOff;
+  [NSApp sendAction:toggle.action to:toggle.target from:toggle];
+  Check([service.parameters[@"id"] isEqual:@"talaria-notifications"] && [service.parameters[@"enabled"] isEqual:@NO] && service.agentID == 7,
+    @"toggle saves the exact plugin for its owning agent");
+  Check(!PluginSwitches(rows)[0].enabled, @"pending writes prevent duplicate toggle requests");
+  service.pending(nil,[NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Write failed"}]); WaitForPlugins(controller,window);
+  Check(PluginSwitches(rows)[0].state == NSControlStateValueOn && [[[controller valueForKey:@"pluginStatus"] stringValue] isEqual:@"Write failed"],
+    @"a failed write restores the saved state and shows the error");
+  toggle = PluginSwitches(rows)[0]; toggle.state = NSControlStateValueOff; [NSApp sendAction:toggle.action to:toggle.target from:toggle];
+  notification[@"enabled"] = @NO; notification[@"restart_required"] = @YES;
+  service.pending(catalogue(NO),nil); WaitForPlugins(controller,window);
+  Check(PluginSwitches(rows)[0].state == NSControlStateValueOff && [[[controller valueForKey:@"pluginStatus"] stringValue] containsString:@"Restart"],
+    @"successful toggle shows saved state and restart requirement");
+  NSSearchField *search = [controller valueForKey:@"pluginSearch"]; search.stringValue = @"no matches";
+  [(id<NSTextFieldDelegate>)controller controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
+  Check(PluginSwitches(rows).count == 0, @"plugin search filters the installed catalogue");
+  search.stringValue = @""; [(id<NSTextFieldDelegate>)controller controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:search]];
+  [[controller valueForKey:@"refreshPluginsButton"] performClick:nil];
+  void (^late)(NSDictionary *, NSError *) = service.pending;
+  database.currentAgentID = 8; [controller refreshPluginsForSelectedAgent];
+  Check(PluginSwitches(rows).count == 0 && service.agentID == 8, @"agent switch immediately clears the prior plugin list");
+  late(catalogue(NO),nil); SettingsTick(window);
+  Check(PluginSwitches(rows).count == 0, @"late responses cannot show another agent's plugins");
+  service.pending(catalogue(YES),nil); WaitForPlugins(controller,window);
+  Check(!PluginSwitches(rows)[0].enabled, @"managed plugin settings are visible and read-only");
+  [[controller valueForKey:@"refreshPluginsButton"] performClick:nil]; late = service.pending;
+  [controller close]; late(@{@"plugins":@[],@"managed":@NO},nil); SettingsTick(window);
+  Check(PluginSwitches(rows).count == 2, @"closing invalidates pending plugin requests");
+  [window close];
+}
+
 static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   TLSettingsCredentialMock *service = [[TLSettingsCredentialMock alloc] init];
   TLFeatureSettingsStoreMock *store = [[TLFeatureSettingsStoreMock alloc] init];
@@ -2113,7 +2212,7 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   NSWindow *window = HostController(controller);
   TLSettingsWorkspaceView *shell = [controller valueForKey:@"workspace"];
   NSArray<TLSidebarNavigationButton *> *nav = [controller valueForKey:@"navigation"];
-  Check([[nav valueForKey:@"title"] isEqual:@[@"Model", @"Tools & Keys", @"Skills"]], @"Agent exposes Model, Tools & Keys, and Skills in its sidebar");
+  Check([[nav valueForKey:@"title"] isEqual:@[@"Model", @"Tools & Keys", @"Skills", @"Plugins"]], @"Agent exposes models, credentials, skills, and plugins in its sidebar");
   NSSegmentedControl *sections = shell.sectionTabs;
   Check(sections.segmentCount == 3 && [[sections labelForSegment:0] isEqual:@"Agent"] &&
     [[sections labelForSegment:1] isEqual:@"Browser"] && [[sections labelForSegment:2] isEqual:@"Application"], @"settings has three native system sections");
@@ -2295,7 +2394,13 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
     if ([button.identifier isEqual:@"BRAVE_API_KEY"] && [button.title isEqual:@"Save"]) save = button;
   [NSApp sendAction:save.action to:save.target from:save];
   Check([service.action isEqual:@"set"] && [service.value isEqual:@"draft-test-key"], @"save sends only the entered key to Hermes");
-  service.pendingCredentials(@{@"ok":@YES}, nil); SettingsTick(window);
+  service.pendingCredentials(@{@"ok":@YES}, nil);
+  // The completion deliberately hops to the main queue; a single 20ms layout
+  // tick is not a guarantee that it has run on a busy native test process.
+  NSDate *credentialDeadline = [NSDate dateWithTimeIntervalSinceNow:1];
+  while (![service.action isEqual:@"list"] && credentialDeadline.timeIntervalSinceNow > 0)
+    [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:credentialDeadline];
+  [window.contentView layoutSubtreeIfNeeded];
   Check([service.action isEqual:@"list"], @"save refreshes authoritative credential status");
   store.currentAgentID = 8;
   service.pendingCredentials(@{@"entries":entries}, nil); SettingsTick(window);
@@ -3766,6 +3871,7 @@ int main(void) {
     TestAgentSettingsForm();
     TestAgentSkillSettings();
     TestSkillsInSettingsWorkspace();
+    TestPluginsInSettingsWorkspace();
     TestRealSidebarAgents();
     TestSuggestionTypingAndVirtualization();
     TestRunningAgentRepairAction();
