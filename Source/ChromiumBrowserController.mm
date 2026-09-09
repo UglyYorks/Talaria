@@ -339,6 +339,21 @@ class TLChromiumApp : public CefApp, public CefBrowserProcessHandler {
 
   void OnContextInitialized() override { [controller_ browserContextReady]; }
 
+  bool OnAlreadyRunningAppRelaunch(CefRefPtr<CefCommandLine> command_line,
+                                  const CefString &current_directory) override {
+    // Older copies can reach CEF's singleton handoff without our startup guard.
+    // Handle the reopen ourselves so CEF cannot create an unmanaged Chrome window.
+    TLChromiumDeferToMainRunLoop(^{
+      id<NSApplicationDelegate> delegate = NSApp.delegate;
+      if ([delegate respondsToSelector:@selector(applicationShouldHandleReopen:hasVisibleWindows:)]) {
+        BOOL visible = NO;
+        for (NSWindow *window in NSApp.windows) visible = visible || window.visible;
+        [delegate applicationShouldHandleReopen:NSApp hasVisibleWindows:visible];
+      }
+    });
+    return true;
+  }
+
   void OnScheduleMessagePumpWork(int64_t delay_ms) override {
     [controller_ scheduleMessagePumpWork:delay_ms];
   }

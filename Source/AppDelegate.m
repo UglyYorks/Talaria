@@ -26,6 +26,35 @@
 @implementation TLAppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+  // Installed and worktree builds share their database and Chromium profile.
+  // Hand off before restoring tabs can initialize a second CEF browser process.
+  NSRunningApplication *existing = [self earlierRunningInstance];
+  if (existing) {
+    if (!existing.bundleURL) {
+      [existing unhide];
+      [existing activateWithOptions:NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows];
+      [NSApp terminate:nil];
+      return;
+    }
+    // A normal reopen also restores a closed (ordered-out) main window.
+    NSWorkspaceOpenConfiguration *configuration = [NSWorkspaceOpenConfiguration configuration];
+    configuration.createsNewApplicationInstance = NO;
+    configuration.allowsRunningApplicationSubstitution = NO;
+    configuration.activates = YES;
+    configuration.promptsUserIfNeeded = NO;
+    [NSWorkspace.sharedWorkspace openApplicationAtURL:existing.bundleURL configuration:configuration
+      completionHandler:^(NSRunningApplication *application, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (error || !application) {
+            [existing unhide];
+            [existing activateWithOptions:NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows];
+          }
+          [NSApp terminate:nil];
+        });
+      }];
+    return;
+  }
+
   [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   [self installMainMenu];
 
@@ -99,6 +128,29 @@
     if (app.processIdentifier != NSProcessInfo.processInfo.processIdentifier && !app.terminated) return YES;
   }
   return NO;
+}
+
+- (NSRunningApplication *)earlierRunningInstance {
+  NSRunningApplication *current = NSRunningApplication.currentApplication;
+  NSMutableArray<NSRunningApplication *> *others = [NSMutableArray array];
+  BOOL hasLaunchDates = current.launchDate != nil;
+  for (NSRunningApplication *app in [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.talaria.chat"]) {
+    if (app.terminated || app.processIdentifier <= 0 || app.processIdentifier == current.processIdentifier) continue;
+    [others addObject:app];
+    hasLaunchDates = hasLaunchDates && app.launchDate != nil;
+  }
+  NSRunningApplication *earliest = current;
+  for (NSRunningApplication *app in others) {
+    // Launch order elects one survivor even while both apps are still starting.
+    // If any date is unavailable, all candidates use PID order consistently.
+    NSComparisonResult order = hasLaunchDates
+      ? [app.launchDate compare:earliest.launchDate] : NSOrderedSame;
+    if (order == NSOrderedAscending ||
+        (order == NSOrderedSame && app.processIdentifier < earliest.processIdentifier)) {
+      earliest = app;
+    }
+  }
+  return earliest == current ? nil : earliest;
 }
 
 - (void)resetApp:(id)sender {

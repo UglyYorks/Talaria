@@ -1,6 +1,9 @@
 #import "TLBrowserContentColor.h"
 #import <math.h>
 #import <ImageIO/ImageIO.h>
+
+const NSUInteger TLBrowserContentColorMaximumImagePixels = 32 * 1024 * 1024;
+
 @implementation TLBrowserContentColor
 + (NSArray<NSArray<NSNumber *> *> *)horizontalRGBStripForImageData:(NSData *)data bottomFraction:(double)bottomFraction widthFraction:(double)widthFraction {
   if(!isfinite(bottomFraction) || bottomFraction<=0 || bottomFraction>1 ||
@@ -10,7 +13,7 @@
   NSDictionary *properties=CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source,0,NULL));
   double width=[properties[(__bridge NSString *)kCGImagePropertyPixelWidth] doubleValue];
   double height=[properties[(__bridge NSString *)kCGImagePropertyPixelHeight] doubleValue];
-  if(width<1 || height<1 || width*height>16*1024*1024){CFRelease(source);return nil;}
+  if(width<1 || height<1 || width*height>TLBrowserContentColorMaximumImagePixels){CFRelease(source);return nil;}
   CGImageRef image=CGImageSourceCreateImageAtIndex(source,0,NULL);CFRelease(source);
   if(!image)return nil;
   double bottom=MAX(1,floor(height*bottomFraction));
@@ -52,7 +55,7 @@
   NSDictionary *properties=CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source,0,NULL));
   double imageWidth=[properties[(__bridge NSString *)kCGImagePropertyPixelWidth] doubleValue];
   double imageHeight=[properties[(__bridge NSString *)kCGImagePropertyPixelHeight] doubleValue];
-  if(imageWidth<1 || imageHeight<1 || imageWidth*imageHeight>16*1024*1024){CFRelease(source);return nil;}
+  if(imageWidth<1 || imageHeight<1 || imageWidth*imageHeight>TLBrowserContentColorMaximumImagePixels){CFRelease(source);return nil;}
   CGImageRef image=CGImageSourceCreateImageAtIndex(source,0,NULL);CFRelease(source);
   if(!image)return nil;
   // Crop the returned image, never the live Chromium render widget. Image-space
