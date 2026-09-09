@@ -14,6 +14,7 @@
 #import "AssistantTurnRunner.h"
 #import "ChatIconGenerator.h"
 #import "MarkdownRenderer.h"
+#import "design_system/TLMarkdownContentWebView.h"
 #import "NotchOverlayController.h"
 #import "TLQuickInputWindowController.h"
 #import "InputSuggestions.h"
@@ -1626,6 +1627,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       deleteItem.enabled = !controller.isSending;
       deleteItem.image = [NSImage imageWithSystemSymbolName:@"trash" accessibilityDescription:nil];
       [menu addItem:deleteItem];
+      // WebKit must receive the click to identify the link and build its native
+      // menu (including Inspect Element). The row menu is only a fallback.
+      for (NSView *view = hitView; view && view != row; view = view.superview) {
+        if ([view isKindOfClass:TLMarkdownContentWebView.class]) {
+          ((TLMarkdownContentWebView *)view).fallbackContextMenu = menu;
+          return event;
+        }
+      }
       [NSMenu popUpContextMenu:menu withEvent:event forView:row];
       return nil;
     }
