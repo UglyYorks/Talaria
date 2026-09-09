@@ -95,10 +95,6 @@ NSString *TLExtractChatIcon(NSString *value) {
   NSString *trimmedModel = TLChatIconTrim(model);
   NSString *trimmedMessage = TLChatIconTrim(firstUserMessage);
 
-  if (trimmedToken.length == 0) {
-    completion(nil, TLChatIconGeneratorError(@"OpenRouter token is required."));
-    return;
-  }
   if (trimmedModel.length == 0) {
     completion(nil, TLChatIconGeneratorError(@"Supporting model is required."));
     return;

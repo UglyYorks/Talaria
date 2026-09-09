@@ -47,6 +47,16 @@ def tool_activity(kind, payload):
             "summary": text("summary") or text("result_text")}
 
 
+def model_identity(selection):
+    """Legacy IDs belong to OpenRouter; new selections retain provider identity."""
+    provider, separator, model = selection.partition("::")
+    if not separator:
+        return "openrouter", selection
+    if not provider or not model or any(c.isspace() for c in provider + model) or model.startswith("-"):
+        raise ValueError("Invalid provider/model selection.")
+    return provider, model
+
+
 class RPCError(RuntimeError):
     def __init__(self, payload):
         self.code = payload.get("code")
@@ -271,6 +281,7 @@ class HermesGateway:
             seen.add(stored)
             sessions.append({**row, "hermes_session_id": aliases.get(stored, stored),
                              "title": row.get("title") or row.get("preview") or "Untitled session",
+                             "model": (str(row["provider"]) + "::" + str(row.get("model") or "")) if row.get("provider") else row.get("model", ""),
                              "created_at": self.history_date(row.get("started_at")),
                              "updated_at": self.history_date(row.get("last_active") or row.get("started_at"))})
         return {"sessions": sessions}
@@ -293,7 +304,10 @@ class HermesGateway:
         else:
             # Explicit resume: a missing history row must never create a new session.
             result = self.call("session.resume", {"session_id": stored})
-            model = (result.get("info") or {}).get("model") or ""
+            info = result.get("info") or {}
+            model = info.get("model") or ""
+            if info.get("provider") and model:
+                model = info["provider"] + "::" + model
             with self.lock:
                 chat_id = next((chat for chat, target in self.mappings.items() if target == stored), stored)
             sid = self._remember(chat_id, result, model)
@@ -345,17 +359,79 @@ class HermesGateway:
             raise RuntimeError("Hermes returned an invalid model catalogue.")
         return result
 
+    def providers(self, params):
+        action = params.get("action")
+        mutating = action not in {"list", "models", "login.poll", "login.cancel"}
+        if mutating:
+            with self.lock:
+                if (self.listeners or any(lock.locked() for lock in self.session_locks.values())
+                        or getattr(self, "_provider_mutating", False)):
+                    raise RuntimeError("Finish the active response before changing provider settings.")
+                self._provider_mutating = True
+        try:
+            return self._provider_request(params)
+        finally:
+            if mutating:
+                with self.lock:
+                    self._provider_mutating = False
+
+    def _provider_request(self, params):
+        action = params.get("action")
+        if action == "list":
+            catalogue = self.call("model.options", {"include_unconfigured": True, "refresh": True})
+            metadata = self.call("talaria.providers", {"action": "describe"})
+            by_slug = {row["slug"]: row for row in catalogue.get("providers", [])}
+            rows = []
+            for descriptor in metadata["providers"]:
+                row = dict(by_slug.pop(descriptor["slug"], {}))
+                row.update(descriptor)
+                row["name"] = descriptor["label"]
+                rows.append(row)
+            rows.extend(by_slug.values())
+            return {"providers": rows}
+        if action == "models":
+            catalogue = self.call("model.options", {"include_unconfigured": True, "refresh": True})
+            return {"providers": [row for row in catalogue.get("providers", []) if row.get("slug") == params.get("slug")]}
+        if action == "select":
+            provider, model = model_identity(params.get("selection", ""))
+            if provider == "custom" and params.get("custom"):
+                endpoint = self.call("talaria.providers", {"action": "custom.configure", "slug": provider,
+                                                          "model": model, "values": params["custom"]})
+                provider = endpoint["slug"]
+            readiness = self.call("setup.runtime_check", {"provider": provider})
+            if not readiness.get("ok"):
+                raise RuntimeError("Connect this provider before choosing a model.")
+            result = self.call("config.set", {"key": "model", "value": f"{model} --provider {provider}",
+                                             "confirm_expensive_model": bool(params.get("confirmed"))})
+            if result.get("confirm_required"):
+                return result
+            if result.get("value") != model:
+                raise RuntimeError("Hermes did not accept this model.")
+            return {"ok": True, "selection": provider + "::" + model}
+        result = self.call("talaria.providers", params)
+        if action == "configure" or (action == "login.poll" and result.get("status") == "approved"):
+            # Rebuild idle clients with the new credentials on their next turn.
+            # Persistent session mappings/history remain owned by Hermes.
+            with self.lock:
+                self._stale_sessions = set(self.sessions)
+        return result
+
     def generate_text(self, model, instructions, user_input):
+        provider, model_id = model_identity(model)
         # A private draft runtime supplies the chosen supporting model to llm.oneshot.
         # No prompt.submit, conversation history, or persistent Talaria mapping is used.
-        created = self.call("session.create", {"model": model, "provider": "openrouter", "source": "talaria", "hidden": True})
+        created = self.call("session.create", {"model": model_id, "provider": provider, "source": "talaria", "hidden": True})
         sid = created.get("session_id")
         if not sid:
             raise RuntimeError("Hermes did not create a supporting-model session.")
         try:
             # Bare model + --session waits for the lazy agent build and explicitly avoids
             # persisting a global model change. oneshot can then inherit its runtime.
-            configured = self.call("config.set", {"session_id": sid, "key": "model", "value": model + " --session"})
+            if "::" in model:
+                self._apply_session_model(sid, model)
+                configured = {}
+            else:
+                configured = self.call("config.set", {"session_id": sid, "key": "model", "value": model + " --session"})
             if configured.get("confirm_required"):
                 raise RuntimeError(configured.get("confirm_message") or "Hermes requires confirmation of the supporting model.")
             result = self.call("llm.oneshot", {"session_id": sid, "instructions": instructions,
@@ -385,29 +461,44 @@ class HermesGateway:
         return sid
 
     def _apply_session_model(self, sid, model):
+        provider, model_id = model_identity(model)
+        value = f"{model_id} --session"
+        if "::" in model:
+            self.call("talaria.session.ready", {"session_id": sid})
+            value += f" --provider {provider}"
         # A bare model waits for Hermes' lazy agent build. Supplying --provider
         # skips that wait and can race a resumed agent loading its old model.
         result = self.call("config.set", {"session_id": sid, "key": "model",
-                                          "value": f"{model} --session"})
+                                          "value": value})
         if result.get("confirm_required"):
             raise RuntimeError(result.get("confirm_message") or "Hermes requires confirmation of this model change.")
-        if result.get("value") != model:
+        if result.get("value") != model_id:
             raise RuntimeError(f"Hermes did not accept the requested model {model}.")
-        status = self.call("session.status", {"session_id": sid})
-        if f"Model: {model} (openrouter)" not in status.get("output", "").splitlines():
+        if "::" in model:
+            verified = self.call("talaria.session.verify_model", {"session_id": sid, "model": model_id, "provider": provider}).get("verified")
+        else:
+            status = self.call("session.status", {"session_id": sid})
+            verified = f"Model: {model_id} ({provider})" in status.get("output", "").splitlines()
+        if not verified:
             raise RuntimeError(f"Hermes has not activated {model}. Wait for the current response to finish and retry.")
         # This audit contains model identifiers only, never prompts or credentials.
         with (self.home / "talaria-model-switches.jsonl").open("a") as log:
             log.write(json.dumps({"session_id": sid, "model": model, "verified": True, "time": time.time()}) + "\n")
 
     def session(self, chat_id, model, force_model=False):
+        if chat_id in getattr(self, "_stale_sessions", set()):
+            state = self.sessions.get(chat_id)
+            if state:
+                self.call("session.close", {"session_id": state["id"]})
+                self.sessions.pop(chat_id, None)
+            self._stale_sessions.discard(chat_id)
         if chat_id not in self.sessions:
             try:
                 result = self.call("session.resume", {"session_id": self.mappings.get(chat_id, chat_id)})
             except RPCError as exc:
                 if exc.code != 4007:
                     raise
-                result = self.call("session.create", {"model": model, "provider": "openrouter", "source": "talaria"})
+                result = self.call("session.create", {"model": model_identity(model)[1], "provider": model_identity(model)[0], "source": "talaria"})
             # Both create and resume are lazy. Pin and verify after loading before
             # remembering a selection, including the very first turn.
             self._remember(chat_id, result, "")
@@ -419,8 +510,11 @@ class HermesGateway:
 
     def select_model(self, chat_id, model):
         with self.lock:
+            if getattr(self, "_provider_mutating", False):
+                raise RuntimeError("Wait for provider setup to finish before sending or switching models.")
             session_lock = self.session_locks.setdefault(chat_id, threading.Lock())
-        if not session_lock.acquire(blocking=False):
+            acquired = session_lock.acquire(blocking=False)
+        if not acquired:
             raise RuntimeError("Wait for the current response to finish before switching models.")
         try:
             return self.session(chat_id, model, force_model=True)
@@ -442,7 +536,7 @@ class HermesGateway:
         params = {"session_id": sid}
         # These commands are host actions in Hermes's TUI, not slash-worker actions.
         if canonical in {"new", "reset", "clear"}:
-            result = self.call("session.create", {"model": model, "provider": "openrouter", "source": "talaria", "title": arg})
+            result = self.call("session.create", {"model": model_identity(model)[1], "provider": model_identity(model)[0], "source": "talaria", "title": arg})
             self._remember(chat_id, result, model)
             return {"output": "Started a new Hermes session."}
         if canonical in {"resume"} and arg:
@@ -491,8 +585,11 @@ class HermesGateway:
         if cancellation and cancellation.cancelled():
             return
         with self.lock:
+            if getattr(self, "_provider_mutating", False):
+                raise RuntimeError("Wait for provider setup to finish before sending or switching models.")
             session_lock = self.session_locks.setdefault(chat_id, threading.Lock())
-        if not session_lock.acquire(blocking=False):
+            acquired = session_lock.acquire(blocking=False)
+        if not acquired:
             if approval_response is not None:
                 raise RuntimeError("This approval is already being submitted. Wait for the current request.")
             name = text.split(maxsplit=1)[0].lower()

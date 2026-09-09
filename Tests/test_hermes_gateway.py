@@ -830,7 +830,8 @@ class CredentialRPCTests(unittest.TestCase):
                     else:
                         main()
                 self.assertEqual(set(handlers), {"talaria.credentials.list", "talaria.credentials.set",
-                                                "talaria.credentials.remove", "talaria.skills.describe", "talaria.automations"})
+                                                "talaria.credentials.remove", "talaria.skills.describe", "talaria.automations",
+                                    "talaria.providers", "talaria.session.ready", "talaria.session.verify_model"})
                 self.assertIn("talaria.automations", server._LONG_HANDLERS)
                 entry.main.assert_called_once_with()
                 configure_database.assert_called_once_with()

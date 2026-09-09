@@ -1,3 +1,4 @@
+#import "TLProviderSetupWindowController.h"
 #import "TLBrowserImageActions.h"
 #import "TLBrowserLinkActions.h"
 #import "TLAutomationsTabController.h"
@@ -215,6 +216,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListHeightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *slashCommandListBottomConstraint;
 @property (nonatomic, strong) TLOnboardingDemoWindowController *onboardingDemoWindowController;
+@property (nonatomic, strong) TLProviderSetupWindowController *providerSetupWindowController;
 @property (nonatomic, strong) TLHermesOnboardingWindowController *hermesOnboardingWindowController;
 @property (nonatomic, strong) TLAgentCreationWindowController *agentCreationWindowController;
 @property (nonatomic) BOOL openingDebugTerminal;
@@ -1031,6 +1033,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self presentErrorMessage:error.localizedDescription];
     return;
   }
+  self.settings = [self.database appSettings:nil] ?: self.settings;
   [self refreshAgents];
 }
 
@@ -2608,12 +2611,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     return;
   }
 
-  if (token.length == 0) {
-    self.errorMessage = @"Add an OpenRouter token in Settings before sending.";
-    [self renderMessages];
-    [self showSettings:self];
-    return;
-  }
 
   if (!self.activeChat) {
     [self startNewChatWithModel:model focus:NO];
@@ -2784,8 +2781,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if ([message.approvalRequest[@"request_id"] isEqual:requestID] && ![message.approvalRequest[@"submitted"] boolValue]) pending = message;
   }
   if (!pending || ![TLApprovalChoices(pending.approvalRequest) containsObject:choice]) return NO;
-  if (!self.settings.openRouterToken.length || !self.settings.selectedModel.length) {
-    [self presentErrorMessage:@"Configure your token and model before responding to Hermes."];
+  if (!self.settings.selectedModel.length) {
+    [self presentErrorMessage:@"Choose a model before responding to Hermes."];
     return NO;
   }
   NSMutableDictionary *request = [pending.approvalRequest mutableCopy];
@@ -3155,42 +3152,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)showOnboardingDemoWindow:(id)sender {
-  [self.hermesOnboardingWindowController.window close];
-  self.hermesOnboardingWindowController = [[TLHermesOnboardingWindowController alloc]
-    initWithPalette:self.palette token:self.settings.openRouterToken model:self.settings.selectedModel];
-  __weak typeof(self) weakSelf = self;
-  self.hermesOnboardingWindowController.startHandler = ^(NSString *token, NSString *model) {
-    TalariaWindowController *strongSelf = weakSelf;
-    if (!strongSelf) return;
-    TLAppSettings *updated = [strongSelf.settings copy];
-    updated.openRouterToken = token;
-    updated.rememberOpenRouterToken = YES;
-    updated.selectedModel = model;
-    NSError *saveError = nil;
-    TLAppSettings *saved = [strongSelf.database saveAppSettings:updated error:&saveError];
-    if (!saved) {
-      [strongSelf.hermesOnboardingWindowController finishWithError:saveError];
-      return;
-    }
-    strongSelf.settings = saved;
-    [strongSelf.agentOrchestrator createFreshHermesAgentWithProgress:^(NSString *text) {
-      [strongSelf.hermesOnboardingWindowController appendProgress:text];
-    } completion:^(TLAgentRecord *agent, NSError *installError) {
-      if (!installError) {
-        TLAppSettings *completed = [strongSelf.settings copy];
-        completed.onboardingCompleted = YES;
-        TLAppSettings *completedSettings = [strongSelf.database saveAppSettings:completed error:nil];
-        if (completedSettings) strongSelf.settings = completedSettings;
-        [strongSelf refreshAgents];
-        [strongSelf prepareHermesCommands];
-      }
-      [strongSelf.hermesOnboardingWindowController finishWithError:installError];
-    }];
-  };
-  self.hermesOnboardingWindowController.closeHandler = ^{
-    [weakSelf.window makeKeyAndOrderFront:nil];
-  };
-  [self.hermesOnboardingWindowController showFromWindow:self.window];
+  [self createAgent:sender];
 }
 
 - (void)openAppFromOnboarding {
@@ -3863,11 +3825,25 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   __weak typeof(self) weakSelf = self;
   self.agentCreationWindowController.agentCreatedHandler = ^(TLAgentRecord *agent) {
     TalariaWindowController *strongSelf = weakSelf;
-    [strongSelf initializeAgentWithID:agent.agentID];
     [strongSelf showAgents:nil];
     [strongSelf selectAgentWithID:agent.agentID];
+    [strongSelf configureProviderForAgent:agent];
   };
   [self.agentCreationWindowController showFromWindow:self.window];
+}
+
+- (void)configureProviderForAgent:(TLAgentRecord *)agent {
+  self.providerSetupWindowController = [[TLProviderSetupWindowController alloc] initWithAgent:agent orchestrator:self.agentOrchestrator palette:self.palette];
+  __weak typeof(self) weakSelf = self;
+  self.providerSetupWindowController.completionHandler = ^(NSString *selection) {
+    typeof(self) owner = weakSelf;
+    if (!owner) return;
+    owner.settings = [owner.database appSettings:nil] ?: owner.settings;
+    TLAppSettings *completed = [owner.settings copy]; completed.onboardingCompleted = YES;
+    owner.settings = [owner.database saveAppSettings:completed error:nil] ?: owner.settings;
+    [owner refreshAgents]; [owner prepareHermesCommands]; [owner updateControlStates];
+  };
+  [self.providerSetupWindowController presentForWindow:self.window];
 }
 
 - (void)editSelectedAgentSettings:(id)sender {
@@ -3876,6 +3852,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.agentSettingsWindowController = [[TLAgentCreationWindowController alloc]
     initWithAgent:agent palette:self.palette orchestrator:self.agentOrchestrator];
   __weak typeof(self) weakSelf = self;
+  self.agentSettingsWindowController.providerSetupHandler = ^{ [weakSelf configureProviderForAgent:agent]; };
   self.agentSettingsWindowController.agentUpdatedHandler = ^(TLAgentRecord *updatedAgent) {
     [weakSelf refreshAgents];
     if (updatedAgent.agentID == weakSelf.database.currentAgentID) [weakSelf prepareHermesCommands];
@@ -5818,6 +5795,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.messageInput.palette = self.palette;
   [self.chatPresentation applyFindPalette:self.palette];
   [self.onboardingDemoWindowController updatePalette:self.palette];
+  [self.providerSetupWindowController applyPalette:self.palette];
   [self applySlashCommandListPalette];
   if (!self.slashCommandListView.hidden) {
     [self updateSlashCommandList];
@@ -6330,7 +6308,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   NSString *token = [self.settings.openRouterToken stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSString *model = [(summary.supportingModel ?: self.settings.supportingModel) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (token.length == 0 || model.length == 0) {
+  if (model.length == 0) {
     return;
   }
 

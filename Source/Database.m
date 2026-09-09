@@ -156,6 +156,7 @@ static NSString *TLTitleFromMessage(NSString *content) {
       if (![self setSetting:@"supportingModel" value:supportingModel error:transactionError]) {
         return NO;
       }
+      if (![self recordDefaultModelsForAgentID:self.currentAgentID model:selectedModel supportingModel:supportingModel error:transactionError]) return NO;
       if (![self setSetting:@"theme" value:theme error:transactionError]) {
         return NO;
       }
@@ -350,7 +351,8 @@ static NSString *TLTitleFromMessage(NSString *content) {
         if (![statement stepDone:transactionError]) return NO;
       }
       return [self setSetting:@"selectedModel" value:model error:transactionError] &&
-        [self setSetting:@"supportingModel" value:supportingModel error:transactionError];
+        [self setSetting:@"supportingModel" value:supportingModel error:transactionError] &&
+        [self recordDefaultModelsForAgentID:self.currentAgentID model:model supportingModel:supportingModel error:transactionError];
     } error:error];
   }
 }
@@ -638,10 +640,37 @@ static NSString *TLTitleFromMessage(NSString *content) {
   }
 }
 
+- (BOOL)recordDefaultModelsForAgentID:(NSInteger)agentID model:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
+  if (agentID <= 0) return YES;
+  return [self setSetting:[NSString stringWithFormat:@"agent.%ld.model", (long)agentID] value:model error:error] &&
+    [self setSetting:[NSString stringWithFormat:@"agent.%ld.supportingModel", (long)agentID] value:supportingModel error:error];
+}
+
+- (BOOL)saveDefaultModel:(NSString *)model forAgentID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    if (![self agentWithID:agentID error:error] || !TLTrimmedString(model).length) return NO;
+    return [self performTransaction:^BOOL(NSError **transactionError) {
+      if (![self recordDefaultModelsForAgentID:agentID model:model supportingModel:model error:transactionError]) return NO;
+      if (self.currentAgentID == agentID) {
+        return [self setSetting:@"selectedModel" value:model error:transactionError] &&
+          [self setSetting:@"supportingModel" value:model error:transactionError];
+      }
+      return YES;
+    } error:error];
+  }
+}
+
 - (BOOL)setCurrentAgentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     if (![self loadAgentWithID:agentID error:error]) return NO;
-    return [self setSetting:@"currentAgentID" value:[@(agentID) stringValue] error:error];
+    return [self performTransaction:^BOOL(NSError **transactionError) {
+      if (![self setSetting:@"currentAgentID" value:[@(agentID) stringValue] error:transactionError]) return NO;
+      NSString *model = [self settingForKey:[NSString stringWithFormat:@"agent.%ld.model", (long)agentID] error:transactionError];
+      if (!model.length) return YES;
+      NSString *supporting = [self settingForKey:[NSString stringWithFormat:@"agent.%ld.supportingModel", (long)agentID] error:transactionError] ?: model;
+      return [self setSetting:@"selectedModel" value:model error:transactionError] &&
+        [self setSetting:@"supportingModel" value:supporting error:transactionError];
+    } error:error];
   }
 }
 

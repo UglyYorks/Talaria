@@ -9,6 +9,7 @@ static NSString *TLModelString(id value) {
   self = [super init];
   if (self) {
     _modelID = @"";
+    _providerID = @"";
     _name = @"";
     _modelDescription = @"";
     _inputPrice = @"";
@@ -19,6 +20,7 @@ static NSString *TLModelString(id value) {
 - (id)copyWithZone:(NSZone *)zone {
   TLAgentModel *copy = [[[self class] allocWithZone:zone] init];
   copy.modelID = self.modelID;
+  copy.providerID = self.providerID;
   copy.name = self.name;
   copy.modelDescription = self.modelDescription;
   copy.inputPrice = self.inputPrice;
@@ -45,18 +47,17 @@ NSArray<TLAgentModel *> *TLParseHermesModelOptions(NSData *data, NSError **error
   NSMutableArray *models = [NSMutableArray array];
   NSMutableSet *seen = [NSMutableSet set];
   for (id provider in json[@"providers"]) {
-    // Talaria's current settings select OpenRouter models. Hermes owns discovery;
-    // do not offer another provider's IDs under the OpenRouter credential field.
-    if (![provider isKindOfClass:NSDictionary.class] ||
-        ![TLModelString(provider[@"slug"]) isEqualToString:@"openrouter"] ||
+    if (![provider isKindOfClass:NSDictionary.class] || !TLModelString(provider[@"slug"]).length ||
         ![provider[@"models"] isKindOfClass:NSArray.class]) continue;
     NSDictionary *pricing = [provider[@"pricing"] isKindOfClass:NSDictionary.class] ? provider[@"pricing"] : @{};
     for (id value in provider[@"models"]) {
       NSString *modelID = [TLModelString(value) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-      if (!modelID.length || [seen containsObject:modelID]) continue;
-      [seen addObject:modelID];
+      NSString *selection = [NSString stringWithFormat:@"%@::%@", provider[@"slug"], modelID];
+      if (!modelID.length || [seen containsObject:selection]) continue;
+      [seen addObject:selection];
       TLAgentModel *model = [[TLAgentModel alloc] init];
-      model.modelID = modelID;
+      model.modelID = selection;
+      model.providerID = provider[@"slug"];
       model.name = modelID;
       model.modelDescription = TLModelString(provider[@"name"]);
       NSDictionary *prices = [pricing[modelID] isKindOfClass:NSDictionary.class] ? pricing[modelID] : @{};
