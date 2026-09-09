@@ -1244,10 +1244,10 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 - (NSMenu *)menuForEvent:(NSEvent *)event {
   if (![self canOpenTabContextMenu]) return nil;
   NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
-  if ([self.dragDelegate respondsToSelector:@selector(splitMenuForChromeTabView:)]) {
-    NSMenu *splitMenu = [self.dragDelegate splitMenuForChromeTabView:self];
-    for (NSMenuItem *item in splitMenu.itemArray.copy) {
-      [splitMenu removeItem:item]; [menu addItem:item];
+  if ([self.dragDelegate respondsToSelector:@selector(contextMenuForChromeTabView:)]) {
+    NSMenu *tabMenu = [self.dragDelegate contextMenuForChromeTabView:self];
+    for (NSMenuItem *item in tabMenu.itemArray.copy) {
+      [tabMenu removeItem:item]; [menu addItem:item];
     }
     if (menu.numberOfItems) [menu addItem:NSMenuItem.separatorItem];
   }

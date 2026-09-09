@@ -2194,6 +2194,18 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 @implementation TLSidebarShortcutsView
 
+- (void)setDropTargeted:(BOOL)dropTargeted {
+  _dropTargeted = dropTargeted;
+  self.needsDisplay = YES;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+  if (self.dropTargeted) {
+    [self.palette.sidebarHoverSurface setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:self.palette.space2 yRadius:self.palette.space2] fill];
+  }
+}
+
 - (instancetype)initWithFrame:(NSRect)frameRect {
   if ((self = [super initWithFrame:frameRect])) {
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];

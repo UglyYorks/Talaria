@@ -92,6 +92,7 @@ typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {
 
 @class TLButton;
 @interface TLSidebarShortcutsView : NSView
+@property (nonatomic) BOOL dropTargeted;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong, readonly) NSArray<TLSidebarShortcutButton *> *shortcutButtons;
 @property (nonatomic, strong, readonly) TLButton *addButton;

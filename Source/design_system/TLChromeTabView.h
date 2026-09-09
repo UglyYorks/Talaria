@@ -35,7 +35,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 - (void)chromeTabViewDidRequestCloseOtherTabs:(TLChromeTabView *)tabView;
 @optional
 - (void)chromeTabViewWillSelect:(TLChromeTabView *)tabView;
-- (nullable NSMenu *)splitMenuForChromeTabView:(TLChromeTabView *)tabView;
+- (nullable NSMenu *)contextMenuForChromeTabView:(TLChromeTabView *)tabView;
 - (BOOL)chromeTabViewShouldOpenContextMenu:(TLChromeTabView *)tabView;
 @end
 

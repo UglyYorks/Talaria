@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "Database.h"
+#import "TLWorkspaceTabsController.h"
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 #import "TalariaWindowController.h"
@@ -21,6 +22,11 @@ static void Check(BOOL value, NSString *message) {
 - (void)openSidebarBookmark:(TLSidebarShortcutButton *)button;
 - (void)removeBookmark:(NSMenuItem *)item;
 - (TLBookmark *)bookmarkForCurrentPage;
+- (TLBookmark *)bookmarkForTab:(TLWorkspaceTab *)tab;
+- (void)showBookmarkEditorForTab:(TLWorkspaceTab *)tab;
+- (NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller contextMenuForTab:(TLWorkspaceTab *)tab;
+- (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller dragTab:(TLWorkspaceTab *)tab atWindowPoint:(NSPoint)point;
+- (void)workspaceTabsController:(TLWorkspaceTabsController *)controller endDraggingTab:(TLWorkspaceTab *)tab cancelled:(BOOL)cancelled;
 - (void)showAddBookmark:(id)sender;
 @end
 @interface TLBookmarkTestController : TalariaWindowController
@@ -34,6 +40,45 @@ static void Check(BOOL value, NSString *message) {
 - (void)openBrowserTabWithURL:(NSURL *)URL { self.openedURL = URL; }
 - (void)openChatTabWithID:(NSInteger)chatID { self.openedChatID = chatID; }
 @end
+
+// Exercise the real drag routing without opening a popover or changing focus.
+@interface TLBookmarkDropTestController : TLBookmarkTestController
+@property (nonatomic, strong) TLWorkspaceTab *editorTab;
+@end
+@implementation TLBookmarkDropTestController
+- (void)showBookmarkEditorForTab:(TLWorkspaceTab *)tab { self.editorTab = tab; }
+- (void)focusWorkspaceTab:(TLWorkspaceTab *)tab {}
+@end
+
+static void TestBookmarkDrop(void) {
+  TLBookmarkDropTestController *owner = [[TLBookmarkDropTestController alloc] initWithWindow:nil];
+  NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0,0,600,400)];
+  NSView *topbar = [[NSView alloc] initWithFrame:NSMakeRect(0,360,600,40)];
+  TLSidebarShortcutsView *sidebar = [[TLSidebarShortcutsView alloc] initWithFrame:NSMakeRect(0,280,180,30)];
+  [root addSubview:topbar]; [root addSubview:sidebar];
+  [owner setValue:topbar forKey:@"topbar"];
+  [owner setValue:sidebar forKey:@"sidebarShortcutsView"];
+  [owner setValue:@YES forKey:@"sidebarVisible"];
+  TLWorkspaceTab *chat = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:-8 title:@"Draft" toolTip:nil URL:nil closeable:YES];
+  TLWorkspaceTab *page = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:8 title:@"Page" toolTip:nil URL:[NSURL URLWithString:@"https://example.com"] closeable:YES];
+  for (TLWorkspaceTab *tab in @[chat,page]) {
+    Check([owner workspaceTabsController:nil dragTab:tab atWindowPoint:NSMakePoint(80,295)] && sidebar.dropTargeted, @"empty bookmark header accepts chat and webpage drags");
+    Check(!owner.editorTab, @"hover alone does not open the editor");
+    [owner workspaceTabsController:nil endDraggingTab:tab cancelled:NO];
+    Check(owner.editorTab == tab && !sidebar.dropTargeted, @"drop opens the editor for the dragged tab and clears feedback");
+    owner.editorTab = nil;
+    [owner workspaceTabsController:nil dragTab:tab atWindowPoint:NSMakePoint(80,295)];
+    [owner workspaceTabsController:nil endDraggingTab:tab cancelled:YES];
+    Check(!owner.editorTab && !sidebar.dropTargeted, @"Escape cancels bookmark drop");
+    [owner workspaceTabsController:nil dragTab:tab atWindowPoint:NSMakePoint(80,295)];
+    [owner workspaceTabsController:nil dragTab:tab atWindowPoint:NSMakePoint(300,380)];
+    [owner workspaceTabsController:nil endDraggingTab:tab cancelled:NO];
+    Check(!owner.editorTab && !sidebar.dropTargeted, @"leaving Bookmarks before release does not open the editor");
+  }
+  [owner setValue:@NO forKey:@"sidebarVisible"];
+  [owner workspaceTabsController:nil dragTab:page atWindowPoint:NSMakePoint(80,295)];
+  Check(!sidebar.dropTargeted, @"collapsed sidebar cannot accept a bookmark drop");
+}
 
 static void SavePreview(NSView *view, NSString *name) {
   [view layoutSubtreeIfNeeded];
@@ -133,6 +178,15 @@ static void TestPopover(TLBookmarkTestController *owner, TLAppStateManager *stat
   [owner setValue:[NSMutableDictionary dictionary] forKey:@"workspaceTabRuntimes"];
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:-1 title:draft.title toolTip:nil URL:nil closeable:YES];
   [state addWorkspaceTab:tab activate:YES];
+  TLWorkspaceTab *page = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:98 title:@"Background page" toolTip:nil URL:[NSURL URLWithString:@"https://example.org/background"] closeable:YES];
+  [state addWorkspaceTab:page activate:NO];
+  NSMenuItem *add = [[owner workspaceTabsController:nil contextMenuForTab:page] itemWithTitle:@"Add to bookmarks"];
+  [NSApp sendAction:add.action to:add.target from:add];
+  NSPopover *backgroundPopover = [owner valueForKey:@"bookmarkPopover"];
+  TLBookmarkEditorController *backgroundEditor = [owner valueForKey:@"bookmarkEditor"];
+  Check(backgroundPopover.shown && [[[backgroundEditor valueForKey:@"URLField"] stringValue] isEqual:page.URL.absoluteString], @"context menu opens the shared dropdown for an inactive webpage");
+  Check(state.snapshot.activeTabID == tab.tabID, @"opening an inactive tab's bookmark editor preserves selection");
+  backgroundPopover.animates = NO; [backgroundPopover close];
   NSUInteger count = [database listChats:nil].count;
   [owner showAddBookmark:nil];
   NSPopover *popover = [owner valueForKey:@"bookmarkPopover"];
@@ -269,12 +323,24 @@ int main(void) {
     Check(candidate.chatID == chat.chatID && [candidate.emoji isEqual:@"🧭"] && [candidate.name isEqual:chat.title], @"prefills current conversation title and emoji");
     [state addWorkspaceTab:[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindSettings tabID:0 title:@"Settings" toolTip:nil URL:nil closeable:YES] activate:YES];
     Check(![owner bookmarkForCurrentPage], @"non-content tabs cannot accidentally bookmark a previous chat");
+    candidate = [owner bookmarkForTab:tab];
+    Check([candidate.name isEqual:@"Current page"] && [candidate.URL isEqual:website.URL], @"inactive webpage uses its own title and URL");
+    TLChatRecord *different = [TLChatRecord new]; different.chatID = -99; different.title = @"Other chat";
+    [owner setValue:different forKey:@"activeChat"];
+    candidate = [owner bookmarkForTab:chatTab];
+    Check(candidate.chatID == chat.chatID && [candidate.name isEqual:chat.title], @"inactive conversation uses its own database record");
+    for (TLWorkspaceTab *source in @[tab,chatTab]) {
+      NSMenu *menu = [owner workspaceTabsController:nil contextMenuForTab:source];
+      NSMenuItem *add = [menu itemWithTitle:@"Add to bookmarks"];
+      Check(add.enabled && add.representedObject == source && add.target == owner, @"chat and website context menus retain the correct source tab");
+    }
+    Check(![[owner workspaceTabsController:nil contextMenuForTab:state.snapshot.workspaceTabs.lastObject] itemWithTitle:@"Add to bookmarks"], @"settings menu does not offer bookmarking");
     NSMenuItem *remove = sidebar.shortcutButtons[0].menu.itemArray.firstObject;
     [owner removeBookmark:remove];
     Check([database listBookmarks:nil].count == 1, @"context menu removes only selected bookmark");
     Check([database deleteChatWithID:chat.chatID error:&error] && [database listBookmarks:nil].count == 0, @"deleted chat leaves no dangling bookmark");
     Check(![database saveBookmark:conversation error:&error], @"missing conversation cannot be bookmarked");
-    TestEditor(website); TestEditor(conversation);
+    TestEditor(website); TestEditor(conversation); TestBookmarkDrop();
     TestPopover(owner, state, database);
     // At narrow sidebar widths, bookmarks wrap instead of shrinking to unusable hit targets.
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 160, 300) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];

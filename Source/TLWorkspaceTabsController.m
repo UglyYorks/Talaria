@@ -1112,9 +1112,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   if ([self.delegate respondsToSelector:@selector(workspaceTabsController:willSelectTab:)])
     [self.delegate workspaceTabsController:self willSelectTab:tabView.representedObject];
 }
-- (NSMenu *)splitMenuForChromeTabView:(TLChromeTabView *)tabView {
-  return [self.delegate respondsToSelector:@selector(workspaceTabsController:splitMenuForTab:)]
-    ? [self.delegate workspaceTabsController:self splitMenuForTab:tabView.representedObject] : nil;
+- (NSMenu *)contextMenuForChromeTabView:(TLChromeTabView *)tabView {
+  return [self.delegate respondsToSelector:@selector(workspaceTabsController:contextMenuForTab:)]
+    ? [self.delegate workspaceTabsController:self contextMenuForTab:tabView.representedObject] : nil;
 }
 
 - (BOOL)chromeTabViewShouldOpenContextMenu:(TLChromeTabView *)tabView {

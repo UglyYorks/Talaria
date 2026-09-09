@@ -82,6 +82,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong) TLWorkspaceTab *displayedWorkspaceTab;
 @property (nonatomic, strong) TLWorkspaceTab *tabBeforePointerSelection;
 @property (nonatomic, strong) TLWorkspaceTab *splitDropTarget;
+@property (nonatomic) BOOL bookmarkDropTarget;
 @property (nonatomic) TLSplitDropSide splitDropSide;
 @property (nonatomic, strong) id paneFocusMonitor;
 @property (nonatomic) BOOL updatingSplitLayout;
@@ -2318,7 +2319,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (TLBookmark *)bookmarkForCurrentPage {
-  TLWorkspaceTab *tab = [self activeWorkspaceTab];
+  return [self bookmarkForTab:[self activeWorkspaceTab]];
+}
+
+- (TLBookmark *)bookmarkForTab:(TLWorkspaceTab *)tab {
   if (!tab || (tab.kind != TLWorkspaceTabKindBrowser && tab.kind != TLWorkspaceTabKindChat)) return nil;
   TLBookmark *bookmark = [TLBookmark new];
   bookmark.name = tab.title ?: @"";
@@ -2336,19 +2340,36 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       bookmark.faviconData = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
     }
   } else {
-    if (!self.activeChat) return nil;
-    bookmark.chatID = self.activeChat.chatID;
-    bookmark.name = self.activeChat.title.length ? self.activeChat.title : @"New chat";
-    bookmark.emoji = self.activeChat.icon.length ? self.activeChat.icon : TLDefaultChatIcon();
+    TLChatRecord *chat = self.activeChat.chatID == tab.tabID ? self.activeChat : self.chatPresentations[@(tab.tabID)].chat;
+    if (!chat) chat = self.modelDraftChats[@(tab.tabID)];
+    if (!chat && tab.tabID > 0) chat = [self.database chatWithID:tab.tabID error:nil];
+    bookmark.chatID = tab.tabID;
+    bookmark.name = chat.title.length ? chat.title : (tab.title.length ? tab.title : @"New chat");
+    bookmark.emoji = chat.icon.length ? chat.icon : TLDefaultChatIcon();
   }
   return bookmark;
 }
 
 - (void)showAddBookmark:(id)sender {
   if (self.bookmarkPopover.shown) { [self.bookmarkPopover close]; return; }
-  TLBookmark *bookmark = [self bookmarkForCurrentPage];
+  [self showBookmarkEditorForTab:[self activeWorkspaceTab]];
+}
+
+- (void)addTabToBookmarks:(NSMenuItem *)sender {
+  TLWorkspaceTab *tab = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(sender.representedObject)];
+  [self showBookmarkEditorForTab:tab];
+}
+
+- (void)showBookmarkEditorForTab:(TLWorkspaceTab *)tab {
+  TLBookmark *bookmark = [self bookmarkForTab:tab];
   if (!bookmark) return;
-  NSString *sourceIdentity = TLWorkspaceTabIdentity([self activeWorkspaceTab]);
+  [self.bookmarkPopover close];
+  if (!self.sidebarVisible) {
+    self.sidebarVisible = YES;
+    [self updateSidebarLayoutAnimated:NO];
+    [self.window.contentView layoutSubtreeIfNeeded];
+  }
+  NSString *sourceIdentity = TLWorkspaceTabIdentity(tab);
   self.bookmarkEditor = [[TLBookmarkEditorController alloc] initWithBookmark:bookmark palette:self.palette];
   self.bookmarkPopover = [NSPopover new];
   // Keep the editor open while the system emoji panel accepts input.
@@ -2362,6 +2383,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (!owner) return NO;
     if (entry.chatID < 0) {
       TLWorkspaceTab *source = [owner tabWithPresentationIdentity:sourceIdentity];
+      // A context-menu bookmark may refer to an inactive draft. Activate that
+      // presentation before materializing it so its attachments stay with it.
+      if (source && source.tabID < 0) [owner focusWorkspaceTab:source];
       if (source.tabID > 0) entry.chatID = source.tabID;
       else if (source && [owner isWorkspaceTabActive:source] &&
                [owner persistActiveDraftChatWithModel:owner.activeChat.model]) entry.chatID = owner.activeChat.chatID;
@@ -2376,7 +2400,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   };
   self.bookmarkEditor.closeHandler = ^{ [weakSelf.bookmarkPopover close]; };
   NSView *anchor = self.sidebarShortcutsView.addButton;
-  [self.bookmarkPopover showRelativeToRect:anchor.bounds ofView:anchor preferredEdge:NSRectEdgeMaxY];
+  [self.bookmarkPopover showRelativeToRect:anchor.bounds ofView:anchor preferredEdge:NSRectEdgeMinY];
 }
 
 - (void)openSidebarBookmark:(TLSidebarShortcutButton *)sender {
@@ -5709,6 +5733,17 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.tabBeforePointerSelection = [self activeWorkspaceTab];
 }
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller dragTab:(TLWorkspaceTab *)tab atWindowPoint:(NSPoint)point {
+  NSPoint bookmarkPoint = [self.sidebarShortcutsView convertPoint:point fromView:nil];
+  self.bookmarkDropTarget = self.sidebarVisible && !self.sidebarShortcutsView.isHiddenOrHasHiddenAncestor &&
+    (tab.kind == TLWorkspaceTabKindChat || (tab.kind == TLWorkspaceTabKindBrowser && [TLBookmark normalizedURL:tab.URL.absoluteString])) &&
+    NSPointInRect(bookmarkPoint, self.sidebarShortcutsView.bounds);
+  self.sidebarShortcutsView.dropTargeted = self.bookmarkDropTarget;
+  if (self.bookmarkDropTarget) {
+    [self.splitWorkspace clearDropPreview];
+    self.splitDropSide = TLSplitDropSideNone;
+    self.splitDropTarget = nil;
+    return YES;
+  }
   NSPoint topbarPoint = [self.topbar convertPoint:point fromView:nil];
   BOOL outside = !NSPointInRect(topbarPoint, NSInsetRect(self.topbar.bounds, 0, -self.palette.space3));
   if (!outside) {
@@ -5725,16 +5760,27 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return YES;
 }
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller endDraggingTab:(TLWorkspaceTab *)tab cancelled:(BOOL)cancelled {
+  BOOL bookmarkDrop = self.bookmarkDropTarget;
+  self.bookmarkDropTarget = NO;
+  self.sidebarShortcutsView.dropTargeted = NO;
   TLWorkspaceTab *other = self.splitDropTarget;
   TLSplitDropSide side = self.splitDropSide;
   [self.splitWorkspace clearDropPreview];
   self.splitDropTarget = nil; self.splitDropSide = TLSplitDropSideNone;
-  if (!cancelled && side != TLSplitDropSideNone && other) [self splitTab:tab besideTab:other onLeft:side == TLSplitDropSideLeft];
+  if (!cancelled && bookmarkDrop) [self showBookmarkEditorForTab:tab];
+  else if (!cancelled && side != TLSplitDropSideNone && other) [self splitTab:tab besideTab:other onLeft:side == TLSplitDropSideLeft];
   else if (other) [self focusWorkspaceTab:self.tabBeforePointerSelection ?: tab];
   self.tabBeforePointerSelection = nil;
 }
-- (NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller splitMenuForTab:(TLWorkspaceTab *)tab {
+- (NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller contextMenuForTab:(TLWorkspaceTab *)tab {
   NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
+  if (tab.kind == TLWorkspaceTabKindChat || tab.kind == TLWorkspaceTabKindBrowser) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Add to bookmarks" action:@selector(addTabToBookmarks:) keyEquivalent:@""];
+    item.target = self; item.representedObject = tab;
+    item.enabled = !self.widgetbookMode && (tab.kind == TLWorkspaceTabKindChat || [TLBookmark normalizedURL:tab.URL.absoluteString] != nil);
+    [menu addItem:item];
+    [menu addItem:NSMenuItem.separatorItem];
+  }
   if ([self.splitState groupForTab:tab]) {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Separate Split View" action:@selector(separateSplitFromMenu:) keyEquivalent:@""];
     item.target = self; item.representedObject = tab; [menu addItem:item];
