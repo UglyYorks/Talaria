@@ -1,3 +1,4 @@
+#import "TLChatControllerTestSupport.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLMessageInput.h"
@@ -19,7 +20,7 @@
 #import "TLProviderSetupWindowController.h"
 #import "AgentOrchestrator.h"
 #import "AssistantTurnRunner.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import "design_system/ModelPickerView.h"
 #import "UIComponents.h"
 #import "TalariaWindowController.h"
@@ -287,14 +288,35 @@ static id EvaluateChatScript(WKWebView *web, NSString *script) {
   return value;
 }
 
-@interface TLStreamingRenderRecorder : TalariaWindowController
-@property NSUInteger renderCount;
+@interface TLChatTabController (RenderingProbe)
+- (NSView *)cachedRowForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)tail;
+- (void)renderDirtyMessages;
 @end
-@implementation TLStreamingRenderRecorder
+@interface TLCountingChatController : TLChatTabController
+@property NSUInteger renderCount;
+@property NSUInteger rowVisits;
+@end
+@implementation TLCountingChatController
+- (NSView *)cachedRowForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)tail {
+  self.rowVisits++;
+  return [super cachedRowForMessage:message showsOutgoingTail:tail];
+}
+- (void)renderDirtyMessages {
+  NSUInteger before = self.renderCount;
+  [super renderDirtyMessages];
+  if (self.renderCount == before) self.renderCount++;
+}
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
   self.renderCount++;
   [super renderMessagesScrollingToBottom:scrollToBottom];
 }
+@end
+@interface TLStreamingRenderRecorder : TalariaWindowController
+@property (readonly) NSUInteger renderCount;
+@end
+@implementation TLStreamingRenderRecorder
+- (TLChatTabController *)newChatTabController { return [TLCountingChatController new]; }
+- (NSUInteger)renderCount { return [(TLCountingChatController *)[self valueForKey:@"chatPresentation"] renderCount]; }
 @end
 
 static void TestStreamingKeepsMessageViewsAttached(void) {
@@ -370,13 +392,17 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   Check([EvaluateChatScript(web, @"window.domRenderCount") integerValue] == 0,
         @"unchanged messages do not reparse Markdown or replace the DOM");
   NSUInteger renderCount = controller.renderCount;
+  TLCountingChatController *chatRenderer = [controller valueForKey:@"chatPresentation"];
+  NSUInteger rowVisits = chatRenderer.rowVisits;
   for (NSUInteger i = 0; i < 100; i++) {
     assistant.content = [assistant.content stringByAppendingString:@" x"];
+    [chatRenderer markMessageDirty:assistant];
     [controller scheduleStreamingMessageRender];
   }
   Check(controller.renderCount == renderCount, @"a burst of tokens defers native layout");
   [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
   Check(controller.renderCount == renderCount + 1, @"a burst of tokens performs one native transcript update");
+  Check(chatRenderer.rowVisits == rowVisits + 1, @"streaming updates visit only the dirty message row");
   Check([[markdown valueForKey:@"text"] isEqual:assistant.content] &&
         [EvaluateChatScript(web, @"window.domRenderCount") integerValue] == 1,
         @"batched rendering preserves the entire response in the same document");
@@ -405,6 +431,22 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   Check(controller.renderCount == renderCount, @"closing a transcript cancels its pending render");
   Check(stack.arrangedSubviews.count == 0 && [[controller valueForKey:@"messageMarkdownViews"] count] == 0,
         @"theme and conversation resets discard the old renderers");
+  chatRenderer.chat = [TLChatRecord new];
+  chatRenderer.chat.title = @"AWS Oregon Outage";
+  TLChatMessage *outage = [TLChatMessage messageWithRole:TLRoleAssistant
+    content:@"AWS is reporting an outage in the Oregon region." thinking:nil];
+  TLChatMessage *later = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:@"Checking status"];
+  chatRenderer.messages = [NSMutableArray arrayWithObjects:outage, user, later, nil];
+  [controller renderMessages];
+  NSArray *intentRows = stack.arrangedSubviews.copy;
+  Check(intentRows.count == 4, @"an intent widget occupies its own transcript row");
+  later.content = @"Status checked";
+  [chatRenderer markMessageDirty:later];
+  [chatRenderer renderDirtyMessages];
+  Check(stack.arrangedSubviews.count == 4 && stack.arrangedSubviews[1] == intentRows[1] &&
+    stack.arrangedSubviews[2] == intentRows[2] &&
+    stack.arrangedSubviews[3] == [chatRenderer.messageRowViews objectForKey:later],
+    @"a dirty row changing display mode keeps its position after an earlier intent widget");
   [window close];
 }
 
@@ -717,8 +759,8 @@ static void TestDebugResetLayout(void) {
 - (void)renderMessages {}
 - (void)styleSidebarActionButtons {}
 - (void)updateAgentControlStates {}
-- (void)hideSlashCommandList {}
-- (BOOL)isChatWorkspaceActive { return YES; }
+- (void)hideSlashCommandListForChat:(TLChatTabController *)chatContext {}
+- (BOOL)isChatWorkspaceActiveForChat:(TLChatTabController *)chatContext { return YES; }
 @end
 
 @interface TalariaWindowController (ApprovalTests)
@@ -1029,7 +1071,7 @@ static void TestConcurrentChatStreams(void) {
   Check(controller.stream.requests.count == 2 && [a.sessionID isEqual:@"17"] && [b.sessionID isEqual:@"18"],
     @"two independent runners dispatch separate Hermes sessions");
   a.delta(a.requestID, TLAgentStreamDeltaKindContent, @" continues");
-  a.delta(a.requestID, TLAgentStreamDeltaKindToolActivity, @"{\"id\":\"a-tool\",\"name\":\"terminal\",\"state\":\"running\"}");
+  a.delta(a.requestID, TLAgentStreamDeltaKindToolActivity, [NSJSONSerialization JSONObjectWithData:[@"{\"id\":\"a-tool\",\"name\":\"terminal\",\"state\":\"running\"}" dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]);
   b.delta(b.requestID, TLAgentStreamDeltaKindContent, @"Answer B");
   Check(((TLChatMessage *)messagesA.lastObject).toolActivities.count == 1 && !((TLChatMessage *)messagesB.lastObject).toolActivities.count,
     @"background tool updates stay in their originating chat");
@@ -1126,7 +1168,7 @@ static void QueueComplete(TLConcurrentTestRequest *request) {
 }
 static void TestQueuedFollowUps(void) {
   TLQueueTestController *controller = QueueController();
-  TLChatPresentation *a = [controller valueForKey:@"chatPresentation"];
+  TLChatTabController *a = [controller valueForKey:@"chatPresentation"];
   QueueSend(controller, @"First");
   QueueSend(controller, @"Second");
   QueueSend(controller, @"Remove this");
@@ -1144,7 +1186,7 @@ static void TestQueuedFollowUps(void) {
     [a.queuedPromptInFlight.text isEqual:@"Second revised"], @"editing preserves FIFO position and restores an unrelated composer draft");
   Check([controller.stream.requests.lastObject.sentMessages.lastObject.content isEqual:@"Second revised"], @"the gateway receives the edited prompt");
   [controller loadChatWithID:18];
-  TLChatPresentation *b = [controller valueForKey:@"chatPresentation"];
+  TLChatTabController *b = [controller valueForKey:@"chatPresentation"];
   b.promptTextView.string = @"Other chat draft";
   QueueComplete(controller.stream.requests[1]);
   Check(controller.stream.requests.count == 3 && [controller.stream.requests.lastObject.sessionID isEqual:@"17"] &&
@@ -1221,7 +1263,7 @@ static void TestQueuedFollowUps(void) {
   Check(a.queuedPromptInFlight != nil, @"retry starts exactly one prepared queued turn");
   TLConcurrentTestRequest *approval = controller.stream.requests.lastObject;
   approval.delta(approval.requestID, TLAgentStreamDeltaKindApproval,
-    @"{\"request_id\":\"queued-approval\",\"command\":\"echo hello\",\"choices\":[\"once\",\"deny\"]}");
+    [NSJSONSerialization JSONObjectWithData:[@"{\"request_id\":\"queued-approval\",\"command\":\"echo hello\",\"choices\":[\"once\",\"deny\"]}" dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]);
   QueueSend(controller, @"Wait for approval");
   approval.completion(nil);
   QueueDrain();
@@ -1234,7 +1276,7 @@ static void TestQueuedFollowUps(void) {
 
 static void TestSendQueuedPromptNow(void) {
   TLQueueTestController *controller = QueueController();
-  TLChatPresentation *chat = [controller valueForKey:@"chatPresentation"];
+  TLChatTabController *chat = [controller valueForKey:@"chatPresentation"];
   QueueSend(controller, @"Original task");
   TLConcurrentTestRequest *original = controller.stream.requests.lastObject;
   original.delta(original.requestID, TLAgentStreamDeltaKindContent, @"Partial response");
@@ -1391,7 +1433,7 @@ static void TestPromptQueueLayout(void) {
 - (void)resetMessageRowCache {}
 - (void)showChatWorkspace {}
 - (void)reloadWorkspaceTabs {}
-- (void)updateControlStates {}
+- (void)updateControlStatesForChat:(TLChatTabController *)chatContext {}
 - (void)selectActiveChatInHistory {}
 - (void)generateChatIconIfNeededForChatID:(NSInteger)chatID messages:(NSArray *)messages {}
 - (void)presentErrorMessage:(NSString *)message { Check(NO, message); }
@@ -1483,7 +1525,7 @@ static void TestStreamingChatTitlesPersist(void) {
   [self.renderedOrders addObject:[state.snapshot.workspaceTabs valueForKey:@"tabID"]];
 }
 - (void)updateWorkspaceMode {}
-- (void)updateControlStates {}
+- (void)updateControlStatesForChat:(TLChatTabController *)chatContext {}
 @end
 
 static void TestDragCommitRendersBeforeDeferredReload(void) {
@@ -3147,9 +3189,9 @@ static void TestAgentFolderEditing(void) {
 @property (nonatomic) NSUInteger layoutCount;
 @end
 @implementation TLTypingPickerController
-- (void)updateControlStates { self.layoutCount++; }
+- (void)updateControlStatesForChat:(TLChatTabController *)chatContext { self.layoutCount++; }
 - (void)updateMessageScrollInsets { self.layoutCount++; }
-- (BOOL)isChatWorkspaceActive { return YES; }
+- (BOOL)isChatWorkspaceActiveForChat:(TLChatTabController *)chatContext { return YES; }
 - (void)refreshHermesCommandsIfNeeded { self.refreshCount++; }
 @end
 
@@ -3172,8 +3214,8 @@ static void DrainSuggestionTimer(void) {
 @property (nonatomic) NSUInteger openedCount;
 @end
 @implementation TLQueuedSuggestionController
-- (BOOL)isChatWorkspaceActive { return YES; }
-- (BOOL)isChatPresentationVisible { return YES; }
+- (BOOL)isChatWorkspaceActiveForChat:(TLChatTabController *)chatContext { return YES; }
+- (BOOL)isChatPresentationVisibleForChat:(TLChatTabController *)chatContext { return YES; }
 - (void)styleSidebarActionButtons {}
 - (void)updateAgentControlStates {}
 - (void)refreshHermesCommandsIfNeeded {}
@@ -3204,7 +3246,7 @@ static void TestSuggestionsWithQueuedPrompts(void) {
     [workspace.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
     [workspace.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
     [workspace.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor]]];
-  TLChatPresentation *chat = [controller valueForKey:@"chatPresentation"];
+  TLChatTabController *chat = [controller valueForKey:@"chatPresentation"];
   [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Summarize it" attachmentURLs:@[]]];
   [chat.queuedPrompts addObject:[TLQueuedPrompt promptWithText:@"Summarize it again" attachmentURLs:@[]]];
   TLStopTestRunner *runner = [[TLStopTestRunner alloc] initWithMessageStore:(id)[NSObject new] streaming:(id)[NSObject new]];
@@ -3808,7 +3850,7 @@ static void TestProviderSetupStages(void) {
 - (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab {}
 - (void)updateWorkspaceMode {}
 - (void)reloadWorkspaceTabs {}
-- (void)updateControlStates {}
+- (void)updateControlStatesForChat:(TLChatTabController *)chatContext {}
 @end
 
 static void TestLinkTabInsertion(void) {

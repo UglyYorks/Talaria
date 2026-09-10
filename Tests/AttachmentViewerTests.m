@@ -1,9 +1,10 @@
 #import <AppKit/AppKit.h>
+#import "TLChatControllerTestSupport.h"
 #import "ChatAttachmentStore.h"
 #import "TLAttachmentViewerWindowController.h"
 #import "TalariaWindowController.h"
 #import "TLMainWindow.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import "design_system/TLAttachmentChipView.h"
 #import "design_system/TLGlassButton.h"
 #import "design_system/TLAttachmentPreviewPanel.h"
@@ -34,7 +35,7 @@ static TLMessageBubbleView *FindBubble(NSView *row) {
   return nil;
 }
 
-@interface TalariaWindowController (AttachmentViewerTests)
+@interface TLChatTabController (AttachmentViewerTests)
 - (NSView *)rowForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)tail;
 - (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)tail;
 - (NSString *)displayTextForMessage:(TLChatMessage *)message;
@@ -178,22 +179,22 @@ static void TestTranscript(void) {
   NSWindow *window = [[TLMainWindow alloc] initWithContentRect:NSMakeRect(0,0,700,300) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO]; window.releasedWhenClosed = NO;
   window.minSize = NSMakeSize(200,200); window.contentMinSize = NSMakeSize(200,200);
   TalariaWindowController *owner = [[TalariaWindowController alloc] initWithWindow:window];
-  TLChatPresentation *origin = [TLChatPresentation new]; origin.chat = [TLChatRecord new]; origin.chat.title = @"Design review"; origin.chat.hermesSessionID = @"conversation_A";
+  TLChatTabController *origin = [owner newChatTabController]; origin.chat = [TLChatRecord new]; origin.chat.title = @"Design review"; origin.chat.hermesSessionID = @"conversation_A";
   [owner setValue:origin forKey:@"chatPresentation"];
   TLChatMessage *first = [TLChatMessage messageWithRole:TLRoleUser content:@"Here are the latest files." thinking:nil];
   first.attachments = @[@{@"name":@"Cover design.png", @"directory":@NO}, @{@"name":@"Research notes.md", @"directory":@NO}];
   TLChatMessage *second = [TLChatMessage messageWithRole:TLRoleUser content:@"" thinking:nil];
   second.attachments = @[@{@"name":@"Final report.pdf", @"directory":@NO}];
   origin.messages = [@[first,second] mutableCopy];
-  Check([[owner displayTextForMessage:first] isEqual:first.content], @"attachment metadata is never dumped into message text");
+  Check([[origin displayTextForMessage:first] isEqual:first.content], @"attachment metadata is never dumped into message text");
   for (NSNumber *theme in @[@1,@2]) {
-    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue]; [owner setValue:palette forKey:@"palette"];
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue]; [owner setValue:palette forKey:@"palette"]; [origin applyPalette:palette];
     window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
     for (NSNumber *width in @[@200,@700]) {
       [window setContentSize:NSMakeSize(width.doubleValue, 300)];
       [owner setValue:[NSLayoutConstraint constraintWithItem:[NSView new] attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1 constant:width.doubleValue - 40] forKey:@"messageInputWidthConstraint"];
       NSView *root = [NSView new]; window.contentView = root;
-      NSView *row = [owner rowForMessage:second showsOutgoingTail:YES]; [root addSubview:row];
+      NSView *row = [origin rowForMessage:second showsOutgoingTail:YES]; [root addSubview:row];
       [NSLayoutConstraint activateConstraints:@[[row.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20], [row.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20], [row.topAnchor constraintEqualToAnchor:root.topAnchor constant:20]]];
       [root layoutSubtreeIfNeeded];
       NSArray<TLAttachmentChipView *> *cards = FindChips(row);
@@ -205,13 +206,13 @@ static void TestTranscript(void) {
       Check(NSWidth(cards[0].bounds) > 0 && NSMaxX([cards[0] convertRect:cards[0].bounds toView:root]) <= width.doubleValue,
         [NSString stringWithFormat:@"message chips fit the requested %@px window (content %@, row %@, chip %@)",width,NSStringFromRect(root.bounds),NSStringFromRect(row.frame),NSStringFromRect([cards[0] convertRect:cards[0].bounds toView:root])]);
       // Change the active pane before activating an existing card.
-      [owner setValue:[TLChatPresentation new] forKey:@"chatPresentation"];
+      [owner setValue:[TLChatTabController new] forKey:@"chatPresentation"];
       [cards[0] accessibilityPerformPress];
       TLAttachmentViewerWindowController *viewer = [owner valueForKey:@"attachmentViewer"];
       Check(viewer.selectedIndex == 2 && [[viewer valueForKey:@"items"] count] == 3, @"click preserves the originating conversation and selected attachment across focus changes");
       [viewer close]; [owner setValue:origin forKey:@"chatPresentation"];
       [row removeFromSuperview];
-      row = [owner rowForMessage:first showsOutgoingTail:YES]; [root addSubview:row];
+      row = [origin rowForMessage:first showsOutgoingTail:YES]; [root addSubview:row];
       [NSLayoutConstraint activateConstraints:@[[row.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20], [row.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20], [row.topAnchor constraintEqualToAnchor:root.topAnchor constant:20]]];
       [root layoutSubtreeIfNeeded];
       TLMessageBubbleView *bubble = FindBubble(row);
@@ -232,7 +233,7 @@ static void TestTranscript(void) {
   [owner setValue:[NSLayoutConstraint constraintWithItem:[NSView new] attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1 constant:660] forKey:@"messageInputWidthConstraint"];
   first.content = @"Please review these attachments before our next meeting. The design includes a number of important changes to the navigation and the document viewer. I have included the research notes so that everyone can check the supporting details.";
   NSView *root = [NSView new]; window.contentView = root;
-  NSView *row = [owner rowForMessage:first showsOutgoingTail:YES]; [root addSubview:row];
+  NSView *row = [origin rowForMessage:first showsOutgoingTail:YES]; [root addSubview:row];
   [NSLayoutConstraint activateConstraints:@[[row.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20], [row.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-20], [row.topAnchor constraintEqualToAnchor:root.topAnchor constant:20]]];
   [root layoutSubtreeIfNeeded];
   NSStackView *stack = (id)FindBubble(row).subviews.firstObject;

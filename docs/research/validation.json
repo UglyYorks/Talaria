@@ -1,0 +1,152 @@
+{
+  "base": "184c74224da178b27571fb226e0232c069ea046c",
+  "native_suites": [
+    {
+      "name": "HistoryQueryTests",
+      "passed": true
+    },
+    {
+      "name": "RepositoryTests",
+      "passed": true
+    },
+    {
+      "name": "AutomationsTests",
+      "passed": true
+    },
+    {
+      "name": "MarkdownCodeTests",
+      "passed": true
+    },
+    {
+      "name": "MarkdownTableTests",
+      "passed": true
+    },
+    {
+      "name": "MarkdownMathTests",
+      "passed": true
+    },
+    {
+      "name": "GlassPaneTests",
+      "passed": true
+    },
+    {
+      "name": "NotchOverlayViewTests",
+      "passed": true
+    },
+    {
+      "name": "TabLayoutTests",
+      "passed": true
+    },
+    {
+      "name": "PromptBuilderTests",
+      "passed": true
+    },
+    {
+      "name": "CredentialStoreTests",
+      "passed": true
+    },
+    {
+      "name": "AssistantTurnResultTests",
+      "passed": true
+    },
+    {
+      "name": "AppStateManagerTests",
+      "passed": true
+    },
+    {
+      "name": "WorkspaceSessionTests",
+      "passed": true
+    },
+    {
+      "name": "WorkspaceRestoreTests",
+      "passed": true
+    },
+    {
+      "name": "AppStartupTests",
+      "passed": true
+    },
+    {
+      "name": "TransitionCoordinatorTests",
+      "passed": true
+    },
+    {
+      "name": "FeatureControllerTests",
+      "passed": true
+    },
+    {
+      "name": "ChatAttachmentTests",
+      "passed": true
+    },
+    {
+      "name": "TabShortcutTests",
+      "passed": true
+    },
+    {
+      "name": "AppResetTests",
+      "passed": true
+    },
+    {
+      "name": "SplitWorkspaceTests",
+      "passed": true
+    },
+    {
+      "name": "BrowserOverlayPolicyTests",
+      "passed": true
+    },
+    {
+      "name": "AttachmentViewerTests",
+      "passed": true
+    },
+    {
+      "name": "BrowserDownloadTests",
+      "passed": true
+    },
+    {
+      "name": "MarkdownLinkContextTests",
+      "passed": true
+    },
+    {
+      "name": "BrowserFindTests",
+      "passed": true
+    },
+    {
+      "name": "AgentVMLockTests",
+      "passed": true
+    },
+    {
+      "name": "ChatFindTests",
+      "passed": true
+    },
+    {
+      "name": "BookmarkTests",
+      "passed": true
+    },
+    {
+      "name": "BrowserHistoryTests",
+      "passed": true
+    },
+    {
+      "name": "StarryEmptyStateTests",
+      "passed": true
+    },
+    {
+      "name": "AgentProtocolTests",
+      "passed": true
+    }
+  ],
+  "python_tests": 98,
+  "agent_runtime_tests": 13,
+  "terminal_service_tests": 7,
+  "browser_footer_checks": 33,
+  "browser_overlay_checks": 113,
+  "browser_profile_import": "passed",
+  "theme_audit": "passed",
+  "known_failure": {
+    "suite": "QuickInputTests",
+    "assertion": "fully transparent capture window receives mouse-downs beside the notch",
+    "baseline_reproduced": true,
+    "baseline_method": "Original main TLQuickInputWindowController.m linked into the test harness"
+  },
+  "desktop_build": "built and signed",
+  "interactive_desktop_validation": false
+}

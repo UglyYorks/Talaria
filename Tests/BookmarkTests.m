@@ -1,3 +1,4 @@
+#import "TLChatControllerTestSupport.h"
 #import <AppKit/AppKit.h>
 #import "Database.h"
 #import "TLWorkspaceTabsController.h"
@@ -44,7 +45,7 @@ static void Check(BOOL value, NSString *message) {
 @implementation TLBookmarkTestController
 - (void)showChatWorkspace {}
 - (void)reloadWorkspaceTabs {}
-- (void)updateControlStates {}
+- (void)updateControlStatesForChat:(TLChatTabController *)chatContext {}
 - (void)openBrowserTabWithURL:(NSURL *)URL { self.openedURL = URL; self.openedURLCount++; }
 - (void)openChatTabWithID:(NSInteger)chatID { self.openedChatID = chatID; self.openedChatCount++; }
 @end
@@ -365,6 +366,10 @@ static void TestPopover(TLBookmarkTestController *owner, TLAppStateManager *stat
   TLBookmarkEditorController *editor = [owner valueForKey:@"bookmarkEditor"];
   Check(popover.shown && popover.contentSize.height < 200, @"plus opens a compact native dropdown");
   Check([database listChats:nil].count == count, @"opening the dropdown does not persist a draft");
+  // shown becomes true before AppKit finishes opening the popover. Inject the
+  // click after that transition, as the save-path check below already does.
+  [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.4]];
+  popover.animates = NO;
   [[editor valueForKey:@"cancelButton"] performClick:nil];
   NSDate *dismissed = [NSDate dateWithTimeIntervalSinceNow:2];
   while (popover.shown && dismissed.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
@@ -454,7 +459,7 @@ static void TestBrowserHistoryCompatibility(void) {
       Check([fixture executeSQL:"PRAGMA user_version=10; ALTER TABLE chats ADD COLUMN unknown_required TEXT NOT NULL DEFAULT 'x'" error:nil], @"prepare incompatible core schema");
       error = nil;
       Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error, @"version-10 compatibility requires a recognized core schema");
-      Check([fixture executeSQL:"ALTER TABLE chats DROP COLUMN unknown_required; ALTER TABLE browser_history DROP COLUMN favicon" error:nil], @"prepare unrecognized version-10 history schema");
+      Check([fixture executeSQL:"ALTER TABLE chats DROP COLUMN unknown_required; DROP INDEX browser_history_origin_icon; DROP INDEX browser_history_url_icon; ALTER TABLE browser_history DROP COLUMN favicon" error:nil], @"prepare unrecognized version-10 history schema");
       error = nil;
       Check([[TLDatabase alloc] initWithURL:URL error:&error] == nil && error, @"unrecognized version-10 history remains rejected");
     }

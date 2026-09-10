@@ -29,6 +29,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)applyNotificationSyncResult:(NSDictionary *)result agentID:(NSInteger)agentID error:(NSError **)error;
 - (BOOL)cacheNotification:(NSDictionary *)notification agentID:(NSInteger)agentID error:(NSError **)error;
 
+// Work runs on the connection's serial queue; callers deliver UI results on main.
+- (void)performAsync:(void (^)(TLDatabase *database))work;
+- (nullable NSArray<TLChatSummary *> *)cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions error:(NSError **)error;
+- (nullable NSArray<TLChatSummary *> *)cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions agentID:(NSInteger)agentID error:(NSError **)error;
+- (nullable NSArray<TLBrowserHistoryEntry *> *)browserHistoryMatching:(NSString *)query before:(nullable TLBrowserHistoryEntry *)cursor limit:(NSUInteger)limit error:(NSError **)error;
+- (nullable NSData *)faviconForBrowserVisit:(TLBrowserHistoryEntry *)entry error:(NSError **)error;
+
 - (nullable NSArray<TLBookmark *> *)listBookmarks:(NSError **)error;
 - (BOOL)saveBookmark:(TLBookmark *)bookmark error:(NSError **)error;
 - (BOOL)deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error;

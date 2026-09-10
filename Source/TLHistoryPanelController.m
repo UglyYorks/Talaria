@@ -40,6 +40,11 @@
 @interface TLHistoryPanelController () <NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation, NSSearchFieldDelegate>
 
 @property (nonatomic, strong) TLThemePalette *palette;
+@property (nonatomic) NSUInteger queryGeneration;
+@property (nonatomic) BOOL pageLoading;
+@property (nonatomic) BOOL hasMorePages;
+@property (nonatomic) BOOL queryDirty;
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *requestedIcons;
 @property (nonatomic, strong) TLTokenView *panelView;
 @property (nonatomic, strong) TLTokenView *headerView;
 @property (nonatomic, strong) NSTextField *titleLabel;
@@ -123,7 +128,49 @@
 
 - (void)changeFilter:(TLThemedButton *)sender { self.filter = sender.tag; }
 
+- (void)setVisible:(BOOL)visible {
+  if (_visible == visible) return;
+  _visible = visible;
+  if (!visible) { self.queryGeneration++; self.pageLoading = NO; self.queryDirty = YES; }
+  if (visible && self.queryDirty) [self reloadData];
+}
+
 - (void)reloadData {
+  if (!self.repository) { [self renderSnapshot]; return; }
+  self.queryGeneration++;
+  self.pageLoading = NO;
+  self.queryDirty = YES;
+  if (!self.visible) return;
+  self.queryDirty = NO;
+  self.browsingHistory = @[];
+  self.requestedIcons = [NSMutableSet set];
+  self.hasMorePages = self.filter != TLHistoryFilterChats;
+  [self renderSnapshot];
+  NSUInteger generation = self.queryGeneration;
+  __weak typeof(self) weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (weakSelf.queryGeneration == generation) [weakSelf loadNextPage];
+  });
+}
+
+- (void)loadNextPage {
+  if (!self.repository || !self.visible || self.pageLoading || !self.hasMorePages) return;
+  self.pageLoading = YES;
+  NSUInteger generation = self.queryGeneration;
+  NSString *query = [self.searchField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  __weak typeof(self) weakSelf = self;
+  [self.repository historyMatching:query before:self.browsingHistory.lastObject completion:^(NSArray *page, NSError *error) {
+    TLHistoryPanelController *owner = weakSelf;
+    if (!owner || owner.queryGeneration != generation) return;
+    owner.pageLoading = NO;
+    owner.hasMorePages = page.count == 100;
+    owner.browsingStatusMessage = error ? [NSString stringWithFormat:@"Browsing history unavailable: %@", error.localizedDescription] : @"";
+    owner.browsingHistory = [owner.browsingHistory arrayByAddingObjectsFromArray:page ?: @[]];
+    [owner renderSnapshot];
+  }];
+}
+
+- (void)renderSnapshot {
   NSString *query = [self.searchField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSMutableArray *matches = [NSMutableArray array];
   if (self.filter != TLHistoryFilterBrowsing) for (TLChatSummary *chat in self.chats) {
@@ -373,9 +420,25 @@
     dateLabel = [cell viewWithTag:102];
   }
 
+  if (self.repository && row >= (NSInteger)self.filteredEntries.count - 15) {
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf loadNextPage]; });
+  }
   id entry = self.filteredEntries[row];
   TLChatSummary *chat = [entry isKindOfClass:TLChatSummary.class] ? entry : nil;
   TLBrowserHistoryEntry *visit = chat ? nil : entry;
+  if (visit && self.repository && ![self.requestedIcons containsObject:@(visit.visitID)]) {
+    [self.requestedIcons addObject:@(visit.visitID)];
+    NSUInteger generation = self.queryGeneration;
+    __weak typeof(self) weakSelf = self;
+    [self.repository faviconForVisit:visit completion:^(NSData *data) {
+      TLHistoryPanelController *owner = weakSelf;
+      if (!owner || generation != owner.queryGeneration || !data) return;
+      visit.faviconData = data;
+      NSUInteger index = [owner.filteredEntries indexOfObjectIdenticalTo:visit];
+      if (index != NSNotFound) [owner.tableView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:index] columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    }];
+  }
   iconView.icon = chat ? (chat.icon.length > 0 ? chat.icon : TLDefaultChatIcon()) : @"🌐";
   iconView.image = visit.faviconData.length ? [[NSImage alloc] initWithData:visit.faviconData] : nil;
   iconView.palette = self.palette;

@@ -1,3 +1,4 @@
+#import "TLChatControllerTestSupport.h"
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
 #import "MarkdownRenderer.h"
@@ -5,7 +6,7 @@
 #import "design_system/TLMarkdownContentWebView.h"
 #import "Theme.h"
 #import "TalariaWindowController.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import <objc/runtime.h>
 
 @interface TalariaWindowController (ContextMenuTests)
@@ -18,8 +19,8 @@
 @property NSString *regenerationText;
 @end
 @implementation TLContextMenuTestController
-- (BOOL)isChatWorkspaceActive { return YES; }
-- (BOOL)isSending { return self.sending; }
+- (BOOL)isChatWorkspaceActiveForChat:(TLChatTabController *)chatContext { return YES; }
+- (BOOL)isSendingForChat:(TLChatTabController *)chatContext { return self.sending; }
 - (void)beginPreparedTurnWithChat:(TLChatRecord *)chat messages:(NSMutableArray *)messages token:(NSString *)token model:(NSString *)model
                          prompt:(NSString *)prompt attachments:(NSArray *)attachments sourceURLs:(NSArray *)sourceURLs
                approvalResponse:(NSDictionary *)approvalResponse regenerationPrompt:(TLChatMessage *)regenerationPrompt
@@ -64,7 +65,7 @@ static id Eval(WKWebView *web, NSString *script) {
 
 static void TestMessageMenuRouting(NSWindow *window, NSView *row, TLMarkdownContentWebView *web) {
   TLContextMenuTestController *controller = [[TLContextMenuTestController alloc] initWithWindow:window];
-  TLChatPresentation *presentation = [TLChatPresentation new];
+  TLChatTabController *presentation = [TLChatTabController new];
   presentation.chat = [TLChatRecord new]; presentation.chat.chatID = 42;
   presentation.chatWorkspace = window.contentView;
   TLChatMessage *message = [TLChatMessage messageWithRole:TLRoleAssistant content:@"A message with a link" thinking:nil];

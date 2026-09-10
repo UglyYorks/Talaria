@@ -1,4 +1,5 @@
 #import "AgentClient.h"
+#import "TLAgentProtocol.h"
 #import "AgentVMService.h"
 #import "AgentModel.h"
 #import <Virtualization/Virtualization.h>
@@ -19,7 +20,9 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 
 @property (nonatomic, strong) VZVirtioSocketConnection *connection;
 @property (nonatomic, strong) NSFileHandle *fileHandle;
-@property (nonatomic, strong) NSMutableData *outputBuffer;
+@property (nonatomic, strong) TLAgentFrameDecoder *decoder;
+@property (nonatomic, strong) TLAgentJSONResult *JSONResult;
+@property (nonatomic, copy) void (^resultCompletion)(NSDictionary *, NSError *);
 @property (nonatomic, copy) NSString *operation;
 @property (nonatomic, copy) NSString *requestID;
 @property (nonatomic, copy, nullable) TLAgentStreamDeltaHandler deltaHandler;
@@ -52,7 +55,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 - (instancetype)init {
   self = [super init];
   if (self) {
-    _outputBuffer = [NSMutableData data];
+    _decoder = [TLAgentFrameDecoder new];
     _operation = @"";
   }
   return self;
@@ -74,6 +77,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   }
 
   self.operation = operation;
+  self.decoder.requestID = self.requestID ?: @"";
   self.connection = connection;
   self.fileHandle = [[NSFileHandle alloc] initWithFileDescriptor:connection.fileDescriptor closeOnDealloc:NO];
 
@@ -112,53 +116,31 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 
 - (void)appendOutputData:(NSData *)data {
   @synchronized (self) {
-    [self.outputBuffer appendData:data];
-    [self processOutputBuffer];
-  }
-}
-
-- (void)processOutputBuffer {
-  while (true) {
-    const unsigned char *bytes = self.outputBuffer.bytes;
-    NSUInteger length = self.outputBuffer.length;
-    NSUInteger newlineIndex = NSNotFound;
-
-    for (NSUInteger index = 0; index < length; index += 1) {
-      if (bytes[index] == '\n') {
-        newlineIndex = index;
-        break;
-      }
-    }
-
-    if (newlineIndex == NSNotFound) {
-      break;
-    }
-
-    NSData *lineData = [self.outputBuffer subdataWithRange:NSMakeRange(0, newlineIndex)];
-    [self.outputBuffer replaceBytesInRange:NSMakeRange(0, newlineIndex + 1) withBytes:NULL length:0];
-    if (lineData.length == 0) {
-      continue;
-    }
-
-    [self processOutputLineData:lineData];
-    if (self.finished) {
-      break;
+    if (self.finished) return;
+    NSError *error = nil;
+    NSArray *events = [self.decoder appendData:data error:&error];
+    if (!events) { [self finishWithError:error models:nil]; return; }
+    for (NSDictionary *event in events) {
+      [self processEvent:event];
+      if (self.finished) break;
     }
   }
 }
 
-- (void)processOutputLineData:(NSData *)lineData {
+- (void)processEvent:(NSDictionary *)event {
   NSError *error = nil;
-  id json = [NSJSONSerialization JSONObjectWithData:lineData options:0 error:&error];
-  if (![json isKindOfClass:NSDictionary.class]) {
-    [self finishWithError:TLAgentClientError(error.localizedDescription ?: @"Agent VM returned an invalid response.") models:nil];
+  NSString *type = [event[@"type"] isKindOfClass:NSString.class] ? event[@"type"] : @"";
+  if ([type isEqualToString:@"result"]) {
+    if (!self.JSONResult || self.JSONResult.result) {
+      [self finishWithError:TLAgentClientError(@"Hermes returned an unexpected result.") models:nil];
+      return;
+    }
+    self.JSONResult.result = event[@"result"];
     return;
   }
-
-  NSDictionary *event = (NSDictionary *)json;
-  NSString *type = [event[@"type"] isKindOfClass:NSString.class] ? event[@"type"] : @"";
   if ([type isEqualToString:@"delta"]) {
-    [self emitDelta:event];
+    if (self.JSONResult && [event[@"kind"] isEqual:@"content"]) [self.JSONResult appendLegacyText:event[@"text"]];
+    else [self emitDelta:event];
     return;
   }
 
@@ -195,9 +177,10 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   else if ([kindString isEqualToString:@"tool_activity"]) kind = TLAgentStreamDeltaKindToolActivity;
   else if ([kindString isEqualToString:@"content"]) kind = TLAgentStreamDeltaKindContent;
   else return;
-  if (text.length == 0 && kind != TLAgentStreamDeltaKindStatus) return;
+  id value = event[@"payload"] ?: text;
+  if (text.length == 0 && kind != TLAgentStreamDeltaKindStatus && !event[@"payload"]) return;
   dispatch_async(dispatch_get_main_queue(), ^{
-    self.deltaHandler(requestID, kind, text);
+    self.deltaHandler(requestID, kind, value);
   });
 }
 
@@ -229,8 +212,12 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     [self closeConnection];
   }
 
+  NSDictionary *result = nil;
+  if (self.JSONResult && !error) result = [self.JSONResult finish:&error];
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (self.modelCompletion) {
+    if (self.resultCompletion) {
+      self.resultCompletion(result, error);
+    } else if (self.modelCompletion) {
       self.modelCompletion(models, error);
     } else if (self.streamCompletion) {
       self.streamCompletion(error);
@@ -284,208 +271,77 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   return self;
 }
 
+- (void)performJSONOperation:(NSString *)operation agent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
+                    completion:(void (^)(NSDictionary *, NSError *))completion {
+  NSMutableDictionary *payload = [parameters mutableCopy];
+  payload[@"operation"] = operation;
+  payload[@"request_id"] = NSUUID.UUID.UUIDString;
+  [self startWorkerWithAgent:agent payload:payload operation:operation delta:nil streamCompletion:nil
+            modelCompletion:nil resultCompletion:completion];
+}
+
 - (void)hermesProvidersWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
-                   completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
-  NSString *requestID = NSUUID.UUID.UUIDString;
-  NSMutableString *response = [NSMutableString string];
-  [self startWorkerWithAgent:agent
-                    payload:@{@"operation": @"hermes_providers", @"request_id": requestID,
-                              @"params": parameters}
-                  operation:@"hermes_providers"
-                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
-    if ([deltaID isEqualToString:requestID]) [response appendString:text];
-  } streamCompletion:^(NSError *error) {
-    if (error) { completion(nil, error); return; }
-    NSError *parseError = nil;
-    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
-                                               options:0 error:&parseError];
-    if (![result isKindOfClass:NSDictionary.class]) {
-      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned invalid provider data."));
-      return;
-    }
-    completion(result, nil);
-  } modelCompletion:nil];
+                    completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_providers" agent:agent parameters:@{@"params":parameters} completion:completion];
 }
 
 - (void)hermesPluginsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
                         token:(NSString *)token model:(NSString *)model
-                   completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
-  NSString *requestID = NSUUID.UUID.UUIDString;
-  NSMutableString *response = [NSMutableString string];
-  [self startWorkerWithAgent:agent
-                    payload:@{@"operation": @"hermes_plugins", @"request_id": requestID,
-                              @"params": parameters,
-                              @"token": token ?: @"", @"model": model ?: @""}
-                  operation:@"hermes_plugins"
-                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
-    if ([deltaID isEqualToString:requestID]) [response appendString:text];
-  } streamCompletion:^(NSError *error) {
-    if (error) { completion(nil, error); return; }
-    NSError *parseError = nil;
-    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
-                                               options:0 error:&parseError];
-    if (![result isKindOfClass:NSDictionary.class]) {
-      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned invalid plugin data."));
-      return;
-    }
-    completion(result, nil);
-  } modelCompletion:nil];
+                   completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_plugins" agent:agent
+    parameters:@{@"params":parameters, @"token":token ?: @"", @"model":model ?: @""} completion:completion];
 }
 
 - (void)hermesNotificationsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
                         token:(NSString *)token model:(NSString *)model
-                   completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
-  NSString *requestID = NSUUID.UUID.UUIDString;
-  NSMutableString *response = [NSMutableString string];
-  [self startWorkerWithAgent:agent
-                    payload:@{@"operation": @"hermes_notifications", @"request_id": requestID,
-                              @"params": parameters,
-                              @"token": token ?: @"", @"model": model ?: @""}
-                  operation:@"hermes_notifications"
-                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
-    if ([deltaID isEqualToString:requestID]) [response appendString:text];
-  } streamCompletion:^(NSError *error) {
-    if (error) { completion(nil, error); return; }
-    NSError *parseError = nil;
-    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
-                                               options:0 error:&parseError];
-    if (![result isKindOfClass:NSDictionary.class]) {
-      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned invalid notification data."));
-      return;
-    }
-    completion(result, nil);
-  } modelCompletion:nil];
+                   completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_notifications" agent:agent
+    parameters:@{@"params":parameters, @"token":token ?: @"", @"model":model ?: @""} completion:completion];
 }
 
 - (void)hermesAutomationsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
-                        token:(NSString *)token model:(NSString *)model
-                   completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
-  NSString *requestID = NSUUID.UUID.UUIDString;
-  NSMutableString *response = [NSMutableString string];
-  [self startWorkerWithAgent:agent
-                    payload:@{@"operation": @"hermes_automations", @"request_id": requestID,
-                              @"params": parameters,
-                              @"token": token ?: @"", @"model": model ?: @""}
-                  operation:@"hermes_automations"
-                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
-    if ([deltaID isEqualToString:requestID]) [response appendString:text];
-  } streamCompletion:^(NSError *error) {
-    if (error) { completion(nil, error); return; }
-    NSError *parseError = nil;
-    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
-                                               options:0 error:&parseError];
-    if (![result isKindOfClass:NSDictionary.class]) {
-      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned invalid automation data."));
-      return;
-    }
-    completion(result, nil);
-  } modelCompletion:nil];
+                           token:(NSString *)token model:(NSString *)model
+                      completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_automations" agent:agent parameters:@{@"params":parameters,
+    @"token":token ?: @"", @"model":model ?: @""} completion:completion];
 }
-
-- (void)hermesCredentialsWithAgent:(TLAgentRecord *)agent action:(NSString *)action
-                              key:(NSString *)key value:(NSString *)value token:(NSString *)token
-                   completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
-  NSString *requestID = NSUUID.UUID.UUIDString;
-  NSMutableString *response = [NSMutableString string];
-  [self startWorkerWithAgent:agent
-                    payload:@{@"operation": @"hermes_credentials", @"request_id": requestID,
-                              @"action": action, @"key": key ?: @"", @"value": value ?: @"",
-                              @"token": token ?: @""}
-                  operation:@"hermes_credentials"
-                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
-    if ([deltaID isEqualToString:requestID]) [response appendString:text];
-  } streamCompletion:^(NSError *error) {
-    if (error) { completion(nil, error); return; }
-    NSError *parseError = nil;
-    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
-                                               options:0 error:&parseError];
-    if (![result isKindOfClass:NSDictionary.class]) {
-      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned invalid credential data."));
-      return;
-    }
-    completion(result, nil);
-  } modelCompletion:nil];
+- (void)hermesCredentialsWithAgent:(TLAgentRecord *)agent action:(NSString *)action key:(NSString *)key
+                           value:(NSString *)value token:(NSString *)token
+                      completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_credentials" agent:agent parameters:@{@"action":action,
+    @"key":key ?: @"", @"value":value ?: @"", @"token":token ?: @""} completion:completion];
 }
-
 - (void)hermesSkillsWithAgent:(TLAgentRecord *)agent changes:(NSDictionary<NSString *, NSNumber *> *)changes
                   completion:(void (^)(NSDictionary *, NSError *))completion {
-  NSString *requestID = NSUUID.UUID.UUIDString;
-  NSMutableDictionary *payload = [@{@"operation": @"hermes_skills", @"request_id": requestID} mutableCopy];
-  if (changes) payload[@"changes"] = changes;
-  NSMutableString *response = [NSMutableString string];
-  [self startWorkerWithAgent:agent payload:payload operation:@"hermes_skills"
-                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
-    if ([deltaID isEqualToString:requestID] && kind == TLAgentStreamDeltaKindContent) [response appendString:text];
-  } streamCompletion:^(NSError *error) {
-    if (error) { completion(nil, error); return; }
-    NSError *parseError = nil;
-    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
-                                               options:0 error:&parseError];
-    if (![result isKindOfClass:NSDictionary.class] || ![result[@"skills"] isKindOfClass:NSArray.class]) {
-      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned an invalid skill catalogue."));
-      return;
-    }
-    for (id skill in result[@"skills"]) {
-      if (![skill isKindOfClass:NSDictionary.class] || ![skill[@"name"] isKindOfClass:NSString.class] ||
-          ![skill[@"name"] length] || ![skill[@"enabled"] isKindOfClass:NSNumber.class] ||
-          ![skill[@"locked_reason"] isKindOfClass:NSString.class] ||
-          ![skill[@"description"] isKindOfClass:NSString.class]) {
-        completion(nil, TLAgentClientError(@"Hermes returned an invalid skill catalogue."));
-        return;
+  [self performJSONOperation:@"hermes_skills" agent:agent parameters:changes ? @{@"changes":changes} : @{}
+    completion:^(NSDictionary *result, NSError *error) {
+      if (error) { completion(nil, error); return; }
+      if (![result[@"skills"] isKindOfClass:NSArray.class]) {
+        completion(nil, TLAgentClientError(@"Hermes returned an invalid skill catalogue.")); return;
       }
-    }
-    completion(result, nil);
-  } modelCompletion:nil];
+      for (id skill in result[@"skills"]) {
+        if (![skill isKindOfClass:NSDictionary.class] || ![skill[@"name"] isKindOfClass:NSString.class] ||
+            ![skill[@"name"] length] || ![skill[@"enabled"] isKindOfClass:NSNumber.class] ||
+            ![skill[@"locked_reason"] isKindOfClass:NSString.class] || ![skill[@"description"] isKindOfClass:NSString.class]) {
+          completion(nil, TLAgentClientError(@"Hermes returned an invalid skill catalogue.")); return;
+        }
+      }
+      completion(result, nil);
+    }];
 }
-
 - (void)hermesHistoryWithAgent:(TLAgentRecord *)agent action:(NSString *)action sessionID:(NSString *)sessionID
                         token:(NSString *)token model:(NSString *)model
-                   completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
-  NSString *requestID = NSUUID.UUID.UUIDString;
-  NSMutableString *response = [NSMutableString string];
-  [self startWorkerWithAgent:agent
-                    payload:@{@"operation": @"hermes_history", @"request_id": requestID,
-                              @"action": action, @"session_id": sessionID ?: @"",
-                              @"token": token ?: @"", @"model": model ?: @""}
-                  operation:@"hermes_history"
-                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
-    if ([deltaID isEqualToString:requestID]) [response appendString:text];
-  } streamCompletion:^(NSError *error) {
-    if (error) { completion(nil, error); return; }
-    NSError *parseError = nil;
-    id result = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
-                                               options:0 error:&parseError];
-    if (![result isKindOfClass:NSDictionary.class]) {
-      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned invalid history data."));
-      return;
-    }
-    completion(result, nil);
-  } modelCompletion:nil];
+                   completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_history" agent:agent parameters:@{@"action":action,
+    @"session_id":sessionID ?: @"", @"token":token ?: @"", @"model":model ?: @""} completion:completion];
 }
-
-- (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent
-                              token:(NSString *)token
-                              model:(NSString *)model
+- (void)fetchHermesCommandsWithAgent:(TLAgentRecord *)agent token:(NSString *)token model:(NSString *)model
                          completion:(void (^)(NSDictionary *, NSError *))completion {
-  NSString *requestID = NSUUID.UUID.UUIDString;
-  NSMutableString *response = [NSMutableString string];
-  [self startWorkerWithAgent:agent
-                    payload:@{@"operation": @"hermes_commands", @"request_id": requestID,
-                              @"token": token ?: @"", @"model": model ?: @""}
-                  operation:@"hermes_commands"
-                      delta:^(NSString *deltaID, TLAgentStreamDeltaKind kind, NSString *text) {
-    if ([deltaID isEqualToString:requestID]) [response appendString:text];
-  } streamCompletion:^(NSError *error) {
-    if (error) { completion(nil, error); return; }
-    NSError *parseError = nil;
-    id catalogue = [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding]
-                                                 options:0 error:&parseError];
-    if (![catalogue isKindOfClass:NSDictionary.class] || ![catalogue[@"pairs"] isKindOfClass:NSArray.class]) {
-      completion(nil, parseError ?: TLAgentClientError(@"Hermes returned an invalid command catalogue."));
-      return;
-    }
-    completion(catalogue, nil);
-  } modelCompletion:nil];
+  [self performJSONOperation:@"hermes_commands" agent:agent parameters:@{@"token":token ?: @"", @"model":model ?: @""}
+    completion:^(NSDictionary *result, NSError *error) {
+      if (!error && ![result[@"pairs"] isKindOfClass:NSArray.class]) error = TLAgentClientError(@"Hermes returned an invalid command catalogue.");
+      completion(error ? nil : result, error);
+    }];
 }
 
 - (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent
@@ -525,7 +381,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   NSDictionary *payload = @{@"operation": @"hermes_select_model", @"request_id": NSUUID.UUID.UUIDString,
     @"session_id": sessionID, @"token": token, @"model": model};
   [self startWorkerWithAgent:agent payload:payload operation:@"hermes_select_model"
-    delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {}
+    delta:nil
     streamCompletion:completion modelCompletion:nil];
 }
 
@@ -605,7 +461,22 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                        delta:(TLAgentStreamDeltaHandler)delta
             streamCompletion:(TLAgentStreamCompletionHandler)streamCompletion
              modelCompletion:(TLAgentModelCatalogueHandler)modelCompletion {
+  [self startWorkerWithAgent:agent payload:payload operation:operation delta:delta streamCompletion:streamCompletion
+            modelCompletion:modelCompletion resultCompletion:nil];
+}
+
+- (void)startWorkerWithAgent:(TLAgentRecord *)agent
+                     payload:(NSDictionary *)payload
+                   operation:(NSString *)operation
+                       delta:(TLAgentStreamDeltaHandler)delta
+            streamCompletion:(TLAgentStreamCompletionHandler)streamCompletion
+             modelCompletion:(TLAgentModelCatalogueHandler)modelCompletion
+              resultCompletion:(void (^)(NSDictionary *, NSError *))resultCompletion {
   if (!agent) {
+    if (resultCompletion) {
+      dispatch_async(dispatch_get_main_queue(), ^{ resultCompletion(nil, TLAgentClientError(@"Agent VM is missing.")); });
+      return;
+    }
     [self completeStreamCompletion:streamCompletion
                    modelCompletion:modelCompletion
                             models:nil
@@ -615,7 +486,11 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 
   if (self.incognitoID.length) {
     if (self.incognitoClosed && ![payload[@"operation"] isEqual:@"incognito_close"]) {
+      if (resultCompletion) {
+        dispatch_async(dispatch_get_main_queue(), ^{ resultCompletion(nil, TLAgentClientError(@"This Incognito window is closed.")); });
+      } else {
       [self completeStreamCompletion:streamCompletion modelCompletion:modelCompletion models:nil error:TLAgentClientError(@"This Incognito window is closed.")];
+      }
       return;
     }
     NSMutableDictionary *privatePayload = [payload mutableCopy];
@@ -644,6 +519,8 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   request.deltaHandler = delta;
   request.streamCompletion = streamCompletion;
   request.modelCompletion = modelCompletion;
+  request.resultCompletion = resultCompletion;
+  if (resultCompletion) request.JSONResult = [TLAgentJSONResult new];
   __weak typeof(self) weakSelf = self;
   request.releaseHandler = ^(id finishedRequest) {
     [weakSelf.activeRequests removeObject:finishedRequest];

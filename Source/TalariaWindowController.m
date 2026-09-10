@@ -43,7 +43,7 @@
 #import "design_system/TLTransitionCoordinator.h"
 #import "design_system/TLChromeTabView.h"
 #import "WorkspaceState.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import "design_system/TLToolActivityView.h"
 #import "TLAttachmentViewerWindowController.h"
 #import "design_system/TLAttachmentChipView.h"
@@ -78,11 +78,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 @interface TalariaWindowController () <NSWindowDelegate, NSTextViewDelegate, NSTableViewDataSource, NSTableViewDelegate, TLHistoryPanelControllerDelegate, TLWorkspaceTabsControllerDelegate>
 
-@property (nonatomic, strong) TLChatPresentation *chatPresentation;
+@property (nonatomic, strong) TLChatTabController *chatPresentation;
 @property (nonatomic, strong) TLAttachmentViewerWindowController *attachmentViewer;
 @property (nonatomic, strong) TLDownloadsTabController *downloadsController;
 @property (nonatomic, strong) TLWorkspaceTab *downloadsTab;
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLChatPresentation *> *chatPresentations;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLChatTabController *> *chatPresentations;
 @property (nonatomic, strong) TLWorkspaceSplitState *splitState;
 @property (nonatomic, strong) TLSplitWorkspaceView *splitWorkspace;
 @property (nonatomic, strong) TLWorkspaceTab *displayedWorkspaceTab;
@@ -188,6 +188,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic) NSUInteger streamingRenderGeneration;
 
 @property (nonatomic, strong) TLHistoryPanelController *historyPanelController;
+@property (nonatomic, strong) TLHistoryRepository *historyRepository;
 @property (nonatomic, copy) NSArray<TLChatSummary *> *hermesHistoryChats;
 @property (nonatomic, copy) NSDictionary<NSNumber *, NSDictionary *> *hermesHistorySessions;
 @property (nonatomic) NSInteger historyAgentID;
@@ -281,20 +282,85 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 - (void)addDelayedCalendarConflictNotification;
 - (void)openAWSOutageChat:(id)sender;
 - (void)sendAWSOutageIntent:(id)sender;
-- (NSView *)AWSOutageIntentWidget;
-- (BOOL)messageShowsAWSOutageIntent:(TLChatMessage *)message;
 - (void)prepareResponsiveLayoutForWindowWidth:(CGFloat)windowWidth;
 - (CGFloat)tabStackLeadingConstantForSidebarWidth:(CGFloat)sidebarWidth;
 - (CGFloat)availableTabStripWidthForLeadingConstant:(CGFloat)leadingConstant topbarWidth:(CGFloat)topbarWidth;
 - (CGFloat)clampedSidebarWidthForPreferredWidth:(CGFloat)preferredWidth windowWidth:(CGFloat)windowWidth;
 - (BOOL)closeWindowIfOnlyWorkspaceTab:(TLWorkspaceTab *)tab;
 
+- (void)updateControlStatesForChat:(TLChatTabController *)chatContext;
+- (BOOL)isChatPresentationVisibleForChat:(TLChatTabController *)chatContext;
+- (BOOL)isChatWorkspaceActiveForChat:(TLChatTabController *)chatContext;
+- (void)hideSlashCommandListForChat:(TLChatTabController *)chatContext;
+- (void)renderSlashCommandListForChat:(TLChatTabController *)chatContext;
+- (void)flushSlashCommandUpdateForChat:(TLChatTabController *)chatContext;
+- (void)updateSlashCommandListForChat:(TLChatTabController *)chatContext;
+- (BOOL)moveSlashCommandSelectionByOffset:(NSInteger)offset  forChat:(TLChatTabController *)chatContext;
+- (void)setSelectedSlashCommandIndexAndUpdateRows:(NSInteger)selectedIndex  forChat:(TLChatTabController *)chatContext;
+- (void)showSlashCommandListWithCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands  forChat:(TLChatTabController *)chatContext;
+- (CGFloat)slashCommandListWidthForCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands  forChat:(TLChatTabController *)chatContext;
+- (void)applySlashCommandListPaletteForChat:(TLChatTabController *)chatContext;
+- (void)drainPromptQueueForChat:(TLChatTabController *)chatContext;
+- (void)finishQueuedTurnWithResult:(TLAssistantTurnResult *)result  forChat:(TLChatTabController *)chatContext;
+- (void)pausePromptQueueRestoringInFlight:(BOOL)restore  forChat:(TLChatTabController *)chatContext;
+- (void)removeQueuedPromptAtIndex:(NSUInteger)index  forChat:(TLChatTabController *)chatContext;
+- (void)finishQueuedPromptEditingSaving:(BOOL)save  forChat:(TLChatTabController *)chatContext;
+- (void)editQueuedPromptAtIndex:(NSUInteger)index  forChat:(TLChatTabController *)chatContext;
+- (void)sendQueuedPromptNowAtIndex:(NSUInteger)index  forChat:(TLChatTabController *)chatContext;
+- (void)updatePromptQueueForChat:(TLChatTabController *)chatContext;
+- (BOOL)hasPendingChatApprovalForChat:(TLChatTabController *)chatContext;
+- (BOOL)canStopResponseForChat:(TLChatTabController *)chatContext;
+- (BOOL)isSendingForChat:(TLChatTabController *)chatContext;
+- (BOOL)preparingAttachmentsForChat:(TLChatTabController *)chatContext;
 @end
 
 @implementation TalariaWindowController
 
-- (TLChatPresentation *)currentChatPresentation {
-  if (!self.chatPresentation) self.chatPresentation = [TLChatPresentation new];
+- (TLChatTabController *)newChatTabController {
+  TLChatTabController *chat = [[TLChatTabController alloc] initWithPalette:self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem]];
+  __weak typeof(self) weakSelf = self;
+  __weak TLChatTabController *origin = chat;
+  chat.notificationRevealHandler = ^BOOL { return [weakSelf revealNotificationInPresentation:origin]; };
+  chat.previewItemProvider = ^TLAttachmentPreviewItem *(NSDictionary *attachment) {
+    return [weakSelf previewItemForAttachment:attachment sessionID:origin.chat.hermesSessionID];
+  };
+  chat.attachmentPreviewHandler = ^(TLChatMessage *message, NSUInteger index) { [weakSelf previewAttachmentsForPresentation:origin message:message index:index]; };
+  chat.approvalHandler = ^BOOL(NSString *requestID, NSString *choice) { return [weakSelf respondToApproval:requestID choice:choice chatID:origin.chat.chatID]; };
+  chat.linkHandler = ^(NSURL *URL, NSEventModifierFlags flags) { [weakSelf handleLinkURL:URL modifierFlags:flags]; };
+  chat.linkContextMenuHandler = ^dispatch_block_t(NSURL *URL, NSMenu *menu, NSView *view, NSPoint point) {
+    TalariaWindowController *owner = weakSelf;
+    TLWorkspaceTab *source = [owner.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:origin.chat.chatID];
+    if (!source) return nil;
+    NSString *identity = TLWorkspaceTabIdentity(source);
+    return [TLBrowserLinkActions configureNativeMenu:menu forURL:URL inView:view atPoint:point open:^(NSURL *link, TLBrowserLinkDestination destination) {
+      [weakSelf handleContextLinkURL:link destination:destination sourceIdentity:identity];
+    }];
+  };
+  chat.streamingProvider = ^BOOL{ return weakSelf.turnRunners[@(origin.chat.chatID)] != nil; };
+  chat.intentHandler = ^{ [weakSelf activateCachedChatWithID:origin.chat.chatID]; [weakSelf sendAWSOutageIntent:nil]; };
+  chat.composerTarget = self;
+  chat.composerDelegate = self;
+  chat.sendAction = @selector(activateComposerButton:);
+  chat.settingsAction = @selector(showChatModelMenu:);
+  chat.attachmentsChangedHandler = ^{
+    [origin updateMessageScrollInsets];
+    [weakSelf updateSlashCommandListForChat:origin];
+    [weakSelf updateControlStatesForChat:origin];
+  };
+  chat.suggestionActivationHandler = ^(NSUInteger index) {
+    [weakSelf focusChatContainingView:origin.slashCommandScrollView];
+    [weakSelf performInputSuggestionAtIndex:index];
+  };
+  chat.queueSendNowHandler = ^(NSUInteger index) { [weakSelf sendQueuedPromptNowAtIndex:index forChat:origin]; };
+  chat.queueEditHandler = ^(NSUInteger index) { [weakSelf editQueuedPromptAtIndex:index forChat:origin]; };
+  chat.queueRemoveHandler = ^(NSUInteger index) { [weakSelf removeQueuedPromptAtIndex:index forChat:origin]; };
+  chat.queueResumeHandler = ^{ origin.queuePaused = NO; [weakSelf drainPromptQueueForChat:origin]; [weakSelf updateControlStatesForChat:origin]; };
+  chat.queueCancelEditHandler = ^{ [weakSelf finishQueuedPromptEditingSaving:NO forChat:origin]; };
+  return chat;
+}
+
+- (TLChatTabController *)currentChatPresentation {
+  if (!self.chatPresentation) self.chatPresentation = [self newChatTabController];
   return self.chatPresentation;
 }
 
@@ -379,8 +445,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     }
   }
   if (chat) {
-    TLChatPresentation *next = self.chatPresentations[@(chat.chatID)];
-    if (!next) next = previous ? [TLChatPresentation new] : [self currentChatPresentation];
+    TLChatTabController *next = self.chatPresentations[@(chat.chatID)];
+    if (!next) next = previous ? [self newChatTabController] : [self currentChatPresentation];
     self.chatPresentation = next;
     if (!next.chatWorkspace && self.contentHost) {
       self.chatWorkspace = [self buildChatWorkspace];
@@ -395,7 +461,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (BOOL)activateCachedChatWithID:(NSInteger)chatID {
-  TLChatPresentation *presentation = self.chatPresentations[@(chatID)];
+  TLChatTabController *presentation = self.chatPresentations[@(chatID)];
   if (!presentation.chat) return NO;
   self.activeChat = presentation.chat;
   if (![self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatID])
@@ -409,23 +475,19 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 // Background updates never change keyboard focus or the selected workspace tab.
-- (void)withChatPresentation:(TLChatPresentation *)presentation perform:(void (^)(void))block {
-  if (!presentation) return;
-  TLChatPresentation *focused = self.chatPresentation;
-  self.chatPresentation = presentation;
-  @try { block(); } @finally { self.chatPresentation = focused; }
-}
-
 - (void)restoreAttachmentDraft:(NSArray<NSURL *> *)URLs prompt:(NSString *)prompt chatID:(NSInteger)chatID {
   self.attachmentDrafts[@(chatID)] = URLs;
   self.attachmentPromptDrafts[@(chatID)] = [prompt copy];
-  TLChatPresentation *presentation = self.chatPresentations[@(chatID)];
-  [self withChatPresentation:presentation perform:^{
-    self.messageInput.attachmentURLs = URLs;
-    self.promptTextView.string = prompt;
-    [self.messageInput recalculateHeight];
-    [self updateControlStates];
-  }];
+  TLChatTabController *presentation = self.chatPresentations[@(chatID)];
+  {
+    TLChatTabController *originChat = presentation;
+    if (originChat) {
+      originChat.messageInput.attachmentURLs = URLs;
+      originChat.promptTextView.string = prompt;
+      [originChat.messageInput recalculateHeight];
+      [self updateControlStatesForChat:originChat];
+    }
+  }
 }
 
 
@@ -1312,98 +1374,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return [[NSImage alloc] initWithContentsOfURL:planetURL];
 }
 
-- (NSView *)buildChatWorkspace {
-  NSView *chatWorkspace = [[NSView alloc] init];
-  chatWorkspace.translatesAutoresizingMaskIntoConstraints = NO;
-  [self allowHorizontalWindowExpansionForView:chatWorkspace];
-
-  NSView *messagesView = [self buildMessagesView];
-  [chatWorkspace addSubview:messagesView];
-  [self.chatPresentation installFindBarInView:chatWorkspace palette:self.palette];
-  [chatWorkspace addSubview:[self buildSlashCommandListView]];
-  [chatWorkspace addSubview:[self buildMessageInput]];
-  TLStarryEmptyStateView *emptyState = [[TLStarryEmptyStateView alloc] init];
-  emptyState.translatesAutoresizingMaskIntoConstraints = NO;
-  emptyState.hidden = YES;
-  NSArray<NSString *> *tips = TLEmptyStateTips();
-  emptyState.tip = tips[arc4random_uniform((uint32_t)tips.count)];
-  self.chatPresentation.emptyStateView = emptyState;
-  [chatWorkspace addSubview:emptyState positioned:NSWindowAbove relativeTo:messagesView];
-  [NSLayoutConstraint activateConstraints:@[
-    [emptyState.leadingAnchor constraintEqualToAnchor:messagesView.leadingAnchor],
-    [emptyState.trailingAnchor constraintEqualToAnchor:messagesView.trailingAnchor],
-    [emptyState.topAnchor constraintEqualToAnchor:messagesView.topAnchor],
-    [emptyState.bottomAnchor constraintEqualToAnchor:self.messageInput.topAnchor constant:-self.palette.space12],
-  ]];
-  TLChatPresentation *presentation = self.chatPresentation;
-  presentation.promptQueueView = [TLPromptQueueView new];
-  [chatWorkspace addSubview:presentation.promptQueueView];
-  __weak typeof(self) weakSelf = self;
-  __weak TLChatPresentation *weakPresentation = presentation;
-  presentation.promptQueueView.sendNowHandler = ^(NSUInteger index) {
-    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf sendQueuedPromptNowAtIndex:index]; }];
-  };
-  presentation.promptQueueView.editHandler = ^(NSUInteger index) {
-    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf editQueuedPromptAtIndex:index]; }];
-  };
-  presentation.promptQueueView.removeHandler = ^(NSUInteger index) {
-    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf removeQueuedPromptAtIndex:index]; }];
-  };
-  presentation.promptQueueView.resumeHandler = ^{
-    [weakSelf withChatPresentation:weakPresentation perform:^{
-      weakPresentation.queuePaused = NO;
-      [weakSelf drainPromptQueue];
-      [weakSelf updateControlStates];
-    }];
-  };
-  presentation.promptQueueView.cancelEditHandler = ^{
-    [weakSelf withChatPresentation:weakPresentation perform:^{ [weakSelf finishQueuedPromptEditingSaving:NO]; }];
-  };
-  presentation.promptQueueBottomConstraint = [presentation.promptQueueView.bottomAnchor
-    constraintEqualToAnchor:self.messageInput.topAnchor constant:-self.palette.space3];
-  [NSLayoutConstraint activateConstraints:@[
-    [presentation.promptQueueView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor],
-    [presentation.promptQueueView.trailingAnchor constraintEqualToAnchor:self.messageInput.trailingAnchor],
-    presentation.promptQueueBottomConstraint,
-  ]];
-
-  NSLayoutConstraint *messageInputLeadingConstraint = [self.messageInput.leadingAnchor constraintGreaterThanOrEqualToAnchor:chatWorkspace.leadingAnchor
-                                                                                                                   constant:self.palette.space11];
-  NSLayoutConstraint *messageInputTrailingConstraint = [self.messageInput.trailingAnchor constraintLessThanOrEqualToAnchor:chatWorkspace.trailingAnchor
-                                                                                                                    constant:-self.palette.space11];
-  // At the 200px window minimum, allow the composer to clip within its pane
-  // rather than letting two preferred margins increase the window minimum.
-  messageInputLeadingConstraint.priority = NSLayoutPriorityFittingSizeCompression;
-  messageInputTrailingConstraint.priority = NSLayoutPriorityFittingSizeCompression;
-  CGFloat initialAvailableInputWidth = self.palette.windowInitialWidth - (self.palette.space11 * 2.0);
-  CGFloat initialInputWidth = MIN(self.palette.messageInputMaxWidth,
-                                  MAX(self.palette.messageInputMinWidth, initialAvailableInputWidth));
-  self.messageInputWidthConstraint = [self.messageInput.widthAnchor constraintEqualToConstant:initialInputWidth];
-  self.messageInputWidthConstraint.priority = NSLayoutPriorityWindowSizeStayPut - 1.0;
-  self.slashCommandListBottomConstraint = [self.slashCommandListView.bottomAnchor constraintEqualToAnchor:self.messageInput.topAnchor
-                                                                                                  constant:-self.palette.space5];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [messagesView.leadingAnchor constraintEqualToAnchor:chatWorkspace.leadingAnchor],
-    [messagesView.trailingAnchor constraintEqualToAnchor:chatWorkspace.trailingAnchor],
-    [messagesView.topAnchor constraintEqualToAnchor:self.chatPresentation.findBar.bottomAnchor],
-    [messagesView.bottomAnchor constraintEqualToAnchor:chatWorkspace.bottomAnchor],
-    [self.messageInput.centerXAnchor constraintEqualToAnchor:chatWorkspace.centerXAnchor],
-    [self.slashCommandListView.leadingAnchor constraintEqualToAnchor:self.messageInput.leadingAnchor constant:self.palette.space4],
-    self.slashCommandListWidthConstraint,
-    self.slashCommandListBottomConstraint,
-    self.slashCommandListHeightConstraint,
-    [self.messageStack.widthAnchor constraintEqualToAnchor:self.messageInput.widthAnchor],
-    [self.messageInput.widthAnchor constraintGreaterThanOrEqualToConstant:0],
-    [self.messageInput.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth],
-    messageInputLeadingConstraint,
-    messageInputTrailingConstraint,
-    self.messageInputWidthConstraint,
-    [self.messageInput.bottomAnchor constraintEqualToAnchor:chatWorkspace.bottomAnchor constant:-self.palette.space10],
-  ]];
-
-  return chatWorkspace;
-}
+- (NSView *)buildChatWorkspace { NSView *view = [[self currentChatPresentation] buildChatWorkspace]; [self installMessageScrollWheelMonitor]; return view; }
 
 - (void)updateMessageInputWidthForWindowWidth:(CGFloat)windowWidth {
   if (!self.messageInputWidthConstraint) {
@@ -1546,59 +1517,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self updateWorkspaceTabWidths];
 }
 
-- (NSView *)buildMessagesView {
-  self.messagesBackground = [[TLTokenView alloc] init];
-  self.messagesBackground.translatesAutoresizingMaskIntoConstraints = NO;
-  [self allowHorizontalWindowExpansionForView:self.messagesBackground];
-
-  self.messageDocumentView = [[TLFlippedView alloc] init];
-  self.messageDocumentView.translatesAutoresizingMaskIntoConstraints = NO;
-
-  self.messageStack = [[NSStackView alloc] init];
-  self.messageStack.translatesAutoresizingMaskIntoConstraints = NO;
-  self.messageStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  self.messageStack.alignment = NSLayoutAttributeWidth;
-  self.messageStack.distribution = NSStackViewDistributionGravityAreas;
-  self.messageStack.spacing = self.palette.messageVerticalSpacing;
-  [self.messageStack setHuggingPriority:NSLayoutPriorityRequired
-                         forOrientation:NSLayoutConstraintOrientationVertical];
-  [self.messageStack setContentHuggingPriority:NSLayoutPriorityRequired
-                                forOrientation:NSLayoutConstraintOrientationVertical];
-  [self.messageStack setContentCompressionResistancePriority:NSLayoutPriorityRequired
-                                              forOrientation:NSLayoutConstraintOrientationVertical];
-  [self.messageDocumentView addSubview:self.messageStack];
-
-  self.messageScrollView = [[NSScrollView alloc] init];
-  self.messageScrollView.translatesAutoresizingMaskIntoConstraints = NO;
-  self.messageScrollView.documentView = self.messageDocumentView;
-  self.messageScrollView.hasVerticalScroller = YES;
-  self.messageScrollView.autohidesScrollers = YES;
-  self.messageScrollView.drawsBackground = NO;
-  [self.messagesBackground addSubview:self.messageScrollView];
-  [self installMessageScrollWheelMonitor];
-
-  NSLayoutConstraint *documentWidthConstraint = [self.messageDocumentView.widthAnchor constraintEqualToAnchor:self.messageScrollView.contentView.widthAnchor];
-  documentWidthConstraint.priority = NSLayoutPriorityDefaultLow;
-  self.messageStackMinimumBottomConstraint = [self.messageStack.bottomAnchor constraintLessThanOrEqualToAnchor:self.messageDocumentView.bottomAnchor
-                                                                                                      constant:-self.palette.space12];
-  self.messageStackBottomConstraint = [self.messageStack.bottomAnchor constraintEqualToAnchor:self.messageDocumentView.bottomAnchor
-                                                                                     constant:-self.palette.space12];
-  self.messageStackBottomConstraint.priority = NSLayoutPriorityDefaultLow;
-
-  [NSLayoutConstraint activateConstraints:@[
-    [self.messageScrollView.leadingAnchor constraintEqualToAnchor:self.messagesBackground.leadingAnchor],
-    [self.messageScrollView.trailingAnchor constraintEqualToAnchor:self.messagesBackground.trailingAnchor],
-    [self.messageScrollView.topAnchor constraintEqualToAnchor:self.messagesBackground.topAnchor],
-    [self.messageScrollView.bottomAnchor constraintEqualToAnchor:self.messagesBackground.bottomAnchor],
-    documentWidthConstraint,
-    [self.messageStack.centerXAnchor constraintEqualToAnchor:self.messageDocumentView.centerXAnchor],
-    [self.messageStack.topAnchor constraintEqualToAnchor:self.messageDocumentView.topAnchor constant:self.palette.space12],
-    self.messageStackMinimumBottomConstraint,
-    self.messageStackBottomConstraint,
-  ]];
-
-  return self.messagesBackground;
-}
+- (NSView *)buildMessagesView { return [[self currentChatPresentation] buildMessagesView]; }
 
 - (void)installMessageScrollWheelMonitor {
   [self installMessageContextMenuMonitor];
@@ -1789,30 +1708,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self updateControlStates];
 }
 
-- (NSView *)buildMessageInput {
-  self.messageInput = [[TLGlassMessageInput alloc] init];
-  ((TLGlassMessageInput *)self.messageInput).usesChatBackdrop = YES;
-  self.messageInput.palette = self.palette;
-  self.messageInput.attachmentsEnabled = YES;
-  self.messageInput.showsSettingsButton = YES;
-  self.messageInput.settingsButton.target = self;
-  self.messageInput.settingsButton.action = @selector(showChatModelMenu:);
-  __weak typeof(self) weakSelf = self;
-  __weak TLChatPresentation *origin = self.chatPresentation;
-  self.messageInput.attachmentsChangeHandler = ^{
-    [weakSelf withChatPresentation:origin perform:^{
-      [weakSelf updateMessageScrollInsets];
-      [weakSelf updateSlashCommandList];
-      [weakSelf updateControlStates];
-    }];
-  };
-  self.promptTextView = self.messageInput.textView;
-  self.promptTextView.delegate = self;
-  self.sendButton = self.messageInput.sendButton;
-  self.sendButton.target = self;
-  self.sendButton.action = @selector(activateComposerButton:);
-  return self.messageInput;
-}
+- (NSView *)buildMessageInput { return [[self currentChatPresentation] buildMessageInput]; }
 
 - (void)loadInitialState {
   if (self.widgetbookMode) {
@@ -2715,7 +2611,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   persistedChat.messages = @[];
   NSArray *draftURLs = self.messageInput.attachmentURLs;
   // Keep the same presentation when the draft gains its database identity.
-  TLChatPresentation *presentation = [self currentChatPresentation];
+  TLChatTabController *presentation = [self currentChatPresentation];
   self.chatPresentations[@(persistedChat.chatID)] = presentation;
   [self.chatPresentations removeObjectForKey:@(draftChatID)];
   presentation.chat = persistedChat;
@@ -2730,10 +2626,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                                            toolTip:persistedChat.title.length > 0 ? persistedChat.title : @"New chat"
                                                URL:nil
                                          closeable:YES];
-  [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:self.chatWorkspace
-                                                      openAction:@selector(openChatTab:)
-                                                     closeAction:@selector(closeChatTab:)]
-            forTab:tab];
+  // Promotion changes identity, not ownership. Replacing this runtime would
+  // close the retained chat controller when the draft runtime is released.
+  TLWorkspaceTabRuntime *runtime = [self runtimeForKind:TLWorkspaceTabKindChat tabID:draftChatID];
+  if (!runtime) runtime = [TLWorkspaceTabRuntime runtimeWithContentView:self.chatWorkspace
+                                                           openAction:@selector(openChatTab:)
+                                                          closeAction:@selector(closeChatTab:)];
+  [self setRuntime:runtime forTab:tab];
   [self.appStateManager replaceWorkspaceTabWithKind:TLWorkspaceTabKindChat
                                               tabID:draftChatID
                                             withTab:tab
@@ -2745,12 +2644,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return YES;
 }
 
-- (BOOL)preparingAttachments {
-  return self.activeChat && [self.preparingAttachmentChats containsObject:@(self.activeChat.chatID)];
+- (BOOL)preparingAttachments { return [self preparingAttachmentsForChat:[self currentChatPresentation]]; }
+- (BOOL)preparingAttachmentsForChat:(TLChatTabController *)chatContext {
+  return chatContext.chat && [self.preparingAttachmentChats containsObject:@(chatContext.chat.chatID)];
 }
 
-- (BOOL)isSending {
-  return self.activeChat && (self.turnRunners[@(self.activeChat.chatID)] != nil || self.preparingAttachments);
+- (BOOL)isSending { return [self isSendingForChat:[self currentChatPresentation]]; }
+- (BOOL)isSendingForChat:(TLChatTabController *)chatContext {
+  return chatContext.chat && (self.turnRunners[@(chatContext.chat.chatID)] != nil || [self preparingAttachmentsForChat:chatContext]);
 }
 
 - (BOOL)hasSendingTurns {
@@ -2761,9 +2662,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return [[TLAssistantTurnRunner alloc] initWithDatabase:self.database agentOrchestrator:self.agentOrchestrator];
 }
 
-- (BOOL)canStopResponse {
-  return self.turnRunners[@(self.activeChat.chatID)].running && [self isChatPresentationVisible] &&
-    self.promptTextView.string.length == 0 && self.messageInput.attachmentURLs.count == 0;
+- (BOOL)canStopResponse { return [self canStopResponseForChat:[self currentChatPresentation]]; }
+- (BOOL)canStopResponseForChat:(TLChatTabController *)chatContext {
+  return self.turnRunners[@(chatContext.chat.chatID)].running && [self isChatPresentationVisibleForChat:chatContext] &&
+    chatContext.promptTextView.string.length == 0 && chatContext.messageInput.attachmentURLs.count == 0;
 }
 
 - (void)showChatModelMenu:(id)sender {
@@ -2826,25 +2728,28 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [controller presentForWindow:self.window];
 }
 
-- (BOOL)hasPendingChatApproval {
-  for (TLChatMessage *message in self.messages) {
+- (BOOL)hasPendingChatApproval { return [self hasPendingChatApprovalForChat:[self currentChatPresentation]]; }
+- (BOOL)hasPendingChatApprovalForChat:(TLChatTabController *)chatContext {
+  for (TLChatMessage *message in chatContext.messages) {
     if (message.approvalRequest && ![message.approvalRequest[@"submitted"] boolValue]) return YES;
   }
   return NO;
 }
 
-- (void)updatePromptQueue {
-  TLChatPresentation *presentation = self.chatPresentation;
+- (void)updatePromptQueue { [self updatePromptQueueForChat:[self currentChatPresentation]]; }
+- (void)updatePromptQueueForChat:(TLChatTabController *)chatContext {
+  TLChatTabController *presentation = chatContext;
   if (!presentation.promptQueueView) return;
   [presentation.promptQueueView updatePrompts:presentation.queuedPrompts editing:presentation.editingQueuedPrompt
-    paused:presentation.queuePaused canResume:!self.isSending && ![self hasPendingChatApproval]
-    canSendNow:!self.preparingAttachments && !presentation.queueInterruptPending && ![self hasPendingChatApproval] palette:self.palette];
+    paused:presentation.queuePaused canResume:![self isSendingForChat:chatContext] && ![self hasPendingChatApprovalForChat:chatContext]
+    canSendNow:![self preparingAttachmentsForChat:chatContext] && !presentation.queueInterruptPending && ![self hasPendingChatApprovalForChat:chatContext] palette:self.palette];
 }
 
-- (void)sendQueuedPromptNowAtIndex:(NSUInteger)index {
-  TLChatPresentation *presentation = self.chatPresentation;
+- (void)sendQueuedPromptNowAtIndex:(NSUInteger)index { [self sendQueuedPromptNowAtIndex:index forChat:[self currentChatPresentation]]; }
+- (void)sendQueuedPromptNowAtIndex:(NSUInteger)index  forChat:(TLChatTabController *)chatContext {
+  TLChatTabController *presentation = chatContext;
   if (index >= presentation.queuedPrompts.count || presentation.editingQueuedPrompt ||
-      presentation.queueInterruptPending || self.preparingAttachments || [self hasPendingChatApproval]) return;
+      presentation.queueInterruptPending || [self preparingAttachmentsForChat:chatContext] || [self hasPendingChatApprovalForChat:chatContext]) return;
   TLQueuedPrompt *prompt = presentation.queuedPrompts[index];
   [presentation.queuedPrompts removeObjectAtIndex:index];
   [presentation.queuedPrompts insertObject:prompt atIndex:0];
@@ -2854,83 +2759,89 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     // Cancellation finalizes the partial reply synchronously. Its completion
     // schedules dispatch after cancel has also reached the transport.
     presentation.queueInterruptPending = YES;
-    [self updateControlStates];
+    [self updateControlStatesForChat:chatContext];
     [runner cancel];
   } else {
-    [self drainPromptQueue];
+    [self drainPromptQueueForChat:chatContext];
   }
 }
 
-- (void)editQueuedPromptAtIndex:(NSUInteger)index {
-  TLChatPresentation *presentation = self.chatPresentation;
-  if (presentation.editingQueuedPrompt || presentation.queueInterruptPending || index >= presentation.queuedPrompts.count || self.preparingAttachments) return;
-  presentation.queueDraft = [TLQueuedPrompt promptWithText:self.promptTextView.string attachmentURLs:self.messageInput.attachmentURLs];
+- (void)editQueuedPromptAtIndex:(NSUInteger)index { [self editQueuedPromptAtIndex:index forChat:[self currentChatPresentation]]; }
+- (void)editQueuedPromptAtIndex:(NSUInteger)index  forChat:(TLChatTabController *)chatContext {
+  TLChatTabController *presentation = chatContext;
+  if (presentation.editingQueuedPrompt || presentation.queueInterruptPending || index >= presentation.queuedPrompts.count || [self preparingAttachmentsForChat:chatContext]) return;
+  presentation.queueDraft = [TLQueuedPrompt promptWithText:chatContext.promptTextView.string attachmentURLs:chatContext.messageInput.attachmentURLs];
   presentation.editingQueuedPrompt = presentation.queuedPrompts[index];
-  self.promptTextView.string = presentation.editingQueuedPrompt.text;
-  self.messageInput.attachmentURLs = presentation.editingQueuedPrompt.attachmentURLs;
-  [self updateControlStates];
-  [self.window makeFirstResponder:self.promptTextView];
+  chatContext.promptTextView.string = presentation.editingQueuedPrompt.text;
+  chatContext.messageInput.attachmentURLs = presentation.editingQueuedPrompt.attachmentURLs;
+  [self updateControlStatesForChat:chatContext];
+  [self.window makeFirstResponder:chatContext.promptTextView];
 }
 
-- (void)finishQueuedPromptEditingSaving:(BOOL)save {
-  TLChatPresentation *presentation = self.chatPresentation;
+- (void)finishQueuedPromptEditingSaving:(BOOL)save { [self finishQueuedPromptEditingSaving:save forChat:[self currentChatPresentation]]; }
+- (void)finishQueuedPromptEditingSaving:(BOOL)save  forChat:(TLChatTabController *)chatContext {
+  TLChatTabController *presentation = chatContext;
   if (!presentation.editingQueuedPrompt) return;
   if (save) {
-    NSString *text = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (!text.length && !self.messageInput.attachmentURLs.count) return;
+    NSString *text = [chatContext.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!text.length && !chatContext.messageInput.attachmentURLs.count) return;
     presentation.editingQueuedPrompt.text = text;
-    presentation.editingQueuedPrompt.attachmentURLs = self.messageInput.attachmentURLs;
+    presentation.editingQueuedPrompt.attachmentURLs = chatContext.messageInput.attachmentURLs;
   }
-  self.promptTextView.string = presentation.queueDraft.text ?: @"";
-  self.messageInput.attachmentURLs = presentation.queueDraft.attachmentURLs ?: @[];
+  chatContext.promptTextView.string = presentation.queueDraft.text ?: @"";
+  chatContext.messageInput.attachmentURLs = presentation.queueDraft.attachmentURLs ?: @[];
   presentation.queueDraft = nil;
   presentation.editingQueuedPrompt = nil;
-  [self updateControlStates];
-  [self drainPromptQueue];
+  [self updateControlStatesForChat:chatContext];
+  [self drainPromptQueueForChat:chatContext];
 }
 
-- (void)removeQueuedPromptAtIndex:(NSUInteger)index {
-  TLChatPresentation *presentation = self.chatPresentation;
+- (void)removeQueuedPromptAtIndex:(NSUInteger)index { [self removeQueuedPromptAtIndex:index forChat:[self currentChatPresentation]]; }
+- (void)removeQueuedPromptAtIndex:(NSUInteger)index  forChat:(TLChatTabController *)chatContext {
+  TLChatTabController *presentation = chatContext;
   if (presentation.queueInterruptPending || index >= presentation.queuedPrompts.count) return;
   BOOL editing = presentation.editingQueuedPrompt == presentation.queuedPrompts[index];
   [presentation.queuedPrompts removeObjectAtIndex:index];
-  if (editing) [self finishQueuedPromptEditingSaving:NO];
-  [self updateControlStates];
+  if (editing) [self finishQueuedPromptEditingSaving:NO forChat:chatContext];
+  [self updateControlStatesForChat:chatContext];
 }
 
-- (void)pausePromptQueueRestoringInFlight:(BOOL)restore {
-  TLChatPresentation *presentation = self.chatPresentation;
+- (void)pausePromptQueueRestoringInFlight:(BOOL)restore { [self pausePromptQueueRestoringInFlight:restore forChat:[self currentChatPresentation]]; }
+- (void)pausePromptQueueRestoringInFlight:(BOOL)restore  forChat:(TLChatTabController *)chatContext {
+  TLChatTabController *presentation = chatContext;
   if (restore && presentation.queuedPromptInFlight) [presentation.queuedPrompts insertObject:presentation.queuedPromptInFlight atIndex:0];
   presentation.queuedPromptInFlight = nil;
   presentation.queueInterruptPending = NO;
   presentation.queuePaused = YES;
-  [self updateControlStates];
+  [self updateControlStatesForChat:chatContext];
 }
 
-- (void)finishQueuedTurnWithResult:(TLAssistantTurnResult *)result {
-  TLChatPresentation *presentation = self.chatPresentation;
+- (void)finishQueuedTurnWithResult:(TLAssistantTurnResult *)result { [self finishQueuedTurnWithResult:result forChat:[self currentChatPresentation]]; }
+- (void)finishQueuedTurnWithResult:(TLAssistantTurnResult *)result  forChat:(TLChatTabController *)chatContext {
+  TLChatTabController *presentation = chatContext;
   BOOL interruptedForQueuedPrompt = presentation.queueInterruptPending &&
     result.generationStatus == TLAssistantTurnGenerationStatusCancelled;
   if ((!interruptedForQueuedPrompt && result.generationStatus != TLAssistantTurnGenerationStatusSucceeded) ||
       result.persistenceStatus != TLAssistantTurnPersistenceStatusSucceeded || result.assistantMessage.approvalRequest) {
-    [self pausePromptQueueRestoringInFlight:result.generationStatus == TLAssistantTurnGenerationStatusNotStarted];
+    [self pausePromptQueueRestoringInFlight:result.generationStatus == TLAssistantTurnGenerationStatusNotStarted forChat:chatContext];
     return;
   }
   presentation.queuedPromptInFlight = nil;
   // Leave the completion stack before starting the next turn, including synchronous failures.
   __weak typeof(self) weakSelf = self;
   dispatch_async(dispatch_get_main_queue(), ^{
-    [weakSelf withChatPresentation:presentation perform:^{ [weakSelf drainPromptQueue]; }];
+    if (presentation) [weakSelf drainPromptQueueForChat:presentation];
   });
 }
 
-- (void)drainPromptQueue {
-  TLChatPresentation *presentation = self.chatPresentation;
-  if (self.isSending || presentation.queuePaused || presentation.editingQueuedPrompt ||
-      presentation.queuedPromptInFlight || !presentation.queuedPrompts.count || [self hasPendingChatApproval]) return;
+- (void)drainPromptQueue { [self drainPromptQueueForChat:[self currentChatPresentation]]; }
+- (void)drainPromptQueueForChat:(TLChatTabController *)chatContext {
+  TLChatTabController *presentation = chatContext;
+  if ([self isSendingForChat:chatContext] || presentation.queuePaused || presentation.editingQueuedPrompt ||
+      presentation.queuedPromptInFlight || !presentation.queuedPrompts.count || [self hasPendingChatApprovalForChat:chatContext]) return;
   NSString *token = self.settings.openRouterToken ?: @"";
   NSString *model = presentation.chat.model ?: self.settings.selectedModel ?: @"";
-  if (!token.length || !model.length) { presentation.queueInterruptPending = NO; presentation.queuePaused = YES; [self updateControlStates]; return; }
+  if (!token.length || !model.length) { presentation.queueInterruptPending = NO; presentation.queuePaused = YES; [self updateControlStatesForChat:chatContext]; return; }
   presentation.queueInterruptPending = NO;
   TLQueuedPrompt *prompt = presentation.queuedPrompts.firstObject;
   [presentation.queuedPrompts removeObjectAtIndex:0];
@@ -2942,29 +2853,35 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       strategy:TLPromptCompactionStrategyWhole name:@"file-only-request"] build];
   }
   void (^start)(NSArray *) = ^(NSArray *attachments) {
-    [self withChatPresentation:presentation perform:^{
-      if (presentation.queuePaused) { [self pausePromptQueueRestoringInFlight:YES]; return; }
-      self.errorMessage = @"";
-      [self beginPreparedTurnWithChat:presentation.chat messages:presentation.messages token:token model:model prompt:text
-        attachments:attachments sourceURLs:prompt.attachmentURLs];
-      [self updateControlStates];
-    }];
+    {
+      TLChatTabController *originChat = presentation;
+      if (originChat) {
+        if (presentation.queuePaused) { [self pausePromptQueueRestoringInFlight:YES forChat:originChat]; return; }
+        originChat.errorMessage = @"";
+        [self beginPreparedTurnWithChat:presentation.chat messages:presentation.messages token:token model:model prompt:text
+          attachments:attachments sourceURLs:prompt.attachmentURLs];
+        [self updateControlStatesForChat:originChat];
+      }
+    }
   };
   if (prompt.attachmentURLs.count) {
     if (!self.preparingAttachmentChats) self.preparingAttachmentChats = [NSMutableSet set];
     [self.preparingAttachmentChats addObject:@(presentation.chat.chatID)];
-    [self updateControlStates];
+    [self updateControlStatesForChat:chatContext];
     [self.agentOrchestrator prepareAttachmentURLs:prompt.attachmentURLs
       sessionID:presentation.chat.continuationSessionID.length ? presentation.chat.continuationSessionID : presentation.chat.hermesSessionID
       agentID:presentation.chat.sourceAgentID
       completion:^(NSArray *attachments, NSError *error) {
         [self.preparingAttachmentChats removeObject:@(presentation.chat.chatID)];
         if (!attachments) {
-          [self withChatPresentation:presentation perform:^{
-            [self pausePromptQueueRestoringInFlight:YES];
-            self.errorMessage = error.localizedDescription ?: @"Could not copy queued attachments.";
-            [self renderMessages];
-          }];
+          {
+            TLChatTabController *originChat = presentation;
+            if (originChat) {
+              [self pausePromptQueueRestoringInFlight:YES forChat:originChat];
+              originChat.errorMessage = error.localizedDescription ?: @"Could not copy queued attachments.";
+              [originChat renderMessagesScrollingToBottom:YES];
+            }
+          }
           return;
         }
         start(attachments);
@@ -3087,7 +3004,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                     attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs
                approvalResponse:(NSDictionary *)approvalResponse regenerationPrompt:(TLChatMessage *)regenerationPrompt
             regenerationMessage:(TLChatMessage *)regenerationMessage {
-  TLChatPresentation *origin = self.chatPresentations[@(chat.chatID)];
+  TLChatTabController *origin = self.chatPresentations[@(chat.chatID)];
   origin.notificationTargetMessageID = nil;
   origin.notificationTargetToolCallID = nil;
   origin.notificationDidReveal = nil;
@@ -3095,13 +3012,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (!regenerationPrompt && !approvalResponse && !self.chatPresentations[@(chat.chatID)].queuedPromptInFlight) {
     self.attachmentDrafts[@(chat.chatID)] = @[];
     self.attachmentPromptDrafts[@(chat.chatID)] = @"";
-    [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{
-      self.promptTextView.string = @"";
-      self.messageInput.attachmentURLs = @[];
-      self.errorMessage = @"";
-      [self.messageInput recalculateHeight];
-      [self updateControlStates];
-    }];
+    {
+      TLChatTabController *originChat = self.chatPresentations[@(chat.chatID)];
+      if (originChat) {
+        originChat.promptTextView.string = @"";
+        originChat.messageInput.attachmentURLs = @[];
+        originChat.errorMessage = @"";
+        [originChat.messageInput recalculateHeight];
+        [self updateControlStatesForChat:originChat];
+      }
+    }
   }
   TLAssistantTurnRunner *runner = [self newAssistantTurnRunner];
   if (!self.turnRunners) self.turnRunners = [NSMutableDictionary dictionary];
@@ -3125,13 +3045,12 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (!strongSelf) {
       return;
     }
-    TLChatPresentation *presentation = strongSelf.chatPresentations[@(chat.chatID)];
-    [strongSelf withChatPresentation:presentation perform:^{
-      if (![strongSelf.chatWorkspace isHiddenOrHasHiddenAncestor]) {
-        [strongSelf scheduleStreamingMessageRender];
-        [strongSelf updateControlStates];
-      }
-    }];
+    TLChatTabController *presentation = strongSelf.chatPresentations[@(chat.chatID)];
+    if (![presentation.chatWorkspace isHiddenOrHasHiddenAncestor]) {
+      [presentation markMessageDirty:strongSelf.turnRunners[@(chat.chatID)].streamingMessage];
+      [presentation scheduleStreamingMessageRender];
+      [strongSelf updateControlStatesForChat:presentation];
+    }
   } completionHandler:^(TLAssistantTurnResult *result) {
     TalariaWindowController *strongSelf = weakSelf;
     if (!strongSelf) {
@@ -3155,9 +3074,12 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       [strongSelf updateMessageScrollInsets];
     }
 
-    [strongSelf withChatPresentation:strongSelf.chatPresentations[@(chat.chatID)] perform:^{
-      [strongSelf finishQueuedTurnWithResult:result];
-    }];
+    {
+      TLChatTabController *originChat = strongSelf.chatPresentations[@(chat.chatID)];
+      if (originChat) {
+        [strongSelf finishQueuedTurnWithResult:result forChat:originChat];
+      }
+    }
 
     if ([nextPrompt hasPrefix:@"/"]) strongSelf.hermesCommandsFetchedAt = nil;
     [strongSelf refreshChatsKeepingActiveSelection];
@@ -3166,10 +3088,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       [strongSelf generateChatIconIfNeededForChatID:chat.chatID messages:turnMessages];
     }
     if (showingOrigin) [strongSelf renderMessages];
-    else [strongSelf withChatPresentation:strongSelf.chatPresentations[@(chat.chatID)] perform:^{
-      [strongSelf renderMessages];
-      [strongSelf updateControlStates];
-    }];
+    else {
+      TLChatTabController *originChat = strongSelf.chatPresentations[@(chat.chatID)];
+      if (originChat) {
+        [originChat renderMessagesScrollingToBottom:YES];
+        [strongSelf updateControlStatesForChat:originChat];
+      }
+    }
     [strongSelf updateControlStates];
     if (showingOrigin) [strongSelf.window makeFirstResponder:strongSelf.promptTextView];
 
@@ -3203,7 +3128,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       if (!regenerationPrompt && !self.chatPresentations[@(chat.chatID)].queuedPromptInFlight)
         [self restoreAttachmentDraft:sourceURLs prompt:nextPrompt chatID:chat.chatID];
     }
-    [self withChatPresentation:self.chatPresentations[@(chat.chatID)] perform:^{ [self pausePromptQueueRestoringInFlight:YES]; }];
+    TLChatTabController *originChat = self.chatPresentations[@(chat.chatID)];
+    if (originChat) [self pausePromptQueueRestoringInFlight:YES forChat:originChat];
     [self presentErrorMessage:startError.localizedDescription ?: @"Could not start assistant turn."];
     [self updateControlStates];
   }
@@ -3283,44 +3209,23 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }];
 }
 
-- (NSView *)buildSlashCommandListView {
-  self.slashCommandListView = [[TLInputSuggestionPanelView alloc] init];
-  self.slashCommandListView.translatesAutoresizingMaskIntoConstraints = NO;
-  self.slashCommandListView.hidden = YES;
-  self.slashCommandListView.wantsLayer = YES;
-  self.slashCommandListView.layer.zPosition = 20.0;
-  self.slashCommandListWidthConstraint = [self.slashCommandListView.widthAnchor constraintEqualToConstant:self.palette.space0];
-  self.slashCommandListHeightConstraint = [self.slashCommandListView.heightAnchor constraintEqualToConstant:self.palette.space0];
+- (NSView *)buildSlashCommandListView { return [[self currentChatPresentation] buildSlashCommandListView]; }
 
-  self.slashCommandScrollView = [[TLInputSuggestionListView alloc] init];
-  __weak typeof(self) weakSelf = self;
-  self.slashCommandScrollView.selectionHandler = ^(NSInteger index) { weakSelf.selectedSlashCommandIndex = index; };
-  self.slashCommandScrollView.activationHandler = ^(NSUInteger index) { [weakSelf performInputSuggestionAtIndex:index]; };
-  [self.slashCommandListView addSubview:self.slashCommandScrollView];
-  [NSLayoutConstraint activateConstraints:@[
-    [self.slashCommandScrollView.leadingAnchor constraintEqualToAnchor:self.slashCommandListView.leadingAnchor constant:self.palette.space3],
-    [self.slashCommandScrollView.trailingAnchor constraintEqualToAnchor:self.slashCommandListView.trailingAnchor constant:-self.palette.space3],
-    [self.slashCommandScrollView.topAnchor constraintEqualToAnchor:self.slashCommandListView.topAnchor constant:self.palette.space2],
-    [self.slashCommandScrollView.bottomAnchor constraintEqualToAnchor:self.slashCommandListView.bottomAnchor constant:-self.palette.space2],
-  ]];
-
-  [self applySlashCommandListPalette];
-  return self.slashCommandListView;
-}
-
-- (void)applySlashCommandListPalette {
-  if (!self.slashCommandListView) {
+- (void)applySlashCommandListPalette { [self applySlashCommandListPaletteForChat:[self currentChatPresentation]]; }
+- (void)applySlashCommandListPaletteForChat:(TLChatTabController *)chatContext {
+  if (!chatContext.slashCommandListView) {
     return;
   }
-  self.slashCommandListView.palette = self.palette;
-  self.slashCommandScrollView.palette = self.palette;
-  self.slashCommandListBottomConstraint.constant = -self.palette.space5;
+  chatContext.slashCommandListView.palette = self.palette;
+  chatContext.slashCommandScrollView.palette = self.palette;
+  chatContext.slashCommandListBottomConstraint.constant = -self.palette.space5;
 }
 
-- (CGFloat)slashCommandListWidthForCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {
-  CGFloat availableInputWidth = NSWidth(self.messageInput.bounds);
+- (CGFloat)slashCommandListWidthForCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands { return [self slashCommandListWidthForCommands:commands forChat:[self currentChatPresentation]]; }
+- (CGFloat)slashCommandListWidthForCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands  forChat:(TLChatTabController *)chatContext {
+  CGFloat availableInputWidth = NSWidth(chatContext.messageInput.bounds);
   if (availableInputWidth <= self.palette.space0) {
-    availableInputWidth = self.messageInputWidthConstraint.constant;
+    availableInputWidth = chatContext.messageInputWidthConstraint.constant;
   }
   if (availableInputWidth <= self.palette.space0) {
     availableInputWidth = self.palette.messageInputMaxWidth;
@@ -3328,50 +3233,41 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   CGFloat maximum = availableInputWidth * 0.9;
   CGFloat padding = self.palette.space3 * 2;
-  return MIN(maximum, padding + [self.slashCommandScrollView preferredWidthWithMaximum:MAX(0, maximum - padding)]);
+  return MIN(maximum, padding + [chatContext.slashCommandScrollView preferredWidthWithMaximum:MAX(0, maximum - padding)]);
 }
 
-- (void)showSlashCommandListWithCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands {
+- (void)showSlashCommandListWithCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands { [self showSlashCommandListWithCommands:commands forChat:[self currentChatPresentation]]; }
+- (void)showSlashCommandListWithCommands:(NSArray<NSDictionary<NSString *, NSString *> *> *)commands  forChat:(TLChatTabController *)chatContext {
   CGFloat rowHeight = self.palette.slashCommandRowHeight;
   CGFloat padding = self.palette.space2;
 
-  BOOL changed = ![self.visibleSlashCommands isEqualToArray:commands];
-  self.visibleSlashCommands = [commands copy];
-  self.slashCommandScrollView.suggestions = commands;
-  if (changed) self.selectedSlashCommandIndex = -1;
-  [self applySlashCommandListPalette];
+  BOOL changed = ![chatContext.visibleSlashCommands isEqualToArray:commands];
+  chatContext.visibleSlashCommands = [commands copy];
+  chatContext.slashCommandScrollView.suggestions = commands;
+  if (changed) chatContext.selectedSlashCommandIndex = -1;
+  [self applySlashCommandListPaletteForChat:chatContext];
   CGFloat availableHeight = MAX(rowHeight + padding * 2, NSHeight(self.rootView.bounds) * 0.4);
-  CGFloat contentHeight = self.slashCommandScrollView.contentHeight;
+  CGFloat contentHeight = chatContext.slashCommandScrollView.contentHeight;
   CGFloat heightLimit = MIN(availableHeight, (rowHeight + self.palette.space2) * 8 + padding * 2);
-  self.slashCommandListHeightConstraint.constant = MIN(contentHeight + padding * 2, heightLimit);
-  self.slashCommandScrollView.scrollingEnabled = contentHeight + padding * 2 > heightLimit;
-  self.slashCommandListWidthConstraint.constant = [self slashCommandListWidthForCommands:commands];
-  self.slashCommandListView.hidden = NO;
-  [self updateMessageScrollInsets];
+  chatContext.slashCommandListHeightConstraint.constant = MIN(contentHeight + padding * 2, heightLimit);
+  chatContext.slashCommandScrollView.scrollingEnabled = contentHeight + padding * 2 > heightLimit;
+  chatContext.slashCommandListWidthConstraint.constant = [self slashCommandListWidthForCommands:commands forChat:chatContext];
+  chatContext.slashCommandListView.hidden = NO;
+  [chatContext updateMessageScrollInsets];
 }
 
-- (void)setSelectedSlashCommandIndexAndUpdateRows:(NSInteger)selectedIndex {
-  self.slashCommandScrollView.selectedIndex = selectedIndex;
-  self.selectedSlashCommandIndex = self.slashCommandScrollView.selectedIndex;
+- (void)setSelectedSlashCommandIndexAndUpdateRows:(NSInteger)selectedIndex { [self setSelectedSlashCommandIndexAndUpdateRows:selectedIndex forChat:[self currentChatPresentation]]; }
+- (void)setSelectedSlashCommandIndexAndUpdateRows:(NSInteger)selectedIndex  forChat:(TLChatTabController *)chatContext {
+  chatContext.slashCommandScrollView.selectedIndex = selectedIndex;
+  chatContext.selectedSlashCommandIndex = chatContext.slashCommandScrollView.selectedIndex;
 }
 
-- (BOOL)moveSlashCommandSelectionByOffset:(NSInteger)offset {
-  NSInteger commandCount = (NSInteger)self.visibleSlashCommands.count;
-  if (self.slashCommandListView.hidden || commandCount == 0) {
-    return NO;
-  }
-
-  NSInteger nextIndex = self.selectedSlashCommandIndex;
-  for (NSInteger attempt = 0; attempt < commandCount; attempt++) {
-    nextIndex = nextIndex < 0 ? (offset < 0 ? commandCount - 1 : 0)
-      : (nextIndex + offset + commandCount) % commandCount;
-    if ([self.slashCommandScrollView isSuggestionEnabledAtIndex:(NSUInteger)nextIndex]) {
-      [self setSelectedSlashCommandIndexAndUpdateRows:nextIndex];
-      return YES;
-    }
-  }
-  [self setSelectedSlashCommandIndexAndUpdateRows:-1];
-  return NO;
+- (BOOL)moveSlashCommandSelectionByOffset:(NSInteger)offset { return [self moveSlashCommandSelectionByOffset:offset forChat:[self currentChatPresentation]]; }
+- (BOOL)moveSlashCommandSelectionByOffset:(NSInteger)offset  forChat:(TLChatTabController *)chatContext {
+  if (chatContext.slashCommandListView.hidden) return NO;
+  BOOL moved = [chatContext.slashCommandScrollView moveSelectionByOffset:offset];
+  chatContext.selectedSlashCommandIndex = chatContext.slashCommandScrollView.selectedIndex;
+  return moved;
 }
 
 - (BOOL)performSelectedSlashCommand {
@@ -3532,34 +3428,38 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
 }
 
-- (void)updateSlashCommandList {
-  if (self.renderingSlashCommands) return;
-  [self.slashCommandUpdateTimer invalidate];
+- (void)updateSlashCommandList { [self updateSlashCommandListForChat:[self currentChatPresentation]]; }
+- (void)updateSlashCommandListForChat:(TLChatTabController *)chatContext {
+  if (chatContext.renderingSlashCommands) return;
+  [chatContext.slashCommandUpdateTimer invalidate];
   __weak typeof(self) weakSelf = self;
-  __weak TLChatPresentation *origin = self.chatPresentation;
+  __weak TLChatTabController *origin = chatContext;
   // Return the keystroke to AppKit before filtering, fetching, or rendering suggestions.
-  self.slashCommandUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:NO block:^(NSTimer *timer) {
-    [weakSelf withChatPresentation:origin perform:^{ [weakSelf flushSlashCommandUpdate]; }];
+  chatContext.slashCommandUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:NO block:^(NSTimer *timer) {
+    TLChatTabController *originChat = origin;
+    if (originChat) [weakSelf flushSlashCommandUpdateForChat:originChat];
   }];
 }
 
-- (void)flushSlashCommandUpdate {
-  if (!self.slashCommandUpdateTimer) return;
-  [self.slashCommandUpdateTimer invalidate];
-  self.slashCommandUpdateTimer = nil;
-  self.renderingSlashCommands = YES;
-  [self renderSlashCommandList];
-  [self updateControlStates];
-  self.renderingSlashCommands = NO;
+- (void)flushSlashCommandUpdate { [self flushSlashCommandUpdateForChat:[self currentChatPresentation]]; }
+- (void)flushSlashCommandUpdateForChat:(TLChatTabController *)chatContext {
+  if (!chatContext.slashCommandUpdateTimer) return;
+  [chatContext.slashCommandUpdateTimer invalidate];
+  chatContext.slashCommandUpdateTimer = nil;
+  chatContext.renderingSlashCommands = YES;
+  [self renderSlashCommandListForChat:chatContext];
+  [self updateControlStatesForChat:chatContext];
+  chatContext.renderingSlashCommands = NO;
 }
 
-- (void)renderSlashCommandList {
-  if (self.preparingAttachments || self.chatPresentation.editingQueuedPrompt || self.messageInput.attachmentURLs.count || ![self isChatWorkspaceActive] || !self.messageInput.window || NSIsEmptyRect(self.messageInput.bounds)) {
-    [self hideSlashCommandList];
+- (void)renderSlashCommandList { [self renderSlashCommandListForChat:[self currentChatPresentation]]; }
+- (void)renderSlashCommandListForChat:(TLChatTabController *)chatContext {
+  if ([self preparingAttachmentsForChat:chatContext] || chatContext.editingQueuedPrompt || chatContext.messageInput.attachmentURLs.count || ![self isChatWorkspaceActiveForChat:chatContext] || !chatContext.messageInput.window || NSIsEmptyRect(chatContext.messageInput.bounds)) {
+    [self hideSlashCommandListForChat:chatContext];
     return;
   }
 
-  NSString *input = self.promptTextView.string ?: @"";
+  NSString *input = chatContext.promptTextView.string ?: @"";
   BOOL slashInput = [[input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] hasPrefix:@"/"];
   if (slashInput) [self refreshHermesCommandsIfNeeded];
   NSArray<NSDictionary<NSString *, NSString *> *> *commands = [self slashCommandsMatchingPrompt:input];
@@ -3571,29 +3471,30 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                   @"title": self.hermesCommandsError}];
   }
   if (commands.count == 0) {
-    [self hideSlashCommandList];
+    [self hideSlashCommandListForChat:chatContext];
     return;
   }
 
-  [self showSlashCommandListWithCommands:commands];
-  NSString *trimmedPrompt = [self.promptTextView.string
+  [self showSlashCommandListWithCommands:commands forChat:chatContext];
+  NSString *trimmedPrompt = [chatContext.promptTextView.string
       stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (trimmedPrompt.length > 1 && self.selectedSlashCommandIndex < 0) {
-    [self moveSlashCommandSelectionByOffset:1];
+  if (trimmedPrompt.length > 1 && chatContext.selectedSlashCommandIndex < 0) {
+    [self moveSlashCommandSelectionByOffset:1 forChat:chatContext];
   }
 }
 
-- (void)hideSlashCommandList {
-  [self.slashCommandUpdateTimer invalidate];
-  self.slashCommandUpdateTimer = nil;
-  if (!self.slashCommandListView.hidden || self.slashCommandListHeightConstraint.constant > self.palette.space0) {
-    self.slashCommandListView.hidden = YES;
-    self.visibleSlashCommands = @[];
-    self.slashCommandScrollView.suggestions = @[];
-    self.selectedSlashCommandIndex = -1;
-    self.slashCommandListWidthConstraint.constant = self.palette.space0;
-    self.slashCommandListHeightConstraint.constant = self.palette.space0;
-    [self updateMessageScrollInsets];
+- (void)hideSlashCommandList { [self hideSlashCommandListForChat:[self currentChatPresentation]]; }
+- (void)hideSlashCommandListForChat:(TLChatTabController *)chatContext {
+  [chatContext.slashCommandUpdateTimer invalidate];
+  chatContext.slashCommandUpdateTimer = nil;
+  if (!chatContext.slashCommandListView.hidden || chatContext.slashCommandListHeightConstraint.constant > self.palette.space0) {
+    chatContext.slashCommandListView.hidden = YES;
+    chatContext.visibleSlashCommands = @[];
+    chatContext.slashCommandScrollView.suggestions = @[];
+    chatContext.selectedSlashCommandIndex = -1;
+    chatContext.slashCommandListWidthConstraint.constant = self.palette.space0;
+    chatContext.slashCommandListHeightConstraint.constant = self.palette.space0;
+    [chatContext updateMessageScrollInsets];
   }
 }
 
@@ -4617,586 +4518,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self updateSlashCommandList];
 }
 
-- (void)pinMessageRowToStackWidth:(NSView *)row {
-  static NSString *const TLMessageRowWidthConstraintIdentifier = @"TLMessageRowWidthConstraint";
-
-  for (NSLayoutConstraint *constraint in self.messageStack.constraints) {
-    if (constraint.firstItem == row && [constraint.identifier isEqualToString:TLMessageRowWidthConstraintIdentifier]) {
-      return;
-    }
-  }
-
-  NSLayoutConstraint *constraint = [row.widthAnchor constraintEqualToAnchor:self.messageStack.widthAnchor];
-  constraint.identifier = TLMessageRowWidthConstraintIdentifier;
-  constraint.active = YES;
-}
-
-- (void)addMessageRowToStack:(NSView *)row {
-  [self.messageStack addView:row inGravity:NSStackViewGravityTop];
-}
-
-- (void)placeMessageRow:(NSView *)row atIndex:(NSUInteger)index {
-  NSArray<NSView *> *rows = self.messageStack.arrangedSubviews;
-  if (index < rows.count && rows[index] == row) return;
-  [self removeArrangedMessageRowIfNeeded:row];
-  [self.messageStack insertView:row atIndex:index inGravity:NSStackViewGravityTop];
-}
-
-- (BOOL)isUserMessageAtIndex:(NSUInteger)index {
-  if (index >= self.messages.count) {
-    return NO;
-  }
-
-  TLChatMessage *message = self.messages[index];
-  return [message.role isEqualToString:TLRoleUser];
-}
-
-- (BOOL)showsOutgoingTailForMessageAtIndex:(NSUInteger)index {
-  return [self isUserMessageAtIndex:index] && ![self isUserMessageAtIndex:index + 1];
-}
-
-- (CGFloat)messageStackSpacingAfterMessageAtIndex:(NSUInteger)index {
-  if ([self isUserMessageAtIndex:index] && [self isUserMessageAtIndex:index + 1]) {
-    return self.palette.space3;
-  }
-
-  return self.palette.messageVerticalSpacing;
-}
-
-- (void)removeArrangedMessageRowIfNeeded:(NSView *)row {
-  if ([self.messageStack.arrangedSubviews containsObject:row]) {
-    [self.messageStack removeView:row];
-  }
-}
-
-- (void)detachMessageRowFromStack:(NSView *)row {
-  [self removeArrangedMessageRowIfNeeded:row];
-  if (row.superview) {
-    [row removeFromSuperview];
-  }
-}
-
-- (void)renderMessages {
-  [self renderMessagesScrollingToBottom:YES];
-}
-
-- (void)scheduleStreamingMessageRender {
-  if (self.streamingRenderScheduled) return;
-  self.streamingRenderScheduled = YES;
-  NSUInteger generation = ++self.streamingRenderGeneration;
-  TLChatPresentation *presentation = self.chatPresentation;
-  __weak typeof(self) weakSelf = self;
-  // Batch native layout work too; WebKit separately coalesces DOM updates.
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-    TalariaWindowController *controller = weakSelf;
-    if (!controller || generation != presentation.streamingRenderGeneration) return;
-    [controller withChatPresentation:presentation perform:^{ [controller renderMessages]; }];
-  });
-}
-
+- (void)renderMessages { [self renderMessagesScrollingToBottom:YES]; }
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
-  if (self.chatPresentation.findBarVisible) scrollToBottom = NO;
-  // Completion, navigation and theme changes render immediately and supersede a pending batch.
-  self.streamingRenderScheduled = NO;
-  self.streamingRenderGeneration += 1;
-  NSPoint previousScrollOrigin = self.messageScrollView.contentView.bounds.origin;
-  // Persistence replaces transient messages with stored records. Keep their
-  // already-loaded views when the displayed message at that position is unchanged.
-  [self.renderedMessages enumerateObjectsUsingBlock:^(TLChatMessage *previous, NSUInteger index, BOOL *stop) {
-    if (index >= self.messages.count || [self.messages indexOfObjectIdenticalTo:previous] != NSNotFound) return;
-    TLChatMessage *current = self.messages[index];
-    NSView *row = [self.messageRowViews objectForKey:previous];
-    if (!row || [self.messageRowViews objectForKey:current] ||
-        ![previous.role isEqualToString:current.role] || ![previous.content isEqualToString:current.content] ||
-        ![(previous.thinking ?: @"") isEqualToString:current.thinking ?: @""] ||
-        ![previous.toolActivities isEqual:current.toolActivities] ||
-        ![(previous.notification ?: @{}) isEqual:current.notification ?: @{}] ||
-        ![(previous.approvalRequest ?: @{}) isEqual:current.approvalRequest ?: @{}]) return;
-    [self.messageRowViews setObject:row forKey:current];
-    [self.messageRowSignatures setObject:[self.messageRowSignatures objectForKey:previous] forKey:current];
-    NSView *markdown = [self.messageMarkdownViews objectForKey:previous];
-    if (markdown) [self.messageMarkdownViews setObject:markdown forKey:current];
-    NSView *activity = [self.chatPresentation.messageActivityViews objectForKey:previous];
-    if (activity) [self.chatPresentation.messageActivityViews setObject:activity forKey:current];
-    [self.messageRowViews removeObjectForKey:previous];
-    [self.messageRowSignatures removeObjectForKey:previous];
-    [self.messageMarkdownViews removeObjectForKey:previous];
-    [self.chatPresentation.messageActivityViews removeObjectForKey:previous];
-  }];
-  self.renderedMessages = self.messages.copy;
-  for (TLChatMessage *cachedMessage in self.messageRowViews.keyEnumerator.allObjects) {
-    if ([self.messages indexOfObjectIdenticalTo:cachedMessage] == NSNotFound) {
-      NSView *staleRow = [self.messageRowViews objectForKey:cachedMessage];
-      [self detachMessageRowFromStack:staleRow];
-      [self.messageRowViews removeObjectForKey:cachedMessage];
-      [self.messageRowSignatures removeObjectForKey:cachedMessage];
-      [self.messageMarkdownViews removeObjectForKey:cachedMessage];
-      [self.chatPresentation.messageActivityViews removeObjectForKey:cachedMessage];
-    }
-  }
-  NSArray<NSView *> *previousRows = self.messageStack.arrangedSubviews.copy;
-
-  TLStarryEmptyStateView *emptyStateView = self.chatPresentation.emptyStateView;
-  emptyStateView.palette = self.palette;
-  emptyStateView.availableMessageWidth = self.messageInputWidthConstraint.constant;
-  emptyStateView.hidden = self.isLoading || self.errorMessage.length > 0 || self.messages.count > 0;
-  if (!emptyStateView.hidden) {
-    NSString *avatar = nil;
-    for (TLAgentRecord *agent in self.agents) {
-      if (agent.agentID == self.database.currentAgentID) { avatar = agent.avatar; break; }
-    }
-    emptyStateView.avatar = avatar ?: @"🤖";
-  }
-
-  if (self.isLoading || self.errorMessage.length > 0 || self.messages.count == 0) {
-    [self resetMessageRowCache];
-    for (NSView *view in previousRows) {
-      [self detachMessageRowFromStack:view];
-    }
-    if (self.isLoading || self.errorMessage.length > 0) {
-      NSView *emptyState = [self emptyStateView];
-      [self addMessageRowToStack:emptyState];
-      [self pinMessageRowToStackWidth:emptyState];
-    }
-    [self.chatPresentation refreshFindResults];
-    return;
-  }
-
-  NSMutableSet<NSView *> *renderedRows = [NSMutableSet setWithCapacity:self.messages.count];
-  NSUInteger rowIndex = 0;
-  for (NSUInteger index = 0; index < self.messages.count; index++) {
-    TLChatMessage *message = self.messages[index];
-    BOOL showsOutgoingTail = [self showsOutgoingTailForMessageAtIndex:index];
-    NSView *row = [self cachedRowForMessage:message showsOutgoingTail:showsOutgoingTail];
-    [renderedRows addObject:row];
-    [self placeMessageRow:row atIndex:rowIndex++];
-    [self pinMessageRowToStackWidth:row];
-    if ([self messageShowsAWSOutageIntent:message]) {
-      [self.messageStack setCustomSpacing:self.palette.space8 afterView:row];
-      NSView *intentWidget = [self AWSOutageIntentWidget];
-      [renderedRows addObject:intentWidget];
-      [self placeMessageRow:intentWidget atIndex:rowIndex++];
-      [self pinMessageRowToStackWidth:intentWidget];
-      [self.messageStack setCustomSpacing:[self messageStackSpacingAfterMessageAtIndex:index] afterView:intentWidget];
-    } else {
-      [self.messageStack setCustomSpacing:[self messageStackSpacingAfterMessageAtIndex:index] afterView:row];
-    }
-  }
-
-  for (NSView *view in self.messageStack.subviews.copy) {
-    if (![renderedRows containsObject:view]) {
-      [self detachMessageRowFromStack:view];
-    }
-  }
-
-  [self.chatPresentation refreshFindResults];
-  TLChatPresentation *presentation = self.chatPresentation;
-  dispatch_async(dispatch_get_main_queue(), ^{
-    [self withChatPresentation:presentation perform:^{
-      [self updateMessageScrollInsets];
-      [self.messageDocumentView layoutSubtreeIfNeeded];
-      if ([self revealNotificationInPresentation:presentation]) return;
-      if (scrollToBottom && !presentation.suppressAutomaticScroll) {
-        NSRect bottom = NSMakeRect(0.0, MAX(0.0, self.messageDocumentView.bounds.size.height - 1.0), 1.0, 1.0);
-        [self.messageDocumentView scrollRectToVisible:bottom];
-      } else {
-        CGFloat maximumY = MAX(0.0, NSHeight(self.messageDocumentView.bounds) - NSHeight(self.messageScrollView.contentView.bounds));
-        [self.messageScrollView.contentView scrollToPoint:NSMakePoint(previousScrollOrigin.x, MIN(previousScrollOrigin.y, maximumY))];
-        [self.messageScrollView reflectScrolledClipView:self.messageScrollView.contentView];
-      }
-    }];
-  });
+  TLChatTabController *chat = [self currentChatPresentation];
+  for (TLAgentRecord *agent in self.agents) if (agent.agentID == self.database.currentAgentID) { chat.agentAvatar = agent.avatar; break; }
+  [chat renderMessagesScrollingToBottom:scrollToBottom];
 }
-
-- (BOOL)messageShowsAWSOutageIntent:(TLChatMessage *)message {
-  return [self.activeChat.title isEqualToString:TLAWSOutageChatTitle] &&
-    [message.role isEqualToString:TLRoleAssistant] &&
-    [message.content containsString:@"AWS is reporting an outage in the Oregon region."];
-}
-
-- (NSView *)AWSOutageIntentWidget {
-  NSView *row = [[NSView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-
-  TLTokenView *widget = [[TLTokenView alloc] init];
-  widget.translatesAutoresizingMaskIntoConstraints = NO;
-  widget.fillColor = self.palette.assistantMessageSurface;
-  widget.borderColor = self.palette.transparentSurface;
-  widget.borderEdges = TLBorderEdgeNone;
-  widget.cornerRadius = self.palette.space9;
-  [row addSubview:widget];
-
-  NSStackView *content = [[NSStackView alloc] init];
-  content.translatesAutoresizingMaskIntoConstraints = NO;
-  content.orientation = NSUserInterfaceLayoutOrientationVertical;
-  content.alignment = NSLayoutAttributeLeading;
-  content.distribution = NSStackViewDistributionFill;
-  content.spacing = self.palette.space4;
-  [widget addSubview:content];
-
-  NSTextField *titleLabel = [self labelWithString:@"Intent"
-                                             font:self.palette.smallFont
-                                            color:self.palette.textMuted];
-  NSTextField *intentLabel = [self wrappingLabelWithString:TLAWSOutageIntent
-                                                      font:self.palette.messageBodyFont
-                                                     color:self.palette.assistantMessageText];
-  intentLabel.preferredMaxLayoutWidth = self.palette.messageMaxWidth * 0.5;
-
-  TLGlassButton *sendButton = [[TLGlassButton alloc] initWithUsesGlassEffect:YES];
-  sendButton.palette = self.palette;
-  sendButton.image = [NSImage imageWithSystemSymbolName:@"arrow.up"
-                               accessibilityDescription:@"Send intent"];
-  sendButton.title = @"send";
-  sendButton.font = self.palette.smallFont;
-  sendButton.contentTintColor = self.palette.userMessageText;
-  sendButton.glassTintColor = self.palette.userMessageSurface;
-  sendButton.glassHoverTintColor = self.palette.blue600;
-  sendButton.target = self;
-  sendButton.action = @selector(sendAWSOutageIntent:);
-  sendButton.toolTip = @"Send intent";
-
-  [content addArrangedSubview:titleLabel];
-  [content addArrangedSubview:intentLabel];
-  [content setCustomSpacing:self.palette.space6 afterView:intentLabel];
-  [content addArrangedSubview:sendButton];
-
-  CGFloat inset = self.palette.space6;
-  CGFloat buttonHeight = self.palette.space11 + self.palette.space3;
-  NSLayoutConstraint *widgetWidth = [widget.widthAnchor constraintEqualToAnchor:row.widthAnchor multiplier:0.62];
-  widgetWidth.priority = NSLayoutPriorityDefaultHigh;
-  [NSLayoutConstraint activateConstraints:@[
-    [widget.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
-    [widget.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor],
-    [widget.topAnchor constraintEqualToAnchor:row.topAnchor],
-    [widget.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
-    widgetWidth,
-    [content.leadingAnchor constraintEqualToAnchor:widget.leadingAnchor constant:inset],
-    [content.trailingAnchor constraintEqualToAnchor:widget.trailingAnchor constant:-inset],
-    [content.topAnchor constraintEqualToAnchor:widget.topAnchor constant:inset],
-    [content.bottomAnchor constraintEqualToAnchor:widget.bottomAnchor constant:-inset],
-    [titleLabel.widthAnchor constraintLessThanOrEqualToAnchor:content.widthAnchor],
-    [intentLabel.widthAnchor constraintEqualToAnchor:content.widthAnchor],
-    [sendButton.heightAnchor constraintEqualToConstant:buttonHeight],
-  ]];
-
-  return row;
-}
-
-- (void)updateMessageScrollInsets {
-  CGFloat slashCommandListHeight = (!self.slashCommandListView.hidden && self.slashCommandListHeightConstraint.constant > self.palette.space0)
-    ? self.slashCommandListHeightConstraint.constant + self.palette.space5
-    : self.palette.space0;
-  // Suggestions remain nearest the input; move the queue above their panel.
-  self.chatPresentation.promptQueueBottomConstraint.constant = -self.palette.space3 - slashCommandListHeight;
-  [self.messageInput.superview layoutSubtreeIfNeeded];
-  CGFloat inputHeight = NSHeight(self.messageInput.frame) > 0.0 ? NSHeight(self.messageInput.frame) : self.palette.composerButtonHeight;
-  CGFloat queueHeight = self.chatPresentation.promptQueueView.preferredHeight;
-  CGFloat bottomClearance = inputHeight + (queueHeight > 0 ? queueHeight + self.palette.space3 : 0) + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
-  self.messageScrollView.contentInsets = NSEdgeInsetsMake(self.palette.space0,
-                                                          self.palette.space0,
-                                                          self.palette.space0,
-                                                          self.palette.space0);
-  self.messageStackMinimumBottomConstraint.constant = -bottomClearance;
-  self.messageStackBottomConstraint.constant = -bottomClearance;
-  [self.messageDocumentView setNeedsLayout:YES];
-}
-
-- (NSView *)cachedRowForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
-  NSString *signature = [self rowSignatureForMessage:message showsOutgoingTail:showsOutgoingTail];
-  NSView *row = [self.messageRowViews objectForKey:message];
-  NSString *previousSignature = [self.messageRowSignatures objectForKey:message];
-
-  if (row && [previousSignature isEqualToString:signature]) {
-    TLToolActivityView *activity = (id)[self.chatPresentation.messageActivityViews objectForKey:message];
-    activity.activities = message.toolActivities;
-    NSView *markdown = [self.messageMarkdownViews objectForKey:message];
-    if (markdown) {
-      TLMarkdownRenderer *renderer = [[TLMarkdownRenderer alloc] initWithPalette:self.palette];
-      [renderer updateMarkdown:[self displayTextForMessage:message] inView:markdown];
-    }
-    return row;
-  }
-
-  if (row) {
-    [self detachMessageRowFromStack:row];
-  }
-
-  BOOL activityExpanded = [(TLToolActivityView *)[self.chatPresentation.messageActivityViews objectForKey:message] isExpanded];
-  [self.messageMarkdownViews removeObjectForKey:message];
-  [self.chatPresentation.messageActivityViews removeObjectForKey:message];
-  row = [self rowForMessage:message showsOutgoingTail:showsOutgoingTail];
-  [(TLToolActivityView *)[self.chatPresentation.messageActivityViews objectForKey:message] setExpanded:activityExpanded];
-  [self.messageRowViews setObject:row forKey:message];
-  [self.messageRowSignatures setObject:signature forKey:message];
-  return row;
-}
-
-- (NSString *)displayTextForMessage:(TLChatMessage *)message {
-  BOOL user = [message.role isEqualToString:TLRoleUser];
-  BOOL hasResponseContent = message.content.length > 0;
-  BOOL showThinking = !user && !hasResponseContent && message.thinking.length > 0;
-  NSString *displayText = showThinking
-    ? (message.thinking ?: @"")
-    : (hasResponseContent ? message.content : ([message.role isEqualToString:TLRoleAssistant] ? @"..." : @""));
-  if ([self messageShowsAWSOutageIntent:message]) {
-    displayText = TLAWSOutageAgentMessage;
-  }
-  return displayText;
-}
-
-- (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
-  BOOL user = [message.role isEqualToString:TLRoleUser];
-  BOOL showThinking = !user && !message.content.length && message.thinking.length > 0;
-  NSString *mode = message.approvalRequest ? [@"approval:" stringByAppendingString:message.approvalRequest.description] : (showThinking ? @"thinking" : @"content");
-  if (message.notification) mode = [mode stringByAppendingFormat:@" notification:%@", message.notification];
-  CGFloat layoutWidth = self.messageInputWidthConstraint.constant > 0.0
-    ? self.messageInputWidthConstraint.constant
-    : self.palette.messageInputMaxWidth;
-
-  return [NSString stringWithFormat:@"%@\n--TLROW--\n%@\n--TLROW--\n%.0f\n--TLROW--\n%@\n--TLROW--\n%@",
-                                    message.role ?: @"",
-                                    [mode stringByAppendingFormat:@"\n%@\nactivity:%d\ncontent:%d", message.attachments ?: @[], message.toolActivities.count > 0, message.content.length > 0],
-                                    layoutWidth,
-                                    showsOutgoingTail ? @"tail" : @"body",
-                                    user ? [self displayTextForMessage:message] : ([self messageShowsAWSOutageIntent:message] ? @"intent" : @"answer")];
-}
-
-- (void)resetMessageRowCache {
-  self.streamingRenderScheduled = NO;
-  self.streamingRenderGeneration += 1;
-  for (NSView *view in self.messageRowViews.objectEnumerator) {
-    [self detachMessageRowFromStack:view];
-  }
-  self.messageRowViews = [NSMapTable strongToStrongObjectsMapTable];
-  self.messageRowSignatures = [NSMapTable strongToStrongObjectsMapTable];
-  self.messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
-  self.chatPresentation.messageActivityViews = [NSMapTable strongToStrongObjectsMapTable];
-  self.renderedMessages = @[];
-}
-
-- (NSView *)emptyStateView {
-  NSView *view = [[NSView alloc] init];
-  view.translatesAutoresizingMaskIntoConstraints = NO;
-  [view.heightAnchor constraintGreaterThanOrEqualToConstant:360.0].active = YES;
-
-  NSStackView *stack = [[NSStackView alloc] init];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  stack.alignment = NSLayoutAttributeCenterX;
-  stack.spacing = self.palette.space6;
-  [view addSubview:stack];
-
-  if (self.isLoading) {
-    [stack addArrangedSubview:[self labelWithString:@"Loading chats" font:self.palette.emptyTitleFont color:self.palette.appText]];
-  } else if (self.errorMessage.length > 0) {
-    [stack addArrangedSubview:[self labelWithString:self.errorMessage font:self.palette.emptyTitleFont color:self.palette.appText]];
-  }
-
-  [NSLayoutConstraint activateConstraints:@[
-    [stack.centerXAnchor constraintEqualToAnchor:view.centerXAnchor],
-    [stack.centerYAnchor constraintEqualToAnchor:view.centerYAnchor],
-    [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:view.leadingAnchor constant:24.0],
-    [stack.trailingAnchor constraintLessThanOrEqualToAnchor:view.trailingAnchor constant:-24.0],
-  ]];
-
-  return view;
-}
-
-- (NSView *)rowForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
-  BOOL user = [message.role isEqualToString:TLRoleUser];
-  BOOL drawsOutgoingTail = user && showsOutgoingTail;
-  NSView *row = [[NSView alloc] init];
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-  [row setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
-  [row setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
-
-  TLMessageBubbleView *bubble = [[TLMessageBubbleView alloc] init];
-  bubble.translatesAutoresizingMaskIntoConstraints = NO;
-  bubble.palette = self.palette;
-  bubble.drawsOutgoingTail = drawsOutgoingTail;
-  bubble.fillColor = user ? self.palette.userMessageSurface : self.palette.transparentSurface;
-  bubble.borderColor = self.palette.transparentSurface;
-  bubble.borderEdges = TLBorderEdgeNone;
-  bubble.borderWidth = self.palette.borderWidth;
-  bubble.cornerRadius = user ? self.palette.userMessageCornerRadius : self.palette.space0;
-  bubble.wantsLayer = YES;
-  [bubble setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
-  [bubble setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
-
-  NSStackView *stack = [[NSStackView alloc] init];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-  stack.alignment = NSLayoutAttributeWidth;
-  stack.distribution = NSStackViewDistributionFill;
-  stack.spacing = self.palette.space5;
-  [stack setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
-  [stack setContentCompressionResistancePriority:NSLayoutPriorityRequired
-                                  forOrientation:NSLayoutConstraintOrientationVertical];
-  [bubble addSubview:stack];
-
-  CGFloat widthMultiplier = user ? self.palette.userMessageMaxWidthMultiplier : self.palette.assistantMessageMaxWidthMultiplier;
-  NSColor *textColor = user ? self.palette.userMessageText : self.palette.assistantMessageText;
-  NSTextField *contentLabel = nil;
-  CGFloat userLeadingInset = self.palette.space0;
-  CGFloat userTrailingInset = self.palette.space0;
-  CGFloat userTopInset = self.palette.space0;
-  CGFloat userBottomInset = self.palette.space0;
-  CGFloat userTextMaxWidth = self.palette.messageInputMaxWidth;
-  TLAttachmentChipRow *attachmentRow = nil;
-  CGFloat availableMessageWidth = self.messageInputWidthConstraint.constant > 0.0
-    ? self.messageInputWidthConstraint.constant
-    : self.palette.messageInputMaxWidth;
-
-  BOOL hasResponseContent = message.content.length > 0;
-  BOOL showThinking = !user && !hasResponseContent && message.thinking.length > 0;
-  if (showThinking && !message.approvalRequest) {
-    [stack addArrangedSubview:[self labelWithString:@"Thinking"
-                                               font:self.palette.roleFont
-                                              color:self.palette.thinkingText]];
-    NSView *markdown = [self markdownViewWithString:message.thinking textColor:self.palette.thinkingText baseFont:self.palette.smallFont];
-    [stack addArrangedSubview:markdown];
-    [self.messageMarkdownViews setObject:markdown forKey:message];
-  } else if (user) {
-    NSString *content = hasResponseContent ? message.content : @"";
-    userLeadingInset = self.palette.userMessageHorizontalPadding;
-    userTrailingInset = self.palette.userMessageHorizontalPadding;
-    userTopInset = self.palette.userMessageVerticalPadding;
-    userBottomInset = self.palette.userMessageVerticalPadding +
-      (drawsOutgoingTail ? self.palette.userMessageTailHeight : self.palette.space0);
-    userTextMaxWidth = MAX(1.0, availableMessageWidth * widthMultiplier - userLeadingInset - userTrailingInset);
-    contentLabel = [self wrappingLabelWithString:content
-                                            font:self.palette.messageBodyFont
-                                           color:textColor];
-    contentLabel.selectable = YES;
-    contentLabel.preferredMaxLayoutWidth = userTextMaxWidth;
-    // Grow the padding symmetrically for tiny messages, keeping the label at
-    // its natural width so punctuation stays centred in the rounded body.
-    CGFloat minimumBubbleWidth = MIN(self.palette.userMessageMinWidth, availableMessageWidth * widthMultiplier);
-    CGFloat minimumInset = (minimumBubbleWidth - contentLabel.intrinsicContentSize.width) * 0.5;
-    userLeadingInset = MAX(userLeadingInset, minimumInset);
-    userTrailingInset = MAX(userTrailingInset, minimumInset);
-    userTextMaxWidth = MAX(1.0, availableMessageWidth * widthMultiplier - userLeadingInset - userTrailingInset);
-    contentLabel.preferredMaxLayoutWidth = userTextMaxWidth;
-    [contentLabel setContentHuggingPriority:NSLayoutPriorityDefaultHigh
-                             forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [contentLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
-                                           forOrientation:NSLayoutConstraintOrientationHorizontal];
-    if (hasResponseContent) {
-      [stack addArrangedSubview:contentLabel];
-      [self.messageMarkdownViews setObject:contentLabel forKey:message];
-    } else contentLabel = nil;
-  } else if (hasResponseContent || (!message.notification && !message.approvalRequest && !message.attachments.count && !message.toolActivities.count)) {
-    NSString *content = hasResponseContent ? message.content : @"...";
-    if ([self messageShowsAWSOutageIntent:message]) {
-      content = TLAWSOutageAgentMessage;
-      NSView *leadingSpacer = [[NSView alloc] init];
-      leadingSpacer.translatesAutoresizingMaskIntoConstraints = NO;
-      CGFloat lineHeight = ceil(self.palette.messageBodyFont.ascender -
-                                self.palette.messageBodyFont.descender +
-                                self.palette.messageBodyFont.leading);
-      [leadingSpacer.heightAnchor constraintEqualToConstant:lineHeight * 3.0].active = YES;
-      [stack addArrangedSubview:leadingSpacer];
-    }
-    NSView *markdown = [self markdownViewWithString:content textColor:textColor baseFont:self.palette.messageBodyFont];
-    [stack addArrangedSubview:markdown];
-    [self.messageMarkdownViews setObject:markdown forKey:message];
-  }
-
-  if (message.attachments.count) {
-    // Capture the originating presentation: split-pane focus may change before a click.
-    __weak TLChatPresentation *origin = self.chatPresentation;
-    __weak typeof(self) weakSelf = self;
-    NSMutableArray<TLAttachmentChipView *> *chips = [NSMutableArray array];
-    [message.attachments enumerateObjectsUsingBlock:^(NSDictionary *attachment, NSUInteger index, BOOL *stop) {
-      TLAttachmentPreviewItem *item = [self previewItemForAttachment:attachment sessionID:origin.chat.hermesSessionID];
-      TLAttachmentChipView *chip = [[TLAttachmentChipView alloc] init];
-      chip.palette = self.palette; chip.showsRemoveButton = NO;
-      chip.title = item.name; chip.toolTip = [NSString stringWithFormat:@"%@\n%@", item.name, item.detail];
-      chip.image = [NSImage imageWithSystemSymbolName:item.directory ? @"folder" : @"doc" accessibilityDescription:nil];
-      chip.activationHandler = ^{ [weakSelf previewAttachmentsForPresentation:origin message:message index:index]; };
-      if (item.previewItemURL) [chip loadPreviewForURL:item.previewItemURL];
-      [chips addObject:chip];
-    }];
-    attachmentRow = [[TLAttachmentChipRow alloc] initWithChips:chips palette:self.palette];
-    attachmentRow.alignsTrailing = user;
-    [row addSubview:attachmentRow];
-  }
-
-  if (!user && message.toolActivities.count) {
-    TLToolActivityView *activity = [[TLToolActivityView alloc] init];
-    activity.palette = self.palette;
-    activity.activities = message.toolActivities;
-    [stack insertArrangedSubview:activity atIndex:0];
-    [activity.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    [self.chatPresentation.messageActivityViews setObject:activity forKey:message];
-  }
-
-  if (!user && message.notification) {
-    TLNotificationMessageCardView *card = [[TLNotificationMessageCardView alloc] initWithNotification:message.notification palette:self.palette];
-    [stack addArrangedSubview:card];
-    [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-  }
-  if (!user && message.approvalRequest) {
-    TLApprovalCardView *card = [[TLApprovalCardView alloc] initWithRequest:message.approvalRequest palette:self.palette];
-    NSString *requestID = message.approvalRequest[@"request_id"];
-    NSInteger chatID = self.activeChat.chatID;
-    __weak typeof(self) weakSelf = self;
-    card.choiceHandler = ^BOOL(NSString *choice) { return [weakSelf respondToApproval:requestID choice:choice chatID:chatID]; };
-    [stack addArrangedSubview:card];
-    [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-  }
-  BOOL hasBubble = stack.arrangedSubviews.count > 0 || !attachmentRow;
-  NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray array];
-  if (attachmentRow) {
-    [constraints addObjectsFromArray:@[
-      [attachmentRow.topAnchor constraintEqualToAnchor:hasBubble ? bubble.bottomAnchor : row.topAnchor constant:hasBubble ? self.palette.space5 : self.palette.space0],
-      [attachmentRow.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
-      [attachmentRow.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:widthMultiplier],
-    ]];
-    // Reserve the available row width; thumbnails can change chip widths after loading.
-    NSLayoutConstraint *preferredWidth = [attachmentRow.widthAnchor constraintEqualToConstant:availableMessageWidth * widthMultiplier];
-    preferredWidth.priority = NSLayoutPriorityDefaultHigh;
-    [constraints addObject:preferredWidth];
-    if (user) {
-      [constraints addObject:[attachmentRow.trailingAnchor constraintEqualToAnchor:row.trailingAnchor]];
-      [constraints addObject:[attachmentRow.leadingAnchor constraintGreaterThanOrEqualToAnchor:row.leadingAnchor]];
-    } else {
-      [constraints addObject:[attachmentRow.leadingAnchor constraintEqualToAnchor:row.leadingAnchor]];
-      [constraints addObject:[attachmentRow.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
-    }
-  }
-  if (!hasBubble) { [NSLayoutConstraint activateConstraints:constraints]; return row; }
-  [row addSubview:bubble];
-  NSLayoutConstraint *assistantWidth = [bubble.widthAnchor constraintEqualToAnchor:row.widthAnchor multiplier:widthMultiplier];
-  assistantWidth.priority = NSLayoutPriorityDefaultHigh + 1.0;
-
-  [constraints addObjectsFromArray:@[
-    [bubble.topAnchor constraintEqualToAnchor:row.topAnchor],
-    [bubble.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:widthMultiplier],
-    [stack.leadingAnchor constraintEqualToAnchor:bubble.leadingAnchor constant:user ? userLeadingInset : self.palette.space0],
-    [stack.trailingAnchor constraintEqualToAnchor:bubble.trailingAnchor constant:user ? -userTrailingInset : self.palette.space0],
-    [stack.topAnchor constraintEqualToAnchor:bubble.topAnchor constant:user ? userTopInset : self.palette.space0],
-    [stack.bottomAnchor constraintEqualToAnchor:bubble.bottomAnchor constant:user ? -userBottomInset : self.palette.space0],
-  ]];
-  if (!attachmentRow) [constraints addObject:[bubble.bottomAnchor constraintEqualToAnchor:row.bottomAnchor]];
-  if (contentLabel) {
-    [constraints addObject:[contentLabel.widthAnchor constraintLessThanOrEqualToConstant:userTextMaxWidth]];
-  }
-  if (!user) {
-    [constraints addObject:assistantWidth];
-  }
-
-  if (user) {
-    [constraints addObject:[bubble.trailingAnchor constraintEqualToAnchor:row.trailingAnchor]];
-    [constraints addObject:[bubble.leadingAnchor constraintGreaterThanOrEqualToAnchor:row.leadingAnchor]];
-  } else {
-    [constraints addObject:[bubble.leadingAnchor constraintEqualToAnchor:row.leadingAnchor]];
-    [constraints addObject:[bubble.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
-  }
-
-  [NSLayoutConstraint activateConstraints:constraints];
-  return row;
-}
+- (void)scheduleStreamingMessageRender { [[self currentChatPresentation] scheduleStreamingMessageRender]; }
+- (void)updateMessageScrollInsets { [[self currentChatPresentation] updateMessageScrollInsets]; }
+- (void)resetMessageRowCache { [[self currentChatPresentation] resetMessageRowCache]; }
+- (void)detachMessageRowFromStack:(NSView *)row { [[self currentChatPresentation] detachMessageRowFromStack:row]; }
 
 - (TLAttachmentPreviewItem *)previewItemForAttachment:(NSDictionary *)attachment sessionID:(NSString *)sessionID {
   TLAttachmentPreviewItem *item = [[TLAttachmentPreviewItem alloc] init];
@@ -5208,7 +4539,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return item;
 }
 
-- (void)previewAttachmentsForPresentation:(TLChatPresentation *)presentation message:(TLChatMessage *)selectedMessage index:(NSUInteger)index {
+- (void)previewAttachmentsForPresentation:(TLChatTabController *)presentation message:(TLChatMessage *)selectedMessage index:(NSUInteger)index {
   NSMutableArray *items = [NSMutableArray array];
   NSUInteger selectedIndex = NSNotFound;
   for (TLChatMessage *message in presentation.messages) {
@@ -5222,39 +4553,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.attachmentViewer = [[TLAttachmentViewerWindowController alloc] initWithItems:items
     conversationTitle:presentation.chat.title selectedIndex:selectedIndex palette:self.palette];
   [self.attachmentViewer showOnScreen:self.window.screen ?: NSScreen.mainScreen];
-}
-
-- (NSView *)markdownViewWithString:(NSString *)string textColor:(NSColor *)textColor baseFont:(NSFont *)baseFont {
-  TLMarkdownRenderer *renderer = [[TLMarkdownRenderer alloc] initWithPalette:self.palette];
-  __weak typeof(self) weakSelf = self;
-  renderer.linkHandler = ^(NSURL *URL, NSEventModifierFlags modifierFlags) {
-    [weakSelf handleLinkURL:URL modifierFlags:modifierFlags];
-  };
-  __weak TLChatPresentation *origin = self.chatPresentation;
-  renderer.linkContextMenuHandler = ^dispatch_block_t(NSURL *URL, NSMenu *menu, NSView *view, NSPoint point) {
-    TalariaWindowController *controller = weakSelf;
-    if (!controller || !origin) return nil;
-    TLWorkspaceTab *source = [controller.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:origin.chat.chatID];
-    NSString *identity = TLWorkspaceTabIdentity(source);
-    if (!source) return nil;
-    return [TLBrowserLinkActions configureNativeMenu:menu forURL:URL inView:view atPoint:point
-      open:^(NSURL *link, TLBrowserLinkDestination destination) {
-        [weakSelf handleContextLinkURL:link destination:destination sourceIdentity:identity];
-      }];
-  };
-  __block __weak NSView *weakView = nil;
-  renderer.heightChangeHandler = ^{
-    TalariaWindowController *controller = weakSelf;
-    if (!origin || !controller || origin.findBarVisible || ![weakView isDescendantOf:origin.messageStack]) return;
-    [origin.messageDocumentView layoutSubtreeIfNeeded];
-    if ([controller revealNotificationInPresentation:origin]) return;
-    if (origin.suppressAutomaticScroll || !controller.turnRunners[@(origin.chat.chatID)]) return;
-    NSRect bottom = NSMakeRect(0, MAX(0, NSHeight(origin.messageDocumentView.bounds) - 1), 1, 1);
-    [origin.messageDocumentView scrollRectToVisible:bottom];
-  };
-  NSView *view = [renderer viewForMarkdown:string ?: @"" textColor:textColor baseFont:baseFont];
-  weakView = view;
-  return view;
 }
 
 - (NSView *)plainTextViewWithString:(NSString *)string textColor:(NSColor *)textColor baseFont:(NSFont *)baseFont {
@@ -5645,24 +4943,21 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (!runtime || !tab) {
     return;
   }
+  if (tab.kind == TLWorkspaceTabKindChat) runtime.featureController = self.chatPresentations[@(tab.tabID)] ?: self.chatPresentation;
   if (tab.kind == TLWorkspaceTabKindSettings) runtime.featureController = self.settingsTabController;
   if (tab.kind == TLWorkspaceTabKindDownloads) runtime.featureController = self.downloadsController;
   if (tab.kind == TLWorkspaceTabKindAutomations) runtime.featureController = self.automationsController;
+  TLWorkspaceTabRuntime *previous = self.workspaceTabRuntimes[TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID)];
+  if (previous != runtime && previous.featureController == runtime.featureController) previous.featureController = nil;
   self.workspaceTabRuntimes[TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID)] = runtime;
 }
 
 - (void)removeRuntimeForKind:(TLWorkspaceTabKind)kind tabID:(NSInteger)tabID {
   if (kind == TLWorkspaceTabKindChat) {
-    TLChatPresentation *presentation = self.chatPresentations[@(tabID)];
-    if (presentation.queuedPrompts.count || presentation.queuedPromptInFlight) {
-      presentation.queuePaused = YES;
-      presentation.queueInterruptPending = NO;
-      presentation.chatWorkspace.hidden = YES;
-      [self withChatPresentation:presentation perform:^{ [self updatePromptQueue]; }];
-    } else {
-      [presentation.chatWorkspace removeFromSuperview];
-      [self.chatPresentations removeObjectForKey:@(tabID)];
-    }
+    TLChatTabController *presentation = self.chatPresentations[@(tabID)];
+    [presentation close];
+    if (presentation.closed) [self.chatPresentations removeObjectForKey:@(tabID)];
+    else [self updatePromptQueueForChat:presentation];
   }
   [self.workspaceTabRuntimes removeObjectForKey:TLWorkspaceTabRuntimeKey(kind, tabID)];
 }
@@ -5735,9 +5030,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return snapshot.activeTabKind == TLWorkspaceTabKindHistory && self.historyTab && snapshot.activeTabID == self.historyTab.tabID;
 }
 
-- (BOOL)isChatWorkspaceActive {
+- (BOOL)isChatWorkspaceActive { return [self isChatWorkspaceActiveForChat:[self currentChatPresentation]]; }
+- (BOOL)isChatWorkspaceActiveForChat:(TLChatTabController *)chatContext {
   TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
-  return snapshot.activeTabKind == TLWorkspaceTabKindChat && self.activeChat && snapshot.activeTabID == self.activeChat.chatID;
+  return snapshot.activeTabKind == TLWorkspaceTabKindChat && chatContext.chat && snapshot.activeTabID == chatContext.chat.chatID;
 }
 
 - (void)mountWorkspaceView:(NSView *)view inHost:(NSView *)host {
@@ -5977,7 +5273,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     TalariaWindowController *owner = weakSelf;
     if (event.window != owner.window) return event;
     if (event.type == NSEventTypeScrollWheel || event.type == NSEventTypeLeftMouseDown) {
-      for (TLChatPresentation *presentation in owner.chatPresentations.allValues) {
+      for (TLChatTabController *presentation in owner.chatPresentations.allValues) {
         NSPoint scrollPoint = [presentation.messageScrollView convertPoint:event.locationInWindow fromView:nil];
         if (presentation.messageScrollView.window && !presentation.chatWorkspace.hidden &&
             NSPointInRect(scrollPoint, presentation.messageScrollView.bounds)) {
@@ -6009,7 +5305,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 - (void)focusChatContainingView:(id)view {
   if (![view isKindOfClass:NSView.class]) return;
-  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+  for (TLChatTabController *presentation in self.chatPresentations.allValues) {
     if ([view isDescendantOf:presentation.chatWorkspace]) {
       TLWorkspaceTab *tab = [self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:presentation.chat.chatID];
       [self focusWorkspaceTab:tab];
@@ -6021,10 +5317,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLWorkspaceSplitGroup *group = [self.splitState groupForTab:[self activeWorkspaceTab]];
   [self focusWorkspaceTab:[self tabWithPresentationIdentity:right ? group.rightIdentity : group.leftIdentity]];
 }
-- (BOOL)isChatPresentationVisible {
-  TLWorkspaceTab *tab = [self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:self.activeChat.chatID];
-  if ([self isChatWorkspaceActive]) return YES;
-  if (!tab || !self.activeChat) return NO;
+- (BOOL)isChatPresentationVisible { return [self isChatPresentationVisibleForChat:[self currentChatPresentation]]; }
+- (BOOL)isChatPresentationVisibleForChat:(TLChatTabController *)chatContext {
+  TLWorkspaceTab *tab = [self.appStateManager workspaceTabWithKind:TLWorkspaceTabKindChat tabID:chatContext.chat.chatID];
+  if ([self isChatWorkspaceActiveForChat:chatContext]) return YES;
+  if (!tab || !chatContext.chat) return NO;
   TLWorkspaceSplitGroup *group = [self.splitState groupForTab:[self activeWorkspaceTab]];
   return group && group == [self.splitState groupForTab:tab];
 }
@@ -6032,7 +5329,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   CGFloat available = MAX(0, workspaceWidth - self.palette.space5);
   CGFloat minimum = MIN(self.palette.windowMinimumWidth, available * 0.35);
   CGFloat left = MAX(minimum, MIN(available - minimum, available * self.splitWorkspace.fraction));
-  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+  for (TLChatTabController *presentation in self.chatPresentations.allValues) {
     if (presentation.chatWorkspace.isHiddenOrHasHiddenAncestor) continue;
     CGFloat paneWidth = presentation.chatWorkspace.superview == self.splitWorkspace.rightHost ? available - left : left;
     presentation.messageInputWidthConstraint.constant = MAX(0, MIN(self.palette.messageInputMaxWidth, paneWidth - self.palette.space11 * 2));
@@ -6047,20 +5344,19 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 - (void)updateSplitContentSizes {
   if (self.updatingSplitLayout || !self.splitWorkspace) return;
   self.updatingSplitLayout = YES;
-  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+  for (TLChatTabController *presentation in self.chatPresentations.allValues) {
     if (presentation.chatWorkspace.isHiddenOrHasHiddenAncestor) continue;
-    [self withChatPresentation:presentation perform:^{
-      CGFloat available = NSWidth(self.chatWorkspace.superview.bounds) - self.palette.space11 * 2;
+      CGFloat available = NSWidth(presentation.chatWorkspace.superview.bounds) - self.palette.space11 * 2;
       CGFloat width = MAX(0, MIN(self.palette.messageInputMaxWidth, available));
-      BOOL changed = fabs(self.messageInputWidthConstraint.constant - width) > 0.5;
-      self.messageInputWidthConstraint.constant = width;
+      BOOL changed = fabs(presentation.messageInputWidthConstraint.constant - width) > 0.5;
+      presentation.messageInputWidthConstraint.constant = width;
       if (changed) {
-        [self.messageInput recalculateHeight];
-        [self updateMessageScrollInsets];
-        [self resetMessageRowCache];
-        [self renderMessagesScrollingToBottom:NO];
+        [presentation.messageInput recalculateHeight];
+        [presentation updateMessageScrollInsets];
+        [presentation resetMessageRowCache];
+        [presentation renderMessagesScrollingToBottom:NO];
       }
-    }];
+
   }
   for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
     TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
@@ -6208,7 +5504,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   NSMutableSet<NSView *> *contentViews = [NSMutableSet set];
   for (TLWorkspaceTabRuntime *runtime in self.workspaceTabRuntimes.allValues)
     if (runtime.contentView) [contentViews addObject:runtime.contentView];
-  for (TLChatPresentation *presentation in self.chatPresentations.allValues)
+  for (TLChatTabController *presentation in self.chatPresentations.allValues)
     if (presentation.chatWorkspace) [contentViews addObject:presentation.chatWorkspace];
   if (self.chatWorkspace) [contentViews addObject:self.chatWorkspace];
   if (self.historyPanelController.panelView) [contentViews addObject:self.historyPanelController.panelView];
@@ -6224,6 +5520,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   BOOL historyVisible = left.kind == TLWorkspaceTabKindHistory || (right && right.kind == TLWorkspaceTabKindHistory);
   BOOL refreshHistory = historyVisible && (!self.historyWasVisible || self.historyAgentID != self.database.currentAgentID);
   self.historyWasVisible = historyVisible;
+  self.historyPanelController.visible = historyVisible;
   if (refreshHistory) [self refreshHermesHistory];
   [self.splitWorkspace layoutSubtreeIfNeeded];
   self.updatingSplitLayout = NO;
@@ -6386,19 +5683,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self resetMessageRowCache];
   [self renderMessages];
   [self updateControlStates];
-  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+  for (TLChatTabController *presentation in self.chatPresentations.allValues) {
     if (presentation == self.chatPresentation) continue;
-    [self withChatPresentation:presentation perform:^{
-      self.messagesBackground.fillColor = self.palette.tabBackground;
-      self.messageStack.spacing = self.palette.messageVerticalSpacing;
-      self.messageInput.palette = self.palette;
-      [self updatePromptQueue];
-      [self.chatPresentation applyFindPalette:self.palette];
-      [self applySlashCommandListPalette];
-      [self.screensaverView updateBackgroundColor:self.palette.messagesSurface artColor:self.palette.textMuted];
-      [self resetMessageRowCache];
-      [self renderMessagesScrollingToBottom:NO];
-    }];
+    [presentation applyPalette:self.palette];
+    [presentation renderMessagesScrollingToBottom:NO];
   }
   [self.notchOverlayController updatePalette:self.palette];
   [self.quickInputController applyPalette:self.palette];
@@ -6559,65 +5847,66 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   button.layer.cornerRadius = self.palette.radiusMedium;
 }
 
-- (void)updateControlStates {
+- (void)updateControlStates { [self updateControlStatesForChat:[self currentChatPresentation]]; }
+- (void)updateControlStatesForChat:(TLChatTabController *)chatContext {
   TLWorkspaceTab *bookmarkTab = [self activeWorkspaceTab];
   self.sidebarShortcutsView.addButton.enabled = !self.widgetbookMode && bookmarkTab &&
     (bookmarkTab.kind == TLWorkspaceTabKindChat ||
       (bookmarkTab.kind == TLWorkspaceTabKindBrowser && [TLBookmark normalizedURL:bookmarkTab.URL.absoluteString]));
-  [self updatePromptQueue];
-  [self.messageInput recalculateHeight];
-  [self updateMessageScrollInsets];
+  [self updatePromptQueueForChat:chatContext];
+  [chatContext.messageInput recalculateHeight];
+  [chatContext updateMessageScrollInsets];
 
   if (self.widgetbookMode) {
     self.createChatButton.enabled = NO;
     self.sidebarToggleButton.enabled = NO;
     self.sidebarAutomationsButton.enabled = NO;
     self.sidebarUserButton.enabled = NO;
-    self.sendButton.enabled = NO;
-    self.messageInput.attachmentsEditable = NO;
+    chatContext.sendButton.enabled = NO;
+    chatContext.messageInput.attachmentsEditable = NO;
     self.historyPanelController.enabled = NO;
-    self.promptTextView.editable = NO;
-    self.promptTextView.selectable = YES;
+    chatContext.promptTextView.editable = NO;
+    chatContext.promptTextView.selectable = YES;
     self.createChatButton.alphaValue = self.palette.disabledOpacity;
     self.sidebarToggleButton.alphaValue = self.palette.disabledOpacity;
-    self.sendButton.alphaValue = self.palette.disabledOpacity;
+    chatContext.sendButton.alphaValue = self.palette.disabledOpacity;
     [self styleSidebarActionButtons];
     [self.workspaceTabsController setControlsEnabled:NO disabledOpacity:self.palette.disabledOpacity];
     [self updateAgentControlStates];
     return;
   }
 
-  NSString *prompt = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  BOOL chatActive = [self isChatPresentationVisible];
-  if (!chatActive || prompt.length == 0 || self.preparingAttachments || self.chatPresentation.editingQueuedPrompt || self.messageInput.attachmentURLs.count) {
-    [self hideSlashCommandList];
+  NSString *prompt = [chatContext.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  BOOL chatActive = [self isChatPresentationVisibleForChat:chatContext];
+  if (!chatActive || prompt.length == 0 || [self preparingAttachmentsForChat:chatContext] || chatContext.editingQueuedPrompt || chatContext.messageInput.attachmentURLs.count) {
+    [self hideSlashCommandListForChat:chatContext];
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
   self.sidebarAutomationsButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
-  self.messageInput.placeholderText = self.chatPresentation.editingQueuedPrompt ? @"Edit queued prompt" :
-    (self.isSending || self.chatPresentation.queuedPrompts.count) ? @"Queue a follow-up" : @"Give a task or enter a URL";
-  self.messageInput.showsStopButton = !self.chatPresentation.editingQueuedPrompt && [self canStopResponse];
-  BOOL hasAttachments = self.messageInput.attachmentURLs.count > 0;
-  self.sendButton.enabled = !self.preparingAttachments && (self.messageInput.showsStopButton ||
+  chatContext.messageInput.placeholderText = chatContext.editingQueuedPrompt ? @"Edit queued prompt" :
+    ([self isSendingForChat:chatContext] || chatContext.queuedPrompts.count) ? @"Queue a follow-up" : @"Give a task or enter a URL";
+  chatContext.messageInput.showsStopButton = !chatContext.editingQueuedPrompt && [self canStopResponseForChat:chatContext];
+  BOOL hasAttachments = chatContext.messageInput.attachmentURLs.count > 0;
+  chatContext.sendButton.enabled = ![self preparingAttachmentsForChat:chatContext] && (chatContext.messageInput.showsStopButton ||
     (chatActive && (prompt.length > 0 || hasAttachments)));
-  if (!self.messageInput.showsStopButton) {
-    BOOL editing = self.chatPresentation.editingQueuedPrompt != nil;
-    BOOL queuing = self.isSending || self.chatPresentation.queuedPrompts.count > 0;
+  if (!chatContext.messageInput.showsStopButton) {
+    BOOL editing = chatContext.editingQueuedPrompt != nil;
+    BOOL queuing = [self isSendingForChat:chatContext] || chatContext.queuedPrompts.count > 0;
     NSString *label = editing ? @"Save queued prompt" : queuing ? @"Queue follow-up" : @"Send";
-    [self.messageInput.sendButton setImage:[NSImage imageWithSystemSymbolName:editing ? @"checkmark" : queuing ? @"text.badge.plus" : @"arrow.up" accessibilityDescription:label] animated:NO];
-    self.sendButton.toolTip = label;
+    [chatContext.messageInput.sendButton setImage:[NSImage imageWithSystemSymbolName:editing ? @"checkmark" : queuing ? @"text.badge.plus" : @"arrow.up" accessibilityDescription:label] animated:NO];
+    chatContext.sendButton.toolTip = label;
   }
-  self.messageInput.attachmentsEditable = !self.preparingAttachments && chatActive;
-  if (self.preparingAttachments) self.sendButton.toolTip = @"Copying attachments…";
+  chatContext.messageInput.attachmentsEditable = ![self preparingAttachmentsForChat:chatContext] && chatActive;
+  if ([self preparingAttachmentsForChat:chatContext]) chatContext.sendButton.toolTip = @"Copying attachments…";
   self.historyPanelController.enabled = YES;
-  self.promptTextView.editable = chatActive && !self.preparingAttachments;
-  self.promptTextView.selectable = YES;
+  chatContext.promptTextView.editable = chatActive && ![self preparingAttachmentsForChat:chatContext];
+  chatContext.promptTextView.selectable = YES;
 
   self.createChatButton.alphaValue = self.createChatButton.enabled ? 1.0 : self.palette.disabledOpacity;
   self.sidebarToggleButton.alphaValue = self.sidebarToggleButton.enabled ? 1.0 : self.palette.disabledOpacity;
-  self.sendButton.alphaValue = self.sendButton.enabled ? 1.0 : self.palette.disabledOpacity;
+  chatContext.sendButton.alphaValue = chatContext.sendButton.enabled ? 1.0 : self.palette.disabledOpacity;
   [self styleSidebarActionButtons];
   [self.workspaceTabsController setControlsEnabled:YES disabledOpacity:self.palette.disabledOpacity];
   [self updateAgentControlStates];
@@ -6636,7 +5925,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)notificationsDidActivate:(NSNotification *)notification {
   [self refreshNotifications];
-  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+  for (TLChatTabController *presentation in self.chatPresentations.allValues) {
     if (presentation.notificationDidReveal) [self revealNotificationInPresentation:presentation];
   }
 }
@@ -6656,7 +5945,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     self.notificationsSyncInFlight = NO;
     self.notificationsNextSync = nil;
     self.notificationsFailureCount = 0;
-    for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+    for (TLChatTabController *presentation in self.chatPresentations.allValues) {
       presentation.notificationTargetMessageID = nil;
       presentation.notificationTargetToolCallID = nil;
       presentation.notificationDidReveal = nil;
@@ -6736,7 +6025,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (BOOL)insertNotificationSource:(NSDictionary *)notification transcript:(NSArray<NSDictionary *> *)transcript
-                   presentation:(TLChatPresentation *)presentation {
+                   presentation:(TLChatTabController *)presentation {
   // Ordinary Hermes history omits tool-only calls. Restore that exact source
   // row by durable neighboring IDs while retaining the live turn's objects.
   NSUInteger sourceIndex = [transcript indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger index, BOOL *stop) {
@@ -6778,7 +6067,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   NSInteger agentID = self.notificationsAgentID;
   if (agentID <= 0 || agentID != self.database.currentAgentID || !notification[@"id"] || !notification[@"version"]) return;
   NSUInteger generation = ++self.notificationsNavigationGeneration;
-  for (TLChatPresentation *presentation in self.chatPresentations.allValues) {
+  for (TLChatTabController *presentation in self.chatPresentations.allValues) {
     presentation.notificationTargetMessageID = nil;
     presentation.notificationTargetToolCallID = nil;
     presentation.notificationDidReveal = nil;
@@ -6808,7 +6097,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     metadata[@"continuation_session_id"] = result[@"continuation_session_id"] ?: result[@"source_session_id"];
     if ([result[@"model"] isKindOfClass:NSString.class] && [result[@"model"] length]) metadata[@"model"] = result[@"model"];
     TLChatRecord *existing = [owner.database chatWithHermesSessionID:metadata[@"id"] agentID:agentID error:nil];
-    TLChatPresentation *presentation = existing ? owner.chatPresentations[@(existing.chatID)] : nil;
+    TLChatTabController *presentation = existing ? owner.chatPresentations[@(existing.chatID)] : nil;
     NSNumber *existingChatID = existing ? @(existing.chatID) : nil;
     BOOL preserveHistory = existingChatID && (owner.turnRunners[existingChatID] ||
       owner.turnMessagesByChat[existingChatID] || [owner.preparingAttachmentChats containsObject:existingChatID]);
@@ -6858,7 +6147,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }];
 }
 
-- (BOOL)revealNotificationInPresentation:(TLChatPresentation *)presentation {
+- (BOOL)revealNotificationInPresentation:(TLChatTabController *)presentation {
   if (!presentation.notificationTargetMessageID.length || !presentation.notificationTargetToolCallID.length) return NO;
   if (presentation.notificationNavigationGeneration != self.notificationsNavigationGeneration) return NO;
   NSDictionary *target = @{@"message_id": presentation.notificationTargetMessageID, @"tool_call_id": presentation.notificationTargetToolCallID};
@@ -6929,7 +6218,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     TLChatRecord *chat = [owner.database cacheHermesSession:metadata messages:messages agentID:agentID error:&error];
     if (!chat) { owner.historyPanelController.statusMessage = error.localizedDescription; return; }
     owner.chats = [[owner.database listChats:nil] mutableCopy];
-    TLChatPresentation *presentation = owner.chatPresentations[@(chat.chatID)];
+    TLChatTabController *presentation = owner.chatPresentations[@(chat.chatID)];
     if (presentation) {
       presentation.chat = chat;
       presentation.messages = [[NSArray alloc] initWithArray:chat.messages copyItems:YES].mutableCopy;
@@ -7095,34 +6384,42 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       owner.historyPanelController.statusMessage = error.localizedDescription ?: @"Hermes returned an invalid session list.";
       return;
     }
-    NSMutableArray *chats = [NSMutableArray array];
-    NSMutableDictionary *metadata = [NSMutableDictionary dictionary];
-    NSMutableDictionary *previews = [NSMutableDictionary dictionary];
     for (id session in sessions) {
       if (![session isKindOfClass:NSDictionary.class] || ![session[@"id"] isKindOfClass:NSString.class]) {
         owner.historyPanelController.statusMessage = @"Hermes returned an invalid session.";
         return;
       }
-      TLChatRecord *chat = [owner.database cacheHermesSession:session messages:nil agentID:agentID error:&error];
-      if (!chat) { owner.historyPanelController.statusMessage = error.localizedDescription; return; }
-      [chats addObject:chat];
-      metadata[@(chat.chatID)] = session;
-      previews[@(chat.chatID)] = [session[@"preview"] isKindOfClass:NSString.class] ? session[@"preview"] : @"";
     }
-    owner.hermesHistoryChats = chats;
-    owner.hermesHistorySessions = metadata;
-    owner.historyPanelController.searchPreviews = previews;
-    owner.chats = [[owner.database listChats:nil] mutableCopy];
-    [owner reloadHistoryPanel];
-    [owner reloadWorkspaceTabs];
+    owner.historyPanelController.loading = YES;
+    [owner.historyRepository cacheSessions:sessions agentID:agentID completion:^(NSArray *chats, NSArray *allChats, NSError *cacheError) {
+      TalariaWindowController *current = weakSelf;
+      if (!current || generation != current.historyRequestGeneration) return;
+      current.historyPanelController.loading = NO;
+      if (agentID != current.database.currentAgentID) { [current refreshHermesHistory]; return; }
+      if (!chats) { current.historyPanelController.statusMessage = cacheError.localizedDescription; return; }
+      NSMutableDictionary *metadata = [NSMutableDictionary dictionary];
+      NSMutableDictionary *previews = [NSMutableDictionary dictionary];
+      [chats enumerateObjectsUsingBlock:^(TLChatSummary *chat, NSUInteger index, BOOL *stop) {
+        NSDictionary *session = sessions[index];
+        metadata[@(chat.chatID)] = session;
+        previews[@(chat.chatID)] = [session[@"preview"] isKindOfClass:NSString.class] ? session[@"preview"] : @"";
+      }];
+      current.hermesHistoryChats = chats;
+      current.hermesHistorySessions = metadata;
+      current.historyPanelController.searchPreviews = previews;
+      current.chats = [allChats mutableCopy];
+      [current reloadHistoryPanel];
+      [current reloadWorkspaceTabs];
+    }];
   }];
 }
 
 - (void)reloadHistoryPanel {
   if (!self.historyPanelController) return;
-  NSError *error = nil;
-  self.historyPanelController.browsingHistory = [self.database listBrowserHistory:&error] ?: @[];
-  self.historyPanelController.browsingStatusMessage = error ? [NSString stringWithFormat:@"Browsing history unavailable: %@", error.localizedDescription] : @"";
+  if (!self.widgetbookMode && !self.historyRepository) {
+    self.historyRepository = [[TLHistoryRepository alloc] initWithDatabase:self.database];
+    self.historyPanelController.repository = self.historyRepository;
+  }
   self.historyPanelController.chats = self.widgetbookMode ? (self.chats ?: @[]) : (self.hermesHistoryChats ?: @[]);
   [self.historyPanelController reloadData];
 }

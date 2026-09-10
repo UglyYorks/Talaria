@@ -57,7 +57,7 @@ static void TestOwnerRouting(TLDatabase *db, NSURL *folder) {
   __block BOOL completed = NO;
   [orchestrator streamChatWithAgentID:a.agentID requestID:@"owned-request" sessionID:@"continuation"
     token:@"test" model:@"test" messages:@[[TLChatMessage messageWithRole:TLRoleUser content:@"Reply" thinking:nil]]
-    delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {} completion:^(NSError *error) { completed = error == nil; }];
+    delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, id value) {} completion:^(NSError *error) { completed = error == nil; }];
   Check(completed && client.capturedAgentID == a.agentID && [client.capturedSessionID isEqual:@"continuation"], @"notification replies use source owner after the selected agent changes");
   [orchestrator selectModel:@"model" sessionID:@"continuation" agentID:a.agentID token:@"test" completion:^(NSError *error) {}];
   Check(client.capturedAgentID == a.agentID, @"notification model changes keep their source owner");
@@ -156,8 +156,8 @@ int main(void) { @autoreleasepool {
     [copy.notification[@"id"] isEqual:@"n-1"], @"source metadata survives import and copy even when the message is empty");
   NSInteger previousLocalID = first.messages.firstObject.messageID;
   first = [db cacheHermesSession:session messages:@[source, source] agentID:1 error:&error];
-  Check(first.messages.firstObject.messageID != previousLocalID && [first.messages.firstObject.sourceMessageID isEqual:@"42"],
-    @"recaching changes local IDs without changing source anchors");
+  Check(first.messages.firstObject.messageID == previousLocalID && [first.messages.firstObject.sourceMessageID isEqual:@"42"],
+    @"recaching preserves local IDs and source anchors");
   NSMutableDictionary *continued = [session mutableCopy];
   continued[@"source_session_id"] = @"unexpected-new-source"; continued[@"continuation_session_id"] = @"latest";
   first = [db cacheHermesSession:continued messages:nil agentID:1 error:&error];

@@ -47,6 +47,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
 @property (nonatomic, readwrite) BOOL running;
 @property (nonatomic, strong, readwrite) TLChatMessage *activeUserMessage;
 @property (nonatomic, copy) NSString *activeRequestID;
+@property (nonatomic, strong, readwrite) TLChatMessage *streamingMessage;
 @property (nonatomic, copy) TLAgentStreamCompletionHandler finishStream;
 @end
 
@@ -128,6 +129,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   TLChatMessage *userMessage = self.regenerationPrompt ?: [TLChatMessage messageWithRole:TLRoleUser content:trimmedPrompt thinking:nil];
   if (!self.regenerationPrompt) userMessage.attachments = attachments;
   TLChatMessage *assistantMessage = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
+  self.streamingMessage = assistantMessage;
   if (!self.regenerationPrompt) [messages addObject:userMessage];
   if (originalAnswer) messages[[messages indexOfObjectIdenticalTo:originalAnswer]] = assistantMessage;
   else [messages addObject:assistantMessage];
@@ -208,22 +210,23 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
       userMessage:savedUser assistantMessage:resultAssistant];
     [strongSelf finishWithResult:result updateHandler:updateHandler completionHandler:completionHandler];
   };
-  TLAgentStreamDeltaHandler delta = ^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
+  TLAgentStreamDeltaHandler delta = ^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, id value) {
+    NSString *text = [value isKindOfClass:NSString.class] ? value : @"";
     TLAssistantTurnRunner *strongSelf = weakSelf;
     if (!strongSelf || !strongSelf.running || ![strongSelf.activeRequestID isEqualToString:requestID] ||
         ![deltaRequestID isEqualToString:requestID] ||
-        (text.length == 0 && kind != TLAgentStreamDeltaKindStatus)) {
+        (text.length == 0 && kind != TLAgentStreamDeltaKindStatus && ![value isKindOfClass:NSDictionary.class])) {
       return;
     }
 
     BOOL displayChanged = NO;
     if (kind == TLAgentStreamDeltaKindToolActivity) {
-      id activity = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+      id activity = value;
       displayChanged = [assistantMessage applyToolActivity:activity];
       if (!displayChanged) return;
       assistantStatus = @"";
     } else if (kind == TLAgentStreamDeltaKindApproval) {
-      id request = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+      id request = value;
       if (![request isKindOfClass:NSDictionary.class] || ![request[@"request_id"] isKindOfClass:NSString.class] ||
           ![request[@"request_id"] length] || ![request[@"command"] isKindOfClass:NSString.class]) return;
       assistantMessage.approvalRequest = request;

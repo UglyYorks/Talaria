@@ -318,8 +318,7 @@ static void TestStructuredApproval(void) {
     updateHandler:nil completionHandler:^(TLAssistantTurnResult *value) { result = value; } error:nil];
   TLTurnTestRequest *request = stream.requests.lastObject;
   NSDictionary *approval = @{@"request_id":@"exact-id", @"command":@"execute_code\n# literal comment\nprint('hello')", @"choices":@[@"once", @"deny"]};
-  NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:approval options:0 error:nil] encoding:NSUTF8StringEncoding];
-  request.delta(request.requestID, TLAgentStreamDeltaKindApproval, json);
+  request.delta(request.requestID, TLAgentStreamDeltaKindApproval, approval);
   TLAssert([messages.lastObject.approvalRequest isEqual:approval] && !messages.lastObject.content.length,
     @"approval command is structured metadata, never assistant Markdown");
   request.completion(nil);
@@ -440,10 +439,10 @@ static void TestLiveToolActivity(void) {
     TLTurnTestRequest *request = stream.requests.lastObject;
     void (^emit)(NSString *, NSString *, NSString *) = ^(NSString *rid, NSString *identifier, NSString *state) {
       NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"id":identifier, @"name":@"terminal", @"state":state, @"detail":@"pwd"} options:0 error:nil];
-      request.delta(rid, TLAgentStreamDeltaKindToolActivity, [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]);
+      request.delta(rid, TLAgentStreamDeltaKindToolActivity, [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]);
     };
     emit(@"wrong-request", @"wrong", @"running");
-    request.delta(request.requestID, TLAgentStreamDeltaKindToolActivity, @"[]");
+    request.delta(request.requestID, TLAgentStreamDeltaKindToolActivity, [NSJSONSerialization JSONObjectWithData:[@"[]" dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]);
     TLAssert(!messages.lastObject.toolActivities.count, @"malformed and foreign tool updates are ignored");
     emit(request.requestID, @"preparing:terminal", @"preparing");
     emit(request.requestID, @"a", @"running");
@@ -460,7 +459,7 @@ static void TestLiveToolActivity(void) {
     TLAssert([snapshot.toolActivities[0][@"state"] isEqual:@"running"], @"activity snapshots are immutable");
     TLAssert(!messages.lastObject.content.length && !messages.lastObject.thinking.length &&
       ![messages.lastObject.requestDictionary.description containsString:@"terminal"], @"tool activity stays out of answer, reasoning and prompt context");
-    if (outcome.integerValue == 3) request.delta(request.requestID, TLAgentStreamDeltaKindApproval, @"{\"request_id\":\"p\",\"command\":\"pwd\"}");
+    if (outcome.integerValue == 3) request.delta(request.requestID, TLAgentStreamDeltaKindApproval, [NSJSONSerialization JSONObjectWithData:[@"{\"request_id\":\"p\",\"command\":\"pwd\"}" dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]);
     if (outcome.integerValue == 2) [runner cancel];
     else request.completion(outcome.integerValue == 1 ? TLTestError(@"Disconnected") : nil);
     NSString *expected = @[@"ended", @"interrupted", @"stopped", @"paused"][outcome.unsignedIntegerValue];

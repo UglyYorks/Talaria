@@ -1,6 +1,7 @@
 #import "Database.h"
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
+#import "TLTranscriptReconciler.h"
 
 static NSInteger const TLDatabaseSchemaVersion = 12;
 
@@ -50,9 +51,20 @@ static NSString *TLTitleFromMessage(NSString *content) {
   return title.length > 0 ? title : @"New chat";
 }
 
-
-static NSString *TLSourceIdentity(id value) {
-  return [value isKindOfClass:NSString.class] ? value : ([value isKindOfClass:NSNumber.class] ? [value stringValue] : @"");
+static void TLHistoryMatches(sqlite3_context *context, int count, sqlite3_value **values) {
+  @autoreleasepool {
+    NSString *(^string)(int) = ^NSString *(int i) { const char *text = (const char *)sqlite3_value_text(values[i]); return text ? @(text) : @""; };
+    NSString *url = string(1), *query = string(2);
+    NSString *text = [NSString stringWithFormat:@"%@ %@ %@", string(0), url, url.stringByRemovingPercentEncoding ?: @""];
+    sqlite3_result_int(context, !query.length || [text rangeOfString:query options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location != NSNotFound);
+  }
+}
+static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value **values) {
+  @autoreleasepool {
+    const char *text = (const char *)sqlite3_value_text(values[0]);
+    NSString *origin = text ? TLBrowserHistoryOrigin([NSURL URLWithString:@(text)]) : nil;
+    if (origin) sqlite3_result_text(context, origin.UTF8String, -1, SQLITE_TRANSIENT); else sqlite3_result_null(context);
+  }
 }
 
 static BOOL TLValidSourceMetadata(id calls, id notification) {
@@ -74,6 +86,7 @@ static id TLJSONValue(NSString *text) {
 @interface TLDatabase ()
 
 @property (nonatomic, strong) TLSQLiteConnection *sqliteConnection;
+@property (nonatomic, strong) dispatch_queue_t databaseQueue;
 @property (nonatomic, readwrite, getter=isIncognito) BOOL incognito;
 @property (nonatomic, copy) NSString *incognitoToken;
 @property (nonatomic, strong) id<TLCredentialStore> credentialStore;
@@ -85,21 +98,426 @@ static id TLJSONValue(NSString *text) {
 
 @implementation TLDatabase
 
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _databaseQueue = dispatch_queue_create("com.talaria.database", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_set_specific(_databaseQueue, (__bridge void *)self, (__bridge void *)self, NULL);
+  }
+  return self;
+}
+
+- (void)registerHistoryFunctions {
+  sqlite3_create_function_v2(self.sqliteConnection.handle, "talaria_history_matches", 3, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, TLHistoryMatches, NULL, NULL, NULL);
+  sqlite3_create_function_v2(self.sqliteConnection.handle, "talaria_origin", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, TLHistoryOrigin, NULL, NULL, NULL);
+}
+
 - (TLDatabase *)incognitoDatabase:(NSError **)error {
-  @synchronized (self) {
-    TLDatabase *copy = [TLDatabase new];
-    copy.incognito = YES;
-    copy.incognitoToken = [self appSettings:error].openRouterToken;
-    copy.sqliteConnection = [TLSQLiteConnection openInMemory:error];
-    if (!copy.sqliteConnection) return nil;
-    sqlite3_backup *backup = sqlite3_backup_init(copy.sqliteConnection.handle, "main", self.sqliteConnection.handle, "main");
-    if (!backup) { [copy.sqliteConnection setCurrentError:error]; return nil; }
-    int result = sqlite3_backup_step(backup, -1);
-    sqlite3_backup_finish(backup);
-    if (result != SQLITE_DONE) { [copy.sqliteConnection setCurrentError:error]; return nil; }
-    if (![copy executeSQL:"PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; DELETE FROM messages; DELETE FROM bookmarks; DELETE FROM chats; DELETE FROM browser_history; DELETE FROM notifications; DELETE FROM notification_sync;" error:error]) return nil;
+  if (!dispatch_get_specific((__bridge void *)self)) {
+    __block TLDatabase *copy;
+    __block NSError *copyError = nil;
+    dispatch_sync(self.databaseQueue, ^{ copy = [self incognitoDatabase:&copyError]; });
+    if (error) *error = copyError;
     return copy;
   }
+  TLAppSettings *settings = [self appSettings:error];
+  if (!settings) return nil;
+  TLDatabase *copy = [TLDatabase new];
+  copy.incognito = YES;
+  copy.incognitoToken = settings.openRouterToken;
+  __block BOOL copied = NO;
+  __block NSError *copyError = nil;
+  // Hold the source queue while creating a destination that is not yet shared.
+  dispatch_sync(copy.databaseQueue, ^{
+    copy.sqliteConnection = [TLSQLiteConnection openInMemory:&copyError];
+    if (!copy.sqliteConnection) return;
+    [copy registerHistoryFunctions];
+    sqlite3_backup *backup = sqlite3_backup_init(copy.sqliteConnection.handle, "main", self.sqliteConnection.handle, "main");
+    if (!backup) { [copy.sqliteConnection setCurrentError:&copyError]; return; }
+    int result = sqlite3_backup_step(backup, -1);
+    int finished = sqlite3_backup_finish(backup);
+    if (result != SQLITE_DONE || finished != SQLITE_OK) { [copy.sqliteConnection setCurrentError:&copyError]; return; }
+    copied = [copy executeSQL:"PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; DELETE FROM messages; DELETE FROM bookmarks; DELETE FROM chats; DELETE FROM browser_history; DELETE FROM notifications; DELETE FROM notification_sync;" error:&copyError];
+  });
+  if (error) *error = copyError;
+  return copied ? copy : nil;
+}
+
+
+- (TLChatRecord *)cacheHermesSession:(NSDictionary *)session messages:(NSArray<NSDictionary *> *)messages
+                           agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheHermesSession:session messages:messages agentID:agentID error:error];
+  __block TLChatRecord * value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_cacheHermesSession:session messages:messages agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (TLChatRecord *)chatWithHermesSessionID:(NSString *)sessionID agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_chatWithHermesSessionID:sessionID agentID:agentID error:error];
+  __block TLChatRecord * value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_chatWithHermesSessionID:sessionID agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (NSArray<NSDictionary *> *)notificationsForAgentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_notificationsForAgentID:agentID error:error];
+  __block NSArray<NSDictionary *> * value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_notificationsForAgentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (NSDictionary *)notificationSyncStateForAgentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_notificationSyncStateForAgentID:agentID error:error];
+  __block NSDictionary * value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_notificationSyncStateForAgentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (BOOL)cacheNotification:(NSDictionary *)notification agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheNotification:notification agentID:agentID error:error];
+  __block BOOL value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_cacheNotification:notification agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (BOOL)applyNotificationSyncResult:(NSDictionary *)result agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_applyNotificationSyncResult:result agentID:agentID error:error];
+  __block BOOL value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_applyNotificationSyncResult:result agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (NSArray<TLChatSummary *> *)cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheHermesSessionSummaries:sessions agentID:agentID error:error];
+  __block NSArray *value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_cacheHermesSessionSummaries:sessions agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+
+- (void)dealloc {
+  __block TLSQLiteConnection *connection = _sqliteConnection;
+  _sqliteConnection = nil;
+  if (_databaseQueue && !dispatch_get_specific((__bridge void *)self)) dispatch_sync(_databaseQueue, ^{ connection = nil; });
+  else connection = nil;
+}
+
+- (void)performAsync:(void (^)(TLDatabase *))work {
+  dispatch_async(self.databaseQueue, ^{ @autoreleasepool { work(self); } });
+}
+
+- (NSArray<TLBookmark *> *)listBookmarks:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_listBookmarks:error];
+  __block NSArray<TLBookmark *> * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_listBookmarks:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)saveBookmark:(TLBookmark *)bookmark error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_saveBookmark:bookmark error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_saveBookmark:bookmark error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_deleteBookmarkWithID:bookmarkID error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_deleteBookmarkWithID:bookmarkID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLAppSettings *)appSettings:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_appSettings:error];
+  __block TLAppSettings * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_appSettings:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_saveAppSettings:settings error:error];
+  __block TLAppSettings * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_saveAppSettings:settings error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (NSArray<TLChatSummary *> *)cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheHermesSessionSummaries:sessions agentID:0 error:error];
+  __block NSArray<TLChatSummary *> * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_cacheHermesSessionSummaries:sessions agentID:0 error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (nullable TLChatRecord *)cacheHermesSession:(NSDictionary *)session
+                                   messages:(nullable NSArray<NSDictionary *> *)messages
+                                      error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheHermesSession:session messages:messages error:error];
+  __block TLChatRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_cacheHermesSession:session messages:messages error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_recordBrowserVisitToURL:URL title:title error:error];
+  __block NSInteger result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_recordBrowserVisitToURL:URL title:title error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID title:(NSString *)title error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_updateBrowserVisitWithID:visitID title:title error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_updateBrowserVisitWithID:visitID title:title error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID faviconData:(NSData *)data error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_updateBrowserVisitWithID:visitID faviconData:data error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_updateBrowserVisitWithID:visitID faviconData:data error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (NSArray<TLBrowserHistoryEntry *> *)browserHistoryMatching:(NSString *)query before:(TLBrowserHistoryEntry *)cursor limit:(NSUInteger)limit error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_browserHistoryMatching:query before:cursor limit:limit error:error];
+  __block NSArray<TLBrowserHistoryEntry *> * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_browserHistoryMatching:query before:cursor limit:limit error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (NSData *)faviconForBrowserVisit:(TLBrowserHistoryEntry *)entry error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_faviconForBrowserVisit:entry error:error];
+  __block NSData * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_faviconForBrowserVisit:entry error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (NSArray<TLBrowserHistoryEntry *> *)listBrowserHistory:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_listBrowserHistory:error];
+  __block NSArray<TLBrowserHistoryEntry *> * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_listBrowserHistory:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_deleteBrowserVisitWithID:visitID error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_deleteBrowserVisitWithID:visitID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (NSArray<TLChatSummary *> *)listChats:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_listChats:error];
+  __block NSArray<TLChatSummary *> * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_listChats:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_createChatWithModel:model error:error];
+  __block TLChatRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_createChatWithModel:model error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_createChatWithModel:model supportingModel:supportingModel error:error];
+  __block TLChatRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_createChatWithModel:model supportingModel:supportingModel error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)saveModelsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_saveModelsForChatID:chatID model:model supportingModel:supportingModel error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_saveModelsForChatID:chatID model:model supportingModel:supportingModel error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLChatRecord *)chatWithID:(NSInteger)chatID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_chatWithID:chatID error:error];
+  __block TLChatRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_chatWithID:chatID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLChatSummary *)saveChatTitle:(NSString *)title chatID:(NSInteger)chatID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_saveChatTitle:title chatID:chatID error:error];
+  __block TLChatSummary * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_saveChatTitle:title chatID:chatID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLChatSummary *)saveChatIcon:(NSString *)icon chatID:(NSInteger)chatID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_saveChatIcon:icon chatID:chatID error:error];
+  __block TLChatSummary * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_saveChatIcon:icon chatID:chatID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_saveMessage:message chatID:chatID error:error];
+  __block TLStoredChatMessage * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_saveMessage:message chatID:chatID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLStoredChatMessage *)replaceMessage:(TLChatMessage *)message messageID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_replaceMessage:message messageID:messageID chatID:chatID error:error];
+  __block TLStoredChatMessage * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_replaceMessage:message messageID:messageID chatID:chatID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)deleteMessageWithID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_deleteMessageWithID:messageID chatID:chatID error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_deleteMessageWithID:messageID chatID:chatID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLChatRecord *)clearChatWithID:(NSInteger)chatID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_clearChatWithID:chatID error:error];
+  __block TLChatRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_clearChatWithID:chatID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)deleteChatWithID:(NSInteger)chatID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_deleteChatWithID:chatID error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_deleteChatWithID:chatID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (NSArray<TLAgentRecord *> *)listAgents:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_listAgents:error];
+  __block NSArray<TLAgentRecord *> * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_listAgents:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLAgentRecord *)createAgentWithName:(NSString *)name
+                             guestKind:(NSString *)guestKind
+                               runtime:(NSString *)runtime
+                           vmDirectory:(NSString *)vmDirectory
+                                 error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_createAgentWithName:name guestKind:guestKind runtime:runtime vmDirectory:vmDirectory error:error];
+  __block TLAgentRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_createAgentWithName:name guestKind:guestKind runtime:runtime vmDirectory:vmDirectory error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
+                                 soul:(NSString *)soul folderPaths:(NSArray<NSString *> *)folderPaths
+                          vmDirectory:(NSString *)vmDirectory error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_createAgentWithName:name avatar:avatar soul:soul folderPaths:folderPaths vmDirectory:vmDirectory error:error];
+  __block TLAgentRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_createAgentWithName:name avatar:avatar soul:soul folderPaths:folderPaths vmDirectory:vmDirectory error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (NSInteger)currentAgentID {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_currentAgentID];
+  __block NSInteger result;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_currentAgentID]; });
+  return result;
+}
+- (BOOL)saveDefaultModel:(NSString *)model forAgentID:(NSInteger)agentID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_saveDefaultModel:model forAgentID:agentID error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_saveDefaultModel:model forAgentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)setCurrentAgentID:(NSInteger)agentID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_setCurrentAgentID:agentID error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_setCurrentAgentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLAgentRecord *)agentWithID:(NSInteger)agentID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_agentWithID:agentID error:error];
+  __block TLAgentRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_agentWithID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID
+                              status:(NSString *)status
+                           lastError:(NSString *)lastError
+                               error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_updateAgentWithID:agentID status:status lastError:lastError error:error];
+  __block TLAgentRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_updateAgentWithID:agentID status:status lastError:lastError error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)folderPaths error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_updateAgentWithID:agentID folderPaths:folderPaths error:error];
+  __block TLAgentRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_updateAgentWithID:agentID folderPaths:folderPaths error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name
+                             avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_updateAgentWithID:agentID name:name avatar:avatar soul:soul error:error];
+  __block TLAgentRecord * result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_updateAgentWithID:agentID name:name avatar:avatar soul:soul error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
+}
+- (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_deleteAgentWithID:agentID error:error];
+  __block BOOL result;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_deleteAgentWithID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return result;
 }
 
 + (NSURL *)defaultDatabaseURL {
@@ -114,7 +532,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (instancetype)initWithURL:(NSURL *)url credentialStore:(id<TLCredentialStore>)credentialStore error:(NSError **)error {
-  self = [super init];
+  self = [self init];
   if (!self) {
     return nil;
   }
@@ -128,19 +546,20 @@ static id TLJSONValue(NSString *text) {
     return nil;
   }
 
-  _sqliteConnection = [TLSQLiteConnection openURL:url error:error];
-  if (!_sqliteConnection) {
-    return nil;
-  }
-
-  if (![self initializeSchema:error]) {
-    return nil;
-  }
+  __block BOOL initialized = NO;
+  __block NSError *initializationError = nil;
+  dispatch_sync(_databaseQueue, ^{
+    self.sqliteConnection = [TLSQLiteConnection openURL:url error:&initializationError];
+    if (!self.sqliteConnection) return;
+    [self registerHistoryFunctions];
+    initialized = [self initializeSchema:&initializationError];
+  });
+  if (!initialized) { if (error) *error = initializationError; return nil; }
 
   return self;
 }
 
-- (NSArray<TLBookmark *> *)listBookmarks:(NSError **)error {
+- (NSArray<TLBookmark *> *)onDatabaseQueue_listBookmarks:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
       "SELECT id, name, url, chat_id, emoji, favicon FROM bookmarks ORDER BY id" error:error];
@@ -163,7 +582,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)saveBookmark:(TLBookmark *)bookmark error:(NSError **)error {
+- (BOOL)onDatabaseQueue_saveBookmark:(TLBookmark *)bookmark error:(NSError **)error {
   @synchronized (self) {
     NSString *name = TLTrimmedString(bookmark.name);
     NSURL *URL = bookmark.URL ? [TLBookmark normalizedURL:bookmark.URL.absoluteString] : nil;
@@ -185,7 +604,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error {
+- (BOOL)onDatabaseQueue_deleteBookmarkWithID:(NSInteger)bookmarkID error:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM bookmarks WHERE id=?1" error:error];
     if (!statement) return NO;
@@ -194,7 +613,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLAppSettings *)appSettings:(NSError **)error {
+- (TLAppSettings *)onDatabaseQueue_appSettings:(NSError **)error {
   @synchronized (self) {
     NSDictionary<NSString *, NSString *> *values = [self storedSettings:error];
     if (!values) {
@@ -225,7 +644,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error {
+- (TLAppSettings *)onDatabaseQueue_saveAppSettings:(TLAppSettings *)settings error:(NSError **)error {
   @synchronized (self) {
     NSString *selectedModel = TLNonBlank(settings.selectedModel, TLDefaultModelID);
     NSString *supportingModel = TLNonBlank(settings.supportingModel, TLDefaultSupportingModelID);
@@ -289,39 +708,32 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-// Hermes owns history. These records only adapt it to Talaria's existing tab/message cache.
-- (nullable TLChatRecord *)cacheHermesSession:(NSDictionary *)session
-                                   messages:(nullable NSArray<NSDictionary *> *)messages
-                                      error:(NSError **)error {
-  return [self cacheHermesSession:session messages:messages agentID:0 error:error];
-}
-
-- (TLChatRecord *)cacheHermesSession:(NSDictionary *)session messages:(NSArray<NSDictionary *> *)messages
-                           agentID:(NSInteger)agentID error:(NSError **)error {
-  @synchronized (self) {
-    NSString *(^string)(id) = ^NSString *(id value) { return [value isKindOfClass:NSString.class] ? value : @""; };
-    NSString *sessionID = string(session[@"hermes_session_id"]);
-    if (!sessionID.length) sessionID = string(session[@"id"]);
-    NSString *sourceID = string(session[@"source_session_id"]);
-    if (!sourceID.length) sourceID = string(session[@"id"]);
-    NSString *continuationID = string(session[@"continuation_session_id"]);
-    if (!sessionID.length) { TLSetDatabaseError(error, @"Hermes session identity is missing."); return nil; }
-    // History can use a Talaria alias while notification links use the stored
-    // Hermes ID. Both refer to the same owned chat, never its continuation.
-    if (agentID > 0 && sourceID.length) {
-      TLChatRecord *existing = [self chatWithHermesSessionID:sourceID agentID:agentID error:error];
-      if (existing) sessionID = existing.hermesSessionID;
-    }
-    __block NSInteger chatID = 0;
-    BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
+- (NSInteger)upsertHermesSession:(NSDictionary *)session agentID:(NSInteger)agentID error:(NSError **)error {
+  NSString *(^string)(id) = ^NSString *(id value) { return [value isKindOfClass:NSString.class] ? value : @""; };
+  NSString *sessionID = string(session[@"hermes_session_id"]);
+  if (!sessionID.length) sessionID = string(session[@"id"]);
+  NSString *sourceID = string(session[@"source_session_id"]);
+  if (!sourceID.length) sourceID = string(session[@"id"]);
+  NSString *continuationID = string(session[@"continuation_session_id"]);
+  if (!sessionID.length) { TLSetDatabaseError(error, @"Hermes session identity is missing."); return 0; }
+  if (agentID > 0 && sourceID.length) {
+    TLSQLiteStatement *alias = [self.sqliteConnection prepareSQL:
+      "SELECT hermes_session_id FROM chats WHERE source_agent_id=?1 AND (hermes_session_id=?2 OR source_session_id=?2) "
+      "ORDER BY CASE WHEN hermes_session_id=?2 THEN 0 ELSE 1 END, id LIMIT 1" error:error];
+    if (!alias) return 0;
+    [alias bindInt64:agentID atIndex:1]; [alias bindText:sourceID atIndex:2];
+    int result = [alias step];
+    if (result == SQLITE_ROW) sessionID = [alias stringAtColumn:0];
+    else if (result != SQLITE_DONE) { [self.sqliteConnection setCurrentError:error]; return 0; }
+  }
       // An authoritative import may claim an unowned legacy chat, but never another agent's chat.
       if (agentID > 0) {
         TLSQLiteStatement *claim = [self.sqliteConnection prepareSQL:
           "UPDATE chats SET source_agent_id = ?1 WHERE source_agent_id = 0 AND hermes_session_id = ?2 "
-          "AND NOT EXISTS (SELECT 1 FROM chats WHERE source_agent_id = ?1 AND hermes_session_id = ?2)" error:transactionError];
-        if (!claim) return NO;
+          "AND NOT EXISTS (SELECT 1 FROM chats WHERE source_agent_id = ?1 AND hermes_session_id = ?2)" error:error];
+        if (!claim) return 0;
         [claim bindInt64:agentID atIndex:1]; [claim bindText:sessionID atIndex:2];
-        if (![claim stepDone:transactionError]) return NO;
+        if (![claim stepDone:error]) return 0;
       }
       TLSQLiteStatement *upsert = [self.sqliteConnection prepareSQL:
         "INSERT INTO chats (title, model, icon, hermes_session_id, created_at, updated_at, source_agent_id, source_session_id, continuation_session_id) "
@@ -329,8 +741,8 @@ static id TLJSONValue(NSString *text) {
         "title = excluded.title, model = CASE WHEN excluded.model = '' THEN chats.model ELSE excluded.model END, "
         "created_at = excluded.created_at, updated_at = excluded.updated_at, "
         "source_session_id = CASE WHEN chats.source_session_id = '' THEN excluded.source_session_id ELSE chats.source_session_id END, "
-        "continuation_session_id = CASE WHEN excluded.continuation_session_id = '' THEN chats.continuation_session_id ELSE excluded.continuation_session_id END" error:transactionError];
-      if (!upsert) return NO;
+        "continuation_session_id = CASE WHEN excluded.continuation_session_id = '' THEN chats.continuation_session_id ELSE excluded.continuation_session_id END" error:error];
+      if (!upsert) return 0;
       [upsert bindText:string(session[@"title"]) atIndex:1];
       [upsert bindText:string(session[@"model"]) atIndex:2];
       [upsert bindText:sessionID atIndex:3];
@@ -339,58 +751,81 @@ static id TLJSONValue(NSString *text) {
       [upsert bindInt64:agentID atIndex:6];
       [upsert bindText:sourceID atIndex:7];
       [upsert bindText:continuationID atIndex:8];
-      if (![upsert stepDone:transactionError]) return NO;
-      TLSQLiteStatement *lookup = [self.sqliteConnection prepareSQL:"SELECT id FROM chats WHERE hermes_session_id = ?1 AND source_agent_id = ?2" error:transactionError];
-      if (!lookup) return NO;
+      if (![upsert stepDone:error]) return 0;
+      TLSQLiteStatement *lookup = [self.sqliteConnection prepareSQL:"SELECT id FROM chats WHERE hermes_session_id = ?1 AND source_agent_id = ?2" error:error];
+      if (!lookup) return 0;
       [lookup bindText:sessionID atIndex:1];
       [lookup bindInt64:agentID atIndex:2];
-      if ([lookup step] != SQLITE_ROW) { [self.sqliteConnection setCurrentError:transactionError]; return NO; }
-      chatID = sqlite3_column_int64(lookup.handle, 0);
+      if ([lookup step] != SQLITE_ROW) { [self.sqliteConnection setCurrentError:error]; return 0; }
+      NSInteger chatID = sqlite3_column_int64(lookup.handle, 0);
       sqlite3_reset(lookup.handle);
+  return chatID;
+}
+
+- (NSArray<TLChatSummary *> *)onDatabaseQueue_cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions agentID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    NSMutableArray *summaries = [NSMutableArray arrayWithCapacity:sessions.count];
+    BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
+      for (id session in sessions) {
+        if (![session isKindOfClass:NSDictionary.class]) { TLSetDatabaseError(transactionError, @"Hermes returned an invalid session."); return NO; }
+        NSInteger chatID = [self upsertHermesSession:session agentID:agentID error:transactionError];
+        TLChatSummary *summary = chatID ? [self loadChatSummaryWithID:chatID error:transactionError] : nil;
+        if (!summary) return NO;
+        [summaries addObject:summary];
+      }
+      return YES;
+    } error:error];
+    return saved ? summaries : nil;
+  }
+}
+
+// Hermes owns history. These records only adapt it to Talaria's existing tab/message cache.
+- (nullable TLChatRecord *)onDatabaseQueue_cacheHermesSession:(NSDictionary *)session
+                                   messages:(nullable NSArray<NSDictionary *> *)messages
+                                      error:(NSError **)error {
+  return [self cacheHermesSession:session messages:messages agentID:0 error:error];
+}
+
+- (TLChatRecord *)onDatabaseQueue_cacheHermesSession:(NSDictionary *)session messages:(NSArray<NSDictionary *> *)messages
+                           agentID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    __block NSInteger chatID = 0;
+    BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
+      chatID = [self upsertHermesSession:session agentID:agentID error:transactionError];
+      if (!chatID) return NO;
       if (!messages) return YES;
       TLChatRecord *previous = [self loadChatWithID:chatID error:transactionError];
       if (!previous) return NO;
-      TLSQLiteStatement *remove = [self.sqliteConnection prepareSQL:"DELETE FROM messages WHERE chat_id = ?1" error:transactionError];
-      if (!remove) return NO;
-      [remove bindInt64:chatID atIndex:1];
-      if (![remove stepDone:transactionError]) return NO;
-      NSMutableArray<TLStoredChatMessage *> *oldMessages = [previous.messages mutableCopy];
-      for (id item in messages) {
-        if (![item isKindOfClass:NSDictionary.class] || ![self isValidRole:string(item[@"role"])] ||
-            ![item[@"content"] isKindOfClass:NSString.class]) {
-          TLSetDatabaseError(transactionError, @"Hermes returned an invalid transcript.");
-          return NO; // Rolls back both the transcript and metadata.
-        }
-        NSArray *attachments = @[];
-        NSString *thinking = string(item[@"thinking"]);
-        // Attachment files belong to Talaria; retain their descriptors on matching turns.
-        for (TLStoredChatMessage *old in [oldMessages copy]) {
-          if ([old.role isEqual:item[@"role"]] && [old.content isEqual:item[@"content"]]) {
-            attachments = old.attachments ?: @[];
-            if (!thinking.length) thinking = old.thinking ?: @"";
-            [oldMessages removeObjectIdenticalTo:old];
-            break;
-          }
-        }
-        NSData *data = [NSJSONSerialization dataWithJSONObject:attachments options:0 error:transactionError];
+      TLTranscriptChanges *changes = [TLTranscriptReconciler reconcileMessages:messages previous:previous.messages error:transactionError];
+      if (!changes) return NO;
+      TLSQLiteStatement *remove = [self.sqliteConnection prepareSQL:"DELETE FROM messages WHERE id = ?1 AND chat_id = ?2" error:transactionError];
+      TLSQLiteStatement *write = [self.sqliteConnection prepareSQL:
+        "INSERT INTO messages (id, chat_id, role, content, thinking, attachments, created_at, position, source_message_id, source_tool_call_ids, notification) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(id) DO UPDATE SET "
+        "thinking=excluded.thinking, created_at=excluded.created_at, position=excluded.position, source_message_id=excluded.source_message_id, source_tool_call_ids=excluded.source_tool_call_ids, notification=excluded.notification" error:transactionError];
+      if (!remove || !write) return NO;
+      for (NSNumber *messageID in changes.deletedIDs) {
+        sqlite3_reset(remove.handle); sqlite3_clear_bindings(remove.handle);
+        [remove bindInt64:messageID.longLongValue atIndex:1];
+        [remove bindInt64:chatID atIndex:2];
+        if (![remove stepDone:transactionError]) return NO;
+      }
+      for (TLStoredChatMessage *message in changes.writes) {
+        NSData *data = [NSJSONSerialization dataWithJSONObject:message.attachments options:0 error:transactionError];
         if (!data) return NO;
-        TLSQLiteStatement *insert = [self.sqliteConnection prepareSQL:
-          "INSERT INTO messages (chat_id, role, content, thinking, attachments, created_at, source_message_id, source_tool_call_ids, notification) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
-          error:transactionError];
-        if (!insert) return NO;
-        [insert bindInt64:chatID atIndex:1];
-        [insert bindText:item[@"role"] atIndex:2];
-        [insert bindText:item[@"content"] atIndex:3];
-        [insert bindText:thinking atIndex:4];
-        [insert bindText:[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] atIndex:5];
-        [insert bindText:string(item[@"created_at"]) atIndex:6];
-        [insert bindText:TLSourceIdentity(item[@"source_message_id"]) atIndex:7];
-        NSArray *calls = item[@"source_tool_call_ids"] ?: @[];
-        NSDictionary *notification = item[@"notification"] ?: @{};
-        if (!TLValidSourceMetadata(calls, notification)) { TLSetDatabaseError(transactionError, @"Hermes returned invalid source metadata."); return NO; }
-        [insert bindText:TLJSONText(calls, transactionError) atIndex:8];
-        [insert bindText:TLJSONText(notification, transactionError) atIndex:9];
-        if (![insert stepDone:transactionError]) return NO;
+        sqlite3_reset(write.handle); sqlite3_clear_bindings(write.handle);
+        if (message.messageID) [write bindInt64:message.messageID atIndex:1]; else [write bindNullAtIndex:1];
+        [write bindInt64:chatID atIndex:2];
+        [write bindText:message.role atIndex:3];
+        [write bindText:message.content atIndex:4];
+        [write bindText:message.thinking ?: @"" atIndex:5];
+        [write bindText:[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] atIndex:6];
+        [write bindText:message.createdAt atIndex:7];
+        [write bindInt64:message.position atIndex:8];
+        [write bindText:message.sourceMessageID ?: @"" atIndex:9];
+        [write bindText:TLJSONText(message.sourceToolCallIDs ?: @[], transactionError) atIndex:10];
+        [write bindText:TLJSONText(message.notification ?: @{}, transactionError) atIndex:11];
+        if (![write stepDone:transactionError]) return NO;
       }
       return YES;
     } error:error];
@@ -398,13 +833,13 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error {
+- (NSInteger)onDatabaseQueue_recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error {
   if (self.incognito) return 0;
   NSString *scheme = URL.scheme.lowercaseString;
   if ((![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) || !URL.host.length) return 0;
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
-      "INSERT INTO browser_history (url, title, favicon) VALUES (?1, ?2, "
+      "INSERT INTO browser_history (url, title, origin, favicon) VALUES (?1, ?2, talaria_origin(?1), "
       "(SELECT favicon FROM browser_history WHERE url = ?1 AND favicon IS NOT NULL ORDER BY id DESC LIMIT 1))" error:error];
     if (!statement) return 0;
     [statement bindText:URL.absoluteString atIndex:1];
@@ -413,7 +848,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID title:(NSString *)title error:(NSError **)error {
+- (BOOL)onDatabaseQueue_updateBrowserVisitWithID:(NSInteger)visitID title:(NSString *)title error:(NSError **)error {
   if (visitID <= 0 || !title.length) return YES;
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
@@ -425,7 +860,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)updateBrowserVisitWithID:(NSInteger)visitID faviconData:(NSData *)data error:(NSError **)error {
+- (BOOL)onDatabaseQueue_updateBrowserVisitWithID:(NSInteger)visitID faviconData:(NSData *)data error:(NSError **)error {
   if (visitID <= 0 || !data.length) return YES;
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
@@ -437,7 +872,44 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (NSArray<TLBrowserHistoryEntry *> *)listBrowserHistory:(NSError **)error {
+- (NSArray<TLBrowserHistoryEntry *> *)onDatabaseQueue_browserHistoryMatching:(NSString *)query before:(TLBrowserHistoryEntry *)cursor limit:(NSUInteger)limit error:(NSError **)error {
+  @synchronized (self) {
+    const char *sql = cursor ?
+      "SELECT id, url, title, visited_at FROM browser_history WHERE (visited_at, id) < (?2, ?3) AND talaria_history_matches(title, url, ?1) ORDER BY visited_at DESC, id DESC LIMIT ?4" :
+      "SELECT id, url, title, visited_at FROM browser_history WHERE talaria_history_matches(title, url, ?1) ORDER BY visited_at DESC, id DESC LIMIT ?4";
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
+    if (!statement) return nil;
+    [statement bindText:query atIndex:1];
+    if (cursor) { [statement bindText:cursor.visitedAt atIndex:2]; [statement bindInt64:cursor.visitID atIndex:3]; }
+    [statement bindInt64:MIN(MAX(limit, 1), 200) atIndex:4];
+    NSMutableArray *entries = [NSMutableArray array];
+    int result;
+    while ((result = [statement step]) == SQLITE_ROW) {
+      TLBrowserHistoryEntry *entry = [TLBrowserHistoryEntry new];
+      entry.visitID = sqlite3_column_int64(statement.handle, 0);
+      entry.URLString = [statement stringAtColumn:1]; entry.title = [statement stringAtColumn:2]; entry.visitedAt = [statement stringAtColumn:3];
+      [entries addObject:entry];
+    }
+    if (result != SQLITE_DONE) { [self.sqliteConnection setCurrentError:error]; return nil; }
+    return entries;
+  }
+}
+
+- (NSData *)onDatabaseQueue_faviconForBrowserVisit:(TLBrowserHistoryEntry *)entry error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "SELECT COALESCE((SELECT favicon FROM browser_history WHERE id = ?1), "
+      "(SELECT favicon FROM browser_history WHERE origin = ?2 AND favicon IS NOT NULL ORDER BY visited_at DESC, id DESC LIMIT 1))" error:error];
+    if (!statement) return nil;
+    [statement bindInt64:entry.visitID atIndex:1];
+    [statement bindText:TLBrowserHistoryOrigin([NSURL URLWithString:entry.URLString]) ?: @"" atIndex:2];
+    if ([statement step] != SQLITE_ROW) { [self.sqliteConnection setCurrentError:error]; return nil; }
+    int length = sqlite3_column_bytes(statement.handle, 0);
+    return length ? [NSData dataWithBytes:sqlite3_column_blob(statement.handle, 0) length:length] : nil;
+  }
+}
+
+- (NSArray<TLBrowserHistoryEntry *> *)onDatabaseQueue_listBrowserHistory:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
       "SELECT id, url, title, visited_at, favicon FROM browser_history ORDER BY visited_at DESC, id DESC" error:error];
@@ -470,7 +942,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error {
+- (BOOL)onDatabaseQueue_deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM browser_history WHERE id = ?1" error:error];
     if (!statement) return NO;
@@ -479,7 +951,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLChatRecord *)chatWithHermesSessionID:(NSString *)sessionID agentID:(NSInteger)agentID error:(NSError **)error {
+- (TLChatRecord *)onDatabaseQueue_chatWithHermesSessionID:(NSString *)sessionID agentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
       "SELECT id FROM chats WHERE source_agent_id = ?1 AND (hermes_session_id = ?2 OR source_session_id = ?2) "
@@ -497,7 +969,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (NSArray<NSDictionary *> *)notificationsForAgentID:(NSInteger)agentID error:(NSError **)error {
+- (NSArray<NSDictionary *> *)onDatabaseQueue_notificationsForAgentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
       "SELECT payload FROM notifications WHERE agent_id = ?1 ORDER BY change_seq DESC, notification_id" error:error];
@@ -515,7 +987,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (NSDictionary *)notificationSyncStateForAgentID:(NSInteger)agentID error:(NSError **)error {
+- (NSDictionary *)onDatabaseQueue_notificationSyncStateForAgentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
       "SELECT generation, cursor FROM notification_sync WHERE agent_id = ?1" error:error];
@@ -559,7 +1031,7 @@ static id TLJSONValue(NSString *text) {
   return [statement stepDone:error];
 }
 
-- (BOOL)cacheNotification:(NSDictionary *)notification agentID:(NSInteger)agentID error:(NSError **)error {
+- (BOOL)onDatabaseQueue_cacheNotification:(NSDictionary *)notification agentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     return [self performTransaction:^BOOL(NSError **transactionError) {
       return [self storeNotification:notification agentID:agentID error:transactionError];
@@ -567,7 +1039,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)applyNotificationSyncResult:(NSDictionary *)result agentID:(NSInteger)agentID error:(NSError **)error {
+- (BOOL)onDatabaseQueue_applyNotificationSyncResult:(NSDictionary *)result agentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     if (agentID <= 0 || ![result isKindOfClass:NSDictionary.class] ||
         ![result[@"generation"] isKindOfClass:NSString.class] || ![result[@"generation"] length] ||
@@ -605,7 +1077,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (NSArray<TLChatSummary *> *)listChats:(NSError **)error {
+- (NSArray<TLChatSummary *> *)onDatabaseQueue_listChats:(NSError **)error {
   @synchronized (self) {
     const char *sql =
       "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id "
@@ -633,14 +1105,14 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error {
+- (TLChatRecord *)onDatabaseQueue_createChatWithModel:(NSString *)model error:(NSError **)error {
   @synchronized (self) {
     NSString *small = [self settingForKey:@"supportingModel" error:error] ?: TLDefaultSupportingModelID;
     return [self createChatWithModel:model supportingModel:small error:error];
   }
 }
 
-- (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
+- (TLChatRecord *)onDatabaseQueue_createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
   @synchronized (self) {
     __block sqlite3_int64 chatID = 0;
     BOOL created = [self performTransaction:^BOOL(NSError **transactionError) {
@@ -672,7 +1144,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)saveModelsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
+- (BOOL)onDatabaseQueue_saveModelsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
   @synchronized (self) {
     if (!TLTrimmedString(model).length || !TLTrimmedString(supportingModel).length) {
       TLSetDatabaseError(error, @"Choose both a large and small model.");
@@ -696,13 +1168,13 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLChatRecord *)chatWithID:(NSInteger)chatID error:(NSError **)error {
+- (TLChatRecord *)onDatabaseQueue_chatWithID:(NSInteger)chatID error:(NSError **)error {
   @synchronized (self) {
     return [self loadChatWithID:chatID error:error];
   }
 }
 
-- (TLChatSummary *)saveChatTitle:(NSString *)title chatID:(NSInteger)chatID error:(NSError **)error {
+- (TLChatSummary *)onDatabaseQueue_saveChatTitle:(NSString *)title chatID:(NSInteger)chatID error:(NSError **)error {
   @synchronized (self) {
     NSString *trimmedTitle = TLTrimmedString(title);
     if (trimmedTitle.length == 0) {
@@ -729,7 +1201,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLChatSummary *)saveChatIcon:(NSString *)icon chatID:(NSInteger)chatID error:(NSError **)error {
+- (TLChatSummary *)onDatabaseQueue_saveChatIcon:(NSString *)icon chatID:(NSInteger)chatID error:(NSError **)error {
   @synchronized (self) {
     NSString *trimmedIcon = TLTrimmedString(icon);
     if (trimmedIcon.length == 0) {
@@ -756,7 +1228,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLStoredChatMessage *)saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error {
+- (TLStoredChatMessage *)onDatabaseQueue_saveMessage:(TLChatMessage *)message chatID:(NSInteger)chatID error:(NSError **)error {
   @synchronized (self) {
     if (![self isValidRole:message.role]) {
       TLSetDatabaseError(error, @"Messages must use system, user, or assistant roles.");
@@ -766,8 +1238,8 @@ static id TLJSONValue(NSString *text) {
     __block TLStoredChatMessage *savedMessage = nil;
     BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
       const char *sql =
-        "INSERT INTO messages (chat_id, role, content, thinking, attachments, created_at, source_message_id, source_tool_call_ids, notification) "
-        "VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), ?6, ?7, ?8)";
+        "INSERT INTO messages (chat_id, role, content, thinking, attachments, created_at, source_message_id, source_tool_call_ids, notification, position) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), ?6, ?7, ?8, (SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE chat_id = ?1))";
 
       TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
       if (!statement) {
@@ -815,7 +1287,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLStoredChatMessage *)replaceMessage:(TLChatMessage *)message messageID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
+- (TLStoredChatMessage *)onDatabaseQueue_replaceMessage:(TLChatMessage *)message messageID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
   @synchronized (self) {
     __block TLStoredChatMessage *saved = nil;
     BOOL replaced = [self performTransaction:^BOOL(NSError **transactionError) {
@@ -841,7 +1313,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)deleteMessageWithID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
+- (BOOL)onDatabaseQueue_deleteMessageWithID:(NSInteger)messageID chatID:(NSInteger)chatID error:(NSError **)error {
   @synchronized (self) {
     return [self performTransaction:^BOOL(NSError **transactionError) {
       TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
@@ -860,7 +1332,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLChatRecord *)clearChatWithID:(NSInteger)chatID error:(NSError **)error {
+- (TLChatRecord *)onDatabaseQueue_clearChatWithID:(NSInteger)chatID error:(NSError **)error {
   @synchronized (self) {
     BOOL cleared = [self performTransaction:^BOOL(NSError **transactionError) {
       TLSQLiteStatement *deleteStatement = [self.sqliteConnection prepareSQL:"DELETE FROM messages WHERE chat_id = ?1" error:transactionError];
@@ -890,7 +1362,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)deleteChatWithID:(NSInteger)chatID error:(NSError **)error {
+- (BOOL)onDatabaseQueue_deleteChatWithID:(NSInteger)chatID error:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM chats WHERE id = ?1" error:error];
     if (!statement) {
@@ -901,7 +1373,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (NSArray<TLAgentRecord *> *)listAgents:(NSError **)error {
+- (NSArray<TLAgentRecord *> *)onDatabaseQueue_listAgents:(NSError **)error {
   @synchronized (self) {
     const char *sql =
       "SELECT id, name, guest_kind, runtime, status, vm_directory, last_error, created_at, updated_at, avatar, soul, folder_paths "
@@ -929,7 +1401,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLAgentRecord *)createAgentWithName:(NSString *)name
+- (TLAgentRecord *)onDatabaseQueue_createAgentWithName:(NSString *)name
                              guestKind:(NSString *)guestKind
                                runtime:(NSString *)runtime
                            vmDirectory:(NSString *)vmDirectory
@@ -941,7 +1413,7 @@ static id TLJSONValue(NSString *text) {
   return [self createAgentWithName:name avatar:@"🤖" soul:@"" folderPaths:@[] vmDirectory:vmDirectory error:error];
 }
 
-- (TLAgentRecord *)createAgentWithName:(NSString *)name avatar:(NSString *)avatar
+- (TLAgentRecord *)onDatabaseQueue_createAgentWithName:(NSString *)name avatar:(NSString *)avatar
                                  soul:(NSString *)soul folderPaths:(NSArray<NSString *> *)folderPaths
                           vmDirectory:(NSString *)vmDirectory error:(NSError **)error {
   @synchronized (self) {
@@ -998,7 +1470,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (NSInteger)currentAgentID {
+- (NSInteger)onDatabaseQueue_currentAgentID {
   @synchronized (self) {
     NSInteger savedID = [[self settingForKey:@"currentAgentID" error:nil] integerValue];
     NSArray<TLAgentRecord *> *agents = [self listAgents:nil];
@@ -1015,7 +1487,7 @@ static id TLJSONValue(NSString *text) {
     [self setSetting:[NSString stringWithFormat:@"agent.%ld.supportingModel", (long)agentID] value:supportingModel error:error];
 }
 
-- (BOOL)saveDefaultModel:(NSString *)model forAgentID:(NSInteger)agentID error:(NSError **)error {
+- (BOOL)onDatabaseQueue_saveDefaultModel:(NSString *)model forAgentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     if (![self agentWithID:agentID error:error] || !TLTrimmedString(model).length) return NO;
     return [self performTransaction:^BOOL(NSError **transactionError) {
@@ -1029,7 +1501,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)setCurrentAgentID:(NSInteger)agentID error:(NSError **)error {
+- (BOOL)onDatabaseQueue_setCurrentAgentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     if (![self loadAgentWithID:agentID error:error]) return NO;
     return [self performTransaction:^BOOL(NSError **transactionError) {
@@ -1043,13 +1515,13 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLAgentRecord *)agentWithID:(NSInteger)agentID error:(NSError **)error {
+- (TLAgentRecord *)onDatabaseQueue_agentWithID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     return [self loadAgentWithID:agentID error:error];
   }
 }
 
-- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID
+- (TLAgentRecord *)onDatabaseQueue_updateAgentWithID:(NSInteger)agentID
                               status:(NSString *)status
                            lastError:(NSString *)lastError
                                error:(NSError **)error {
@@ -1086,7 +1558,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)folderPaths error:(NSError **)error {
+- (TLAgentRecord *)onDatabaseQueue_updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)folderPaths error:(NSError **)error {
   @synchronized (self) {
     if (![self loadAgentWithID:agentID error:error]) return nil;
     NSData *data = [NSJSONSerialization dataWithJSONObject:folderPaths options:0 error:error];
@@ -1101,7 +1573,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID name:(NSString *)name
+- (TLAgentRecord *)onDatabaseQueue_updateAgentWithID:(NSInteger)agentID name:(NSString *)name
                              avatar:(NSString *)avatar soul:(NSString *)soul error:(NSError **)error {
   @synchronized (self) {
     if (![self loadAgentWithID:agentID error:error]) return nil;
@@ -1117,7 +1589,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (BOOL)deleteAgentWithID:(NSInteger)agentID error:(NSError **)error {
+- (BOOL)onDatabaseQueue_deleteAgentWithID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:"DELETE FROM agents WHERE id = ?1" error:error];
     if (!statement) {
@@ -1168,10 +1640,10 @@ static id TLJSONValue(NSString *text) {
   chat.continuationSessionID = summary.continuationSessionID;
 
   const char *messagesSQL =
-    "SELECT id, role, content, thinking, created_at, attachments, source_message_id, source_tool_call_ids, notification "
+    "SELECT id, role, content, thinking, created_at, attachments, source_message_id, source_tool_call_ids, notification, position "
     "FROM messages "
     "WHERE chat_id = ?1 "
-    "ORDER BY id ASC";
+    "ORDER BY position ASC, id ASC";
 
   TLSQLiteStatement *messagesStatement = [self.sqliteConnection prepareSQL:messagesSQL error:error];
   if (!messagesStatement) {
@@ -1213,7 +1685,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (TLStoredChatMessage *)loadMessageWithID:(NSInteger)messageID error:(NSError **)error {
-  const char *sql = "SELECT id, role, content, thinking, created_at, attachments, source_message_id, source_tool_call_ids, notification FROM messages WHERE id = ?1";
+  const char *sql = "SELECT id, role, content, thinking, created_at, attachments, source_message_id, source_tool_call_ids, notification, position FROM messages WHERE id = ?1";
 
   TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
   if (!statement) {
@@ -1292,6 +1764,7 @@ static id TLJSONValue(NSString *text) {
 - (TLStoredChatMessage *)storedMessageFromStatement:(sqlite3_stmt *)statement {
   TLStoredChatMessage *message = [[TLStoredChatMessage alloc] init];
   message.messageID = sqlite3_column_int64(statement, 0);
+  message.position = sqlite3_column_int64(statement, 9);
   message.role = TLStringFromColumn(statement, 1);
   message.content = TLStringFromColumn(statement, 2);
   message.thinking = TLNullableStringFromColumn(statement, 3);

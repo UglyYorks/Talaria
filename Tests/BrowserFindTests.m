@@ -1,6 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "AppDelegate.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import "TalariaWindowController.h"
 #import "WorkspaceTabRuntime.h"
 #import "TLBrowserTabController.h"
@@ -205,7 +205,7 @@ int main(void) {
     Check(other.findBarVisible && !browser.findBarVisible, @"active pane owns find independently of the other browser");
     TLWorkspaceTab *chat = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindChat tabID:3 title:@"Chat" toolTip:@"" URL:nil closeable:YES];
     [state addWorkspaceTab:chat activate:YES];
-    TLChatPresentation *presentation = [TLChatPresentation new];
+    TLChatTabController *presentation = [TLChatTabController new];
     [presentation installFindBarInView:window.contentView palette:bar.palette];
     [workspace setValue:[NSMutableDictionary dictionaryWithObject:presentation forKey:@3] forKey:@"chatPresentations"];
     Check([delegate handleFindShortcutEvent:Key(@"f", NSEventModifierFlagCommand)] && presentation.findBarVisible,
