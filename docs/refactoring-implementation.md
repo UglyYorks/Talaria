@@ -67,3 +67,9 @@ These are dependency-operation counts, not clean-build or end-user performance c
 No new application latency, retained-memory, or live-Hermes performance numbers are claimed. The measured improvements are bounded queries, eliminated message reads/writes, dirty-row work counts, and precise rebuild dependencies. The desktop app was built and signed; interactive end-to-end desktop use was not performed.
 
 [Validation inventory](/Users/yn/work/talaria/.worktrees/refactoring-research/docs/research/validation.json).
+
+## Integration with current main
+
+Before publication, integrated main `093fc87` (notifications and agent plugin settings). Both version-12 feature schemas are now reconciled on open. Notification source metadata survives incremental transcript updates, session-summary batches carry the owning agent without hydrating messages, and notification reveal/scroll behavior runs through each chat controller. Notifications and plugins use the shared structured protocol result path.
+
+The combined branch passes 36 native suites, 128 discovered Python tests, 13 agent-runtime tests, 7 terminal-service tests, 146 browser checks, browser-profile import tests, and the theme audit. The desktop build and strict signature verification pass. The earlier quick-input capture failure remains excluded from the native pass. See [merge validation](research/merge-validation.json). Earlier build measurements and validation inventories describe the initial refactor revision.

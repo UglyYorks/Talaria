@@ -22,10 +22,13 @@
   }];
 }
 - (void)cacheSessions:(NSArray<NSDictionary *> *)sessions completion:(void (^)(NSArray<TLChatSummary *> * _Nullable, NSArray<TLChatSummary *> * _Nullable, NSError * _Nullable))completion {
+  [self cacheSessions:sessions agentID:0 completion:completion];
+}
+- (void)cacheSessions:(NSArray<NSDictionary *> *)sessions agentID:(NSInteger)agentID completion:(void (^)(NSArray<TLChatSummary *> * _Nullable, NSArray<TLChatSummary *> * _Nullable, NSError * _Nullable))completion {
   NSArray *snapshot = [sessions copy];
   [_database performAsync:^(TLDatabase *database) {
     NSError *error = nil;
-    NSArray *summaries = [database cacheHermesSessionSummaries:snapshot error:&error];
+    NSArray *summaries = [database cacheHermesSessionSummaries:snapshot agentID:agentID error:&error];
     NSArray *all = summaries ? [database listChats:&error] : nil;
     dispatch_async(dispatch_get_main_queue(), ^{ completion(summaries, all, error); });
   }];

@@ -258,6 +258,21 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                     completion:(void (^)(NSDictionary *, NSError *))completion {
   [self performJSONOperation:@"hermes_providers" agent:agent parameters:@{@"params":parameters} completion:completion];
 }
+
+- (void)hermesPluginsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
+                        token:(NSString *)token model:(NSString *)model
+                   completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_plugins" agent:agent
+    parameters:@{@"params":parameters, @"token":token ?: @"", @"model":model ?: @""} completion:completion];
+}
+
+- (void)hermesNotificationsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
+                        token:(NSString *)token model:(NSString *)model
+                   completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_notifications" agent:agent
+    parameters:@{@"params":parameters, @"token":token ?: @"", @"model":model ?: @""} completion:completion];
+}
+
 - (void)hermesAutomationsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
                            token:(NSString *)token model:(NSString *)model
                       completion:(void (^)(NSDictionary *, NSError *))completion {

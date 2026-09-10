@@ -32,8 +32,22 @@
     message.role = key[0]; message.content = key[1]; message.position = position++;
     if ([item[@"thinking"] isKindOfClass:NSString.class] && [item[@"thinking"] length]) message.thinking = item[@"thinking"];
     if ([item[@"created_at"] isKindOfClass:NSString.class] && [item[@"created_at"] length]) message.createdAt = item[@"created_at"];
+    id sourceID = item[@"source_message_id"];
+    message.sourceMessageID = [sourceID isKindOfClass:NSString.class] ? sourceID : ([sourceID isKindOfClass:NSNumber.class] ? [sourceID stringValue] : @"");
+    NSArray *calls = item[@"source_tool_call_ids"] ?: @[];
+    NSDictionary *notification = item[@"notification"] ?: @{};
+    BOOL valid = [calls isKindOfClass:NSArray.class] && [notification isKindOfClass:NSDictionary.class] && [NSJSONSerialization isValidJSONObject:notification];
+    if (valid) for (id call in calls) if (![call isKindOfClass:NSString.class]) { valid = NO; break; }
+    if (!valid) {
+      if (error) *error = [NSError errorWithDomain:@"Talaria.Transcript" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Hermes returned invalid source metadata."}];
+      return nil;
+    }
+    message.sourceToolCallIDs = calls;
+    message.notification = notification.count ? notification : nil;
     if (old) [retained addObject:@(old.messageID)];
-    if (!old || old.position != message.position || ![old.createdAt isEqual:message.createdAt] || ![(old.thinking ?: @"") isEqual:message.thinking ?: @""]) [writes addObject:message];
+    if (!old || ![(old.sourceMessageID ?: @"") isEqual:message.sourceMessageID] ||
+        ![(old.sourceToolCallIDs ?: @[]) isEqual:message.sourceToolCallIDs] ||
+        ![(old.notification ?: @{}) isEqual:message.notification ?: @{}] || old.position != message.position || ![old.createdAt isEqual:message.createdAt] || ![(old.thinking ?: @"") isEqual:message.thinking ?: @""]) [writes addObject:message];
   }
   NSMutableArray *deleted = [NSMutableArray array];
   for (TLStoredChatMessage *message in previous) if (![retained containsObject:@(message.messageID)]) [deleted addObject:@(message.messageID)];

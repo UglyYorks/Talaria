@@ -9,5 +9,6 @@ NS_ASSUME_NONNULL_BEGIN
 @interface TLHistoryRepository : NSObject <TLHistoryReading>
 - (instancetype)initWithDatabase:(TLDatabase *)database;
 - (void)cacheSessions:(NSArray<NSDictionary *> *)sessions completion:(void (^)(NSArray<TLChatSummary *> * _Nullable, NSArray<TLChatSummary *> * _Nullable, NSError * _Nullable))completion;
+- (void)cacheSessions:(NSArray<NSDictionary *> *)sessions agentID:(NSInteger)agentID completion:(void (^)(NSArray<TLChatSummary *> * _Nullable, NSArray<TLChatSummary *> * _Nullable, NSError * _Nullable))completion;
 @end
 NS_ASSUME_NONNULL_END

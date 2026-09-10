@@ -100,6 +100,8 @@ NSString *TLAgentDisplayStatus(NSString *status) {
     _content = @"";
     _attachments = @[];
     _toolActivities = @[];
+    _sourceMessageID = @"";
+    _sourceToolCallIDs = @[];
   }
   return self;
 }
@@ -113,6 +115,9 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.approvalResponse = self.approvalResponse;
   copy.toolActivities = self.toolActivities;
   copy.attachments = self.attachments;
+  copy.sourceMessageID = self.sourceMessageID;
+  copy.sourceToolCallIDs = self.sourceToolCallIDs;
+  copy.notification = self.notification;
   return copy;
 }
 
@@ -204,6 +209,8 @@ NSString *TLAgentDisplayStatus(NSString *status) {
     _model = [TLDefaultModelID copy];
     _supportingModel = [TLDefaultSupportingModelID copy];
     _hermesSessionID = @"";
+    _sourceSessionID = @"";
+    _continuationSessionID = @"";
     _createdAt = @"";
     _updatedAt = @"";
   }
@@ -218,6 +225,9 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.model = self.model;
   copy.supportingModel = self.supportingModel;
   copy.hermesSessionID = self.hermesSessionID;
+  copy.sourceAgentID = self.sourceAgentID;
+  copy.sourceSessionID = self.sourceSessionID;
+  copy.continuationSessionID = self.continuationSessionID;
   copy.createdAt = self.createdAt;
   copy.updatedAt = self.updatedAt;
   return copy;

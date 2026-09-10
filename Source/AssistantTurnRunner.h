@@ -47,12 +47,20 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
                                  messages:(NSArray<TLChatMessage *> *)messages
                                     delta:(TLAgentStreamDeltaHandler)delta
                                completion:(TLAgentStreamCompletionHandler)completion;
+@optional
+- (void)streamChatWithAgentID:(NSInteger)agentID requestID:(NSString *)requestID
+                  sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model
+                   messages:(NSArray<TLChatMessage *> *)messages delta:(TLAgentStreamDeltaHandler)delta
+                 completion:(TLAgentStreamCompletionHandler)completion;
 @end
 
 @interface TLAssistantTurnRunner : NSObject
 
 @property (nonatomic, readonly) BOOL running;
 @property (nonatomic, strong, readonly, nullable) TLChatMessage *streamingMessage;
+// Identity of the current turn boundary, for inserting newly discovered
+// historical tool-call rows without replacing the runner's mutable array.
+@property (nonatomic, strong, readonly, nullable) TLChatMessage *activeUserMessage;
 // Stops generation and saves any partial response. Safe to call repeatedly.
 - (void)cancel;
 // Reference context is sent to the model, never displayed or stored as the user's message.

@@ -145,12 +145,13 @@ static void TestVersion8Compatibility(void) {
   NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
   NSURL *URL = [base URLByAppendingPathComponent:@"version8.sqlite"];
   NSError *error = nil;
-  TLDatabase *database = [[TLDatabase alloc] initWithURL:URL error:&error];
-  TLChatRecord *chat = [database createChatWithModel:@"test" error:&error];
-  [database saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"Preserved history" thinking:nil] chatID:chat.chatID error:&error];
-  database = nil;
+  [NSFileManager.defaultManager createDirectoryAtURL:base withIntermediateDirectories:YES attributes:nil error:&error];
   TLSQLiteConnection *fixture = [TLSQLiteConnection openURL:URL error:&error];
-  Check([fixture executeSQL:"PRAGMA user_version = 8; UPDATE chats SET supporting_model = 'test/saved-model'" error:&error], @"populates the version-8 supporting model");
+  Check(TLDatabaseMigrate(fixture, 8, &error), @"creates an actual version-8 database");
+  Check([fixture executeSQL:"INSERT INTO chats(title,model,hermes_session_id,supporting_model) VALUES('Preserved history','test','legacy-session','test/saved-model');"
+    "INSERT INTO messages(chat_id,role,content) VALUES(1,'user','Preserved history');" error:&error], @"populates the version-8 supporting model");
+  TLChatRecord *chat = [TLChatRecord new]; chat.chatID = 1;
+  TLDatabase *database = nil;
   Check(TLDatabaseMigrate(fixture, 7, &error), @"version-7 clients accept the known additive version-8 schema");
   fixture = nil;
   database = [[TLDatabase alloc] initWithURL:URL error:&error];

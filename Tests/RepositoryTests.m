@@ -86,7 +86,13 @@ int main(void) {
       NSUInteger reads = 0;
       sqlite3_set_authorizer(connection.handle, CountMessageReads, &reads);
       NSArray *summaries = [store cacheHermesSessionSummaries:@[session] error:nil];
+      NSArray *ownedSummaries = [store cacheHermesSessionSummaries:@[session] agentID:7 error:nil];
+      NSArray *otherSummaries = [store cacheHermesSessionSummaries:@[session] agentID:8 error:nil];
       sqlite3_set_authorizer(connection.handle, NULL, NULL);
+      Check(ownedSummaries.count == 1 && otherSummaries.count == 1 &&
+        [ownedSummaries[0] chatID] == chat.chatID && [otherSummaries[0] chatID] != chat.chatID &&
+        [ownedSummaries[0] sourceAgentID] == 7 && [otherSummaries[0] sourceAgentID] == 8,
+        @"summary batches preserve agent ownership without merging another agent's identical session ID");
       Check(summaries.count == 1 && reads == 0 && ![summaries[0] isKindOfClass:TLChatRecord.class], @"summary batches never hydrate transcripts");
       NSInteger special = [store recordBrowserVisitToURL:[NSURL URLWithString:@"https://example.com/caf%C3%A9"] title:@"Old visit" error:nil];
       NSData *icon = [@"fixture icon" dataUsingEncoding:NSUTF8StringEncoding];

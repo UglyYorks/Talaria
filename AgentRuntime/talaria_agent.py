@@ -259,6 +259,38 @@ def hermes_automations(request, output=None):
         error(f"Could not manage Hermes automations: {exc}", output)
 
 
+def hermes_notifications(request, output=None):
+    try:
+        params = request.get("params")
+        if not isinstance(params, dict):
+            raise ValueError("Notification parameters must be an object.")
+        action = params.get("action")
+        if action not in {"sync", "set_read", "open_source"}:
+            raise ValueError("Unknown notification action.")
+        result = tui_gateway(trim(request.get("token")), trim(request.get("model"))).call(
+            "talaria.notifications." + action, {key: value for key, value in params.items() if key != "action"})
+        emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not manage Hermes notifications: {exc}", output)
+
+
+def hermes_plugins(request, output=None):
+    try:
+        params = request.get("params")
+        if not isinstance(params, dict):
+            raise ValueError("Plugin parameters must be an object.")
+        action = params.get("action")
+        if action not in {"list", "set_enabled"}:
+            raise ValueError("Unknown plugin action.")
+        result = tui_gateway(trim(request.get("token")), trim(request.get("model"))).call(
+            "talaria.plugins", params)
+        emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not manage Hermes plugins: {exc}", output)
+
+
 def hermes_history(request, output=None):
     try:
         gateway = tui_gateway(trim(request.get("token")), trim(request.get("model")))
@@ -433,6 +465,12 @@ def handle_request(request, output=None, cancellation=None):
         return
     if operation == "hermes_automations":
         hermes_automations(request, output)
+        return
+    if operation == "hermes_plugins":
+        hermes_plugins(request, output)
+        return
+    if operation == "hermes_notifications":
+        hermes_notifications(request, output)
         return
     if operation == "hermes_commands":
         fetch_hermes_commands(request, output)

@@ -65,6 +65,10 @@ NSString * _Nullable TLBrowserHistoryOrigin(NSURL *URL);
 - (void)finishToolActivitiesWithState:(NSString *)state;
 // JSON-compatible records: name, guestPath, directory. Originals are never exposed to the VM.
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *attachments;
+// Durable Hermes identities; local SQLite message IDs are only cache keys.
+@property (nonatomic, copy) NSString *sourceMessageID;
+@property (nonatomic, copy) NSArray<NSString *> *sourceToolCallIDs;
+@property (nonatomic, copy, nullable) NSDictionary *notification;
 
 + (instancetype)messageWithRole:(NSString *)role content:(NSString *)content thinking:(nullable NSString *)thinking;
 - (NSDictionary<NSString *, NSString *> *)requestDictionary;
@@ -87,6 +91,9 @@ NSString * _Nullable TLBrowserHistoryOrigin(NSURL *URL);
 @property (nonatomic, copy) NSString *model;
 @property (nonatomic, copy) NSString *supportingModel;
 @property (nonatomic, copy) NSString *hermesSessionID;
+@property (nonatomic) NSInteger sourceAgentID;
+@property (nonatomic, copy) NSString *sourceSessionID;
+@property (nonatomic, copy) NSString *continuationSessionID;
 @property (nonatomic, copy) NSString *createdAt;
 @property (nonatomic, copy) NSString *updatedAt;
 

@@ -41,6 +41,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) dispatch_block_t _Nullable (^linkContextMenuHandler)(NSURL *URL, NSMenu *menu, NSView *view, NSPoint point);
 @property (nonatomic, copy, nullable) BOOL (^streamingProvider)(void);
 @property (nonatomic, copy, nullable) dispatch_block_t intentHandler;
+@property (nonatomic, copy, nullable) BOOL (^notificationRevealHandler)(void);
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom;
 - (void)scheduleStreamingMessageRender;
 - (void)markMessageDirty:(nullable TLChatMessage *)message;
@@ -92,5 +93,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) NSUInteger streamingRenderGeneration;
 @property (nonatomic, strong) TLGlassButton *sendButton;
 @property (nonatomic, strong, nullable) TLASCIIPlanetScreensaverView *screensaverView;
+// Explicit source navigation survives streaming and asynchronous Markdown layout.
+@property (nonatomic, copy, nullable) NSString *notificationTargetMessageID;
+@property (nonatomic, copy, nullable) NSString *notificationTargetToolCallID;
+@property (nonatomic) BOOL suppressAutomaticScroll;
+@property (nonatomic) NSUInteger notificationNavigationGeneration;
+@property (nonatomic, copy, nullable) void (^notificationDidReveal)(void);
 @end
 NS_ASSUME_NONNULL_END

@@ -50,6 +50,16 @@
 @property (nonatomic) BOOL skillsLoaded;
 @property (nonatomic, copy) NSString *skillsStatus;
 @property TLBrowserSettingsController *browserSettingsController;
+@property NSStackView *pluginRows;
+@property NSSearchField *pluginSearch;
+@property NSTextField *pluginStatus;
+@property TLThemedButton *refreshPluginsButton;
+@property TLWrappingActionView *pluginActions;
+@property (nonatomic, copy) NSArray<NSDictionary *> *plugins;
+@property (nonatomic) NSInteger pluginsAgentID;
+@property (nonatomic) NSUInteger pluginsGeneration;
+@property (nonatomic) BOOL pluginsBusy;
+@property (nonatomic) BOOL pluginsManaged;
 @end
 
 @implementation TLSettingsTabController
@@ -77,7 +87,7 @@
 - (NSArray<NSString *> *)pageNames {
   if (self.sectionIndex == 1) return TLBrowserPreferences.categories;
   if (self.sectionIndex == 2) return @[];
-  return @[@"Model", @"Tools & Keys", @"Skills"];
+  return @[@"Model", @"Tools & Keys", @"Skills", @"Plugins"];
 }
 
 - (TLThemedButton *)button:(NSString *)title action:(SEL)action {
@@ -208,7 +218,7 @@
   NSString *section = self.sectionIndex == 0 ? @"Agent" : @"Browser";
   NSTextField *label = [self labelWithString:section font:self.palette.labelFont colorToken:@"textMuted"];
   NSMutableArray *items = [NSMutableArray arrayWithObject:label];
-  NSArray *icons = self.sectionIndex == 0 ? @[@"cube", @"key.horizontal", @"sparkles"] :
+  NSArray *icons = self.sectionIndex == 0 ? @[@"cube", @"key.horizontal", @"sparkles", @"puzzlepiece.extension"] :
     @[@"lock.shield", @"hand.raised", @"person.text.rectangle", @"magnifyingglass", @"textformat",
       @"power", @"speedometer", @"character.bubble", @"arrow.down.circle", @"accessibility",
       @"gearshape", @"arrow.counterclockwise", @"square.and.arrow.down"];
@@ -245,8 +255,10 @@
     self.agentPageIndex = index;
     self.selectedPage = self.pageNames[index]; title = self.selectedPage;
     detail = index == 0 ? @"Choose the models and provider behind your conversations." : index == 1
-      ? @"Connect your tools with credentials stored in Hermes." : @"Choose which installed skills your agent can use.";
-    if (!self.pages[self.selectedPage]) self.pages[self.selectedPage] = index == 2 ? [self buildSkillsPage] : [self buildCredentialsPage];
+      ? @"Connect your tools with credentials stored in Hermes." : index == 2 ? @"Choose which installed skills your agent can use."
+      : @"Manage the plugins installed for your selected agent.";
+    if (!self.pages[self.selectedPage]) self.pages[self.selectedPage] = index == 3 ? [self buildPluginsPage] :
+      index == 2 ? [self buildSkillsPage] : [self buildCredentialsPage];
   } else if (self.sectionIndex == 1) {
     self.browserPageIndex = index;
     self.selectedPage = @"Browser"; title = self.pageNames[index];
@@ -280,6 +292,115 @@
     if (!self.skillsBusy && (!self.skillsLoaded || self.skillsAgentID != self.database.currentAgentID)) [self requestSkillsWithChanges:nil];
     [self updateSkillsFooter];
   }
+  if ([self.selectedPage isEqual:@"Plugins"]) [self refreshPluginsForSelectedAgent];
+}
+
+- (NSView *)buildPluginsPage {
+  self.pluginSearch = [[NSSearchField alloc] init];
+  [self styleField:self.pluginSearch]; self.pluginSearch.delegate = self;
+  self.pluginSearch.placeholderString = @"Search installed plugins";
+  self.pluginSearch.accessibilityLabel = @"Search installed plugins";
+  self.refreshPluginsButton = [self button:@"Refresh" action:@selector(reloadPlugins:)];
+  self.pluginActions = [[TLWrappingActionView alloc] initWithViews:@[self.refreshPluginsButton] palette:self.palette];
+  self.pluginSearch.appearance = [NSAppearance appearanceNamed:self.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+  self.pluginStatus = [self description:@""];
+  self.pluginRows = [self stack:@[] vertical:YES];
+  NSTextField *detail = [self description:@"Changes save immediately. Restart the agent to apply them to existing sessions."];
+  self.pluginStatus.hidden = YES;
+  return [self scrollPageWithStack:[self stack:@[self.pluginSearch, self.pluginActions, detail,
+    self.pluginStatus, self.pluginRows] vertical:YES]];
+}
+
+- (void)refreshPluginsForSelectedAgent {
+  if (self.isClosed || !self.pluginRows) return;
+  NSInteger agentID = self.database.currentAgentID;
+  if (agentID != self.pluginsAgentID) {
+    self.pluginsGeneration++;
+    self.pluginsBusy = NO; self.plugins = nil; self.pluginsManaged = NO;
+    self.pluginsAgentID = agentID;
+    self.pluginSearch.stringValue = @"";
+    self.pluginStatus.stringValue = @"";
+    [self renderPlugins];
+  }
+  if ([self.selectedPage isEqual:@"Plugins"] && !self.plugins && !self.pluginsBusy) [self reloadPlugins:nil];
+}
+
+- (void)renderPlugins {
+  for (NSView *row in self.pluginRows.arrangedSubviews.copy) {
+    [self.pluginRows removeArrangedSubview:row]; [row removeFromSuperview];
+  }
+  self.refreshPluginsButton.enabled = !self.pluginsBusy;
+  self.pluginStatus.hidden = !self.pluginStatus.stringValue.length;
+  NSString *query = self.pluginSearch.stringValue;
+  for (NSDictionary *plugin in self.plugins) {
+    NSString *searchable = [NSString stringWithFormat:@"%@ %@ %@", plugin[@"name"], plugin[@"id"], plugin[@"description"]];
+    if (query.length && [searchable rangeOfString:query options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location == NSNotFound) continue;
+    NSSwitch *toggle = [[NSSwitch alloc] init];
+    toggle.appearance = [NSAppearance appearanceNamed:self.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    toggle.identifier = plugin[@"id"]; toggle.target = self; toggle.action = @selector(togglePlugin:);
+    toggle.state = [plugin[@"enabled"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+    toggle.enabled = !self.pluginsBusy && !self.pluginsManaged;
+    toggle.accessibilityLabel = [NSString stringWithFormat:@"Enable %@", plugin[@"name"]];
+    NSString *origin = [plugin[@"source"] isEqual:@"bundled"] ? @"Built-in" : @"Installed";
+    NSString *version = [plugin[@"version"] length] ? [@" · " stringByAppendingString:plugin[@"version"]] : @"";
+    NSString *state = [plugin[@"restart_required"] boolValue] ? @"Restart agent to apply" :
+      ([plugin[@"enabled"] boolValue] ? @"Enabled" : @"Disabled");
+    if ([plugin[@"enabled"] boolValue] && ![plugin[@"restart_required"] boolValue] && [plugin[@"error"] length]) state = plugin[@"error"];
+    NSTextField *metadata = [self description:[NSString stringWithFormat:@"%@%@ · %@", origin, version, state]];
+    NSString *description = [plugin[@"description"] length] ? plugin[@"description"] : plugin[@"id"];
+    NSView *row = [self card:plugin[@"name"] description:description controls:@[toggle, metadata]];
+    [self.pluginRows addArrangedSubview:row];
+    [row.widthAnchor constraintEqualToAnchor:self.pluginRows.widthAnchor].active = YES;
+  }
+  if (self.plugins && !self.pluginRows.arrangedSubviews.count) {
+    NSTextField *empty = [self description:self.plugins.count ? @"No plugins match your search." : @"No plugins installed for this agent."];
+    [self.pluginRows addArrangedSubview:empty];
+    [empty.widthAnchor constraintEqualToAnchor:self.pluginRows.widthAnchor].active = YES;
+  }
+}
+
+- (void)reloadPlugins:(id)sender { [self requestPlugins:@{@"action": @"list"}]; }
+- (void)togglePlugin:(NSSwitch *)sender {
+  if (self.pluginsBusy || self.pluginsManaged || self.isClosed) return;
+  if (self.pluginsAgentID != self.database.currentAgentID) { [self refreshPluginsForSelectedAgent]; return; }
+  [self requestPlugins:@{@"action": @"set_enabled", @"id": sender.identifier,
+    @"enabled": @(sender.state == NSControlStateValueOn)}];
+}
+- (void)requestPlugins:(NSDictionary *)parameters {
+  if (self.isClosed || self.pluginsBusy) return;
+  NSInteger agentID = self.database.currentAgentID;
+  if (agentID != self.pluginsAgentID) { [self refreshPluginsForSelectedAgent]; return; }
+  if (agentID <= 0) { self.pluginStatus.stringValue = @"Select an agent to view its plugins."; self.pluginStatus.hidden = NO; return; }
+  self.pluginsBusy = YES;
+  self.pluginStatus.stringValue = [parameters[@"action"] isEqual:@"list"] ? @"Loading plugins…" : @"Saving plugin setting…";
+  [self renderPlugins];
+  NSUInteger generation = ++self.pluginsGeneration;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesPluginsWithParameters:parameters agentID:agentID token:self.draftSettings.openRouterToken
+    model:self.draftSettings.selectedModel completion:^(NSDictionary *result, NSError *error) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      typeof(self) owner = weakSelf;
+      if (!owner || owner.isClosed || generation != owner.pluginsGeneration) return;
+      owner.pluginsBusy = NO;
+      if (agentID != owner.database.currentAgentID) { [owner refreshPluginsForSelectedAgent]; return; }
+      BOOL valid = [result[@"plugins"] isKindOfClass:NSArray.class];
+      if (valid) for (id item in result[@"plugins"]) {
+        if (![item isKindOfClass:NSDictionary.class]) { valid = NO; break; }
+        for (NSString *key in @[@"id", @"name", @"description", @"version", @"source", @"error"])
+          if (![item[key] isKindOfClass:NSString.class]) valid = NO;
+        for (NSString *key in @[@"enabled", @"restart_required"])
+          if (![item[key] isKindOfClass:NSNumber.class]) valid = NO;
+      }
+      if (error || !valid) {
+        owner.pluginStatus.stringValue = error.localizedDescription ?: @"Hermes returned an invalid plugin list. Refresh to retry.";
+      } else {
+        owner.plugins = result[@"plugins"]; owner.pluginsManaged = [result[@"managed"] boolValue];
+        owner.pluginStatus.stringValue = owner.pluginsManaged ? @"Plugin settings are managed by your administrator." :
+          ([result[@"restart_required"] boolValue] ? @"Saved. Restart the agent to apply changes to existing sessions." : @"");
+      }
+      [owner renderPlugins];
+    });
+  }];
 }
 
 - (void)updateModelLabelsInView:(NSView *)view {
@@ -433,6 +554,7 @@
   return [self scrollPageWithStack:stack];
 }
 - (void)controlTextDidChange:(NSNotification *)notification {
+  if (notification.object == self.pluginSearch) { [self renderPlugins]; return; }
   if (notification.object == self.credentialSearch) { [self renderCredentials]; return; }
   NSTextField *field = notification.object;
   if (field.identifier.length) self.credentialDrafts[field.identifier] = field.stringValue;
@@ -576,6 +698,9 @@
   [self.browserSettingsController applyPalette:palette];
   [self.applicationSettingsController applyPalette:palette];
   self.skillsPicker.palette = palette;
+  self.pluginActions.palette = palette;
+  self.pluginSearch.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+  if (self.pluginRows) [self renderPlugins];
   [TLChromiumBrowserController.sharedController applyDarkAppearance:palette.dark];
 }
 - (void)close {
@@ -587,6 +712,8 @@
   self.workspace.pageMenu.target = nil;
   self.credentialGeneration++;
   self.skillsGeneration++;
+  self.pluginsGeneration++;
+  self.pluginSearch.delegate = nil;
   self.skillsPicker.reloadHandler = nil;
   self.skillsPicker.changesHandler = nil;
   [self.credentialDrafts removeAllObjects];

@@ -319,9 +319,16 @@ class HermesGateway:
             text = message.get("text", "")
             if not isinstance(text, str):
                 raise RuntimeError("Hermes returned an invalid transcript message.")
-            transcript.append({"role": message["role"], "content": text,
+            shaped = {"role": message["role"], "content": text,
                                "thinking": message.get("reasoning") or message.get("reasoning_content") or "",
-                               "created_at": self.history_date(message.get("timestamp"))})
+                               "created_at": self.history_date(message.get("timestamp"))}
+            source_id = message.get("source_message_id", message.get("row_id"))
+            if source_id is not None:
+                shaped["source_message_id"] = source_id
+            for key in ("source_tool_call_ids", "notification"):
+                if key in message:
+                    shaped[key] = message[key]
+            transcript.append(shaped)
         return {"messages": transcript, "model": model}
 
     def delete_history_session(self, stored):

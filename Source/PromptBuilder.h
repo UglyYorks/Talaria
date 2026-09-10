@@ -39,6 +39,7 @@ typedef NS_ENUM(NSInteger, TLPromptCompactionStrategy) {
 
 @interface TLPromptBuilder : NSObject
 
++ (NSString *)notificationToolDescription;
 - (instancetype)init;
 - (instancetype)initWithLimit:(nullable NSNumber *)limit separator:(NSString *)separator NS_DESIGNATED_INITIALIZER;
 - (instancetype)addPartWithContent:(NSString *)content

@@ -17,10 +17,20 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable TLChatRecord *)cacheHermesSession:(NSDictionary *)session
                                    messages:(nullable NSArray<NSDictionary *> *)messages
                                       error:(NSError **)error;
+- (nullable TLChatRecord *)cacheHermesSession:(NSDictionary *)session
+                                   messages:(nullable NSArray<NSDictionary *> *)messages
+                                    agentID:(NSInteger)agentID error:(NSError **)error;
+- (nullable TLChatRecord *)chatWithHermesSessionID:(NSString *)sessionID agentID:(NSInteger)agentID error:(NSError **)error;
+- (nullable NSArray<NSDictionary *> *)notificationsForAgentID:(NSInteger)agentID error:(NSError **)error;
+- (nullable NSDictionary *)notificationSyncStateForAgentID:(NSInteger)agentID error:(NSError **)error;
+// Applies a complete sync page and its cursor in one transaction.
+- (BOOL)applyNotificationSyncResult:(NSDictionary *)result agentID:(NSInteger)agentID error:(NSError **)error;
+- (BOOL)cacheNotification:(NSDictionary *)notification agentID:(NSInteger)agentID error:(NSError **)error;
 
 // Work runs on the connection's serial queue; callers deliver UI results on main.
 - (void)performAsync:(void (^)(TLDatabase *database))work;
 - (nullable NSArray<TLChatSummary *> *)cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions error:(NSError **)error;
+- (nullable NSArray<TLChatSummary *> *)cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions agentID:(NSInteger)agentID error:(NSError **)error;
 - (nullable NSArray<TLBrowserHistoryEntry *> *)browserHistoryMatching:(NSString *)query before:(nullable TLBrowserHistoryEntry *)cursor limit:(NSUInteger)limit error:(NSError **)error;
 - (nullable NSData *)faviconForBrowserVisit:(TLBrowserHistoryEntry *)entry error:(NSError **)error;
 

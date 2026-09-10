@@ -1,5 +1,6 @@
 #import "TLChatTabController.h"
 #import "MarkdownRenderer.h"
+#import "design_system/TLNotificationMessageCardView.h"
 #import "TLEmptyStateTips.h"
 #import "design_system/TLToolActivityView.h"
 #import "design_system/TLAttachmentChipView.h"
@@ -323,7 +324,8 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   [self.dirtyMessages removeAllObjects];
   [self refreshFindResults];
   [self.messageDocumentView layoutSubtreeIfNeeded];
-  if (!self.findBarVisible) [self.messageDocumentView scrollRectToVisible:NSMakeRect(0, MAX(0, NSHeight(self.messageDocumentView.bounds) - 1), 1, 1)];
+  if (self.notificationRevealHandler && self.notificationRevealHandler()) return;
+  if (!self.findBarVisible && !self.suppressAutomaticScroll) [self.messageDocumentView scrollRectToVisible:NSMakeRect(0, MAX(0, NSHeight(self.messageDocumentView.bounds) - 1), 1, 1)];
 }
 
 - (void)scheduleStreamingMessageRender {
@@ -365,6 +367,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
         ![previous.role isEqualToString:current.role] || ![previous.content isEqualToString:current.content] ||
         ![(previous.thinking ?: @"") isEqualToString:current.thinking ?: @""] ||
         ![previous.attachments isEqual:current.attachments] ||
+        ![(previous.notification ?: @{}) isEqual:current.notification ?: @{}] ||
         ![previous.toolActivities isEqual:current.toolActivities] ||
         ![(previous.approvalRequest ?: @{}) isEqual:current.approvalRequest ?: @{}]) return;
     [self.messageRowViews setObject:row forKey:current];
@@ -448,7 +451,8 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   dispatch_async(dispatch_get_main_queue(), ^{
       [self updateMessageScrollInsets];
       [self.messageDocumentView layoutSubtreeIfNeeded];
-      if (scrollToBottom) {
+      if (self.notificationRevealHandler && self.notificationRevealHandler()) return;
+      if (scrollToBottom && !self.suppressAutomaticScroll) {
         NSRect bottom = NSMakeRect(0.0, MAX(0.0, self.messageDocumentView.bounds.size.height - 1.0), 1.0, 1.0);
         [self.messageDocumentView scrollRectToVisible:bottom];
       } else {
@@ -599,6 +603,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   BOOL user = [message.role isEqualToString:TLRoleUser];
   BOOL showThinking = !user && !message.content.length && message.thinking.length > 0;
   NSString *mode = message.approvalRequest ? [@"approval:" stringByAppendingString:message.approvalRequest.description] : (showThinking ? @"thinking" : @"content");
+  if (message.notification) mode = [mode stringByAppendingFormat:@" notification:%@", message.notification];
   CGFloat layoutWidth = self.messageInputWidthConstraint.constant > 0.0
     ? self.messageInputWidthConstraint.constant
     : self.palette.messageInputMaxWidth;
@@ -738,7 +743,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
       [stack addArrangedSubview:contentLabel];
       [self.messageMarkdownViews setObject:contentLabel forKey:message];
     } else contentLabel = nil;
-  } else if (hasResponseContent || (!message.approvalRequest && !message.attachments.count && !message.toolActivities.count)) {
+  } else if (hasResponseContent || (!message.notification && !message.approvalRequest && !message.attachments.count && !message.toolActivities.count)) {
     NSString *content = hasResponseContent ? message.content : @"...";
     if ([self messageShowsAWSOutageIntent:message]) {
       content = TLAWSOutageAgentMessage;
@@ -781,6 +786,11 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     [stack insertArrangedSubview:activity atIndex:0];
     [activity.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [self.messageActivityViews setObject:activity forKey:message];
+  }
+  if (!user && message.notification) {
+    TLNotificationMessageCardView *card = [[TLNotificationMessageCardView alloc] initWithNotification:message.notification palette:self.palette];
+    [stack addArrangedSubview:card];
+    [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
   }
   if (!user && message.approvalRequest) {
     TLApprovalCardView *card = [[TLApprovalCardView alloc] initWithRequest:message.approvalRequest palette:self.palette];
@@ -877,8 +887,10 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   __block __weak NSView *weakView = nil;
   renderer.heightChangeHandler = ^{
     TLChatTabController *owner = weakSelf;
-    if (!owner || owner.findBarVisible || !owner.streamingProvider || !owner.streamingProvider() || ![weakView isDescendantOf:owner.messageStack]) return;
+    if (!owner || owner.findBarVisible || ![weakView isDescendantOf:owner.messageStack]) return;
     [owner.messageDocumentView layoutSubtreeIfNeeded];
+    if (owner.notificationRevealHandler && owner.notificationRevealHandler()) return;
+    if (owner.suppressAutomaticScroll || !owner.streamingProvider || !owner.streamingProvider()) return;
     NSRect bottom = NSMakeRect(0, MAX(0, NSHeight(owner.messageDocumentView.bounds) - 1), 1, 1);
     [owner.messageDocumentView scrollRectToVisible:bottom];
   };

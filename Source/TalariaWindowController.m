@@ -5,6 +5,8 @@
 #import "TLBrowserLinkActions.h"
 #import "design_system/TLActionMenuItem.h"
 #import "TLAutomationsTabController.h"
+#import "TLNotificationsController.h"
+#import "design_system/TLNotificationMessageCardView.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLInputSuggestionListView.h"
@@ -109,6 +111,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *debugTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *automationsTab;
 @property (nonatomic, strong, nullable) TLAutomationsTabController *automationsController;
+@property (nonatomic, strong) TLNotificationsController *notificationsController;
+@property (nonatomic, strong) NSTimer *notificationsTimer;
+@property (nonatomic) NSInteger notificationsAgentID;
+@property (nonatomic) NSUInteger notificationsSyncGeneration;
+@property (nonatomic) NSUInteger notificationsNavigationGeneration;
+@property (nonatomic) BOOL notificationsSyncInFlight;
+@property (nonatomic) BOOL openingNotificationSource;
+@property (nonatomic) NSUInteger notificationsFailureCount;
+@property (nonatomic, strong) NSDate *notificationsNextSync;
 @property (nonatomic, strong) TLChatRecord *activeChat;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<NSURL *> *> *attachmentDrafts;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *attachmentPromptDrafts;
@@ -307,6 +318,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLChatTabController *chat = [[TLChatTabController alloc] initWithPalette:self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem]];
   __weak typeof(self) weakSelf = self;
   __weak TLChatTabController *origin = chat;
+  chat.notificationRevealHandler = ^BOOL { return [weakSelf revealNotificationInPresentation:origin]; };
   chat.previewItemProvider = ^TLAttachmentPreviewItem *(NSDictionary *attachment) {
     return [weakSelf previewItemForAttachment:attachment sessionID:origin.chat.hermesSessionID];
   };
@@ -553,11 +565,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       name:TLApplicationPreferencesDidChangeNotification object:TLApplicationPreferences.sharedPreferences];
     TLApplicationPreferences.sharedPreferences.quickInputHandler = ^{ [weakSelf openFromNotchOverlay:nil]; };
     [self applicationPreferencesChanged:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(notificationsDidActivate:)
+      name:NSApplicationDidBecomeActiveNotification object:nil];
+    [self startNotifications];
   }
   return self;
 }
 
 - (void)dealloc {
+  [self.notificationsTimer invalidate];
+  [NSNotificationCenter.defaultCenter removeObserver:self name:NSApplicationDidBecomeActiveNotification object:nil];
   [NSNotificationCenter.defaultCenter removeObserver:self name:TLApplicationPreferencesDidChangeNotification object:nil];
   [self.debugTerminalStateTimer invalidate];
   if (self.effectiveAppearanceObserverInstalled) {
@@ -1230,53 +1247,19 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.sidebarShortcutsView.addButton.action = @selector(showAddBookmark:);
   [self reloadBookmarks];
 
-  self.gmailInboxStackView = [self sidebarInboxStackViewWithTitle:@"Payment pending"
-                                                         subtitle:@"Daily Email Summary"
-                                                    iconAssetName:@"gmail"
-                                                notificationCount:3];
-  self.slackInboxStackView = [self sidebarInboxStackViewWithTitle:@"Project deadline question"
-                                                         subtitle:@"Review Slack Mentions"
-                                                    iconAssetName:@"slack"
-                                                notificationCount:0];
-  TLSidebarInboxStackView *driveCleanupInboxStackView = [self sidebarInboxStackViewWithTitle:@"2.4 GB can be cleaned up"
-                                                                                    subtitle:@"Clean Hard Drive"
-                                                                              systemIconName:@"externaldrive.fill"
-                                                                           notificationCount:0];
-  TLSidebarInboxStackView *downloadReviewInboxStackView = [self sidebarInboxStackViewWithTitle:@"14 downloads need review"
-                                                                                      subtitle:@"Review Downloads"
-                                                                                systemIconName:@"tray.and.arrow.down.fill"
-                                                                             notificationCount:0];
-  TLSidebarInboxStackView *securityReviewInboxStackView = [self sidebarInboxStackViewWithTitle:@"Password security issues"
-                                                                                      subtitle:@"Security Checkup"
-                                                                                systemIconName:@"lock.shield.fill"
-                                                                             notificationCount:0];
-  self.gmailInboxStackView.usesPrimaryBadge = YES;
-  NSArray<TLSidebarInboxStackView *> *inboxItemViews = @[
-    self.gmailInboxStackView,
-    self.slackInboxStackView,
-    driveCleanupInboxStackView,
-    downloadReviewInboxStackView,
-    securityReviewInboxStackView,
-  ];
-  for (TLSidebarInboxStackView *inboxItemView in inboxItemViews) {
-    inboxItemView.showsSeparator = NO;
-  }
-
-  self.sidebarInboxPaneView = [[TLSidebarInboxPaneView alloc] init];
-  self.sidebarInboxPaneView.palette = self.palette;
-  [self.sidebarInboxPaneView setContentHuggingPriority:NSLayoutPriorityDefaultLow
-                                        forOrientation:NSLayoutConstraintOrientationVertical];
-  [self.sidebarInboxPaneView setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
-                                                     forOrientation:NSLayoutConstraintOrientationVertical];
-  for (TLSidebarInboxStackView *inboxItemView in inboxItemViews) {
-    [self.sidebarInboxPaneView addInboxItemView:inboxItemView];
-  }
-
+  self.notificationsController = [[TLNotificationsController alloc] initWithPalette:self.palette];
+  __weak typeof(self) weakSelf = self;
+  self.notificationsController.openHandler = ^(NSDictionary *notification) { [weakSelf openNotification:notification]; };
+  self.notificationsController.readHandler = ^(NSDictionary *notification, BOOL read) {
+    [weakSelf setNotification:notification read:read agentID:weakSelf.notificationsAgentID];
+  };
+  NSView *notifications = self.notificationsController.view;
+  notifications.translatesAutoresizingMaskIntoConstraints = NO;
   [inboxStack addArrangedSubview:self.sidebarShortcutsView];
   [inboxStack setCustomSpacing:self.palette.space5 afterView:self.sidebarShortcutsView];
-  [inboxStack addArrangedSubview:self.sidebarInboxPaneView];
+  [inboxStack addArrangedSubview:notifications];
   [self.sidebarShortcutsView.widthAnchor constraintEqualToAnchor:inboxStack.widthAnchor].active = YES;
-  [self.sidebarInboxPaneView.widthAnchor constraintEqualToAnchor:inboxStack.widthAnchor].active = YES;
+  [notifications.widthAnchor constraintEqualToAnchor:inboxStack.widthAnchor].active = YES;
   return inboxStack;
 }
 
@@ -1539,6 +1522,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       return event;
     }
 
+    strongSelf.chatPresentation.notificationTargetMessageID = nil;
+    strongSelf.chatPresentation.notificationTargetToolCallID = nil;
+    strongSelf.chatPresentation.notificationDidReveal = nil;
     [strongSelf.messageScrollView scrollWheel:event];
     return nil;
   }];
@@ -1715,6 +1701,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
   self.chats = [loadedChats mutableCopy];
   self.agents = [loadedAgents mutableCopy];
+  [self refreshNotifications];
+  [self.settingsTabController refreshPluginsForSelectedAgent];
   [self rebuildSidebarAgents];
 
   // A chat can have been deleted since this session was last saved.
@@ -1954,7 +1942,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self selectActiveChatInHistory];
   [self renderMessages];
   [self updateControlStates];
-  [self generateChatIconIfNeededForChatID:chat.chatID messages:self.messages];
+  if (!self.openingNotificationSource) [self generateChatIconIfNeededForChatID:chat.chatID messages:self.messages];
 }
 
 - (void)activateDraftChatWithID:(NSInteger)chatID {
@@ -2699,7 +2687,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     // Small models use isolated supporting sessions. Draft chats have no Hermes
     // conversation yet; their selection is verified when the first turn starts.
     if (small || !chat.hermesSessionID.length) { saveSelection(nil); return; }
-    [owner.agentOrchestrator selectModel:model sessionID:chat.hermesSessionID token:owner.settings.openRouterToken
+    [owner.agentOrchestrator selectModel:model sessionID:chat.continuationSessionID.length ? chat.continuationSessionID : chat.hermesSessionID
+      agentID:chat.sourceAgentID token:owner.settings.openRouterToken
       completion:saveSelection];
   };
   [controller presentForWindow:self.window];
@@ -2845,7 +2834,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (!self.preparingAttachmentChats) self.preparingAttachmentChats = [NSMutableSet set];
     [self.preparingAttachmentChats addObject:@(presentation.chat.chatID)];
     [self updateControlStatesForChat:chatContext];
-    [self.agentOrchestrator prepareAttachmentURLs:prompt.attachmentURLs sessionID:presentation.chat.hermesSessionID
+    [self.agentOrchestrator prepareAttachmentURLs:prompt.attachmentURLs
+      sessionID:presentation.chat.continuationSessionID.length ? presentation.chat.continuationSessionID : presentation.chat.hermesSessionID
+      agentID:presentation.chat.sourceAgentID
       completion:^(NSArray *attachments, NSError *error) {
         [self.preparingAttachmentChats removeObject:@(presentation.chat.chatID)];
         if (!attachments) {
@@ -2941,7 +2932,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (!self.preparingAttachmentChats) self.preparingAttachmentChats = [NSMutableSet set];
     [self.preparingAttachmentChats addObject:@(chat.chatID)];
     [self updateControlStates];
-    [self.agentOrchestrator prepareAttachmentURLs:sourceURLs sessionID:chat.hermesSessionID
+    [self.agentOrchestrator prepareAttachmentURLs:sourceURLs sessionID:chat.continuationSessionID.length ? chat.continuationSessionID : chat.hermesSessionID agentID:chat.sourceAgentID
       completion:^(NSArray *attachments, NSError *error) {
         [self.preparingAttachmentChats removeObject:@(chat.chatID)];
         if (!attachments) {
@@ -2979,6 +2970,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                     attachments:(NSArray<NSDictionary<NSString *, id> *> *)attachments sourceURLs:(NSArray<NSURL *> *)sourceURLs
                approvalResponse:(NSDictionary *)approvalResponse regenerationPrompt:(TLChatMessage *)regenerationPrompt
             regenerationMessage:(TLChatMessage *)regenerationMessage {
+  TLChatTabController *origin = self.chatPresentations[@(chat.chatID)];
+  origin.notificationTargetMessageID = nil;
+  origin.notificationTargetToolCallID = nil;
+  origin.notificationDidReveal = nil;
+  origin.suppressAutomaticScroll = NO;
   if (!regenerationPrompt && !approvalResponse && !self.chatPresentations[@(chat.chatID)].queuedPromptInFlight) {
     self.attachmentDrafts[@(chat.chatID)] = @[];
     self.attachmentPromptDrafts[@(chat.chatID)] = @"";
@@ -4087,6 +4083,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
 
   self.agents = [loadedAgents mutableCopy];
+  [self refreshNotifications];
   if (self.historyAgentID != self.database.currentAgentID) {
     self.historyRequestGeneration += 1;
     self.historyPanelController.loading = NO;
@@ -5239,7 +5236,19 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown | NSEventMaskScrollWheel
     handler:^NSEvent *(NSEvent *event) {
     TalariaWindowController *owner = weakSelf;
-    if (event.window != owner.window || !owner.splitWorkspace.split) return event;
+    if (event.window != owner.window) return event;
+    if (event.type == NSEventTypeScrollWheel || event.type == NSEventTypeLeftMouseDown) {
+      for (TLChatTabController *presentation in owner.chatPresentations.allValues) {
+        NSPoint scrollPoint = [presentation.messageScrollView convertPoint:event.locationInWindow fromView:nil];
+        if (presentation.messageScrollView.window && !presentation.chatWorkspace.hidden &&
+            NSPointInRect(scrollPoint, presentation.messageScrollView.bounds)) {
+          presentation.notificationTargetMessageID = nil;
+          presentation.notificationTargetToolCallID = nil;
+          presentation.notificationDidReveal = nil;
+        }
+      }
+    }
+    if (!owner.splitWorkspace.split) return event;
     NSPoint point = [owner.splitWorkspace convertPoint:event.locationInWindow fromView:nil];
     // Scrolling does not steal typing focus. Native scroll views still receive it.
     if (event.type != NSEventTypeScrollWheel) {
@@ -5680,6 +5689,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.sidebarInboxStack setCustomSpacing:self.palette.space5 afterView:self.sidebarShortcutsView];
   self.sidebarShortcutsView.palette = self.palette;
   self.sidebarInboxPaneView.palette = self.palette;
+  self.notificationsController.palette = self.palette;
 
   for (NSView *view in self.sidebarInboxPaneView.contentStackView.arrangedSubviews) {
     if ([view isKindOfClass:TLSidebarInboxStackView.class]) {
@@ -5866,6 +5876,270 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self updateAgentControlStates];
 }
 
+- (void)startNotifications {
+  if (self.widgetbookMode || self.notificationsTimer) return;
+  __weak typeof(self) weakSelf = self;
+  self.notificationsTimer = [NSTimer timerWithTimeInterval:5 repeats:YES block:^(NSTimer *timer) {
+    [weakSelf refreshNotifications];
+  }];
+  [[NSRunLoop mainRunLoop] addTimer:self.notificationsTimer forMode:NSRunLoopCommonModes];
+  [self refreshNotifications];
+}
+
+- (void)notificationsDidActivate:(NSNotification *)notification {
+  [self refreshNotifications];
+  for (TLChatTabController *presentation in self.chatPresentations.allValues) {
+    if (presentation.notificationDidReveal) [self revealNotificationInPresentation:presentation];
+  }
+}
+
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+  [self notificationsDidActivate:notification];
+}
+
+- (void)refreshNotifications {
+  if (self.widgetbookMode || !self.notificationsController || !self.agentOrchestrator) return;
+  NSInteger agentID = self.database.currentAgentID;
+  if (self.notificationsAgentID != agentID) {
+    self.notificationsAgentID = agentID;
+    self.notificationsSyncGeneration++;
+    self.notificationsNavigationGeneration++;
+    self.notificationsSyncInFlight = NO;
+    self.notificationsNextSync = nil;
+    self.notificationsFailureCount = 0;
+    for (TLChatTabController *presentation in self.chatPresentations.allValues) {
+      presentation.notificationTargetMessageID = nil;
+      presentation.notificationTargetToolCallID = nil;
+      presentation.notificationDidReveal = nil;
+    }
+    self.notificationsController.notifications = agentID > 0 ? [self.database notificationsForAgentID:agentID error:nil] ?: @[] : @[];
+    self.notificationsController.errorMessage = nil;
+  }
+  if (agentID <= 0) { self.notificationsController.loading = NO; return; }
+  if (self.notificationsSyncInFlight || [self.notificationsNextSync timeIntervalSinceNow] > 0) return;
+  TLAgentRecord *agent = [self.database agentWithID:agentID error:nil];
+  if (!agent || ![self.agentOrchestrator isVMRunningForAgent:agent]) {
+    self.notificationsController.loading = NO;
+    self.notificationsController.errorMessage = @"Agent offline. Saved notifications remain available.";
+    return;
+  }
+  NSError *cacheError = nil;
+  NSDictionary *state = [self.database notificationSyncStateForAgentID:agentID error:&cacheError];
+  if (!state) { self.notificationsController.errorMessage = cacheError.localizedDescription; return; }
+  NSMutableDictionary *params = [state mutableCopy];
+  params[@"action"] = @"sync";
+  params[@"limit"] = @200;
+  self.notificationsSyncInFlight = YES;
+  self.notificationsController.loading = self.notificationsController.notifications.count == 0;
+  NSUInteger generation = ++self.notificationsSyncGeneration;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesNotificationsWithParameters:params agentID:agentID
+    token:self.settings.openRouterToken model:self.settings.selectedModel completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.notificationsSyncGeneration || agentID != owner.database.currentAgentID) return;
+    owner.notificationsSyncInFlight = NO;
+    owner.notificationsController.loading = NO;
+    NSError *failure = error;
+    if (!failure && ![owner.database applyNotificationSyncResult:result agentID:agentID error:&failure]) {
+      if (!failure) failure = [NSError errorWithDomain:@"Talaria.Notifications" code:1
+        userInfo:@{NSLocalizedDescriptionKey: @"Could not cache notifications."}];
+    }
+    if (failure) {
+      owner.notificationsFailureCount = MIN(4, owner.notificationsFailureCount + 1);
+      owner.notificationsNextSync = [NSDate dateWithTimeIntervalSinceNow:MIN(60, 5 * (1 << owner.notificationsFailureCount))];
+      owner.notificationsController.errorMessage = failure.localizedDescription;
+      return;
+    }
+    owner.notificationsFailureCount = 0;
+    owner.notificationsController.errorMessage = nil;
+    owner.notificationsController.notifications = [owner.database notificationsForAgentID:agentID error:nil] ?: @[];
+    owner.notificationsNextSync = [NSDate dateWithTimeIntervalSinceNow:[result[@"has_more"] boolValue] ? 0 : 5];
+    if ([result[@"has_more"] boolValue]) dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf refreshNotifications]; });
+  }];
+}
+
+- (void)setNotification:(NSDictionary *)notification read:(BOOL)read agentID:(NSInteger)agentID {
+  if (agentID <= 0 || !notification[@"id"] || !notification[@"version"]) return;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesNotificationsWithParameters:@{@"action": @"set_read", @"id": notification[@"id"],
+      @"version": notification[@"version"], @"read": @(read)} agentID:agentID
+    token:self.settings.openRouterToken model:self.settings.selectedModel completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner) return;
+    NSError *failure = error;
+    NSDictionary *updated = [result[@"notification"] isKindOfClass:NSDictionary.class] ? result[@"notification"] : nil;
+    if (!failure && updated) [owner.database cacheNotification:updated agentID:agentID error:&failure];
+    if (agentID != owner.database.currentAgentID) return;
+    if (failure || !updated) {
+      owner.notificationsController.errorMessage = failure.localizedDescription ?: @"Could not update notification read state.";
+      return;
+    }
+    owner.notificationsController.notifications = [owner.database notificationsForAgentID:agentID error:nil] ?: @[];
+  }];
+}
+
+- (BOOL)message:(TLChatMessage *)message matchesNotification:(NSDictionary *)notification {
+  NSString *messageID = [notification[@"message_id"] description];
+  NSString *callID = notification[@"tool_call_id"];
+  if (!messageID.length || !callID.length || ![message.sourceMessageID isEqual:messageID]) return NO;
+  NSString *cardCallID = message.notification[@"tool_call_id"];
+  return cardCallID.length ? [cardCallID isEqual:callID] : [message.sourceToolCallIDs containsObject:callID];
+}
+
+- (BOOL)insertNotificationSource:(NSDictionary *)notification transcript:(NSArray<NSDictionary *> *)transcript
+                   presentation:(TLChatTabController *)presentation {
+  // Ordinary Hermes history omits tool-only calls. Restore that exact source
+  // row by durable neighboring IDs while retaining the live turn's objects.
+  NSUInteger sourceIndex = [transcript indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger index, BOOL *stop) {
+    return [[row[@"source_message_id"] description] isEqual:[notification[@"message_id"] description]] &&
+      [row[@"notification"][@"tool_call_id"] isEqual:notification[@"tool_call_id"]];
+  }];
+  if (sourceIndex == NSNotFound) return NO;
+  TLAssistantTurnRunner *runner = self.turnRunners[@(presentation.chat.chatID)];
+  NSUInteger boundary = [presentation.messages indexOfObjectIdenticalTo:runner.activeUserMessage];
+  if (boundary == NSNotFound) boundary = presentation.messages.count;
+  NSUInteger insertion = boundary;
+  BOOL located = NO;
+  for (NSUInteger index = sourceIndex + 1; index < transcript.count && !located; index++) {
+    NSString *nextID = [transcript[index][@"source_message_id"] description];
+    for (NSUInteger local = 0; local < boundary; local++) {
+      if (nextID.length && [presentation.messages[local].sourceMessageID isEqual:nextID]) {
+        insertion = local; located = YES; break;
+      }
+    }
+  }
+  for (NSInteger index = (NSInteger)sourceIndex - 1; index >= 0 && !located; index--) {
+    NSString *previousID = [transcript[index][@"source_message_id"] description];
+    for (NSUInteger local = 0; local < boundary; local++) {
+      if (previousID.length && [presentation.messages[local].sourceMessageID isEqual:previousID]) {
+        insertion = local + 1; located = YES; break;
+      }
+    }
+  }
+  NSDictionary *row = transcript[sourceIndex];
+  TLChatMessage *message = [TLChatMessage messageWithRole:TLRoleAssistant content:row[@"content"] ?: @"" thinking:row[@"thinking"]];
+  message.sourceMessageID = [row[@"source_message_id"] description];
+  message.sourceToolCallIDs = row[@"source_tool_call_ids"] ?: @[];
+  message.notification = row[@"notification"];
+  [presentation.messages insertObject:message atIndex:insertion];
+  return YES;
+}
+
+- (void)openNotification:(NSDictionary *)notification {
+  NSInteger agentID = self.notificationsAgentID;
+  if (agentID <= 0 || agentID != self.database.currentAgentID || !notification[@"id"] || !notification[@"version"]) return;
+  NSUInteger generation = ++self.notificationsNavigationGeneration;
+  for (TLChatTabController *presentation in self.chatPresentations.allValues) {
+    presentation.notificationTargetMessageID = nil;
+    presentation.notificationTargetToolCallID = nil;
+    presentation.notificationDidReveal = nil;
+  }
+  self.notificationsController.errorMessage = nil;
+  TLChatRecord *requestedChat = [self.database chatWithHermesSessionID:notification[@"session_id"] agentID:agentID error:nil];
+  NSNumber *requestedChatID = requestedChat ? @(requestedChat.chatID) : nil;
+  BOOL requestedWithLiveHistory = requestedChatID && (self.turnRunners[requestedChatID] ||
+    self.turnMessagesByChat[requestedChatID] || [self.preparingAttachmentChats containsObject:requestedChatID]);
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesNotificationsWithParameters:@{@"action": @"open_source", @"id": notification[@"id"],
+      @"version": notification[@"version"]} agentID:agentID token:self.settings.openRouterToken
+    model:self.settings.selectedModel completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.notificationsNavigationGeneration || agentID != owner.database.currentAgentID) return;
+    NSArray *messages = [result[@"messages"] isKindOfClass:NSArray.class] ? result[@"messages"] : nil;
+    NSDictionary *session = [result[@"session"] isKindOfClass:NSDictionary.class] ? result[@"session"] : nil;
+    NSDictionary *source = [result[@"notification"] isKindOfClass:NSDictionary.class] ? result[@"notification"] : nil;
+    if (error || !messages || !session || ![source[@"id"] isEqual:notification[@"id"]] ||
+        ![source[@"version"] isEqual:notification[@"version"]] || ![source[@"session_id"] isEqual:result[@"source_session_id"]]) {
+      owner.notificationsController.errorMessage = error.localizedDescription ?: @"The notification's source is unavailable.";
+      return;
+    }
+    NSMutableDictionary *metadata = [session mutableCopy];
+    metadata[@"id"] = result[@"source_session_id"];
+    metadata[@"source_session_id"] = result[@"source_session_id"];
+    metadata[@"continuation_session_id"] = result[@"continuation_session_id"] ?: result[@"source_session_id"];
+    if ([result[@"model"] isKindOfClass:NSString.class] && [result[@"model"] length]) metadata[@"model"] = result[@"model"];
+    TLChatRecord *existing = [owner.database chatWithHermesSessionID:metadata[@"id"] agentID:agentID error:nil];
+    TLChatTabController *presentation = existing ? owner.chatPresentations[@(existing.chatID)] : nil;
+    NSNumber *existingChatID = existing ? @(existing.chatID) : nil;
+    BOOL preserveHistory = existingChatID && (owner.turnRunners[existingChatID] ||
+      owner.turnMessagesByChat[existingChatID] || [owner.preparingAttachmentChats containsObject:existingChatID]);
+    BOOL localHistoryChanged = existing && (!requestedChat || existing.messages.count != requestedChat.messages.count ||
+      existing.messages.lastObject.messageID != requestedChat.messages.lastObject.messageID);
+    if (!preserveHistory && (requestedWithLiveHistory || localHistoryChanged)) {
+      // The runtime snapshot may predate a reply that finished during this
+      // request. Fetch again after completion before replacing local history.
+      [owner openNotification:notification];
+      return;
+    }
+    // Keep arrays owned by streaming, paused approvals, or attachment preparation.
+    TLChatRecord *chat = [owner.database cacheHermesSession:metadata messages:preserveHistory ? nil : messages agentID:agentID error:&error];
+    if (!chat) { owner.notificationsController.errorMessage = error.localizedDescription; return; }
+    NSArray *displayMessages = preserveHistory ? presentation.messages : chat.messages;
+    BOOL found = NO;
+    for (TLChatMessage *message in displayMessages) {
+      if ([owner message:message matchesNotification:source]) {
+        if (!message.notification) message.notification = source;
+        found = YES; break;
+      }
+    }
+    if (!found && preserveHistory) found = [owner insertNotificationSource:source transcript:messages presentation:presentation];
+    if (!found) {
+      owner.notificationsController.errorMessage = @"The original notification message is unavailable. Try reopening after this turn finishes.";
+      return;
+    }
+    if (presentation && !preserveHistory) {
+      presentation.chat = chat;
+      presentation.messages = [[NSArray alloc] initWithArray:chat.messages copyItems:YES].mutableCopy;
+    }
+    [owner addChatToSessionIfNeeded:chat.chatID activate:YES];
+    owner.openingNotificationSource = YES;
+    @try { [owner loadChatWithID:chat.chatID]; } @finally { owner.openingNotificationSource = NO; }
+    presentation = owner.chatPresentations[@(chat.chatID)];
+    presentation.notificationTargetMessageID = [source[@"message_id"] description];
+    presentation.notificationTargetToolCallID = source[@"tool_call_id"];
+    presentation.notificationNavigationGeneration = generation;
+    presentation.suppressAutomaticScroll = YES;
+    presentation.notificationDidReveal = ^{
+      TalariaWindowController *current = weakSelf;
+      if (current && generation == current.notificationsNavigationGeneration && agentID == current.database.currentAgentID) {
+        [current setNotification:source read:YES agentID:agentID];
+      }
+    };
+    [owner renderMessagesScrollingToBottom:NO];
+  }];
+}
+
+- (BOOL)revealNotificationInPresentation:(TLChatTabController *)presentation {
+  if (!presentation.notificationTargetMessageID.length || !presentation.notificationTargetToolCallID.length) return NO;
+  if (presentation.notificationNavigationGeneration != self.notificationsNavigationGeneration) return NO;
+  NSDictionary *target = @{@"message_id": presentation.notificationTargetMessageID, @"tool_call_id": presentation.notificationTargetToolCallID};
+  for (TLChatMessage *message in presentation.messages) {
+    if (![self message:message matchesNotification:target]) continue;
+    NSView *row = [presentation.messageRowViews objectForKey:message];
+    if (!row || !row.window.isVisible || row.window.isMiniaturized || row.isHiddenOrHasHiddenAncestor ||
+        presentation.chatWorkspace.isHiddenOrHasHiddenAncestor) return NO;
+    [presentation.messageDocumentView layoutSubtreeIfNeeded];
+    [row scrollRectToVisible:row.bounds];
+    NSRect location = [row convertRect:row.bounds toView:presentation.messageDocumentView];
+    if (!NSIntersectsRect(location, presentation.messageScrollView.documentVisibleRect)) return NO;
+    if (presentation.notificationDidReveal) {
+      void (^revealed)(void) = presentation.notificationDidReveal;
+      presentation.notificationDidReveal = nil;
+      row.wantsLayer = YES;
+      row.layer.borderColor = self.palette.sidebarInboxPrimaryBadgeSurface.CGColor;
+      row.layer.borderWidth = self.palette.borderWidth;
+      row.layer.cornerRadius = self.palette.radiusMedium;
+      __weak NSView *weakRow = row;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        weakRow.layer.borderWidth = 0;
+      });
+      revealed();
+    }
+    return YES;
+  }
+  return NO;
+}
+
 - (void)historyPanelController:(TLHistoryPanelController *)controller didSelectChatID:(NSInteger)chatID {
   if (self.widgetbookMode) {
     [self selectActiveChatInHistory];
@@ -5903,9 +6177,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (owner.turnRunners[@(chatID)] || [owner.preparingAttachmentChats containsObject:@(chatID)]) return;
     NSMutableDictionary *metadata = [session mutableCopy];
     if ([result[@"model"] isKindOfClass:NSString.class]) metadata[@"model"] = result[@"model"];
-    TLChatRecord *chat = [owner.database cacheHermesSession:metadata messages:messages error:&error];
+    TLChatRecord *chat = [owner.database cacheHermesSession:metadata messages:messages agentID:agentID error:&error];
     if (!chat) { owner.historyPanelController.statusMessage = error.localizedDescription; return; }
     owner.chats = [[owner.database listChats:nil] mutableCopy];
+    TLChatTabController *presentation = owner.chatPresentations[@(chat.chatID)];
+    if (presentation) {
+      presentation.chat = chat;
+      presentation.messages = [[NSArray alloc] initWithArray:chat.messages copyItems:YES].mutableCopy;
+    }
     if ([owner isHistoryScreenActive]) [owner loadChatWithID:chat.chatID];
   }];
 }
@@ -6074,7 +6353,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       }
     }
     owner.historyPanelController.loading = YES;
-    [owner.historyRepository cacheSessions:sessions completion:^(NSArray *chats, NSArray *allChats, NSError *cacheError) {
+    [owner.historyRepository cacheSessions:sessions agentID:agentID completion:^(NSArray *chats, NSArray *allChats, NSError *cacheError) {
       TalariaWindowController *current = weakSelf;
       if (!current || generation != current.historyRequestGeneration) return;
       current.historyPanelController.loading = NO;

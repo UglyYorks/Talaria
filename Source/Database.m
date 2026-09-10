@@ -67,6 +67,22 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
   }
 }
 
+static BOOL TLValidSourceMetadata(id calls, id notification) {
+  if (![calls isKindOfClass:NSArray.class] || ![notification isKindOfClass:NSDictionary.class] ||
+      ![NSJSONSerialization isValidJSONObject:notification]) return NO;
+  for (id call in calls) if (![call isKindOfClass:NSString.class]) return NO;
+  return YES;
+}
+
+static NSString *TLJSONText(id value, NSError **error) {
+  NSData *data = [NSJSONSerialization dataWithJSONObject:value options:0 error:error];
+  return data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+}
+
+static id TLJSONValue(NSString *text) {
+  return [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+}
+
 @interface TLDatabase ()
 
 @property (nonatomic, strong) TLSQLiteConnection *sqliteConnection;
@@ -79,6 +95,64 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
 @end
 
 @implementation TLDatabase
+
+- (TLChatRecord *)cacheHermesSession:(NSDictionary *)session messages:(NSArray<NSDictionary *> *)messages
+                           agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheHermesSession:session messages:messages agentID:agentID error:error];
+  __block TLChatRecord * value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_cacheHermesSession:session messages:messages agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (TLChatRecord *)chatWithHermesSessionID:(NSString *)sessionID agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_chatWithHermesSessionID:sessionID agentID:agentID error:error];
+  __block TLChatRecord * value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_chatWithHermesSessionID:sessionID agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (NSArray<NSDictionary *> *)notificationsForAgentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_notificationsForAgentID:agentID error:error];
+  __block NSArray<NSDictionary *> * value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_notificationsForAgentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (NSDictionary *)notificationSyncStateForAgentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_notificationSyncStateForAgentID:agentID error:error];
+  __block NSDictionary * value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_notificationSyncStateForAgentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (BOOL)cacheNotification:(NSDictionary *)notification agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheNotification:notification agentID:agentID error:error];
+  __block BOOL value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_cacheNotification:notification agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (BOOL)applyNotificationSyncResult:(NSDictionary *)result agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_applyNotificationSyncResult:result agentID:agentID error:error];
+  __block BOOL value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_applyNotificationSyncResult:result agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
+- (NSArray<TLChatSummary *> *)cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions agentID:(NSInteger)agentID error:(NSError **)error {
+  if (dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheHermesSessionSummaries:sessions agentID:agentID error:error];
+  __block NSArray *value;
+  __block NSError *queryError = nil;
+  dispatch_sync(self.databaseQueue, ^{ value = [self onDatabaseQueue_cacheHermesSessionSummaries:sessions agentID:agentID error:&queryError]; });
+  if (error) *error = queryError;
+  return value;
+}
 
 - (void)dealloc {
   __block TLSQLiteConnection *connection = _sqliteConnection;
@@ -132,10 +206,10 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
   return result;
 }
 - (NSArray<TLChatSummary *> *)cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions error:(NSError **)error {
-  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheHermesSessionSummaries:sessions error:error];
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_cacheHermesSessionSummaries:sessions agentID:0 error:error];
   __block NSArray<TLChatSummary *> * result;
   __block NSError *queryError = nil;
-  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_cacheHermesSessionSummaries:sessions error:&queryError]; });
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_cacheHermesSessionSummaries:sessions agentID:0 error:&queryError]; });
   if (error) *error = queryError;
   return result;
 }
@@ -588,36 +662,67 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
   }
 }
 
-- (NSInteger)upsertHermesSession:(NSDictionary *)session error:(NSError **)error {
+- (NSInteger)upsertHermesSession:(NSDictionary *)session agentID:(NSInteger)agentID error:(NSError **)error {
   NSString *(^string)(id) = ^NSString *(id value) { return [value isKindOfClass:NSString.class] ? value : @""; };
   NSString *sessionID = string(session[@"hermes_session_id"]);
+  if (!sessionID.length) sessionID = string(session[@"id"]);
+  NSString *sourceID = string(session[@"source_session_id"]);
+  if (!sourceID.length) sourceID = string(session[@"id"]);
+  NSString *continuationID = string(session[@"continuation_session_id"]);
   if (!sessionID.length) { TLSetDatabaseError(error, @"Hermes session identity is missing."); return 0; }
+  if (agentID > 0 && sourceID.length) {
+    TLSQLiteStatement *alias = [self.sqliteConnection prepareSQL:
+      "SELECT hermes_session_id FROM chats WHERE source_agent_id=?1 AND (hermes_session_id=?2 OR source_session_id=?2) "
+      "ORDER BY CASE WHEN hermes_session_id=?2 THEN 0 ELSE 1 END, id LIMIT 1" error:error];
+    if (!alias) return 0;
+    [alias bindInt64:agentID atIndex:1]; [alias bindText:sourceID atIndex:2];
+    int result = [alias step];
+    if (result == SQLITE_ROW) sessionID = [alias stringAtColumn:0];
+    else if (result != SQLITE_DONE) { [self.sqliteConnection setCurrentError:error]; return 0; }
+  }
+      // An authoritative import may claim an unowned legacy chat, but never another agent's chat.
+      if (agentID > 0) {
+        TLSQLiteStatement *claim = [self.sqliteConnection prepareSQL:
+          "UPDATE chats SET source_agent_id = ?1 WHERE source_agent_id = 0 AND hermes_session_id = ?2 "
+          "AND NOT EXISTS (SELECT 1 FROM chats WHERE source_agent_id = ?1 AND hermes_session_id = ?2)" error:error];
+        if (!claim) return 0;
+        [claim bindInt64:agentID atIndex:1]; [claim bindText:sessionID atIndex:2];
+        if (![claim stepDone:error]) return 0;
+      }
       TLSQLiteStatement *upsert = [self.sqliteConnection prepareSQL:
-        "INSERT INTO chats (title, model, icon, hermes_session_id, created_at, updated_at) "
-        "VALUES (?1, ?2, '', ?3, ?4, ?5) ON CONFLICT(hermes_session_id) DO UPDATE SET "
+        "INSERT INTO chats (title, model, icon, hermes_session_id, created_at, updated_at, source_agent_id, source_session_id, continuation_session_id) "
+        "VALUES (?1, ?2, '', ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(source_agent_id, hermes_session_id) DO UPDATE SET "
         "title = excluded.title, model = CASE WHEN excluded.model = '' THEN chats.model ELSE excluded.model END, "
-        "created_at = excluded.created_at, updated_at = excluded.updated_at" error:error];
+        "created_at = excluded.created_at, updated_at = excluded.updated_at, "
+        "source_session_id = CASE WHEN chats.source_session_id = '' THEN excluded.source_session_id ELSE chats.source_session_id END, "
+        "continuation_session_id = CASE WHEN excluded.continuation_session_id = '' THEN chats.continuation_session_id ELSE excluded.continuation_session_id END" error:error];
       if (!upsert) return 0;
       [upsert bindText:string(session[@"title"]) atIndex:1];
       [upsert bindText:string(session[@"model"]) atIndex:2];
       [upsert bindText:sessionID atIndex:3];
       [upsert bindText:string(session[@"created_at"]) atIndex:4];
       [upsert bindText:string(session[@"updated_at"]) atIndex:5];
+      [upsert bindInt64:agentID atIndex:6];
+      [upsert bindText:sourceID atIndex:7];
+      [upsert bindText:continuationID atIndex:8];
       if (![upsert stepDone:error]) return 0;
-      TLSQLiteStatement *lookup = [self.sqliteConnection prepareSQL:"SELECT id FROM chats WHERE hermes_session_id = ?1" error:error];
+      TLSQLiteStatement *lookup = [self.sqliteConnection prepareSQL:"SELECT id FROM chats WHERE hermes_session_id = ?1 AND source_agent_id = ?2" error:error];
       if (!lookup) return 0;
       [lookup bindText:sessionID atIndex:1];
+      [lookup bindInt64:agentID atIndex:2];
       if ([lookup step] != SQLITE_ROW) { [self.sqliteConnection setCurrentError:error]; return 0; }
-      return sqlite3_column_int64(lookup.handle, 0);
+      NSInteger chatID = sqlite3_column_int64(lookup.handle, 0);
+      sqlite3_reset(lookup.handle);
+  return chatID;
 }
 
-- (NSArray<TLChatSummary *> *)onDatabaseQueue_cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions error:(NSError **)error {
+- (NSArray<TLChatSummary *> *)onDatabaseQueue_cacheHermesSessionSummaries:(NSArray<NSDictionary *> *)sessions agentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
     NSMutableArray *summaries = [NSMutableArray arrayWithCapacity:sessions.count];
     BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
       for (id session in sessions) {
         if (![session isKindOfClass:NSDictionary.class]) { TLSetDatabaseError(transactionError, @"Hermes returned an invalid session."); return NO; }
-        NSInteger chatID = [self upsertHermesSession:session error:transactionError];
+        NSInteger chatID = [self upsertHermesSession:session agentID:agentID error:transactionError];
         TLChatSummary *summary = chatID ? [self loadChatSummaryWithID:chatID error:transactionError] : nil;
         if (!summary) return NO;
         [summaries addObject:summary];
@@ -632,13 +737,15 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
 - (nullable TLChatRecord *)onDatabaseQueue_cacheHermesSession:(NSDictionary *)session
                                    messages:(nullable NSArray<NSDictionary *> *)messages
                                       error:(NSError **)error {
+  return [self cacheHermesSession:session messages:messages agentID:0 error:error];
+}
+
+- (TLChatRecord *)onDatabaseQueue_cacheHermesSession:(NSDictionary *)session messages:(NSArray<NSDictionary *> *)messages
+                           agentID:(NSInteger)agentID error:(NSError **)error {
   @synchronized (self) {
-    NSString *(^string)(id) = ^NSString *(id value) { return [value isKindOfClass:NSString.class] ? value : @""; };
-    NSString *sessionID = string(session[@"hermes_session_id"]);
-    if (!sessionID.length) { TLSetDatabaseError(error, @"Hermes session identity is missing."); return nil; }
     __block NSInteger chatID = 0;
     BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
-      chatID = [self upsertHermesSession:session error:transactionError];
+      chatID = [self upsertHermesSession:session agentID:agentID error:transactionError];
       if (!chatID) return NO;
       if (!messages) return YES;
       TLChatRecord *previous = [self loadChatWithID:chatID error:transactionError];
@@ -647,9 +754,9 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
       if (!changes) return NO;
       TLSQLiteStatement *remove = [self.sqliteConnection prepareSQL:"DELETE FROM messages WHERE id = ?1 AND chat_id = ?2" error:transactionError];
       TLSQLiteStatement *write = [self.sqliteConnection prepareSQL:
-        "INSERT INTO messages (id, chat_id, role, content, thinking, attachments, created_at, position) "
-        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(id) DO UPDATE SET "
-        "thinking=excluded.thinking, created_at=excluded.created_at, position=excluded.position" error:transactionError];
+        "INSERT INTO messages (id, chat_id, role, content, thinking, attachments, created_at, position, source_message_id, source_tool_call_ids, notification) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(id) DO UPDATE SET "
+        "thinking=excluded.thinking, created_at=excluded.created_at, position=excluded.position, source_message_id=excluded.source_message_id, source_tool_call_ids=excluded.source_tool_call_ids, notification=excluded.notification" error:transactionError];
       if (!remove || !write) return NO;
       for (NSNumber *messageID in changes.deletedIDs) {
         sqlite3_reset(remove.handle); sqlite3_clear_bindings(remove.handle);
@@ -669,6 +776,9 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
         [write bindText:[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] atIndex:6];
         [write bindText:message.createdAt atIndex:7];
         [write bindInt64:message.position atIndex:8];
+        [write bindText:message.sourceMessageID ?: @"" atIndex:9];
+        [write bindText:TLJSONText(message.sourceToolCallIDs ?: @[], transactionError) atIndex:10];
+        [write bindText:TLJSONText(message.notification ?: @{}, transactionError) atIndex:11];
         if (![write stepDone:transactionError]) return NO;
       }
       return YES;
@@ -794,10 +904,136 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
   }
 }
 
+- (TLChatRecord *)onDatabaseQueue_chatWithHermesSessionID:(NSString *)sessionID agentID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "SELECT id FROM chats WHERE source_agent_id = ?1 AND (hermes_session_id = ?2 OR source_session_id = ?2) "
+      "ORDER BY CASE WHEN hermes_session_id = ?2 THEN 0 ELSE 1 END, id LIMIT 1" error:error];
+    if (!statement) return nil;
+    [statement bindInt64:agentID atIndex:1]; [statement bindText:sessionID atIndex:2];
+    int result = [statement step];
+    if (result == SQLITE_ROW) {
+      NSInteger chatID = sqlite3_column_int64(statement.handle, 0);
+      sqlite3_reset(statement.handle);
+      return [self loadChatWithID:chatID error:error];
+    }
+    if (result != SQLITE_DONE) [self.sqliteConnection setCurrentError:error];
+    return nil;
+  }
+}
+
+- (NSArray<NSDictionary *> *)onDatabaseQueue_notificationsForAgentID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "SELECT payload FROM notifications WHERE agent_id = ?1 ORDER BY change_seq DESC, notification_id" error:error];
+    if (!statement) return nil;
+    [statement bindInt64:agentID atIndex:1];
+    NSMutableArray *rows = [NSMutableArray array];
+    int result;
+    while ((result = [statement step]) == SQLITE_ROW) {
+      id notification = TLJSONValue([statement stringAtColumn:0]);
+      if (![notification isKindOfClass:NSDictionary.class]) { TLSetDatabaseError(error, @"Invalid cached notification."); return nil; }
+      [rows addObject:notification];
+    }
+    if (result != SQLITE_DONE) { [self.sqliteConnection setCurrentError:error]; return nil; }
+    return rows;
+  }
+}
+
+- (NSDictionary *)onDatabaseQueue_notificationSyncStateForAgentID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+      "SELECT generation, cursor FROM notification_sync WHERE agent_id = ?1" error:error];
+    if (!statement) return nil;
+    [statement bindInt64:agentID atIndex:1];
+    int result = [statement step];
+    if (result == SQLITE_ROW) {
+      NSDictionary *state = @{@"generation": [statement stringAtColumn:0], @"cursor": @(sqlite3_column_int64(statement.handle, 1))};
+      sqlite3_reset(statement.handle);
+      return state;
+    }
+    if (result != SQLITE_DONE) { [self.sqliteConnection setCurrentError:error]; return nil; }
+    return @{@"generation": @"", @"cursor": @0};
+  }
+}
+
+- (BOOL)storeNotification:(NSDictionary *)notification agentID:(NSInteger)agentID error:(NSError **)error {
+  if (agentID <= 0 || ![notification isKindOfClass:NSDictionary.class] || ![NSJSONSerialization isValidJSONObject:notification]) {
+    TLSetDatabaseError(error, @"Invalid notification data."); return NO;
+  }
+  for (NSString *key in @[@"id", @"title", @"task_id", @"session_id"]) {
+    if (![notification[key] isKindOfClass:NSString.class] || ![notification[key] length]) {
+      TLSetDatabaseError(error, @"A notification is missing its source or title."); return NO;
+    }
+  }
+  for (NSString *key in @[@"change_seq", @"version", @"is_read"]) {
+    if (![notification[key] isKindOfClass:NSNumber.class] || [notification[key] longLongValue] < 0) {
+      TLSetDatabaseError(error, @"A notification has invalid revision data."); return NO;
+    }
+  }
+  NSString *json = TLJSONText(notification, error);
+  if (!json) return NO;
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+    "INSERT INTO notifications(agent_id, notification_id, change_seq, version, payload) VALUES (?1, ?2, ?3, ?4, ?5) "
+    "ON CONFLICT(agent_id, notification_id) DO UPDATE SET change_seq = excluded.change_seq, version = excluded.version, payload = excluded.payload "
+    "WHERE excluded.change_seq >= notifications.change_seq AND excluded.version >= notifications.version" error:error];
+  if (!statement) return NO;
+  [statement bindInt64:agentID atIndex:1]; [statement bindText:notification[@"id"] atIndex:2];
+  [statement bindInt64:[notification[@"change_seq"] longLongValue] atIndex:3];
+  [statement bindInt64:[notification[@"version"] longLongValue] atIndex:4]; [statement bindText:json atIndex:5];
+  return [statement stepDone:error];
+}
+
+- (BOOL)onDatabaseQueue_cacheNotification:(NSDictionary *)notification agentID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    return [self performTransaction:^BOOL(NSError **transactionError) {
+      return [self storeNotification:notification agentID:agentID error:transactionError];
+    } error:error];
+  }
+}
+
+- (BOOL)onDatabaseQueue_applyNotificationSyncResult:(NSDictionary *)result agentID:(NSInteger)agentID error:(NSError **)error {
+  @synchronized (self) {
+    if (agentID <= 0 || ![result isKindOfClass:NSDictionary.class] ||
+        ![result[@"generation"] isKindOfClass:NSString.class] || ![result[@"generation"] length] ||
+        ![result[@"cursor"] isKindOfClass:NSNumber.class] || [result[@"cursor"] longLongValue] < 0 ||
+        ![result[@"notifications"] isKindOfClass:NSArray.class] ||
+        ![result[@"reset"] isKindOfClass:NSNumber.class] || ![result[@"has_more"] isKindOfClass:NSNumber.class]) {
+      TLSetDatabaseError(error, @"Hermes returned invalid notification sync data."); return NO;
+    }
+    return [self performTransaction:^BOOL(NSError **transactionError) {
+      NSDictionary *state = [self notificationSyncStateForAgentID:agentID error:transactionError];
+      if (!state) return NO;
+      BOOL reset = [result[@"reset"] boolValue];
+      if ([state[@"generation"] length] && ![state[@"generation"] isEqual:result[@"generation"]] && !reset) {
+        TLSetDatabaseError(transactionError, @"Notification generation changed. Restart synchronization."); return NO;
+      }
+      if (!reset && [state[@"cursor"] longLongValue] > [result[@"cursor"] longLongValue]) {
+        TLSetDatabaseError(transactionError, @"Notification sync response is stale."); return NO;
+      }
+      if (reset) {
+        TLSQLiteStatement *remove = [self.sqliteConnection prepareSQL:"DELETE FROM notifications WHERE agent_id = ?1" error:transactionError];
+        if (!remove) return NO;
+        [remove bindInt64:agentID atIndex:1]; if (![remove stepDone:transactionError]) return NO;
+      }
+      for (id notification in result[@"notifications"]) {
+        if (![self storeNotification:notification agentID:agentID error:transactionError]) return NO;
+      }
+      TLSQLiteStatement *save = [self.sqliteConnection prepareSQL:
+        "INSERT INTO notification_sync(agent_id, generation, cursor) VALUES (?1, ?2, ?3) "
+        "ON CONFLICT(agent_id) DO UPDATE SET generation = excluded.generation, cursor = excluded.cursor" error:transactionError];
+      if (!save) return NO;
+      [save bindInt64:agentID atIndex:1]; [save bindText:result[@"generation"] atIndex:2];
+      [save bindInt64:[result[@"cursor"] longLongValue] atIndex:3];
+      return [save stepDone:transactionError];
+    } error:error];
+  }
+}
+
 - (NSArray<TLChatSummary *> *)onDatabaseQueue_listChats:(NSError **)error {
   @synchronized (self) {
     const char *sql =
-      "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model "
+      "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id "
       "FROM chats "
       "ORDER BY datetime(updated_at) DESC, id DESC";
 
@@ -834,8 +1070,8 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
     __block sqlite3_int64 chatID = 0;
     BOOL created = [self performTransaction:^BOOL(NSError **transactionError) {
       const char *sql =
-        "INSERT INTO chats (title, model, hermes_session_id, supporting_model, created_at, updated_at) "
-        "VALUES ('New chat', ?1, ?2, ?3, datetime('now'), datetime('now'))";
+        "INSERT INTO chats (title, model, hermes_session_id, supporting_model, created_at, updated_at, source_agent_id) "
+        "VALUES ('New chat', ?1, ?2, ?3, datetime('now'), datetime('now'), ?4)";
 
       TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
       if (!statement) {
@@ -845,6 +1081,7 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
       [statement bindText:TLNonBlank(model, TLDefaultModelID) atIndex:1];
       [statement bindText:[@"talaria_" stringByAppendingString:NSUUID.UUID.UUIDString.lowercaseString] atIndex:2];
       [statement bindText:TLNonBlank(supportingModel, TLDefaultSupportingModelID) atIndex:3];
+      [statement bindInt64:self.currentAgentID atIndex:4];
       if (![statement stepDone:transactionError]) {
         return NO;
       }
@@ -954,8 +1191,8 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
     __block TLStoredChatMessage *savedMessage = nil;
     BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
       const char *sql =
-        "INSERT INTO messages (chat_id, role, content, thinking, attachments, created_at, position) "
-        "VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), (SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE chat_id = ?1))";
+        "INSERT INTO messages (chat_id, role, content, thinking, attachments, created_at, source_message_id, source_tool_call_ids, notification, position) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), ?6, ?7, ?8, (SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE chat_id = ?1))";
 
       TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:transactionError];
       if (!statement) {
@@ -965,6 +1202,10 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
       [statement bindInt64:chatID atIndex:1];
       [statement bindText:message.role atIndex:2];
       [statement bindText:message.content atIndex:3];
+      if (!TLValidSourceMetadata(message.sourceToolCallIDs, message.notification ?: @{})) { TLSetDatabaseError(transactionError, @"Invalid message source metadata."); return NO; }
+      [statement bindText:message.sourceMessageID ?: @"" atIndex:6];
+      [statement bindText:TLJSONText(message.sourceToolCallIDs, transactionError) atIndex:7];
+      [statement bindText:TLJSONText(message.notification ?: @{}, transactionError) atIndex:8];
       NSData *attachmentData = [NSJSONSerialization dataWithJSONObject:message.attachments ?: @[] options:0 error:transactionError];
       if (!attachmentData) return NO;
       [statement bindText:[[NSString alloc] initWithData:attachmentData encoding:NSUTF8StringEncoding] atIndex:5];
@@ -1322,7 +1563,7 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
 }
 
 - (TLChatRecord *)loadChatWithID:(NSInteger)chatID error:(NSError **)error {
-  const char *chatSQL = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model FROM chats WHERE id = ?1";
+  const char *chatSQL = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id FROM chats WHERE id = ?1";
 
   TLSQLiteStatement *chatStatement = [self.sqliteConnection prepareSQL:chatSQL error:error];
   if (!chatStatement) {
@@ -1347,9 +1588,12 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
   chat.createdAt = summary.createdAt;
   chat.updatedAt = summary.updatedAt;
   chat.hermesSessionID = summary.hermesSessionID;
+  chat.sourceAgentID = summary.sourceAgentID;
+  chat.sourceSessionID = summary.sourceSessionID;
+  chat.continuationSessionID = summary.continuationSessionID;
 
   const char *messagesSQL =
-    "SELECT id, role, content, thinking, created_at, attachments, position "
+    "SELECT id, role, content, thinking, created_at, attachments, source_message_id, source_tool_call_ids, notification, position "
     "FROM messages "
     "WHERE chat_id = ?1 "
     "ORDER BY position ASC, id ASC";
@@ -1376,7 +1620,7 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
 }
 
 - (TLChatSummary *)loadChatSummaryWithID:(NSInteger)chatID error:(NSError **)error {
-  const char *sql = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model FROM chats WHERE id = ?1";
+  const char *sql = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id FROM chats WHERE id = ?1";
 
   TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
   if (!statement) {
@@ -1394,7 +1638,7 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
 }
 
 - (TLStoredChatMessage *)loadMessageWithID:(NSInteger)messageID error:(NSError **)error {
-  const char *sql = "SELECT id, role, content, thinking, created_at, attachments, position FROM messages WHERE id = ?1";
+  const char *sql = "SELECT id, role, content, thinking, created_at, attachments, source_message_id, source_tool_call_ids, notification, position FROM messages WHERE id = ?1";
 
   TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
   if (!statement) {
@@ -1464,13 +1708,16 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
   summary.updatedAt = TLStringFromColumn(statement, 5);
   summary.hermesSessionID = TLStringFromColumn(statement, 6);
   summary.supportingModel = TLStringFromColumn(statement, 7);
+  summary.sourceAgentID = sqlite3_column_int64(statement, 8);
+  summary.sourceSessionID = TLStringFromColumn(statement, 9);
+  summary.continuationSessionID = TLStringFromColumn(statement, 10);
   return summary;
 }
 
 - (TLStoredChatMessage *)storedMessageFromStatement:(sqlite3_stmt *)statement {
   TLStoredChatMessage *message = [[TLStoredChatMessage alloc] init];
   message.messageID = sqlite3_column_int64(statement, 0);
-  message.position = sqlite3_column_int64(statement, 6);
+  message.position = sqlite3_column_int64(statement, 9);
   message.role = TLStringFromColumn(statement, 1);
   message.content = TLStringFromColumn(statement, 2);
   message.thinking = TLNullableStringFromColumn(statement, 3);
@@ -1485,6 +1732,13 @@ static void TLHistoryOrigin(sqlite3_context *context, int count, sqlite3_value *
     }
   }
   message.attachments = valid;
+  message.sourceMessageID = TLStringFromColumn(statement, 6);
+  id calls = TLJSONValue(TLStringFromColumn(statement, 7));
+  id notification = TLJSONValue(TLStringFromColumn(statement, 8));
+  if (TLValidSourceMetadata(calls, notification)) {
+    message.sourceToolCallIDs = calls;
+    message.notification = [notification count] ? notification : nil;
+  }
   return message;
 }
 
