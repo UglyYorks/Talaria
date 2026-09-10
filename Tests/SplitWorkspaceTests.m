@@ -227,6 +227,44 @@ static void TestChatInputNavigation(TLSplitTestController *owner, TLAppStateMana
     @"explicit new-tab actions still retain an empty chat");
 }
 
+static void TestDraftPromotionAcrossEvents(void) {
+  TLSplitTestController *owner;
+  TLChatTabController *chat;
+  // AppKit drains autoreleased runtime snapshots between creating a draft and
+  // submitting its first prompt. Keep that boundary in this lifecycle test.
+  @autoreleasepool {
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,700,550)
+      styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed = NO;
+    owner = [[TLSplitTestController alloc] initWithWindow:window];
+    [owner setValue:[TLAppStateManager new] forKey:@"appStateManager"];
+    [owner setValue:[NSMutableDictionary dictionary] forKey:@"workspaceTabRuntimes"];
+    [owner setValue:[TLSplitTestDatabase new] forKey:@"database"];
+    [owner setValue:[TLAppSettings defaultSettings] forKey:@"settings"];
+    [owner setValue:[TLThemePalette paletteForPreference:TLThemePreferenceDark] forKey:@"palette"];
+    [owner setValue:window.contentView forKey:@"contentHost"];
+    [owner setValue:@(-1) forKey:@"nextDraftChatID"];
+    [owner startNewChatWithModel:@"test-model" focus:NO];
+    chat = [owner valueForKey:@"chatPresentation"];
+    Check(!chat.emptyStateView.hidden, @"draft starts with the empty state visible");
+  }
+  @autoreleasepool {
+    Check([owner persistActiveDraftChatWithModel:@"test-model"], @"first submission saves the draft");
+  }
+  Check(!chat.closed, @"retiring the draft identity keeps its chat controller alive across events");
+  TLChatMessage *message = [TLChatMessage messageWithRole:TLRoleUser content:@"First prompt" thinking:nil];
+  [chat.messages addObject:message];
+  [chat markMessageDirty:message];
+  [chat scheduleStreamingMessageRender];
+  Drain();
+  Check(chat.emptyStateView.hidden && [chat.messageRowViews objectForKey:message].superview == chat.messageStack,
+    @"first submission renders its message and removes the empty state");
+  [owner startNewChatWithModel:@"test-model" focus:NO];
+  [owner closeChatTabWithID:123];
+  Check(chat.closed, @"explicit tab closure still disposes the saved controller");
+  [owner.window close];
+}
+
 static void TestRealWorkspace(void) {
   NSWindow *window = [[TLMainWindow alloc] initWithContentRect:NSMakeRect(0,0,1100,700)
     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView backing:NSBackingStoreBuffered defer:NO];
@@ -293,15 +331,30 @@ static void TestRealWorkspace(void) {
   workspace.swapPanes();
   Check(pa.chatWorkspace.superview == workspace.rightHost, @"swap moves existing views without recreating content");
   [owner focusSplitPane:YES];
-  Check([owner persistActiveDraftChatWithModel:@"test-model"], @"draft can be saved while split");
+  [pa.messages removeAllObjects];
+  [pa renderMessagesScrollingToBottom:NO];
+  Check(!pa.emptyStateView.hidden, @"new draft shows its empty state before the first message");
+  @autoreleasepool {
+    Check([owner persistActiveDraftChatWithModel:@"test-model"], @"draft can be saved while split");
+  }
   Drain();
   TLWorkspaceTab *saved = [state workspaceTabWithKind:TLWorkspaceTabKindChat tabID:123];
   Check([splits groupForTab:saved] && [owner valueForKey:@"chatPresentation"] == pa, @"saving preserves pair and live chat presentation");
+  Check(!pa.closed, @"saving a draft does not dispose its retained chat controller");
+  TLChatMessage *firstMessage = [TLChatMessage messageWithRole:TLRoleUser content:@"Hello after saving" thinking:nil];
+  [pa.messages addObject:firstMessage];
+  [pa markMessageDirty:firstMessage];
+  [pa scheduleStreamingMessageRender];
+  Drain();
+  Check(pa.emptyStateView.hidden && pa.messageStack.arrangedSubviews.count == 1 &&
+    [pa.messageRowViews objectForKey:firstMessage].superview == pa.messageStack,
+    @"the first message replaces the empty state after draft promotion");
   [owner loadChatWithID:c.tabID];
   [owner closeChatTabWithID:b.tabID]; Drain();
   Check(state.snapshot.activeTabID == c.tabID && !workspace.split, @"closing a background pair does not steal focus");
   [owner splitTab:saved besideTab:c onLeft:YES];
   [owner closeChatTabWithID:123]; Drain();
+  Check(pa.closed, @"closing the saved tab still disposes its controller");
   Check(state.snapshot.activeTabID == c.tabID && !workspace.split, @"closing the focused half expands and focuses its companion");
   // A cancelled drag never changes tab order or commits a split.
   [owner startNewChatWithModel:@"test-model" focus:NO];
@@ -369,6 +422,6 @@ static void TestRealWorkspace(void) {
 }
 int main(void) { @autoreleasepool {
   [NSApplication sharedApplication];
-  TestGrouping(); TestPointerCancellation(); TestPaneGeometry(); TestRealWorkspace();
+  TestGrouping(); TestPointerCancellation(); TestPaneGeometry(); TestDraftPromotionAcrossEvents(); TestRealWorkspace();
   NSLog(@"SplitWorkspaceTests passed");
 } return 0; }

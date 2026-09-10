@@ -2604,10 +2604,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                                            toolTip:persistedChat.title.length > 0 ? persistedChat.title : @"New chat"
                                                URL:nil
                                          closeable:YES];
-  [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:self.chatWorkspace
-                                                      openAction:@selector(openChatTab:)
-                                                     closeAction:@selector(closeChatTab:)]
-            forTab:tab];
+  // Promotion changes identity, not ownership. Replacing this runtime would
+  // close the retained chat controller when the draft runtime is released.
+  TLWorkspaceTabRuntime *runtime = [self runtimeForKind:TLWorkspaceTabKindChat tabID:draftChatID];
+  if (!runtime) runtime = [TLWorkspaceTabRuntime runtimeWithContentView:self.chatWorkspace
+                                                           openAction:@selector(openChatTab:)
+                                                          closeAction:@selector(closeChatTab:)];
+  [self setRuntime:runtime forTab:tab];
   [self.appStateManager replaceWorkspaceTabWithKind:TLWorkspaceTabKindChat
                                               tabID:draftChatID
                                             withTab:tab
