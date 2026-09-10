@@ -72,7 +72,7 @@ static void TestWorkspaceDownloads(void) {
 int main(void) { @autoreleasepool {
   [NSApplication sharedApplication];
   NSString *folder = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
-  setenv("TL_CHROMIUM_PROFILE_DIR", folder.UTF8String, 1);
+  setenv("TL_WEBKIT_PROFILE_DIR", folder.UTF8String, 1);
   TestWorkspaceDownloads();
   NSURL *history = [NSURL fileURLWithPath:[folder stringByAppendingPathComponent:@"history.json"]];
   TLBrowserDownloadManager *manager = [[TLBrowserDownloadManager alloc] initWithHistoryURL:history];
@@ -162,7 +162,7 @@ int main(void) { @autoreleasepool {
   restored = [[TLBrowserDownloadManager alloc] initWithHistoryURL:history];
   NSString *oldIdentifier = restored.downloads.firstObject.identifier;
   Update(restored, 4, TLBrowserDownloadStateDownloading, @"", control);
-  Check(restored.downloads.count == 3 && ![restored.downloads.firstObject.identifier isEqual:oldIdentifier], @"reused Chromium IDs cannot overwrite previous-session history");
+  Check(restored.downloads.count == 3 && ![restored.downloads.firstObject.identifier isEqual:oldIdentifier], @"reused WebKit IDs cannot overwrite previous-session history");
   [@"[null,42,{\"state\":\"bad\"}]" writeToURL:history atomically:YES encoding:NSUTF8StringEncoding error:nil];
   Check([[TLBrowserDownloadManager alloc] initWithHistoryURL:history].downloads.count == 0, @"malformed history is ignored safely");
   [controller close];

@@ -282,6 +282,13 @@ try {
     assert.equal(result.fallbacks.length,1,'Empty quick scans need only one browser hit test');
   }});
   await check('scrolling during inspection discards the result','<p>Article</p>'.repeat(20000),null,{setup:'setTimeout(()=>scrollTo(0,100),80)'});
+  await load('<p>Offscreen content</p>'.repeat(2000));
+  await evaluate('globalThis.stalledFrames=0;globalThis.requestAnimationFrame=()=>++globalThis.stalledFrames;globalThis.cancelAnimationFrame=()=>{}',context);
+  const stalled=await inspect();
+  assert.equal(stalled.obstructed,false,'Occluded pages must finish inspection even when animation frames stop');
+  assert.ok(await evaluate('stalledFrames>0',context),'Fixture must exercise a scan yield');
+  assert.ok(stalled.maxSliceMS<25,'Timer fallback must preserve bounded CPU slices');
+  console.log('PASS inspection completes with stalled animation frames');count++;
   await check('20,000-node page stays sliced','<main>Content</main>'+'<p>Offscreen content</p>'.repeat(20000),false,{verify:async(result)=>{
     assert.ok(result.samples<=256);
     assert.ok(result.maxSliceMS<25,`Long inspection slice: ${result.maxSliceMS}ms`);

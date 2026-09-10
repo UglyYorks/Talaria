@@ -25,7 +25,7 @@ ALPINE_MODLOOP_SHA256 := f969d12c8e23b486c8df651f04a4a9767f32fee16aed385c23462c3
 APP_HEADERS := $(wildcard Source/*.h) $(wildcard Source/design_system/*.h)
 APP_OBJC_SOURCES := $(wildcard Source/*.m) $(wildcard Source/design_system/*.m)
 APP_OBJCXX_SOURCES := $(wildcard Source/*.mm)
-APP_CXX_SOURCES := $(filter-out Source/ChromiumProcessHelper.cc,$(wildcard Source/*.cc))
+APP_CXX_SOURCES := $(wildcard Source/*.cc)
 APP_SOURCES := $(APP_OBJC_SOURCES) $(APP_OBJCXX_SOURCES) $(APP_CXX_SOURCES)
 APP_OBJECT_DIR := $(BUILD_DIR)/app-objects
 APP_OBJECTS := $(patsubst Source/%.m,$(APP_OBJECT_DIR)/%.m.o,$(APP_OBJC_SOURCES)) \
@@ -37,6 +37,7 @@ NOTCH_VIEW_TEST_EXECUTABLE := $(BUILD_DIR)/NotchOverlayViewTests
 GLASS_PANE_TEST_EXECUTABLE := $(BUILD_DIR)/GlassPaneTests
 MARKDOWN_IT := Vendor/markdown-it/markdown-it.min.js
 OVERLAY_PROBE := Source/BrowserOverlayProbe.js
+WEBKIT_BRIDGE := Source/BrowserWebKitBridge.js
 DOCUMENT_FOOTER := Source/BrowserDocumentFooter.js Source/BrowserFooterColor.js
 CODE_RESOURCES := Source/MarkdownFind.js Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js Vendor/highlight.js/LICENSE
 MATH_RESOURCES := Source/MarkdownMath.js $(shell find Vendor/katex -type f)
@@ -46,29 +47,8 @@ SIDEBAR_PLANET := assets/sidebar-planet.png
 APP_ICON := assets/Talaria.icns
 INBOX_ICON_FILES := $(wildcard assets/inbox-icons/*.svg)
 BOOKMARK_ICON_FILES := $(wildcard assets/browser-bookmarks/*.png)
-HELPER_EXECUTABLE_NAME := $(APP_NAME)Helper
-HELPER_EXECUTABLE := $(BUILD_DIR)/$(HELPER_EXECUTABLE_NAME)
-HELPER_BUNDLES_DIR := $(BUILD_DIR)/helper-bundles
-HELPER_BUILD_STAMP := $(BUILD_DIR)/.helper-bundles.build.stamp
-
-CEF_DIST := cef_binary_151.3.24+g2384915+chromium-151.0.7922.174_macosarm64
-CEF_ARCHIVE := $(CEF_DIST).tar.bz2
-CEF_URL := https://cef-builds.spotifycdn.com/cef_binary_151.3.24%2Bg2384915%2Bchromium-151.0.7922.174_macosarm64.tar.bz2
-CEF_SHA1 := 0132e8440567c9d1dd8c6dd478c554349ad0bc86
-CEF_DEPS_DIR := $(BUILD_DIR)/deps
-CEF_ROOT := $(CEF_DEPS_DIR)/$(CEF_DIST)
-CEF_ARCHIVE_PATH := $(CEF_DEPS_DIR)/$(CEF_ARCHIVE)
-CEF_EXTRACT_STAMP := $(CEF_ROOT)/.extract.stamp
-CEF_RELEASE_DIR := $(CEF_ROOT)/Release
-CEF_WRAPPER_OBJ_DIR := $(BUILD_DIR)/cef-wrapper-objects
-CEF_WRAPPER_LIB := $(BUILD_DIR)/libcef_dll_wrapper.a
-CEF_FRAMEWORK_DEST := $(APP_BUNDLE)/Contents/Frameworks/Chromium Embedded Framework.framework
-
 OBJCFLAGS := -fobjc-arc -fmodules -fmodules-cache-path=$(abspath $(BUILD_DIR)/module-cache) -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=13.0
-CEF_DEFINES := -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -DCEF_USE_SANDBOX
-CEF_INCLUDE_FLAGS := -I$(CEF_ROOT)
-CEF_CXXFLAGS := $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-strict-aliasing -fstack-protector -funwind-tables -fvisibility=hidden -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-narrowing -Wsign-compare -Wno-undefined-var-template -O3 -mmacosx-version-min=13.0
-APP_OBJCXXFLAGS := $(OBJCFLAGS) $(CEF_DEFINES) $(CEF_INCLUDE_FLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-sign-compare -Wno-nullability-completeness -Wno-missing-field-initializers
+APP_OBJCXXFLAGS := $(OBJCFLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-sign-compare -Wno-nullability-completeness -Wno-missing-field-initializers
 APP_FRAMEWORKS := -framework Vision -framework CoreImage -framework Quartz -framework ServiceManagement -framework Carbon -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -framework AppKit -framework Foundation -framework QuartzCore -framework ScreenCaptureKit -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
 TEST_FRAMEWORKS := -framework Foundation -framework AppKit -framework Virtualization -framework Security -lsqlite3
 
@@ -118,11 +98,12 @@ $(SIGNING_CONFIG): FORCE | check-signing-identity
 	@printf '%s\n' '$(CODE_SIGN_IDENTITY)' > "$@.tmp"
 	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
 
-$(APP_BUILD_STAMP): $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist ChromiumHelper-Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES) $(CEF_WRAPPER_LIB) $(HELPER_BUILD_STAMP)
+$(APP_BUILD_STAMP): $(WEBKIT_BRIDGE) $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES)
 	rm -rf "$(APP_BUNDLE)"
-	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources" "$(APP_BUNDLE)/Contents/Frameworks"
-	xcrun clang++ $(APP_OBJECTS) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(APP_EXECUTABLE)"
+	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"
+	xcrun clang++ $(APP_OBJECTS) $(APP_FRAMEWORKS) -o "$(APP_EXECUTABLE)"
 	cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
+	cp "$(WEBKIT_BRIDGE)" "$(APP_BUNDLE)/Contents/Resources/BrowserWebKitBridge.js"
 	cp "$(OVERLAY_PROBE)" "$(APP_BUNDLE)/Contents/Resources/BrowserOverlayProbe.js"
 	cp $(DOCUMENT_FOOTER) "$(APP_BUNDLE)/Contents/Resources/"
 	cp "$(SIDEBAR_PLANET)" "$(APP_BUNDLE)/Contents/Resources/sidebar-planet.png"
@@ -141,20 +122,6 @@ $(APP_BUILD_STAMP): $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFI
 	mkdir -p "$(APP_BUNDLE)/Contents/Resources/AgentRuntime/linux-arm64"
 	cp "$(AGENT_LINUX_KERNEL)" "$(APP_BUNDLE)/Contents/Resources/AgentRuntime/linux-arm64/Image"
 	cp "$(AGENT_LINUX_INITRD)" "$(APP_BUNDLE)/Contents/Resources/AgentRuntime/linux-arm64/initrd"
-	mkdir -p "$(CEF_FRAMEWORK_DEST)/Versions"
-	ditto "$(CEF_RELEASE_DIR)/Chromium Embedded Framework.framework" "$(CEF_FRAMEWORK_DEST)/Versions/A"
-	cd "$(CEF_FRAMEWORK_DEST)" && ln -sf "Versions/A/Chromium Embedded Framework" "Chromium Embedded Framework"
-	cd "$(CEF_FRAMEWORK_DEST)" && ln -sf "Versions/A/Libraries" "Libraries"
-	cd "$(CEF_FRAMEWORK_DEST)" && ln -sf "Versions/A/Resources" "Resources"
-	cd "$(CEF_FRAMEWORK_DEST)/Versions" && ln -sf "A" "Current"
-	ditto "$(HELPER_BUNDLES_DIR)" "$(APP_BUNDLE)/Contents/Frameworks"
-	@set -e; \
-	for library in "$(CEF_FRAMEWORK_DEST)/Versions/A/Libraries/"*.dylib; do \
-	  codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$$library"; \
-	done; \
-	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(CEF_FRAMEWORK_DEST)"; \
-	find "$(APP_BUNDLE)/Contents/Frameworks" -maxdepth 1 -name "$(APP_NAME) Helper*.app" -type d -print0 | \
-	  xargs -0 -n 1 codesign --force --sign "$(CODE_SIGN_IDENTITY)"; \
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(APP_BUNDLE)"
 	touch "$(APP_BUILD_STAMP)"
 
@@ -162,60 +129,13 @@ $(APP_OBJECT_DIR)/%.m.o: Source/%.m $(APP_HEADERS) Makefile
 	mkdir -p "$(dir $@)"
 	xcrun clang $(OBJCFLAGS) -ISource -c "$<" -o "$@"
 
-$(APP_OBJECT_DIR)/%.mm.o: Source/%.mm $(APP_HEADERS) $(CEF_EXTRACT_STAMP) Makefile
+$(APP_OBJECT_DIR)/%.mm.o: Source/%.mm $(APP_HEADERS) Makefile
 	mkdir -p "$(dir $@)"
 	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource -c "$<" -o "$@"
 
-$(APP_OBJECT_DIR)/%.cc.o: Source/%.cc $(APP_HEADERS) $(CEF_EXTRACT_STAMP) Makefile
+$(APP_OBJECT_DIR)/%.cc.o: Source/%.cc $(APP_HEADERS) Makefile
 	mkdir -p "$(dir $@)"
-	xcrun clang++ $(CEF_CXXFLAGS) -ISource -c "$<" -o "$@"
-
-$(HELPER_BUILD_STAMP): Makefile Source/ChromiumProcessHelper.cc ChromiumHelper-Info.plist $(CEF_WRAPPER_LIB)
-	rm -rf "$(HELPER_BUNDLES_DIR)"
-	mkdir -p "$(BUILD_DIR)" "$(HELPER_BUNDLES_DIR)"
-	xcrun clang++ $(CEF_CXXFLAGS) Source/ChromiumProcessHelper.cc "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(HELPER_EXECUTABLE)"
-	@set -e; \
-	printf '%s\n' '|' ' (Alerts)|.alerts' ' (GPU)|.gpu' ' (Plugin)|.plugin' ' (Renderer)|.renderer' | \
-	while IFS='|' read -r name_suffix bundle_suffix; do \
-	  helper_name="$(APP_NAME) Helper$${name_suffix}"; \
-	  helper_bundle="$(HELPER_BUNDLES_DIR)/$${helper_name}.app"; \
-	  mkdir -p "$${helper_bundle}/Contents/MacOS"; \
-	  cp "$(HELPER_EXECUTABLE)" "$${helper_bundle}/Contents/MacOS/$${helper_name}"; \
-	  sed \
-	    -e "s|@@EXECUTABLE_NAME@@|$${helper_name}|g" \
-	    -e "s|@@PRODUCT_NAME@@|$${helper_name}|g" \
-	    -e "s|@@BUNDLE_ID_SUFFIX@@|$${bundle_suffix}|g" \
-	    ChromiumHelper-Info.plist > "$${helper_bundle}/Contents/Info.plist"; \
-	  printf "APPL????" > "$${helper_bundle}/Contents/PkgInfo"; \
-	done
-	touch "$(HELPER_BUILD_STAMP)"
-
-$(CEF_WRAPPER_LIB): $(CEF_EXTRACT_STAMP) Makefile
-	rm -rf "$(CEF_WRAPPER_OBJ_DIR)"
-	mkdir -p "$(CEF_WRAPPER_OBJ_DIR)"
-	@set -e; \
-	find "$(CEF_ROOT)/libcef_dll" -type f \( -name '*.cc' -o -name '*.mm' \) | sort > "$(CEF_WRAPPER_OBJ_DIR)/sources.txt"; \
-	while IFS= read -r source; do \
-	  relative="$${source#$(CEF_ROOT)/libcef_dll/}"; \
-	  object="$(CEF_WRAPPER_OBJ_DIR)/$$relative.o"; \
-	  mkdir -p "$$(dirname "$$object")"; \
-	  xcrun clang++ $(CEF_CXXFLAGS) -DWRAPPING_CEF_SHARED -c "$$source" -o "$$object"; \
-	done < "$(CEF_WRAPPER_OBJ_DIR)/sources.txt"
-	xcrun ar rcs "$(CEF_WRAPPER_LIB)" $$(find "$(CEF_WRAPPER_OBJ_DIR)" -type f -name '*.o' | sort)
-
-$(CEF_EXTRACT_STAMP): $(CEF_ARCHIVE_PATH)
-	tar -xjf "$(CEF_ARCHIVE_PATH)" -C "$(CEF_DEPS_DIR)"
-	touch "$(CEF_EXTRACT_STAMP)"
-
-$(CEF_ARCHIVE_PATH):
-	mkdir -p "$(CEF_DEPS_DIR)"
-	curl -fL -o "$(CEF_ARCHIVE_PATH)" "$(CEF_URL)"
-	@actual=$$(shasum -a 1 "$(CEF_ARCHIVE_PATH)" | awk '{print $$1}'); \
-	if [ "$$actual" != "$(CEF_SHA1)" ]; then \
-	  rm -f "$(CEF_ARCHIVE_PATH)"; \
-	  echo "CEF checksum mismatch: $$actual"; \
-	  exit 1; \
-	fi
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource -c "$<" -o "$@"
 
 $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILES)
 	mkdir -p "$(AGENT_LINUX_RUNTIME_DIR)"
@@ -263,6 +183,8 @@ test: $(BUILD_DIR)/BookmarkTests $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/Brow
 	"$(BUILD_DIR)/StarryEmptyStateTests"
 	"$(BUILD_DIR)/BrowserHistoryTests"
 	"$(BUILD_DIR)/BrowserDownloadTests"
+	"$(BUILD_DIR)/BrowserSettingsTests"
+	"$(BUILD_DIR)/WebKitDownloadLifecycleTests"
 	"$(BUILD_DIR)/AgentVMLockTests"
 	"$(BUILD_DIR)/IncognitoTests"
 	"$(BUILD_DIR)/NotificationDataTests"
@@ -310,19 +232,19 @@ test-notifications: $(BUILD_DIR)/NotificationDataTests $(BUILD_DIR)/Notification
 	"$(BUILD_DIR)/NotificationSidebarTests"
 	"$(BUILD_DIR)/NotificationNavigationTests"
 
-$(BUILD_DIR)/NotificationDataTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/NotificationDataTests.m
+$(BUILD_DIR)/NotificationDataTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/NotificationDataTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-$(BUILD_DIR)/NotificationSidebarTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/NotificationSidebarTests.m
+$(BUILD_DIR)/NotificationSidebarTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/NotificationSidebarTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-$(BUILD_DIR)/NotificationNavigationTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/NotificationNavigationTests.m
+$(BUILD_DIR)/NotificationNavigationTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/NotificationNavigationTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 test-automations: $(BUILD_DIR)/AutomationsTests
 	"$(BUILD_DIR)/AutomationsTests"
 
-$(BUILD_DIR)/AutomationsTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/AutomationsTests.m
+$(BUILD_DIR)/AutomationsTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/AutomationsTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-$(BUILD_DIR)/QuickInputTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/QuickInputTests.m
+$(BUILD_DIR)/QuickInputTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/QuickInputTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 # Explicit native integration check; uses existing Screen Recording access only.
@@ -403,23 +325,23 @@ $(BUILD_DIR)/WorkspaceSessionTests: Source/WorkspaceState.m Source/AppStateManag
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
 
-$(BUILD_DIR)/WorkspaceRestoreTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/WorkspaceRestoreTests.m
+$(BUILD_DIR)/WorkspaceRestoreTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/WorkspaceRestoreTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
-$(BUILD_DIR)/AppStartupTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/AppStartupTests.m
+$(BUILD_DIR)/AppStartupTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/AppStartupTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 $(BUILD_DIR)/TransitionCoordinatorTests: Source/design_system/TLTransitionCoordinator.m Tests/TransitionCoordinatorTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework QuartzCore -o "$@"
 
-$(BUILD_DIR)/FeatureControllerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/FeatureControllerTests.m
+$(BUILD_DIR)/FeatureControllerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/FeatureControllerTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
 
 $(BUILD_DIR)/ChatAttachmentTests: Source/ChatAttachmentStore.m Source/TalariaModels.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/PromptMessages.m Source/PromptBuilder.m Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/TLMessageInput.m Source/design_system/TLAttachmentChipView.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLGlassButton.m Tests/ChatAttachmentTests.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework AppKit -framework QuartzCore -framework Security -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -lsqlite3 -o "$@"
-$(BUILD_DIR)/TabShortcutTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/TabShortcutTests.m
+$(BUILD_DIR)/TabShortcutTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/TabShortcutTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
 
 .PHONY: test-hermes-gateway
@@ -428,14 +350,14 @@ test-hermes-gateway:
 
 $(BUILD_DIR)/AppResetTests: Source/TLAppReset.m Source/TalariaModels.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Tests/AppResetTests.m
 	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework Security -lsqlite3 -o "$@"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework WebKit -framework Foundation -framework Security -lsqlite3 -o "$@"
 
 $(BUILD_DIR)/TerminalClientProbe: Source/TLTerminalClient.m Tests/TerminalClientProbe.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
 
 # Split state, native pane geometry and real chat workspace integration.
-$(BUILD_DIR)/SplitWorkspaceTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/SplitWorkspaceTests.m
+$(BUILD_DIR)/SplitWorkspaceTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/SplitWorkspaceTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 $(BUILD_DIR)/BrowserOverlayPolicyTests: Source/TLBrowserOverlayPolicy.m Tests/BrowserOverlayPolicyTests.m
 	mkdir -p "$(BUILD_DIR)"
@@ -454,7 +376,7 @@ test-browser-preferences: build
 	mkdir -p "$(BUILD_DIR)/BrowserPreferencesProbe.app/Contents/MacOS"
 	cp Info.plist "$(BUILD_DIR)/BrowserPreferencesProbe.app/Contents/Info.plist"
 	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserPreferencesProbe.app"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserPreferencesIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserPreferencesProbe.app/Contents/MacOS/Talaria"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserPreferencesIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserPreferencesProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserPreferencesProbe.app"
 	python3 Scripts/test-browser-preferences.py
 
@@ -463,17 +385,17 @@ test-browser-navigation: build
 	mkdir -p "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/MacOS"
 	cp Info.plist "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/Info.plist"
 	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserNavigationProbe.app"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserNavigationIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/MacOS/Talaria"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserNavigationIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserNavigationProbe.app"
 	python3 Scripts/test-browser-navigation.py
 
 # Native conversation attachment viewer, including transcript integration.
 test: $(BUILD_DIR)/AttachmentViewerTests
 
-$(BUILD_DIR)/AttachmentViewerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/AttachmentViewerTests.m
+$(BUILD_DIR)/AttachmentViewerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/AttachmentViewerTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
-$(BUILD_DIR)/BrowserDownloadTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/BrowserDownloadTests.m
+$(BUILD_DIR)/BrowserDownloadTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BrowserDownloadTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
 
 .PHONY: test-browser-images
@@ -481,7 +403,7 @@ test-browser-images: build
 	mkdir -p "$(BUILD_DIR)/BrowserImageProbe.app/Contents/MacOS"
 	cp Info.plist "$(BUILD_DIR)/BrowserImageProbe.app/Contents/Info.plist"
 	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserImageProbe.app"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserImageIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserImageProbe.app/Contents/MacOS/Talaria"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserImageIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserImageProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserImageProbe.app"
 	python3 Scripts/test-browser-images.py
 
@@ -490,12 +412,12 @@ test-browser-links: build
 	mkdir -p "$(BUILD_DIR)/BrowserLinkProbe.app/Contents/MacOS"
 	cp Info.plist "$(BUILD_DIR)/BrowserLinkProbe.app/Contents/Info.plist"
 	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserLinkProbe.app"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserLinkIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserLinkProbe.app/Contents/MacOS/Talaria"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserLinkIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserLinkProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserLinkProbe.app"
 	python3 Scripts/test-browser-links.py
 
-# Shared WebKit/Chromium link-menu parity and native context routing.
-$(BUILD_DIR)/MarkdownLinkContextTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/MarkdownLinkContextTests.m
+# Shared browser/markdown link-menu parity and native context routing.
+$(BUILD_DIR)/MarkdownLinkContextTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/MarkdownLinkContextTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 test: $(BUILD_DIR)/BrowserFindTests
@@ -503,15 +425,15 @@ test: $(BUILD_DIR)/BrowserFindTests
 test-browser-find: $(BUILD_DIR)/BrowserFindTests
 	"$(BUILD_DIR)/BrowserFindTests"
 
-$(BUILD_DIR)/BrowserFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/BrowserFindTests.m
+$(BUILD_DIR)/BrowserFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BrowserFindTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
-.PHONY: test-browser-find test-browser-find-cef
-test-browser-find-cef: build
+.PHONY: test-browser-find test-browser-find-webkit
+test-browser-find-webkit: build
 	mkdir -p "$(BUILD_DIR)/BrowserFindProbe.app/Contents/MacOS"
 	cp Info.plist "$(BUILD_DIR)/BrowserFindProbe.app/Contents/Info.plist"
 	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserFindProbe.app"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserFindCEFTests.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserFindProbe.app/Contents/MacOS/Talaria"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserFindWebKitTests.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserFindProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserFindProbe.app"
 	python3 Scripts/test-browser-find.py
 
@@ -521,33 +443,43 @@ $(BUILD_DIR)/AgentVMLockTests: Source/TLAgentVMLock.m Source/AgentVMService.m So
 
 # Native transcript search plus real WebKit rendering, without network or an AI runtime.
 test: $(BUILD_DIR)/ChatFindTests
-$(BUILD_DIR)/ChatFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/ChatFindTests.m | $(MARKDOWN_RESOURCES_STAMP)
+$(BUILD_DIR)/ChatFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/ChatFindTests.m | $(MARKDOWN_RESOURCES_STAMP)
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
-$(BUILD_DIR)/BookmarkTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/BookmarkTests.m
+$(BUILD_DIR)/BookmarkTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BookmarkTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 # Browsing history migration, persistence and native navigation callback routing.
 test: $(BUILD_DIR)/BrowserHistoryTests
 
-$(BUILD_DIR)/BrowserHistoryTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/BrowserHistoryTests.m
+$(BUILD_DIR)/BrowserHistoryTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BrowserHistoryTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 include Scripts/browser-import.mk
 
 # Empty chat sky rendering, responsive tips and loading/message transitions.
 test: $(BUILD_DIR)/StarryEmptyStateTests
-$(BUILD_DIR)/StarryEmptyStateTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/StarryEmptyStateTests.m
+$(BUILD_DIR)/StarryEmptyStateTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/StarryEmptyStateTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 # Private windows use independent memory-only state and dispose their runtimes on close.
 test: $(BUILD_DIR)/IncognitoTests
-$(BUILD_DIR)/IncognitoTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/IncognitoTests.m
+$(BUILD_DIR)/IncognitoTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/IncognitoTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 .PHONY: test-incognito-browser
 test-incognito-browser: build
 	mkdir -p "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/MacOS"
 	cp Info.plist "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/Info.plist"
 	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/IncognitoBrowserProbe.app"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/IncognitoBrowserIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/MacOS/Talaria"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/IncognitoBrowserIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/IncognitoBrowserProbe.app"
 	python3 Scripts/test-incognito-browser.py
+
+# Saved browser controls must reach the native WebKit APIs, including guarded SPI.
+test: $(BUILD_DIR)/BrowserSettingsTests
+test: $(BUILD_DIR)/WebKitDownloadLifecycleTests
+test-webkit-download-lifecycle: $(BUILD_DIR)/WebKitDownloadLifecycleTests
+	"$(BUILD_DIR)/WebKitDownloadLifecycleTests"
+$(BUILD_DIR)/WebKitDownloadLifecycleTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/WebKitDownloadLifecycleTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+$(BUILD_DIR)/BrowserSettingsTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BrowserSettingsTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"

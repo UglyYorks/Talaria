@@ -1,5 +1,5 @@
 /* Read-only, isolated-world inspection. No document-wide queries or observers.
- * Scans yield between frames after 3ms of work; native scheduling also charges
+ * Scans yield after 3ms of work; native scheduling also charges
  * the reported CPU time before starting another scan. Browser-level hit tests
  * supplement the sampled DOM pass for closed shadows and pointer-events:none.
  * This expression is also called on a CDP-resolved node with candidate:true.
@@ -379,7 +379,14 @@
       if(result.frame && !config.quick && fallbacks.length<3) fallbacks.push(point);
       if(performance.now()-sliceStart >= 3) {
         charge();
-        await new Promise(resolve=>requestAnimationFrame(resolve));
+        // A native navigation snapshot or an occluded window can stop animation
+        // frames. Keep the inspection responsive without counting this wait as
+        // CPU work, and release both callbacks whichever one resumes us first.
+        await new Promise(resolve=>{
+          let frame, timer;
+          const resume=()=>{cancelAnimationFrame(frame);clearTimeout(timer);resolve();};
+          frame=requestAnimationFrame(resume);timer=setTimeout(resume,32);
+        });
         sliceStart=performance.now();
         if(performance.now()-started>2000 || innerWidth!==initial[0] || innerHeight!==initial[1] || scrollX!==initial[2] || scrollY!==initial[3]) return finish(null);
       }

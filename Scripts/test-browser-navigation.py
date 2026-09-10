@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise a real desktop link navigation while the new document cannot paint."""
 from collections import Counter
+from browser_test_launcher import launch_browser_test_app
 import http.server
 import os
 from pathlib import Path
@@ -47,11 +48,11 @@ class Fixture(http.server.BaseHTTPRequestHandler):
 with tempfile.TemporaryDirectory(prefix='talaria-native-navigation-test-', dir='/tmp') as profile:
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    env = dict(os.environ, TL_CHROMIUM_PROFILE_DIR=profile,
+    env = dict(os.environ, TL_WEBKIT_PROFILE_DIR=profile,
                TL_BROWSER_TEST_URL=f'http://127.0.0.1:{server.server_port}')
-    executable = Path('build/BrowserNavigationProbe.app/Contents/MacOS/Talaria').resolve()
+    app = 'build/BrowserNavigationProbe.app'
     try:
-        subprocess.run([str(executable)], env=env, timeout=25, check=True)
+        launch_browser_test_app(app, env=env, timeout=25)
         assert requests['/start'] == 1, requests
         assert requests['/next'] == 1, requests
         print('PASS: the source and destination each receive one page request')

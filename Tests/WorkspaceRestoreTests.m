@@ -22,7 +22,7 @@ static void Check(BOOL condition, NSString *message) {
 @end
 
 // Keep the real startup, tab actions, runtime creation and metadata callbacks;
-// omit unrelated rendering, gateway work and Chromium process creation.
+// omit unrelated rendering, gateway work and WebKit process creation.
 @interface TLRestoreTestController : TalariaWindowController
 @end
 @implementation TLRestoreTestController
@@ -97,7 +97,7 @@ static TLRestoreTestController *Load(TLAppStateManager *state) {
 int main(void) {
   @autoreleasepool {
     NSString *directory = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
-    setenv("TL_CHROMIUM_PROFILE_DIR", directory.UTF8String, 1);
+    setenv("TL_WEBKIT_PROFILE_DIR", directory.UTF8String, 1);
     Check([TLBrowserPreferences.profileURL.path isEqual:directory], @"browser preferences use the temporary test profile");
     [NSApplication sharedApplication];
     Method start = class_getInstanceMethod(TLBrowserTabController.class, @selector(startInWindow:));

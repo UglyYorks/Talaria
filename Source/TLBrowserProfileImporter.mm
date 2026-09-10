@@ -9,7 +9,6 @@
 #include <memory>
 #include <map>
 #include "leveldb/db.h"
-#include "leveldb/write_batch.h"
 #include "db/filename.h"
 #include "snappy.h"
 
@@ -33,7 +32,6 @@ static NSString *Text(sqlite3_stmt *s, int i) {
   return p ? [[NSString alloc] initWithBytes:p length:sqlite3_column_bytes(s,i) encoding:NSUTF8StringEncoding] : @"";
 }
 static NSData *Blob(sqlite3_stmt *s, int i) { return [NSData dataWithBytes:sqlite3_column_blob(s,i) length:sqlite3_column_bytes(s,i)]; }
-static std::string Bytes(NSData *data) { return std::string((const char *)data.bytes, data.length); }
 static NSData *Data(const leveldb::Slice &s) { return [NSData dataWithBytes:s.data() length:s.size()]; }
 static BOOL WebOrigin(NSString *origin) {
   NSURLComponents *c = [NSURLComponents componentsWithString:origin];
@@ -276,6 +274,11 @@ static BOOL StorageInventory(NSURL *root, StorageFiles &files, NSError **error) 
     else if(version>=16) expiry/=1000.0;
     if(persistent && expiry <= NSDate.date.timeIntervalSince1970) { (*skipped)++; continue; }
     if(!firefox && sqlite3_column_bytes(s,9)>0) {
+      if(!password && [browser[@"legacyTalaria"] boolValue]) {
+        // The previous engine explicitly used its mock Keychain flag. This
+        // compatibility key is read only when migrating Talaria's own profile.
+        password = [@"mock_password" dataUsingEncoding:NSUTF8StringEncoding];
+      }
       if(!password) {
         CFTypeRef secret=nullptr;
         OSStatus status=SecItemCopyMatching((__bridge CFDictionaryRef)@{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,(__bridge id)kSecAttrService:browser[@"keychainService"],(__bridge id)kSecReturnData:@YES,(__bridge id)kSecMatchLimit:(__bridge id)kSecMatchLimitOne},&secret);
@@ -439,39 +442,91 @@ static BOOL StorageInventory(NSURL *root, StorageFiles &files, NSError **error) 
     return [self writePending:@{@"entries":payload[@"entries"],@"sessionCookies":@[]} profileURL:URL error:error];
   }
 }
-+ (BOOL)applyPendingLocalStorageAtProfileURL:(NSURL *)URL error:(NSError **)error {
-  NSURL *pending=Child(URL,@"TalariaPendingLocalStorage.plist"); if(!Exists(pending)) return YES;
-  NSDictionary *payload=[self readPending:URL error:error]; if(!payload) return NO;
-  NSArray *rows=payload[@"entries"]; if(!rows.count) return YES;
-  // CEF’s Chrome runtime stores the active profile under cache_path/Default.
-  NSURL *directory=Child(URL,@"Default/Local Storage/leveldb");
-  if(![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:error]) return NO;
-  leveldb::Options options; options.create_if_missing=true; options.paranoid_checks=true; leveldb::DB *raw=nullptr;
-  auto status=leveldb::DB::Open(options,directory.path.UTF8String,&raw); std::unique_ptr<leveldb::DB> db(raw);
-  if(!status.ok()) return Fail(error,@"Local storage import is pending. Close other Talaria instances and restart to retry.");
-  std::string version; status=db->Get(leveldb::ReadOptions(),"VERSION",&version);
-  if((!status.ok() && !status.IsNotFound()) || (status.ok() && version!="1")) return Fail(error,@"Talaria’s local storage version is not supported by this import.");
-  leveldb::WriteBatch batch; batch.Put("VERSION","1");
-  std::map<std::string,std::string> merged;
-  leveldb::ReadOptions read; read.verify_checksums=true; std::unique_ptr<leveldb::Iterator> it(db->NewIterator(read));
-  for(it->Seek("_");it->Valid() && it->key().starts_with("_");it->Next()) merged[it->key().ToString()]=it->value().ToString();
-  if(!it->status().ok()) return Fail(error,@"Talaria’s local storage could not be read. Import remains pending.");
-  NSMutableSet *origins=[NSMutableSet set];
-  for(id row in rows) {
-    if(![row isKindOfClass:NSDictionary.class] || ![row[@"key"] isKindOfClass:NSData.class] || ![row[@"value"] isKindOfClass:NSData.class] || !EntryOrigin(row[@"key"])) return Fail(error,@"The pending import contains an invalid local storage entry.");
-    NSData *key=row[@"key"], *value=row[@"value"]; merged[Bytes(key)]=Bytes(value); batch.Put(Bytes(key),Bytes(value)); [origins addObject:EntryOrigin(key)];
-  }
-  // Recalculate metadata for merged origins instead of copying stale source quotas.
-  for(NSString *origin in origins) {
-    std::string prefix="_"+std::string(origin.UTF8String)+std::string(1,'\0'); uint64_t size=0;
-    for(auto iter=merged.lower_bound(prefix);iter!=merged.end() && iter->first.compare(0,prefix.size(),prefix)==0;++iter) size+=iter->first.size()-prefix.size()+iter->second.size();
-    std::string meta; auto varint=[&meta](uint64_t v) { while(v>=128) { meta.push_back((v&127)|128); v>>=7; } meta.push_back(v); };
-    meta.push_back(8); varint((NSDate.date.timeIntervalSince1970+11644473600.0)*1000000); meta.push_back(16); varint(size);
-    batch.Put("META:"+std::string(origin.UTF8String),meta);
-  }
-  leveldb::WriteOptions write; write.sync=true; status=db->Write(write,&batch);
-  if(!status.ok()) return Fail(error,@"Local storage could not be merged. Import remains pending for the next restart.");
-  if([payload[@"sessionCookies"] count]) return [self writePending:@{@"entries":@[],@"sessionCookies":payload[@"sessionCookies"]} profileURL:URL error:error];
-  return [NSFileManager.defaultManager removeItemAtURL:pending error:error];
+static NSString *DecodeStorageString(NSData *data) {
+  if (!data.length) return nil;
+  const unsigned char *bytes = (const unsigned char *)data.bytes;
+  if (bytes[0] > 1 || (bytes[0] == 0 && (data.length - 1) % 2)) return nil;
+  return [[NSString alloc] initWithBytes:bytes + 1 length:data.length - 1
+    encoding:bytes[0] ? NSISOLatin1StringEncoding : NSUTF16LittleEndianStringEncoding];
 }
++ (NSDictionary<NSString *,NSDictionary<NSString *,NSString *> *> *)pendingLocalStorageByOriginAtProfileURL:(NSURL *)URL error:(NSError **)error {
+  @synchronized(self) {
+    NSDictionary *payload = [self readPending:URL error:error];
+    if (!payload) return nil;
+    NSMutableDictionary *origins = [NSMutableDictionary dictionary];
+    for (id row in payload[@"entries"]) {
+      if (![row isKindOfClass:NSDictionary.class] || ![row[@"key"] isKindOfClass:NSData.class] || ![row[@"value"] isKindOfClass:NSData.class]) {
+        Fail(error, @"The pending import contains an invalid local storage entry."); return nil;
+      }
+      NSData *rawKey = row[@"key"];
+      NSString *origin = EntryOrigin(rawKey);
+      if (!origin) { Fail(error, @"The pending import contains an invalid local storage origin."); return nil; }
+      const char *bytes = (const char *)rawKey.bytes;
+      const char *separator = (const char *)memchr(bytes + 1, 0, rawKey.length - 1);
+      NSUInteger offset = (NSUInteger)(separator + 1 - bytes);
+      NSString *key = DecodeStorageString([rawKey subdataWithRange:NSMakeRange(offset, rawKey.length - offset)]);
+      NSString *value = DecodeStorageString(row[@"value"]);
+      if (!key || !value) { Fail(error, @"The pending import contains an unsupported local storage encoding."); return nil; }
+      NSMutableDictionary *values = origins[origin];
+      if (!values) origins[origin] = values = [NSMutableDictionary dictionary];
+      values[key] = value;
+    }
+    return origins.copy;
+  }
+}
++ (BOOL)clearPendingLocalStorageForOrigin:(NSString *)origin profileURL:(NSURL *)URL error:(NSError **)error {
+  if (!WebOrigin(origin)) return Fail(error, @"The local storage origin is invalid.");
+  @synchronized(self) {
+    NSDictionary *payload = [self readPending:URL error:error]; if (!payload) return NO;
+    NSMutableArray *rows = [NSMutableArray array];
+    for (id row in payload[@"entries"]) {
+      if (![row isKindOfClass:NSDictionary.class] || ![row[@"key"] isKindOfClass:NSData.class] || ![row[@"value"] isKindOfClass:NSData.class] || !EntryOrigin(row[@"key"]))
+        return Fail(error, @"The pending import contains an invalid local storage entry.");
+      if (![EntryOrigin(row[@"key"]) isEqual:origin]) [rows addObject:row];
+    }
+    if (!rows.count && ![payload[@"sessionCookies"] count]) {
+      NSURL *pending = Child(URL, @"TalariaPendingLocalStorage.plist");
+      return !Exists(pending) || [NSFileManager.defaultManager removeItemAtURL:pending error:error];
+    }
+    return [self writePending:@{@"entries":rows, @"sessionCookies":payload[@"sessionCookies"]} profileURL:URL error:error];
+  }
+}
++ (BOOL)clearPendingLocalStorageAtProfileURL:(NSURL *)URL error:(NSError **)error {
+  @synchronized(self) {
+    NSDictionary *payload = [self readPending:URL error:error]; if (!payload) return NO;
+    if ([payload[@"sessionCookies"] count])
+      return [self writePending:@{@"entries":@[], @"sessionCookies":payload[@"sessionCookies"]} profileURL:URL error:error];
+    NSURL *pending = Child(URL, @"TalariaPendingLocalStorage.plist");
+    return !Exists(pending) || [NSFileManager.defaultManager removeItemAtURL:pending error:error];
+  }
+}
++ (BOOL)prepareMigrationFromLegacyProfileAtProfileURL:(NSURL *)URL error:(NSError **)error {
+  @synchronized(self) {
+    NSURL *marker = Child(URL, @"TalariaLegacyBrowserMigration");
+    if (Exists(marker)) return YES;
+    NSURL *legacy = Child(URL.URLByDeletingLastPathComponent, @"Chromium");
+    if (!Exists(legacy)) return YES;
+    NSURL *profile = Child(legacy, @"Default");
+    NSURL *cookieURL = Child(profile, @"Network/Cookies");
+    if (!Exists(cookieURL)) cookieURL = Child(profile, @"Cookies");
+    NSUInteger skipped = 0;
+    NSArray *cookies = [self readCookies:cookieURL browser:@{@"engine":@"chromium", @"legacyTalaria":@YES} skipped:&skipped error:error];
+    if (!cookies) return NO;
+    NSMutableDictionary *entries = [NSMutableDictionary dictionary];
+    if (![self readChromiumStorage:Child(profile, @"Local Storage/leveldb") into:entries skipped:&skipped error:error]) return NO;
+    NSDictionary *pending = [self readPending:legacy error:error];
+    if (!pending) return NO;
+    for (id row in pending[@"entries"]) {
+      if (![row isKindOfClass:NSDictionary.class] || ![row[@"key"] isKindOfClass:NSData.class] || ![row[@"value"] isKindOfClass:NSData.class] || !EntryOrigin(row[@"key"]))
+        return Fail(error, @"The previous Talaria browser import contains invalid local storage.");
+      entries[row[@"key"]] = row[@"value"];
+    }
+    NSMutableArray *allCookies = cookies.mutableCopy;
+    [allCookies addObjectsFromArray:pending[@"sessionCookies"]];
+    if (![self stageLocalStorage:entries sessionCookies:allCookies profileURL:URL error:error]) return NO;
+    if (![NSFileManager.defaultManager createDirectoryAtURL:URL withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:error]) return NO;
+    return [[@"1" dataUsingEncoding:NSUTF8StringEncoding] writeToURL:marker options:NSDataWritingAtomic error:error];
+  }
+}
+
 @end

@@ -24,15 +24,15 @@
   <string>1</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
-  <key>LSEnvironment</key>
-  <dict>
-    <key>MallocNanoZone</key>
-    <string>0</string>
-  </dict>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright (C) 2026 UglyYorks</string>
-  <key>NSBluetoothAlwaysUsageDescription</key>
-  <string>Talaria uses Bluetooth when a website you visit requests access to nearby Bluetooth devices.</string>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoadsInWebContent</key>
+    <true/>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
   <key>NSAppDataUsageDescription</key>
   <string>Talaria accesses other browsers’ profile folders to find profiles and import cookies and local storage when you choose Import.</string>
   <key>NSCameraUsageDescription</key>

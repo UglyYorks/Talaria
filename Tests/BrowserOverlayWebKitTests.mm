@@ -1,14 +1,10 @@
-// Run with python3 Tests/run-browser-overlay-cef.py. Uses an isolated test profile.
+// Run with python3 Tests/run-browser-overlay-webkit.py. Uses an isolated test profile.
 #import <AppKit/AppKit.h>
-#import "ChromiumBrowserController.h"
+#import "WebKitBrowserController.h"
+#import "BrowserWebKitTestSupport.h"
 #import "TLBrowserTabController.h"
 #import "TLBrowserHeightTransition.h"
-#include "include/cef_application_mac.h"
-#include "include/cef_browser.h"
 #import <QuartzCore/QuartzCore.h>
-@interface TLChromiumBrowserController (OverlayResizeTest)
-- (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
-@end
 @interface TLBrowserTabController (OverlayResizeTest)
 - (void)toggleBrowserHeightMode:(id)sender;
 @end
@@ -17,21 +13,16 @@ static NSDictionary *TLResizeViewTree(NSView *view, NSUInteger depth) {
   if(depth) for(NSView *child in view.subviews) [children addObject:TLResizeViewTree(child,depth-1)];
   return @{@"class":NSStringFromClass(view.class),@"frame":NSStringFromRect(view.frame),@"bounds":NSStringFromRect(view.bounds),@"layer":NSStringFromRect(view.layer.frame),@"children":children};
 }
-@interface TLOverlayTestApplication : NSApplication <CefAppProtocol>
-@property(nonatomic) BOOL handlingSendEvent;
+@interface TLOverlayTestApplication : NSApplication
 @end
 @implementation TLOverlayTestApplication
-- (BOOL)isHandlingSendEvent { return self.handlingSendEvent; }
-- (void)sendEvent:(NSEvent *)event { CefScopedSendingEvent scoped; [super sendEvent:event]; }
 @end
-@interface TLOverlayTestBrowser : TLChromiumBrowserController
-@property(nonatomic,copy) NSString *testCache;
+@interface TLOverlayTestBrowser : TLWebKitBrowserController
 @property(nonatomic,strong) NSDictionary *lastProbe;
 @property(nonatomic,strong) NSMutableArray *trace;
 @end
 @implementation TLOverlayTestBrowser
-- (NSString *)chromiumCachePath { return self.testCache; }
-- (void)probeOverlayInSession:(TLChromiumBrowserSession *)session overlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick completion:(void (^)(NSDictionary *))completion {
+- (void)probeOverlayInSession:(TLWebKitBrowserSession *)session overlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick completion:(void (^)(NSDictionary *))completion {
   NSTimeInterval started=NSProcessInfo.processInfo.systemUptime;
   [super probeOverlayInSession:session overlayRect:rect viewportSize:viewport quick:quick completion:^(NSDictionary *result) {
     self.lastProbe=@{@"result":result,@"rect":NSStringFromRect(rect),@"viewport":NSStringFromSize(viewport)};
@@ -42,7 +33,7 @@ static NSDictionary *TLResizeViewTree(NSView *view, NSUInteger depth) {
 @end
 @interface TLOverlayTestDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic,strong) TLOverlayTestBrowser *browser;
-@property(nonatomic,strong) TLChromiumBrowserSession *session;
+@property(nonatomic,strong) TLWebKitBrowserSession *session;
 @property(nonatomic,strong) NSWindow *window;
 @property(nonatomic,strong) NSMutableArray *results;
 @property(nonatomic) NSInteger index;
@@ -56,28 +47,39 @@ static NSDictionary *TLResizeViewTree(NSView *view, NSUInteger depth) {
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   NSArray *args=NSProcessInfo.processInfo.arguments;
   self.results=[NSMutableArray array];
+  NSLog(@"Overlay integration started: %@",args);
   [[NSString stringWithFormat:@"%d", NSProcessInfo.processInfo.processIdentifier] writeToFile:[args[3] stringByAppendingString:@".pid"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-  self.browser=[TLOverlayTestBrowser new];self.browser.testCache=args[2];
+  self.browser=[TLOverlayTestBrowser new];
   self.window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,1000,700) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskFullSizeContentView backing:NSBackingStoreBuffered defer:NO];
+  self.window.level=NSFloatingWindowLevel;
+  self.window.collectionBehavior=NSWindowCollectionBehaviorCanJoinAllSpaces|NSWindowCollectionBehaviorFullScreenAuxiliary;
   self.window.titlebarAppearsTransparent=YES;
   self.window.titleVisibility=NSWindowTitleHidden;
   self.window.releasedWhenClosed=NO;[self.window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
   __weak __typeof__(self) weakSelf=self;
   self.session=[self.browser loadURL:[NSURL URLWithString:[args[1] stringByAppendingString:@"/fixed"]] inView:self.window.contentView fromWindow:self.window titleHandler:nil linkHandler:nil URLHandler:nil faviconHandler:nil navigationHandler:^(BOOL back,BOOL forward,BOOL loading) {
+    NSLog(@"Overlay navigation: index=%ld loading=%d generation=%lu scheduled=%d",(long)weakSelf.index,loading,(unsigned long)weakSelf.session.documentGeneration,weakSelf.scheduled);
     if (!loading && !weakSelf.scheduled) {
       weakSelf.scheduled=YES;
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(),^{[weakSelf probe];});
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(),^{TLTestActivateWindow(weakSelf.window,^{[weakSelf probe];});});
     }
   }];
 }
 - (void)probe {
+  NSLog(@"Overlay probe: %ld",(long)self.index);
+  id bridge=[self.session valueForKey:@"pageBridge"];
+  NSLog(@"Overlay view geometry: frame=%@ bounds=%@ visibleRect=%@",NSStringFromRect(self.session.webView.frame),NSStringFromRect(self.session.webView.bounds),NSStringFromRect(self.session.webView.visibleRect));
+  NSLog(@"Overlay placement: frame=%@ screen=%@ active=%d hidden=%d paused=%@ generation=%@",NSStringFromRect(self.window.frame),NSStringFromRect(self.window.screen.frame),NSApp.active,self.session.webView.hiddenOrHasHiddenAncestor,[self.session valueForKey:@"paused"],[self.session valueForKey:@"transitionGeneration"]);
+  NSLog(@"Overlay native state: visible=%d occlusion=%lu cover=%@ frames=%@",self.window.visible,(unsigned long)self.window.occlusionState,[self.session valueForKey:@"navigationCover"],[[bridge valueForKey:@"frames"] allKeys]);
+  [self.session.webView evaluateJavaScript:@"({visibility:document.visibilityState,hidden:document.hidden,bridge:typeof globalThis.__talariaWebKitBridge,candidate:typeof globalThis.__talariaWebKitBridge?.candidate})" inFrame:nil inContentWorld:[bridge valueForKey:@"contentWorld"] completionHandler:^(id state,NSError *error){NSLog(@"Overlay document state: %@ error=%@",state,error);}];
   NSArray *paths=@[@"/fixed",@"/closed",@"/frame",@"/clear",@"/large",@"/large-quick",@"/closed-quick",@"/thin-quick",@"/closed-thin-quick",@"/guardian-quick",@"/guardian-normal-quick",@"/guardian-scrolling-quick",@"/guardian-shared-quick"];
   if (self.index>=paths.count) return;
   NSString *path=paths[self.index];
   __weak __typeof__(self) weakSelf=self;
   NSTimeInterval start=NSProcessInfo.processInfo.systemUptime;
   [self.browser probeOverlayInSession:self.session overlayRect:NSMakeRect(100,20,800,48) viewportSize:NSMakeSize(1000,700) quick:[path hasSuffix:@"-quick"] completion:^(NSDictionary *result){
+    NSLog(@"Overlay result: %@",result);
     TLOverlayTestDelegate *owner=weakSelf;
     [owner.results addObject:@{@"path":path,@"result":result,@"elapsedMS":@((NSProcessInfo.processInfo.systemUptime-start)*1000)}];
     owner.index++;
@@ -91,6 +93,7 @@ static NSDictionary *TLResizeViewTree(NSView *view, NSUInteger depth) {
   }];
 }
 - (void)startLatencyCase {
+  NSLog(@"Overlay latency case: %ld",(long)self.latencyIndex);
   BOOL live=NSProcessInfo.processInfo.arguments.count>4;
   if (self.latencyIndex == (live ? 8 : 7)) {
     NSData *data=[NSJSONSerialization dataWithJSONObject:self.results options:NSJSONWritingPrettyPrinted error:nil];
@@ -157,10 +160,8 @@ static NSDictionary *TLResizeViewTree(NSView *view, NSUInteger depth) {
       // unrelated styled elements are not reliable viewport-bottom markers.
       if(owner.latencyIndex==0) {
         owner.resizeCycles=[NSMutableArray array];
-        TLChromiumBrowserSession *session=[owner.tab valueForKey:@"browserSession"];
-        CefRefPtr<CefBrowser> browser=[owner.browser browserWithIdentifier:(int)session.browserIdentifier];
-        if(browser && browser->GetMainFrame()) browser->GetMainFrame()->ExecuteJavaScript(
-          "window.__talariaResizeCount=0;addEventListener('resize',e=>{if(e.isTrusted)window.__talariaResizeCount++})", "", 0);
+        TLWebKitBrowserSession *session=[owner.tab valueForKey:@"browserSession"];
+        [session.webView evaluateJavaScript:@"window.__talariaResizeCount=0;addEventListener('resize',e=>{if(e.isTrusted)window.__talariaResizeCount++})" completionHandler:nil];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(),^{[owner resizeCycle];});
       } else [owner finishLatencyCase];
     }
@@ -192,10 +193,9 @@ static NSDictionary *TLResizeViewTree(NSView *view, NSUInteger depth) {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,45*NSEC_PER_MSEC),dispatch_get_main_queue(),^{[self.tab toggleBrowserHeightMode:nil];});
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,95*NSEC_PER_MSEC),dispatch_get_main_queue(),^{[self.tab toggleBrowserHeightMode:nil];});
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,350*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
-    TLChromiumBrowserSession *session=[self.tab valueForKey:@"browserSession"];
-    CefRefPtr<CefBrowser> browser=[self.browser browserWithIdentifier:(int)session.browserIdentifier];
+    TLWebKitBrowserSession *session=[self.tab valueForKey:@"browserSession"];
     NSString *script=[NSString stringWithFormat:@"requestAnimationFrame(()=>{document.title=JSON.stringify({cycle:%lu,height:innerHeight,resizes:window.__talariaResizeCount,bottom:(document.querySelector('#fides-banner,.als-cookie-button')||document.querySelector('[style]')).getBoundingClientRect().bottom})})",(unsigned long)self.resizeCycles.count];
-    if(browser && browser->GetMainFrame()) browser->GetMainFrame()->ExecuteJavaScript(script.UTF8String, "", 0);
+    [session.webView evaluateJavaScript:script completionHandler:nil];
     [self collectResizeCycle:visualSample deadline:NSProcessInfo.processInfo.systemUptime+5];
   });
 }
@@ -215,4 +215,4 @@ static NSDictionary *TLResizeViewTree(NSView *view, NSUInteger depth) {
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app { return [self.browser prepareForApplicationTermination]?NSTerminateNow:NSTerminateLater; }
 @end
-int main(int argc,char **argv){@autoreleasepool{TLChromiumBrowserControllerConfigureMainArgs(argc,argv);TLOverlayTestApplication *app=[TLOverlayTestApplication sharedApplication];TLOverlayTestDelegate *delegate=[TLOverlayTestDelegate new];app.delegate=delegate;[app run];}return 0;}
+int main(int argc,char **argv){@autoreleasepool{if(argc>2)setenv("TL_WEBKIT_PROFILE_DIR",argv[2],1);TLOverlayTestApplication *app=[TLOverlayTestApplication sharedApplication];TLOverlayTestDelegate *delegate=[TLOverlayTestDelegate new];app.delegate=delegate;[app run];}return 0;}

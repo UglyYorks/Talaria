@@ -3,7 +3,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Cleanup runs only during startup, before opening SQLite, Chromium, or any VM.
+// Cleanup runs only during startup, before opening SQLite, WebKit, or any VM.
 @interface TLAppReset : NSObject
 @property (nonatomic, readonly) BOOL resetPending;
 - (instancetype)init;

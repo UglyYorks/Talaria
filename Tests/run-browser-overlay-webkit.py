@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Desktop CEF integration regression; temporary app/profile, no user app data.
+"""Desktop WebKit integration regression; temporary app/profile, no user app data.
 
-Run from any directory with `python3 Tests/run-browser-overlay-cef.py`.
+Run from any directory with `python3 Tests/run-browser-overlay-webkit.py`.
 Builds the current checkout. Requires its normal persistent code-signing identity.
 """
 import http.server
@@ -20,24 +20,27 @@ DOCUMENT_FOOTER = "--document-footer" in sys.argv
 FULLSCREEN = "--fullscreen" in sys.argv
 DEVTOOLS = "--devtools" in sys.argv
 ROOT = Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / 'Scripts'))
+from browser_test_launcher import require_unlocked_desktop
+require_unlocked_desktop()
 os.chdir(ROOT)
 subprocess.run(["make", "build"], check=True)
-work = Path(tempfile.mkdtemp(prefix="overlay-cef-check-", dir=ROOT / "build"))
+work = Path(tempfile.mkdtemp(prefix="overlay-webkit-check-", dir=ROOT / "build"))
 profile = Path(tempfile.mkdtemp(prefix="talaria-overlay-profile-"))
 server = None
 peer_server = None
 runner = None
 app_pid = None
 try:
-    cef = next((ROOT / "build/deps").glob("cef_binary_*"))
     binary = work / "OverlayProbeIntegration"
     objects = sorted(str(p) for p in (ROOT / "build/app-objects").rglob("*.o") if p.name != "main.mm.o" and (ROOT / "Source" / p.relative_to(ROOT / "build/app-objects").with_suffix("")).exists())
-    frameworks = ["QuickLookThumbnailing", "UniformTypeIdentifiers", "AppKit", "Foundation", "QuartzCore",
+    frameworks = ["CFNetwork", "Vision", "CoreImage", "Quartz", "ServiceManagement", "Carbon", "ScreenCaptureKit", "QuickLookThumbnailing", "UniformTypeIdentifiers", "AppKit", "Foundation", "QuartzCore",
                   "SceneKit", "CoreText", "Cocoa", "IOSurface", "WebKit", "Virtualization", "Security"]
     subprocess.run([
         "xcrun", "clang++", "-fobjc-arc", "-std=c++20", "-fno-exceptions", "-fno-rtti",
-        "-mmacosx-version-min=13.0", "-I" + str(cef), "-ISource", "Tests/BrowserDevToolsCEFTests.mm" if DEVTOOLS else "Tests/BrowserFullscreenCEFTests.mm" if FULLSCREEN else "Tests/BrowserDocumentFooterCEFTests.mm" if DOCUMENT_FOOTER else "Tests/BrowserOverlayCEFTests.mm",
-        *objects, "build/libcef_dll_wrapper.a", "build/libbrowser_import.a",
+        "-mmacosx-version-min=13.0", "-ISource", "Tests/BrowserDevToolsWebKitTests.mm" if DEVTOOLS else "Tests/BrowserFullscreenWebKitTests.mm" if FULLSCREEN else "Tests/BrowserDocumentFooterWebKitTests.mm" if DOCUMENT_FOOTER else "Tests/BrowserOverlayWebKitTests.mm",
+        *objects, "build/libbrowser_import.a",
         *[arg for framework in frameworks for arg in ("-framework", framework)],
         "-lsqlite3", "-lpthread", "-o", str(binary)], check=True)
     app = work / "Talaria.app"
@@ -157,19 +160,21 @@ try:
         runner.terminate()
         runner.wait(timeout=5)
         raise
+    if not result.exists():
+        raise RuntimeError('The desktop probe exited before producing results:\n' + app_log.read_text(errors='replace'))
     records = json.loads(result.read_text())
-    output = ROOT / ("build/BrowserDevToolsCEFResults.json" if DEVTOOLS else "build/BrowserFullscreenCEFResults.json" if FULLSCREEN else "build/BrowserDocumentFooterCEFResults.json" if DOCUMENT_FOOTER else "build/BrowserOverlayCEFResults.json")
+    output = ROOT / ("build/BrowserDevToolsWebKitResults.json" if DEVTOOLS else "build/BrowserFullscreenWebKitResults.json" if FULLSCREEN else "build/BrowserDocumentFooterWebKitResults.json" if DOCUMENT_FOOTER else "build/BrowserOverlayWebKitResults.json")
     output.write_text(json.dumps(records, indent=2))
     print(json.dumps(records, indent=2))
     if DEVTOOLS:
         assert len(records) >= 15 and all(r["passed"] for r in records), "DevTools integration failed"
-        print("BrowserDevToolsCEFTests passed; results:", output)
+        print("BrowserDevToolsWebKitTests passed; results:", output)
     elif FULLSCREEN:
         assert len(records) >= 35 and all(r["passed"] for r in records), "Fullscreen integration failed"
-        print("BrowserFullscreenCEFTests passed; results:", output)
+        print("BrowserFullscreenWebKitTests passed; results:", output)
     elif DOCUMENT_FOOTER:
         assert len(records) >= 24 and all(r["passed"] for r in records), "Document footer integration failed"
-        print("BrowserDocumentFooterCEFTests passed; results:", output)
+        print("BrowserDocumentFooterWebKitTests passed; results:", output)
     else:
         for record in records:
             if "resizeCycles" not in record:
@@ -217,11 +222,12 @@ try:
         assert 0 <= stress["settledMS"] < max(1000, quick_cost * 80 + 750), "Stress-page detection must respect its measured cooldown, confirmation and visual-animation allowance"
         if len(records) == probe_count+8:
             assert 0 <= records[probe_count+7]["detectionMS"] < 1000, "Live-page overlap confirmation should take under one second after the first positive probe"
-        print("BrowserOverlayCEFTests: 13 probe checks, 7 native latency checks and 72 rapid toggles passed; results:", output)
+        print("BrowserOverlayWebKitTests: 13 probe checks, 7 native latency checks and 72 rapid toggles passed; results:", output)
 
 finally:
-    if DEVTOOLS and (work / "application.log").exists():
-        shutil.copy2(work / "application.log", ROOT / "build/BrowserDevToolsCEF.log")
+    if (work / "application.log").exists():
+        mode = "DevTools" if DEVTOOLS else "Fullscreen" if FULLSCREEN else "DocumentFooter" if DOCUMENT_FOOTER else "Overlay"
+        shutil.copy2(work / "application.log", ROOT / f"build/Browser{mode}WebKit.log")
     if server:
         server.shutdown()
     if peer_server:

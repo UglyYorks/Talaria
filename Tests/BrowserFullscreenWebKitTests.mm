@@ -1,28 +1,19 @@
-// Real Chromium Fullscreen API and AppKit view restoration; isolated profile.
+// Real WebKit Fullscreen API and AppKit view restoration; isolated profile.
 #import <AppKit/AppKit.h>
-#import "ChromiumBrowserController.h"
+#import "WebKitBrowserController.h"
+#import "BrowserWebKitTestSupport.h"
 #import "TLBrowserTabController.h"
-#include "include/cef_application_mac.h"
-#include "include/cef_browser.h"
-@interface TLChromiumBrowserController (FullscreenTests)
-- (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
-@end
 @interface TLBrowserTabController (FullscreenTests)
 - (BOOL)canSampleOverlay;
 - (void)toggleBrowserHeightMode:(id)sender;
 @end
-@interface TLFullscreenTestApplication : NSApplication <CefAppProtocol>
-@property(nonatomic) BOOL handlingSendEvent;
+@interface TLFullscreenTestApplication : NSApplication
 @end
 @implementation TLFullscreenTestApplication
-- (BOOL)isHandlingSendEvent { return self.handlingSendEvent; }
-- (void)sendEvent:(NSEvent *)event { CefScopedSendingEvent scoped; [super sendEvent:event]; }
 @end
-@interface TLFullscreenTestBrowser : TLChromiumBrowserController
-@property(nonatomic,copy) NSString *testCache;
+@interface TLFullscreenTestBrowser : TLWebKitBrowserController
 @end
 @implementation TLFullscreenTestBrowser
-- (NSString *)chromiumCachePath { return self.testCache; }
 @end
 @interface TLFullscreenTestDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic,strong) TLFullscreenTestBrowser *browser;
@@ -34,25 +25,40 @@
 @property(nonatomic) NSUInteger scriptID;
 @property(nonatomic) NSRect originalWindow;
 @property(nonatomic) CGFloat originalInset;
+@property(nonatomic,weak) NSWindow *fullscreenWindow;
 @end
 @implementation TLFullscreenTestDelegate
 - (void)after:(double)seconds run:(dispatch_block_t)block { dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(seconds*NSEC_PER_SEC)),dispatch_get_main_queue(),block); }
-- (TLChromiumBrowserSession *)session { return [self.tab valueForKey:@"browserSession"]; }
-- (CefRefPtr<CefBrowser>)cef { return [self.browser browserWithIdentifier:(int)self.session.browserIdentifier]; }
-- (NSView *)nativeView { return (__bridge NSView *)[self cef]->GetHost()->GetWindowHandle(); }
-- (void)check:(BOOL)passed name:(NSString *)name { [self.results addObject:@{@"name":name,@"passed":@(passed)}]; }
+- (TLWebKitBrowserSession *)session { return [self.tab valueForKey:@"browserSession"]; }
+- (WKWebView *)webView { return self.session.webView; }
+- (NSView *)nativeView { return self.session.webView; }
+- (void)check:(BOOL)passed name:(NSString *)name { NSLog(@"%@: %@",passed ? @"PASS" : @"FAIL",name); [self.results addObject:@{@"name":name,@"passed":@(passed)}]; }
 - (void)eval:(NSString *)code then:(void (^)(id))completion {
   self.reply=completion; self.scriptID++;
   NSString *script=[NSString stringWithFormat:@"Promise.resolve((()=>{%@})()).then(value=>{document.title=JSON.stringify({test:%lu,value})}).catch(error=>{document.title=JSON.stringify({test:%lu,value:{error:String(error)}})})",code,(unsigned long)self.scriptID,(unsigned long)self.scriptID];
-  CefRefPtr<CefDictionaryValue> params=CefDictionaryValue::Create();
-  params->SetString("expression",script.UTF8String); params->SetBool("userGesture",true);
-  [self cef]->GetHost()->ExecuteDevToolsMethod(0,"Runtime.evaluate",params);
+  [self.session.webView evaluateJavaScript:script completionHandler:nil];
+}
+- (void)enterFullscreen:(NSString *)target then:(void (^)(id))completion {
+  self.reply=completion; self.scriptID++;
+  NSString *script=[NSString stringWithFormat:@"(()=>{let button=document.createElement('button');button.id='talaria-fullscreen-test';button.textContent='Enter fullscreen';button.style='position:fixed;top:0;left:0;width:180px;height:60px;z-index:2147483647';button.onclick=()=>{button.remove();%@.requestFullscreen().then(()=>{document.title=JSON.stringify({test:%lu,value:true})}).catch(error=>{document.title=JSON.stringify({test:%lu,value:{error:String(error)}})})};document.body.append(button)})()",target,(unsigned long)self.scriptID,(unsigned long)self.scriptID];
+  [self.webView evaluateJavaScript:script completionHandler:^(id value,NSError *error){
+    if(error){NSLog(@"Fullscreen setup failed: %@",error);completion(@NO);return;}
+    [self after:0.1 run:^{
+      NSView *view=self.webView;
+      NSPoint point=[view convertPoint:NSMakePoint(50,view.isFlipped?30:NSHeight(view.bounds)-30) toView:nil];
+      NSView *targetView=[self.window.contentView hitTest:[self.window.contentView convertPoint:point fromView:nil]];
+      NSEvent *down=[NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:self.window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1];
+      NSEvent *up=[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:self.window.windowNumber context:nil eventNumber:2 clickCount:1 pressure:0];
+      NSLog(@"Posting trusted fullscreen click to %@",targetView);
+      [NSApp postEvent:down atStart:NO];[NSApp postEvent:up atStart:NO];
+    }];
+  }];
 }
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   NSArray *args=NSProcessInfo.processInfo.arguments;
   self.results=[NSMutableArray array];
   [[NSString stringWithFormat:@"%d",NSProcessInfo.processInfo.processIdentifier] writeToFile:[args[3] stringByAppendingString:@".pid"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-  self.browser=[TLFullscreenTestBrowser new];self.browser.testCache=args[2];
+  self.browser=[TLFullscreenTestBrowser new];
   self.window=[[NSWindow alloc] initWithContentRect:NSMakeRect(100,100,1000,700) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO]; self.window.releasedWhenClosed=NO;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnonnull"
@@ -71,11 +77,11 @@
   [NSLayoutConstraint activateConstraints:@[[self.tab.view.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],[self.tab.view.widthAnchor constraintEqualToAnchor:content.widthAnchor multiplier:0.6],[self.tab.view.topAnchor constraintEqualToAnchor:content.topAnchor constant:40],[self.tab.view.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]]];
   [self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];[content layoutSubtreeIfNeeded];
   self.originalWindow=self.window.frame;[self.tab startInWindow:self.window];
-  [self waitForPage:0];
+  TLTestActivateWindow(self.window,^{[self waitForPage:0];});
   [self after:35 run:^{if(self.tab){[self check:NO name:@"Fullscreen integration deadline"];[self finish];}}];
 }
 - (void)waitForPage:(NSUInteger)attempt {
-  if(self.session.browserIdentifier<0 || ![[[self.session valueForKey:@"documentFooter"] valueForKey:@"ready"] boolValue]) {
+  if(self.session.browserIdentifier<0 || ![[[self.session valueForKey:@"pageBridge"] valueForKey:@"ready"] boolValue]) {
     if(attempt<80){[self after:0.1 run:^{[self waitForPage:attempt+1];}];return;}
     [self check:NO name:@"Page ready"];[self finish];return;
   }
@@ -89,8 +95,8 @@
     self.originalInset=[[self.tab valueForKey:@"browserHostBottomConstraint"] constant];
     NSString *target=index==1?@"document.querySelector('video')":@"document.querySelector('#target')";
     if(index==2)target=@"document.querySelector('iframe')";
-    NSString *script=[NSString stringWithFormat:@"return %@.requestFullscreen().then(()=>true)",target];
-    [self eval:script then:^(id entered){
+    [self enterFullscreen:target then:^(id entered){
+      if(![entered isEqual:@YES])NSLog(@"Fullscreen request result: %@",entered);
       [self check:[entered isEqual:@YES] name:@"Renderer accepts user-initiated fullscreen"];
       [self after:0.4 run:^{[self verifyEntry:index];}];
     }];
@@ -99,21 +105,25 @@
 - (void)verifyEntry:(NSUInteger)index {
   NSView *view=[self nativeView];
   NSView *host=self.originalHost;
-  [self check:self.session.fullscreen && view.inFullScreenMode && view.window!=self.window name:@"Browser content enters native fullscreen"];
-  [self check:NSEqualSizes(view.bounds.size,view.window.screen.frame.size) name:@"Browser fills the selected display"];
-  [self check:!NSEqualSizes(host.bounds.size,view.bounds.size) && NSEqualRects(self.originalWindow,self.window.frame) name:@"Original split layout and window stay unchanged"];
+  for(NSWindow *candidate in NSApp.windows) {
+    if(candidate!=self.window && candidate.isVisible && NSEqualSizes(candidate.frame.size,candidate.screen.frame.size)) { self.fullscreenWindow=candidate;break; }
+  }
+  NSWindow *fullscreenWindow=self.fullscreenWindow;
+  [self check:self.session.fullscreen && self.session.webView.fullscreenState == WKFullscreenStateInFullscreen && fullscreenWindow!=nil name:@"Browser content enters native fullscreen"];
+  [self check:fullscreenWindow && NSEqualSizes(fullscreenWindow.frame.size,fullscreenWindow.screen.frame.size) name:@"Browser fills the selected display"];
+  [self check:NSEqualRects(self.originalWindow,self.window.frame) && NSWidth(host.bounds)<NSWidth(self.window.contentView.bounds) name:@"Original split layout and window stay unchanged"];
   [self check:![self.tab canSampleOverlay] name:@"Footer probes pause in fullscreen"];
   [self eval:@"let f=document.querySelector('[data-talaria-document-footer]');return {fullscreen:!!document.fullscreenElement,spacer:f?f.getBoundingClientRect().height:0,width:innerWidth,height:innerHeight}" then:^(NSDictionary *state){
     [self check:[state[@"fullscreen"] boolValue] && [state[@"spacer"] doubleValue]==0 name:@"Fullscreen has no document extension"];
-    [self check:fabs([state[@"width"] doubleValue]-NSWidth(view.bounds))<1 && fabs([state[@"height"] doubleValue]-NSHeight(view.bounds))<1 name:@"Renderer viewport matches native fullscreen size"];
+    [self check:fullscreenWindow && fabs([state[@"width"] doubleValue]-NSWidth(fullscreenWindow.screen.frame))<1 && fabs([state[@"height"] doubleValue]-NSHeight(fullscreenWindow.screen.frame))<1 name:@"Renderer viewport matches native fullscreen size"];
     if(index==3){
       [self.tab close];
-      [self check:!view.inFullScreenMode name:@"Closing fullscreen tab restores native presentation"];
+      [self check:!fullscreenWindow.isVisible && !view.inFullScreenMode name:@"Closing fullscreen tab restores native presentation"];
       [self after:0.2 run:^{[self finish];}];return;
     }
     if(index==1){
       NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
-        timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:view.window.windowNumber context:nil
+        timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:fullscreenWindow.windowNumber context:nil
         characters:@"\033" charactersIgnoringModifiers:@"\033" isARepeat:NO keyCode:53];
       [NSApp sendEvent:escape];
     }else if(index==2){
@@ -122,7 +132,7 @@
       [self eval:@"return document.exitFullscreen().then(()=>true)" then:^(id result){}];
     }
     [self after:0.7 run:^{
-      [self check:!self.session.fullscreen && !view.inFullScreenMode && view.superview==host name:@"Exit restores the browser to its original host"];
+      [self check:!self.session.fullscreen && !(self.session.webView.fullscreenState == WKFullscreenStateInFullscreen) && view.superview==host name:@"Exit restores the browser to its original host"];
       [self check:NSEqualRects(view.frame,host.bounds) && NSEqualRects(self.window.frame,self.originalWindow) name:@"Exit restores exact browser and window geometry"];
       if(index!=2)[self check:self.originalInset==[[self.tab valueForKey:@"browserHostBottomConstraint"] constant] name:@"Exit preserves manual footer mode"];
       [self eval:@"return !document.fullscreenElement" then:^(id cleared){
@@ -138,4 +148,4 @@
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app { return [self.browser prepareForApplicationTermination]?NSTerminateNow:NSTerminateLater; }
 @end
-int main(int argc,char **argv){@autoreleasepool{TLChromiumBrowserControllerConfigureMainArgs(argc,argv);TLFullscreenTestApplication *app=[TLFullscreenTestApplication sharedApplication];TLFullscreenTestDelegate *delegate=[TLFullscreenTestDelegate new];app.delegate=delegate;[app run];}return 0;}
+int main(int argc,char **argv){@autoreleasepool{if(argc>2)setenv("TL_WEBKIT_PROFILE_DIR",argv[2],1);TLFullscreenTestApplication *app=[TLFullscreenTestApplication sharedApplication];TLFullscreenTestDelegate *delegate=[TLFullscreenTestDelegate new];app.delegate=delegate;[app run];}return 0;}

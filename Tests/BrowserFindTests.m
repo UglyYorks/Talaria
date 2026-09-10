@@ -18,29 +18,29 @@ static void Check(BOOL condition, NSString *message) {
 - (NSWindow *)modalWindow { return self.testModalWindow; }
 - (NSEvent *)currentEvent { return self.testCurrentEvent ?: super.currentEvent; }
 @end
-@interface TLFindTestBrowser : TLChromiumBrowserController
-@property (nonatomic, strong) TLChromiumBrowserSession *session;
+@interface TLFindTestBrowser : TLWebKitBrowserController
+@property (nonatomic, strong) TLWebKitBrowserSession *session;
 @property (nonatomic, strong) NSMutableArray *requests;
 @property (nonatomic) NSUInteger stopCount, focusCount;
 @end
 @implementation TLFindTestBrowser
 - (instancetype)init { self = [super init]; if (self) _requests = [NSMutableArray array]; return self; }
-- (TLChromiumBrowserSession *)loadURL:(NSURL *)URL inView:(NSView *)view fromWindow:(NSWindow *)window
-    titleHandler:(TLChromiumBrowserTitleHandler)titleHandler linkHandler:(TLChromiumBrowserLinkHandler)linkHandler
-    URLHandler:(TLChromiumBrowserURLHandler)URLHandler faviconHandler:(TLChromiumBrowserFaviconHandler)faviconHandler
-    navigationHandler:(TLChromiumBrowserNavigationHandler)navigationHandler {
-  self.session = [TLChromiumBrowserSession new];
+- (TLWebKitBrowserSession *)loadURL:(NSURL *)URL inView:(NSView *)view fromWindow:(NSWindow *)window
+    titleHandler:(TLWebKitBrowserTitleHandler)titleHandler linkHandler:(TLWebKitBrowserLinkHandler)linkHandler
+    URLHandler:(TLWebKitBrowserURLHandler)URLHandler faviconHandler:(TLWebKitBrowserFaviconHandler)faviconHandler
+    navigationHandler:(TLWebKitBrowserNavigationHandler)navigationHandler {
+  self.session = [TLWebKitBrowserSession new];
   return self.session;
 }
-- (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(TLChromiumBrowserSession *)session completion:(void (^)(BOOL))completion {
+- (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(TLWebKitBrowserSession *)session completion:(void (^)(BOOL))completion {
   if (completion) completion(YES);
 }
-- (void)findText:(NSString *)text inSession:(TLChromiumBrowserSession *)session forward:(BOOL)forward findNext:(BOOL)findNext {
+- (void)findText:(NSString *)text inSession:(TLWebKitBrowserSession *)session forward:(BOOL)forward findNext:(BOOL)findNext {
   [self.requests addObject:@{@"text":text, @"forward":@(forward), @"next":@(findNext)}];
 }
-- (void)stopFindingInSession:(TLChromiumBrowserSession *)session { self.stopCount++; }
-- (void)focusSession:(TLChromiumBrowserSession *)session { self.focusCount++; }
-- (void)closeSession:(TLChromiumBrowserSession *)session {}
+- (void)stopFindingInSession:(TLWebKitBrowserSession *)session { self.stopCount++; }
+- (void)focusSession:(TLWebKitBrowserSession *)session { self.focusCount++; }
+- (void)closeSession:(TLWebKitBrowserSession *)session {}
 @end
 @interface TalariaWindowController (FindTests)
 - (void)setRuntime:(TLWorkspaceTabRuntime *)runtime forTab:(TLWorkspaceTab *)tab;
@@ -147,7 +147,7 @@ int main(void) {
     Query(bar, @"talaria");
     Check([service.requests.lastObject isEqual:@{@"text":@"talaria", @"forward":@YES, @"next":@NO}], @"typing starts a fresh search");
     service.session.findResultsChangedHandler(3, 1, YES);
-    Check([bar.resultLabel.stringValue isEqual:@"1/3"] && bar.nextButton.enabled, @"Chromium results update count and controls");
+    Check([bar.resultLabel.stringValue isEqual:@"1/3"] && bar.nextButton.enabled, @"WebKit results update count and controls");
     [browser showFindBar];
     Check(service.requests.count == 1 && [(NSTextView *)window.firstResponder selectedRange].length == 7, @"repeated command-F selects the query without moving the match");
     [bar.nextButton performClick:nil];

@@ -1856,7 +1856,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   self.layer.shadowRadius = self.palette.workspaceShadowRadius;
   self.layer.shadowOffset = CGSizeMake(self.palette.space0, self.palette.workspaceShadowOffsetY);
   self.layer.shadowOpacity = self.palette.workspaceShadowOpacity * self.footerRevealFraction;
-  // An explicit outline avoids rasterizing the live Chromium surface for shadows.
+  // An explicit outline avoids rasterizing the live WebKit surface for shadows.
   CGPathRef path = CGPathCreateWithRoundedRect(NSRectToCGRect(self.bounds), radius, radius, NULL);
   self.layer.shadowPath = path;
   CGPathRelease(path);

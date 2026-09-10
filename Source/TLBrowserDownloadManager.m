@@ -30,7 +30,7 @@ NSNotificationName const TLBrowserDownloadsDidChangeNotification = @"TLBrowserDo
   if (self.state == TLBrowserDownloadStateFailed) return self.failureReason.length ? [@"Failed · " stringByAppendingString:self.failureReason] : @"Download interrupted";
   NSString *size = self.totalBytes > 0 ? [NSString stringWithFormat:@"%@ of %@", received,
     [NSByteCountFormatter stringFromByteCount:self.totalBytes countStyle:NSByteCountFormatterCountStyleFile]] : received;
-  if (self.state == TLBrowserDownloadStatePaused) return [@"Paused · " stringByAppendingString:size];
+  if (self.state == TLBrowserDownloadStatePaused) return self.failureReason.length ? [@"Paused · " stringByAppendingString:self.failureReason] : [@"Paused · " stringByAppendingString:size];
   if (!self.path.length) return @"Starting download…";
   if (self.bytesPerSecond <= 0) return [@"Downloading · " stringByAppendingString:size];
   return [NSString stringWithFormat:@"%@ · %@/s", size,
@@ -140,11 +140,12 @@ NSNotificationName const TLBrowserDownloadsDidChangeNotification = @"TLBrowserDo
   self.reservedPaths[@(downloadID)] = path;
   return path;
 }
+- (void)releaseDestinationForDownloadID:(NSUInteger)downloadID { [self.reservedPaths removeObjectForKey:@(downloadID)]; }
 - (void)performAction:(TLBrowserDownloadAction)action forDownload:(TLBrowserDownload *)item {
   if (![self.items containsObject:item] || !item.controllable) return;
   if (action == TLBrowserDownloadActionPause && item.state != TLBrowserDownloadStateDownloading) return;
   if (action == TLBrowserDownloadActionResume && item.state != TLBrowserDownloadStatePaused) return;
-  item.control(action); // State changes only when Chromium confirms them.
+  item.control(action); // State changes only when WebKit confirms them.
 }
 - (void)removeDownload:(TLBrowserDownload *)item {
   if (item.active) return;

@@ -1,7 +1,7 @@
 #import "design_system/TLFindBar.h"
 #import "TLFeatureTabController.h"
 #import "Database.h"
-#import "ChromiumBrowserController.h"
+#import "WebKitBrowserController.h"
 
 @class TLAgentOrchestrator;
 NS_ASSUME_NONNULL_BEGIN
@@ -12,7 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^metadataChangedHandler)(NSString *title, NSURL *URL);
 @property (nonatomic, copy, nullable) void (^historyChangedHandler)(void);
 @property (nonatomic, copy, nullable) void (^faviconChangedHandler)(void);
-@property (nonatomic, copy, nullable) TLChromiumBrowserLinkHandler linkHandler;
+@property (nonatomic, copy, nullable) TLWebKitBrowserLinkHandler linkHandler;
 @property (nonatomic, copy, nullable) TLBrowserLinkOpenHandler contextLinkHandler;
 @property (nonatomic, copy, nullable) TLAppSettings * _Nullable (^settingsProvider)(void);
 @property (nonatomic, copy, nullable) void (^settingsRequiredHandler)(void);
@@ -21,7 +21,7 @@ NS_ASSUME_NONNULL_BEGIN
                  inputWidth:(CGFloat)inputWidth;
 - (instancetype)initWithURL:(NSURL *)URL palette:(TLThemePalette *)palette
                   database:(TLDatabase *)database orchestrator:(TLAgentOrchestrator *)orchestrator
-                inputWidth:(CGFloat)inputWidth browserService:(TLChromiumBrowserController *)browserService;
+                inputWidth:(CGFloat)inputWidth browserService:(TLWebKitBrowserController *)browserService;
 @property (nonatomic, readonly) BOOL findBarVisible;
 - (void)showFindBar;
 - (void)reloadBrowser:(nullable id)sender;

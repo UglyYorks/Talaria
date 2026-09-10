@@ -24,8 +24,8 @@ static leveldb::DB *Open(NSURL *url) {
   leveldb::Options options; options.create_if_missing=true; options.write_buffer_size=1024;
   leveldb::DB *db=nullptr; Check(leveldb::DB::Open(options,url.path.UTF8String,&db).ok(),@"Open LevelDB fixture"); return db;
 }
-static NSData *Encrypted(NSString *host, NSString *value, BOOL hash) {
-  NSData *password=[@"fixture-key" dataUsingEncoding:NSUTF8StringEncoding]; unsigned char key[16],iv[16]; memset(iv,' ',16);
+static NSData *Encrypted(NSString *host, NSString *value, BOOL hash, NSString *keyPassword = @"fixture-key") {
+  NSData *password=[keyPassword dataUsingEncoding:NSUTF8StringEncoding]; unsigned char key[16],iv[16]; memset(iv,' ',16);
   CCKeyDerivationPBKDF(kCCPBKDF2,(const char *)password.bytes,password.length,(const uint8_t *)"saltysalt",9,kCCPRFHmacAlgSHA1,1003,key,16);
   NSMutableData *plain=[NSMutableData data]; if(hash) { unsigned char digest[32]; NSData *domain=[host dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(domain.bytes,(CC_LONG)domain.length,digest); [plain appendBytes:digest length:32]; }
   [plain appendData:[value dataUsingEncoding:NSUTF8StringEncoding]];
@@ -129,25 +129,46 @@ int main(int argc,char **argv) { @autoreleasepool {
   Check(![TLBrowserProfileImporter decryptCookie:encrypted password:password host:@"wrong.test" version:24],@"Reject encrypted cookies bound to another host");
   Check(![TLBrowserProfileImporter decryptCookie:encrypted password:[NSData data] host:@".example.test" version:24],@"Reject a wrong encryption key");
   Check([TLBrowserProfileImporter decryptCookie:Encrypted(@".example.test",@"",NO) password:password host:@".example.test" version:23].length==0,@"Handle legacy encrypted empty cookie values");
-  NSURL *target=At(home,@"Talaria"), *targetDB=At(target,@"Default/Local Storage/leveldb");
-  db=Open(targetDB); db->Put(leveldb::WriteOptions(),"VERSION","1");
-  db->Put(leveldb::WriteOptions(),live,"old"); auto unrelated=Key("https://other.test","keep"); db->Put(leveldb::WriteOptions(),unrelated,"kept"); delete db;
+  NSURL *target=At(home,@"Talaria");
   Check([TLBrowserProfileImporter stageLocalStorage:data[@"storage"] profileURL:target error:&error],@"Stage local storage import");
   NSDictionary *attrs=[NSFileManager.defaultManager attributesOfItemAtPath:At(target,@"TalariaPendingLocalStorage.plist").path error:nil];
   Check([attrs[NSFilePosixPermissions] intValue]==0600,@"Pending secrets are private to the user");
-  db=Open(targetDB);
-  Check(![TLBrowserProfileImporter applyPendingLocalStorageAtProfileURL:target error:&error],@"Refuse to modify a live/locked destination"); delete db;
-  Check([TLBrowserProfileImporter applyPendingLocalStorageAtProfileURL:target error:&error],@"Apply pending import before Chromium opens storage");
-  db=Open(targetDB); std::string value;
-  Check(db->Get(leveldb::ReadOptions(),live,&value).ok() && value==std::string("\1",1)+"live",@"Replace matching local storage keys");
-  Check(db->Get(leveldb::ReadOptions(),unrelated,&value).ok() && value=="kept",@"Keep unrelated Talaria site data"); delete db;
-  Check(![NSFileManager.defaultManager fileExistsAtPath:At(target,@"TalariaPendingLocalStorage.plist").path],@"Remove successfully applied staging data");
-  Check([TLBrowserProfileImporter applyPendingLocalStorageAtProfileURL:target error:&error],@"Restart without a pending import is a no-op");
+  NSDictionary *origins=[TLBrowserProfileImporter pendingLocalStorageByOriginAtProfileURL:target error:&error];
+  Check([origins[@"https://example.test"][@"token"] isEqual:@"live"],@"Decode imported local storage into origin-scoped values");
+  Check([NSFileManager.defaultManager fileExistsAtPath:At(target,@"TalariaPendingLocalStorage.plist").path],@"Reading pending values preserves them until successful browser replay");
+  Check([TLBrowserProfileImporter clearPendingLocalStorageForOrigin:@"https://unrelated.test" profileURL:target error:&error],@"Clearing an unrelated origin is a no-op");
+  Check([TLBrowserProfileImporter pendingLocalStorageByOriginAtProfileURL:target error:&error].count==1,@"Keep unrelated pending site data");
+  Check([TLBrowserProfileImporter clearPendingLocalStorageForOrigin:@"https://example.test" profileURL:target error:&error],@"Acknowledge successfully replayed origin");
+  Check([TLBrowserProfileImporter pendingLocalStorageByOriginAtProfileURL:target error:&error].count==0,@"Remove successfully replayed staging data");
+  Check([TLBrowserProfileImporter clearPendingLocalStorageAtProfileURL:target error:&error],@"Restart without a pending import is a no-op");
   Check([TLBrowserProfileImporter stageLocalStorage:data[@"storage"] sessionCookies:@[cookie] profileURL:target error:&error],@"Queue sessions with the required storage restart");
   Check([TLBrowserProfileImporter pendingSessionCookiesAtProfileURL:target error:&error].count==1,@"Session restoration is pending until restart");
   Check([TLBrowserProfileImporter clearPendingSessionCookiesAtProfileURL:target error:&error],@"Clear cookies cancels pending session restoration");
   Check([TLBrowserProfileImporter pendingSessionCookiesAtProfileURL:target error:&error].count==0,@"Cleared cookies cannot be resurrected by the import");
-  Check([TLBrowserProfileImporter applyPendingLocalStorageAtProfileURL:target error:&error],@"Clearing cookies preserves the pending local storage import");
+  Check([TLBrowserProfileImporter pendingLocalStorageByOriginAtProfileURL:target error:&error].count==1,@"Clearing cookies preserves the pending local storage import");
+  // Upgrading Talaria migrates its own previous profile once, including cookies
+  // encrypted using the previous embedded engine's explicit mock-Keychain mode.
+  NSURL *migrationRoot = At(home, @"upgrade"), *legacyRoot = At(migrationRoot, @"Chromium"), *webKitRoot = At(migrationRoot, @"WebKit");
+  Check([NSFileManager.defaultManager createDirectoryAtURL:legacyRoot withIntermediateDirectories:YES attributes:nil error:&error], @"Create legacy Talaria fixture root");
+  Check([NSFileManager.defaultManager copyItemAtURL:profile toURL:At(legacyRoot, @"Default") error:&error], @"Copy an isolated previous Talaria profile");
+  NSURL *legacyCookies = At(legacyRoot, @"Default/Network/Cookies");
+  NSData *legacyEncrypted = Encrypted(@".example.test", @"migrated-session", YES, @"mock_password");
+  sqlite3 *migrationSQL = nullptr; sqlite3_stmt *migrationStatement = nullptr;
+  Check(sqlite3_open(legacyCookies.fileSystemRepresentation, &migrationSQL) == SQLITE_OK, @"Open legacy encrypted-cookie fixture");
+  Check(sqlite3_prepare_v2(migrationSQL, "UPDATE cookies SET value='',encrypted_value=? WHERE name='session'", -1, &migrationStatement, nullptr) == SQLITE_OK, @"Prepare legacy encrypted-cookie fixture");
+  sqlite3_bind_blob(migrationStatement, 1, legacyEncrypted.bytes, (int)legacyEncrypted.length, SQLITE_TRANSIENT);
+  Check(sqlite3_step(migrationStatement) == SQLITE_DONE, @"Store a legacy mock-Keychain cookie");
+  sqlite3_finalize(migrationStatement); sqlite3_close(migrationSQL);
+  Check([TLBrowserProfileImporter stageLocalStorage:@{D(live):D(std::string("\1",1)+"latest-pending")} profileURL:legacyRoot error:&error], @"Stage an unapplied import in the previous profile");
+  NSData *sourceCookieBytes = [NSData dataWithContentsOfURL:legacyCookies];
+  Check([TLBrowserProfileImporter prepareMigrationFromLegacyProfileAtProfileURL:webKitRoot error:&error], @"Stage the previous Talaria profile for WebKit");
+  NSArray *migratedCookies = [TLBrowserProfileImporter pendingSessionCookiesAtProfileURL:webKitRoot error:&error];
+  Check(migratedCookies.count == 1 && [migratedCookies[0][@"value"] isEqual:@"migrated-session"] && [migratedCookies[0][@"httpOnly"] boolValue], @"Migration decrypts prior cookies and preserves HTTP-only access");
+  NSDictionary *migratedOrigins = [TLBrowserProfileImporter pendingLocalStorageByOriginAtProfileURL:webKitRoot error:&error];
+  Check([migratedOrigins[@"https://example.test"][@"token"] isEqual:@"latest-pending"], @"An unapplied legacy import supersedes its older database value");
+  Check([sourceCookieBytes isEqual:[NSData dataWithContentsOfURL:legacyCookies]], @"Migration does not modify the previous cookie database");
+  Check([TLBrowserProfileImporter clearPendingSessionCookiesAtProfileURL:webKitRoot error:&error] && [TLBrowserProfileImporter clearPendingLocalStorageAtProfileURL:webKitRoot error:&error], @"Acknowledge migrated browser data");
+  Check([TLBrowserProfileImporter prepareMigrationFromLegacyProfileAtProfileURL:webKitRoot error:&error] && [TLBrowserProfileImporter pendingLocalStorageByOriginAtProfileURL:webKitRoot error:&error].count == 0 && [TLBrowserProfileImporter pendingSessionCookiesAtProfileURL:webKitRoot error:&error].count == 0, @"A later launch never resurrects cleared legacy cookies or local storage");
   // Firefox profile discovery and current compressed SQLite local storage.
   NSDictionary *firefox=nil; for(NSDictionary *b in TLBrowserProfileImporter.browserCatalogue) if([b[@"name"] isEqual:@"Firefox"]) firefox=b.mutableCopy;
   [firefox setValue:@"test.firefox.not-running" forKey:@"bundleID"];

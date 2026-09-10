@@ -4,7 +4,6 @@
 #import "design_system/TLTransitionCoordinator.h"
 #import "InputSuggestions.h"
 #import "TLBrowserHeightTransition.h"
-#import "ChromiumRunLoop.h"
 #import "design_system/TLBrowserChatPane.h"
 #import "design_system/TLToolActivityView.h"
 #import "BrowserPageContext.h"
@@ -582,7 +581,7 @@ static void TestBrowserHeightAnimation(void) {
   RunFor(0.41);
   Check(NSHeight(host.frame)==400 && !runtime.isAnimating && completions==1, @"resize commits exact destination and completes once");
   Check(resizes<=26, @"viewport animation stays bounded to 60 updates per second");
-  Check(!fractionalResize, @"viewport animation uses whole-point steps to prevent Chromium compositor rounding drift on Retina screens");
+  Check(!fractionalResize, @"viewport animation uses whole-point steps to prevent WebKit compositor rounding drift on Retina screens");
   [runtime setBrowserBottomInset:0 duration:0.4 overshoot:0]; RunFor(0.1);
   CGFloat intermediate=NSHeight(host.frame);
   Check(intermediate>400 && intermediate<500, @"expansion also lays out intermediate viewport sizes");
@@ -724,13 +723,6 @@ static void TestSendStopImageTransition(void) {
 int main(void) {
   @autoreleasepool {
     [TLFocusTestApplication sharedApplication];
-    for (NSRunLoopMode mode in @[NSDefaultRunLoopMode, NSModalPanelRunLoopMode, NSEventTrackingRunLoopMode]) {
-      __block NSUInteger calls = 0;
-      TLChromiumDeferToMainRunLoop(^{ calls++; });
-      Check(calls == 0, @"CEF work is deferred beyond the current callback");
-      [NSRunLoop.mainRunLoop runMode:mode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-      Check(calls == 1, @"CEF work runs once in normal, termination-modal, and event-tracking modes");
-    }
     TestHermesSuggestions();
     TestURLSuggestions();
     TestBrowserChatPane();

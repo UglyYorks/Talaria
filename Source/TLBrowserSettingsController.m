@@ -119,7 +119,6 @@
   for (NSArray *action in @[
     @[@"cookies",@"Privacy & security",@"Clear cookies",@"Delete cookies for every site in Talaria. This signs you out of websites.",@"Clear cookies…"],
     @[@"cache",@"Privacy & security",@"Clear cached files",@"Remove cached pages, images, and other network responses.",@"Clear cache…"],
-    @[@"permissions",@"Site permissions",@"Reset site exceptions",@"Remove saved site permission decisions and certificate exceptions. Sites will follow your defaults.",@"Reset permissions…"],
     @[@"reset",@"Reset settings",@"Restore browser defaults",@"Reset the settings on these pages. Cookies, saved logins, and your Talaria chats are kept. Restart Talaria to apply system changes.",@"Restore defaults…"]]) {
     TLThemedButton *button = [self button:action[4] action:@selector(confirmDataAction:) identifier:action[0]]; button.enabled = NO; button.tag = 1;
     NSView *row = [self card:action[2] detail:action[3] controls:@[button]];

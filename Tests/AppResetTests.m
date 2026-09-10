@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import "TLAppReset.h"
 #import "Database.h"
+#import <WebKit/WebKit.h>
 
 static void Check(BOOL condition, NSString *message) {
   if (!condition) { NSLog(@"FAIL: %@", message); exit(1); }
@@ -36,6 +37,19 @@ static void Check(BOOL condition, NSString *message) {
 - (instancetype)init { if ((self = [super initWithSuiteName:NSUUID.UUID.UUIDString])) _domains = [NSMutableDictionary dictionary]; return self; }
 - (void)removePersistentDomainForName:(NSString *)name { [self.domains removeObjectForKey:name]; }
 - (BOOL)synchronize { return !self.failSync; }
+@end
+
+@interface TLAppReset (TestStoreAccess)
+- (WKWebsiteDataStore *)defaultBrowserDataStore;
+@end
+@interface TLResetStoreGuardProbe : TLAppReset
+@property NSUInteger defaultStoreAccesses;
+@end
+@implementation TLResetStoreGuardProbe
+- (WKWebsiteDataStore *)defaultBrowserDataStore {
+  self.defaultStoreAccesses++;
+  return nil;
+}
 @end
 
 static NSURL *WriteFile(NSURL *library, NSString *path) {
@@ -77,7 +91,8 @@ int main(void) {
     NSArray *ownedFiles = @[
       @"Application Support/com.talaria.chat/Agents/test/workspace/file.txt",
       @"Application Support/com.talaria.chat/Agents/orphan/workspace/file.txt",
-      @"Application Support/com.talaria.chat/Chromium/Default/Cookies",
+      @"Application Support/com.talaria.chat/WebKit/Default/Cookies",
+      @"Application Support/com.talaria.chat/WebKit/WebKitDefaultDataStore",
       @"Application Support/com.talaria.chat/talaria.sqlite3-wal",
       @"Application Support/com.talaria.chat/talaria.sqlite3-shm",
       @"Caches/com.talaria.chat/cache", @"WebKit/com.talaria.chat/data",
@@ -96,10 +111,17 @@ int main(void) {
     Check(![reset performPendingReset:&error] && error != nil, @"surface credential helper failure");
     Check(reset.resetPending && [fm fileExistsAtPath:dbURL.path], @"credential failure keeps request and database");
     credentials.failRemoval = NO;
+    NSURL *invalidStore = WriteFile(library, @"Application Support/com.talaria.chat/WebKit/WebKitStoreIdentifier");
+    error = nil;
+    Check(![reset performPendingReset:&error] && error != nil, @"an invalid browser store identifier stops reset");
+    Check(reset.resetPending && [fm fileExistsAtPath:dbURL.path] && [fm fileExistsAtPath:invalidStore.path], @"retain the browser identifier and app data when WebKit cleanup cannot be determined");
+    Check([fm removeItemAtURL:invalidStore error:&error], @"remove invalid browser-store fixture");
     error = nil;
     // A new service simulates the next process after the original app exits.
-    reset = [[TLAppReset alloc] initWithLibraryURL:library userDefaults:defaults credentialStore:credentials];
+    TLResetStoreGuardProbe *guardedReset = [[TLResetStoreGuardProbe alloc] initWithLibraryURL:library userDefaults:defaults credentialStore:credentials];
+    reset = guardedReset;
     Check([reset performPendingReset:&error] && error == nil && !reset.resetPending, @"restart completes reset");
+    Check(guardedReset.defaultStoreAccesses == 0, @"a default-store marker in an injected library never accesses the user's WebKit store");
     Check(![fm fileExistsAtPath:dbURL.path], @"remove entire database");
     for (NSString *path in ownedFiles) Check(![fm fileExistsAtPath:[library URLByAppendingPathComponent:path].path], path);
     Check([fm fileExistsAtPath:unrelated.path] && [fm fileExistsAtPath:helper.path] && [fm fileExistsAtPath:linkedFile.path],

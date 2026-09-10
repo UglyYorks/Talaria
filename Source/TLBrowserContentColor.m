@@ -58,7 +58,7 @@ const NSUInteger TLBrowserContentColorMaximumImagePixels = 32 * 1024 * 1024;
   if(imageWidth<1 || imageHeight<1 || imageWidth*imageHeight>TLBrowserContentColorMaximumImagePixels){CFRelease(source);return nil;}
   CGImageRef image=CGImageSourceCreateImageAtIndex(source,0,NULL);CFRelease(source);
   if(!image)return nil;
-  // Crop the returned image, never the live Chromium render widget. Image-space
+  // Crop the returned image, never the live WebKit render widget. Image-space
   // y starts at the top; sampling the bottom strip must not average the page.
   double bottom=MAX(1,floor(imageHeight*bottomFraction));
   CGImageRef edge=CGImageCreateWithImageInRect(image,CGRectMake(0,MAX(0,bottom-12),imageWidth,MIN(12,bottom)));

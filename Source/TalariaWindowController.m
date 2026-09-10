@@ -489,7 +489,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     _sidebarVisible = !database.incognito;
     if (database.incognito) {
       window.title = @"Talaria — Incognito";
-      [TLChromiumBrowserController.sharedController markWindowIncognito:window];
+      [TLWebKitBrowserController.sharedController markWindowIncognito:window];
     }
     _widgetbookMode = TLWidgetbookModeEnabled();
     if (_widgetbookMode) {
@@ -618,7 +618,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     for (TLAssistantTurnRunner *runner in self.turnRunners.allValues) [runner cancel];
     [self.agentOrchestrator closeIncognito];
     for (TLWorkspaceTabRuntime *runtime in self.workspaceTabRuntimes.allValues) [runtime.featureController close];
-    [TLChromiumBrowserController.sharedController forgetIncognitoWindow:sender];
+    [TLWebKitBrowserController.sharedController forgetIncognitoWindow:sender];
     [self.closedWorkspaceTabs removeAllObjects];
     [self.messages removeAllObjects];
     if (self.incognitoDidClose) self.incognitoDidClose();
@@ -2356,7 +2356,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLWorkspaceTab *source = [self tabWithPresentationIdentity:identity];
   if (!source || ![self isBrowserURL:URL]) return;
   if (destination == TLBrowserLinkNewWindow) {
-    [TLChromiumBrowserController.sharedController openURL:URL fromWindow:self.window modifierFlags:0];
+    [TLWebKitBrowserController.sharedController openURL:URL fromWindow:self.window modifierFlags:0];
     return;
   }
   [self openBrowserTabWithURL:URL];
@@ -2471,7 +2471,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)openBookmarkURLInNewWindow:(NSURL *)URL {
-  [TLChromiumBrowserController.sharedController openURL:URL fromWindow:self.window modifierFlags:0];
+  [TLWebKitBrowserController.sharedController openURL:URL fromWindow:self.window modifierFlags:0];
 }
 
 - (void)openBookmark:(TLBookmark *)bookmark destination:(TLBrowserLinkDestination)destination {
@@ -2565,7 +2565,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [owner reloadBookmarks];
     return YES;
   };
-  self.bookmarkEditor.closeHandler = ^{ [weakSelf.bookmarkPopover close]; };
+  self.bookmarkEditor.closeHandler = ^{
+    NSPopover *popover = weakSelf.bookmarkPopover;
+    // AppKit can ignore a close while the opening animation is still active.
+    // Cancel and save must dismiss immediately, including keyboard activation.
+    popover.animates = NO;
+    [popover close];
+  };
   NSView *anchor = self.sidebarShortcutsView.addButton;
   [self.bookmarkPopover showRelativeToRect:anchor.bounds ofView:anchor preferredEdge:NSRectEdgeMinY];
 }
@@ -6298,7 +6304,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.sidebarAgentPane = nil;
   self.window.appearance = nil;
   self.palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem effectiveAppearance:self.window.effectiveAppearance];
-  [TLChromiumBrowserController.sharedController applyDarkAppearance:self.palette.dark];
+  [TLWebKitBrowserController.sharedController applyDarkAppearance:self.palette.dark];
   self.window.opaque = NO;
   self.window.backgroundColor = self.palette.appBackground;
   self.frostedBackgroundView.material = NSVisualEffectMaterialUnderWindowBackground;

@@ -1,39 +1,26 @@
-// Desktop CEF integration against a local fixture and disposable browser profile.
+// Desktop WebKit integration against a local fixture and disposable browser profile.
 #import <AppKit/AppKit.h>
-#import "ChromiumBrowserController.h"
+#import "WebKitBrowserController.h"
+#import "BrowserWebKitTestSupport.h"
 #import "TLBrowserTabController.h"
 #import "design_system/TLFindBar.h"
-#include "include/cef_application_mac.h"
-#include "include/cef_browser.h"
-@interface TLChromiumBrowserController (FindIntegration)
-- (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
-- (void)browserFindResult:(CefRefPtr<CefBrowser>)browser identifier:(int)identifier count:(int)count activeMatch:(int)activeMatch finalUpdate:(BOOL)finalUpdate;
+@interface TLFindWebKitApplication : NSApplication
 @end
-@interface TLFindCEFApplication : NSApplication <CefAppProtocol>
-@property (nonatomic) BOOL handlingSendEvent;
+@implementation TLFindWebKitApplication
 @end
-@implementation TLFindCEFApplication
-- (BOOL)isHandlingSendEvent { return self.handlingSendEvent; }
-- (void)sendEvent:(NSEvent *)event { CefScopedSendingEvent scoped; [super sendEvent:event]; }
+@interface TLFindWebKitBrowser : TLWebKitBrowserController
 @end
-@interface TLFindCEFBrowser : TLChromiumBrowserController
+@implementation TLFindWebKitBrowser
 @end
-@implementation TLFindCEFBrowser
-- (void)browserFindResult:(CefRefPtr<CefBrowser>)browser identifier:(int)identifier count:(int)count activeMatch:(int)activeMatch finalUpdate:(BOOL)finalUpdate {
-  NSLog(@"Find callback id=%d count=%d active=%d final=%d",identifier,count,activeMatch,finalUpdate);
-  [super browserFindResult:browser identifier:identifier count:count activeMatch:activeMatch finalUpdate:finalUpdate];
-}
-- (NSString *)chromiumCachePath { return NSProcessInfo.processInfo.arguments[2]; }
-@end
-@interface TLFindCEFDelegate : NSObject <NSApplicationDelegate>
-@property (nonatomic, strong) TLFindCEFBrowser *browser;
+@interface TLFindWebKitDelegate : NSObject <NSApplicationDelegate>
+@property (nonatomic, strong) TLFindWebKitBrowser *browser;
 @property (nonatomic, strong) TLBrowserTabController *tab;
 @property (nonatomic, strong) NSWindow *window;
 @property (nonatomic, strong) NSMutableArray *results;
 @end
-@implementation TLFindCEFDelegate
+@implementation TLFindWebKitDelegate
 - (TLFindBar *)bar { return [self.tab valueForKey:@"findBar"]; }
-- (TLChromiumBrowserSession *)session { return [self.tab valueForKey:@"browserSession"]; }
+- (TLWebKitBrowserSession *)session { return [self.tab valueForKey:@"browserSession"]; }
 - (void)check:(BOOL)passed name:(NSString *)name {
   NSLog(@"%@: %@", passed ? @"PASS" : @"FAIL", name);
   [self.results addObject:@{@"name":name, @"passed":@(passed)}];
@@ -55,7 +42,7 @@
   [self.bar controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:self.bar.searchField]];
 }
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-  self.results = [NSMutableArray array]; self.browser = [TLFindCEFBrowser new];
+  self.results = [NSMutableArray array]; self.browser = [TLFindWebKitBrowser new];
   self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(80, 80, 800, 600)
     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
   self.window.releasedWhenClosed = NO;
@@ -76,8 +63,7 @@
   [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
   [self.tab startInWindow:self.window];
   [self waitFor:^BOOL {
-    auto cef = [self.browser browserWithIdentifier:(int)self.session.browserIdentifier];
-    return cef && !cef->IsLoading() && self.session.documentGeneration > 0;
+    return self.session.webView && !self.session.webView.loading && self.session.documentGeneration > 0;
   } then:^{ [self begin]; } attempt:0];
 }
 - (void)begin {
@@ -105,7 +91,7 @@
     [self expect:@"0 matches" then:^{
       [self check:!self.bar.nextButton.enabled name:@"No matches disables navigation"];
       [self query:@""];
-      [self check:!self.bar.resultLabel.stringValue.length && ![[self.session valueForKey:@"finding"] boolValue] name:@"Clear cancels Chromium search"];
+      [self check:!self.bar.resultLabel.stringValue.length && ![[[self.session valueForKey:@"pageBridge"] valueForKey:@"finding"] boolValue] name:@"Clear cancels WebKit search"];
       [self query:@"needle"];
       [self expect:@"1/3" then:^{ [self closeAndReopen]; }];
     }];
@@ -113,7 +99,7 @@
 }
 - (void)closeAndReopen {
   [self.tab hideFindBar];
-  [self check:!self.tab.findBarVisible && ![[self.session valueForKey:@"finding"] boolValue] name:@"Close removes find and native highlights"];
+  [self check:!self.tab.findBarVisible && ![[[self.session valueForKey:@"pageBridge"] valueForKey:@"finding"] boolValue] name:@"Close removes find and native highlights"];
   [self check:self.window.firstResponder != self.bar.searchField.currentEditor name:@"Close releases query editor"];
   [self.tab showFindBar];
   [self expect:@"1/3" then:^{
@@ -123,7 +109,7 @@
     [self.browser reloadSession:self.session];
     [self waitFor:^BOOL { return self.session.documentGeneration > generation; }
       then:^{
-        [self check:!self.tab.findBarVisible && ![[self.session valueForKey:@"finding"] boolValue] name:@"Reload clears document search"];
+        [self check:!self.tab.findBarVisible && ![[[self.session valueForKey:@"pageBridge"] valueForKey:@"finding"] boolValue] name:@"Reload clears document search"];
         [self finish];
       } attempt:0];
   }];
@@ -142,9 +128,9 @@
 @end
 int main(int argc, char **argv) {
   @autoreleasepool {
-    TLChromiumBrowserControllerConfigureMainArgs(argc, argv);
-    TLFindCEFApplication *app = [TLFindCEFApplication sharedApplication];
-    TLFindCEFDelegate *delegate = [TLFindCEFDelegate new]; app.delegate = delegate; [app run];
+    if(argc>2)setenv("TL_WEBKIT_PROFILE_DIR",argv[2],1);
+    TLFindWebKitApplication *app = [TLFindWebKitApplication sharedApplication];
+    TLFindWebKitDelegate *delegate = [TLFindWebKitDelegate new]; app.delegate = delegate; [app run];
   }
   return 0;
 }

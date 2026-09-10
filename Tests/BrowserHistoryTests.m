@@ -8,26 +8,26 @@ static void Check(BOOL value, NSString *message) {
   if (!value) { NSLog(@"FAIL: %@", message); exit(1); }
 }
 
-@interface TLHistoryBrowserProbe : TLChromiumBrowserController
-@property (nonatomic, copy) TLChromiumBrowserTitleHandler titleHandler;
-@property (nonatomic, copy) TLChromiumBrowserURLHandler URLHandler;
-@property (nonatomic, copy) TLChromiumBrowserNavigationHandler navigationHandler;
-@property (nonatomic, copy) TLChromiumBrowserFaviconHandler faviconHandler;
+@interface TLHistoryBrowserProbe : TLWebKitBrowserController
+@property (nonatomic, copy) TLWebKitBrowserTitleHandler titleHandler;
+@property (nonatomic, copy) TLWebKitBrowserURLHandler URLHandler;
+@property (nonatomic, copy) TLWebKitBrowserNavigationHandler navigationHandler;
+@property (nonatomic, copy) TLWebKitBrowserFaviconHandler faviconHandler;
 @end
 @implementation TLHistoryBrowserProbe
-- (TLChromiumBrowserSession *)loadURL:(NSURL *)URL inView:(NSView *)view fromWindow:(NSWindow *)window
-  titleHandler:(TLChromiumBrowserTitleHandler)titleHandler linkHandler:(TLChromiumBrowserLinkHandler)linkHandler
-  URLHandler:(TLChromiumBrowserURLHandler)URLHandler faviconHandler:(TLChromiumBrowserFaviconHandler)faviconHandler
-  navigationHandler:(TLChromiumBrowserNavigationHandler)navigationHandler {
+- (TLWebKitBrowserSession *)loadURL:(NSURL *)URL inView:(NSView *)view fromWindow:(NSWindow *)window
+  titleHandler:(TLWebKitBrowserTitleHandler)titleHandler linkHandler:(TLWebKitBrowserLinkHandler)linkHandler
+  URLHandler:(TLWebKitBrowserURLHandler)URLHandler faviconHandler:(TLWebKitBrowserFaviconHandler)faviconHandler
+  navigationHandler:(TLWebKitBrowserNavigationHandler)navigationHandler {
   self.faviconHandler = faviconHandler;
   self.titleHandler = titleHandler; self.URLHandler = URLHandler; self.navigationHandler = navigationHandler;
-  return [TLChromiumBrowserSession new];
+  return [TLWebKitBrowserSession new];
 }
-- (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(TLChromiumBrowserSession *)session completion:(void (^)(BOOL))completion {
+- (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(TLWebKitBrowserSession *)session completion:(void (^)(BOOL))completion {
   if (completion) completion(YES);
 }
-- (void)closeSession:(TLChromiumBrowserSession *)session {}
-- (void)stopFindingInSession:(TLChromiumBrowserSession *)session {}
+- (void)closeSession:(TLWebKitBrowserSession *)session {}
+- (void)stopFindingInSession:(TLWebKitBrowserSession *)session {}
 @end
 
 int main(void) {

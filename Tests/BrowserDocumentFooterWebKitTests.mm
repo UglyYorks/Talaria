@@ -1,37 +1,29 @@
-// Actual desktop CEF integration for document scrolling and native-footer exclusivity.
+// Actual desktop WebKit integration for document scrolling and native-footer exclusivity.
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
-#import "ChromiumBrowserController.h"
+#import "WebKitBrowserController.h"
+#import "BrowserWebKitTestSupport.h"
 #import "TLBrowserTabController.h"
-#include "include/cef_application_mac.h"
-#include "include/cef_browser.h"
 @interface TLBrowserTabController (DocumentFooterTests)
 - (void)toggleBrowserHeightMode:(id)sender;
 - (CGFloat)footerHeight;
 - (void)configureDocumentFooter;
 @end
-@interface TLChromiumBrowserController (DocumentFooterTests)
-- (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
-@end
-@interface TLFooterTestApplication : NSApplication <CefAppProtocol>
-@property(nonatomic) BOOL handlingSendEvent;
+@interface TLFooterTestApplication : NSApplication
 @end
 @implementation TLFooterTestApplication
-- (BOOL)isHandlingSendEvent { return self.handlingSendEvent; }
 - (void)sendEvent:(NSEvent *)event {
-  // User trackpad input must not enter the foreground automation window. CDP
-  // input goes directly to CEF; phase tests use the explicitly routed event.
+  // User trackpad input must not enter the foreground automation window. Programmatic
+  // input goes directly to the web view; phase tests use the explicitly routed event.
   if(event.type==NSEventTypeScrollWheel) return;
-  CefScopedSendingEvent scoped; [super sendEvent:event];
+  [super sendEvent:event];
 }
 @end
-@interface TLFooterTestBrowser : TLChromiumBrowserController
-@property(nonatomic,copy) NSString *testCache;
+@interface TLFooterTestBrowser : TLWebKitBrowserController
 @property(nonatomic,strong) NSDictionary *lastProbe;
 @end
 @implementation TLFooterTestBrowser
-- (NSString *)chromiumCachePath { return self.testCache; }
-- (void)probeOverlayInSession:(TLChromiumBrowserSession *)session overlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick completion:(void (^)(NSDictionary *))completion {
+- (void)probeOverlayInSession:(TLWebKitBrowserSession *)session overlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick completion:(void (^)(NSDictionary *))completion {
   [super probeOverlayInSession:session overlayRect:rect viewportSize:viewport quick:quick completion:^(NSDictionary *result){self.lastProbe=result;completion(result);}];
 }
 @end
@@ -48,26 +40,24 @@
 @end
 @implementation TLFooterTestDelegate
 - (void)after:(double)seconds run:(dispatch_block_t)block { dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(seconds*NSEC_PER_SEC)),dispatch_get_main_queue(),block); }
-- (TLChromiumBrowserSession *)session { return [self.tab valueForKey:@"browserSession"]; }
+- (TLWebKitBrowserSession *)session { return [self.tab valueForKey:@"browserSession"]; }
 - (BOOL)raised { return [[self.tab valueForKey:@"browserUsesReducedHeight"] boolValue]; }
-- (CefRefPtr<CefBrowser>)cef { return [self.browser browserWithIdentifier:(int)self.session.browserIdentifier]; }
-- (void)check:(BOOL)passed name:(NSString *)name { [self.results addObject:@{@"name":name,@"passed":@(passed)}]; }
+- (WKWebView *)webView { return self.session.webView; }
+- (void)check:(BOOL)passed name:(NSString *)name { NSLog(@"%@: %@",passed ? @"PASS" : @"FAIL",name); [self.results addObject:@{@"name":name,@"passed":@(passed)}]; }
 - (void)eval:(NSString *)code then:(void (^)(id))completion {
   self.reply=completion; self.scriptID++;
   NSString *script=[NSString stringWithFormat:@"Promise.resolve((()=>{%@})()).then(value=>{document.title=JSON.stringify({footerTest:%lu,value})})",code,(unsigned long)self.scriptID];
-  [self cef]->GetMainFrame()->ExecuteJavaScript(script.UTF8String,"",0);
+  [self.session.webView evaluateJavaScript:script completionHandler:nil];
 }
 - (void)wheel:(double)delta {
   if (!NSApp.isActive) { [self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES]; }
-  CefRefPtr<CefDictionaryValue> p=CefDictionaryValue::Create();
-  p->SetString("type","mouseWheel");p->SetDouble("x",500);p->SetDouble("y",MIN(620.0,NSHeight([[self.tab valueForKey:@"browserHostView"] bounds])-40));p->SetDouble("deltaX",0);p->SetDouble("deltaY",delta);
-  [self cef]->GetHost()->ExecuteDevToolsMethod(0,"Input.dispatchMouseEvent",p);
+  TLTestScroll(self.session.webView, delta);
 }
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   NSArray *args=NSProcessInfo.processInfo.arguments;
   self.results=[NSMutableArray array];
   [[NSString stringWithFormat:@"%d",NSProcessInfo.processInfo.processIdentifier] writeToFile:[args[3] stringByAppendingString:@".pid"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-  self.browser=[TLFooterTestBrowser new];self.browser.testCache=args[2];
+  self.browser=[TLFooterTestBrowser new];
   self.window=[[NSWindow alloc] initWithContentRect:args.count>4 ? NSMakeRect(0,0,1460,1000) : NSMakeRect(0,0,1000,700) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskFullSizeContentView backing:NSBackingStoreBuffered defer:NO];self.window.releasedWhenClosed=NO;
   // Keep renderer visibility stable while the test runner and editor update.
   self.window.level=NSFloatingWindowLevel;
@@ -90,15 +80,20 @@
   NSView *content=self.window.contentView;[content addSubview:self.tab.view];
   [NSLayoutConstraint activateConstraints:@[[self.tab.view.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],[self.tab.view.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],[self.tab.view.topAnchor constraintEqualToAnchor:content.topAnchor],[self.tab.view.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]]];
   [self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];[content layoutSubtreeIfNeeded];[self.tab startInWindow:self.window];
-  [self waitForBridge:0 then:^{[self testDocument];}];
+  TLTestActivateWindow(self.window,^{[self waitForBridge:0 then:^{[self testDocument];}];});
   [self after:90 run:^{if(self.tab){[self check:NO name:@"Integration deadline"];[self finish];}}];
 }
 
 - (void)waitForBridge:(NSUInteger)attempt then:(dispatch_block_t)next {
-  BOOL ready=[[[self.session valueForKey:@"documentFooter"] valueForKey:@"ready"] boolValue];
+  BOOL ready=[[[self.session valueForKey:@"pageBridge"] valueForKey:@"ready"] boolValue];
   if(!ready && attempt<70){[self after:0.1 run:^{[self waitForBridge:attempt+1 then:next];}];return;}
   [self check:ready name:@"Isolated document-footer bridge installed"];
   if(!ready){dispatch_async(dispatch_get_main_queue(),^{[self finish];});return;}
+  id bridge=[self.session valueForKey:@"pageBridge"];
+  NSLog(@"Footer view geometry: frame=%@ bounds=%@ visibleRect=%@",NSStringFromRect(self.session.webView.frame),NSStringFromRect(self.session.webView.bounds),NSStringFromRect(self.session.webView.visibleRect));
+  NSLog(@"Footer placement: frame=%@ screen=%@ active=%d hidden=%d paused=%@ generation=%@",NSStringFromRect(self.window.frame),NSStringFromRect(self.window.screen.frame),NSApp.active,self.session.webView.hiddenOrHasHiddenAncestor,[self.session valueForKey:@"paused"],[self.session valueForKey:@"transitionGeneration"]);
+  NSLog(@"Footer native state: visible=%d occlusion=%lu viewWindow=%@ cover=%@ frames=%@",self.window.visible,(unsigned long)self.window.occlusionState,self.session.webView.window,[self.session valueForKey:@"navigationCover"],[[bridge valueForKey:@"frames"] allKeys]);
+  [self.session.webView evaluateJavaScript:@"({visibility:document.visibilityState,hidden:document.hidden})" completionHandler:^(id state,NSError *error){NSLog(@"Footer document state: %@ error=%@",state,error);}];
   [self after:0.6 run:next];
 }
 - (void)state:(void (^)(NSDictionary *))completion {
@@ -136,7 +131,7 @@
         monotonic &= cycle==0 ? height<=previous : height>=previous;previous=height;
       }
       BOOL motion=NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
-      [self check:motion || heights.count>=3 name:cycle==0 ? @"Opening animates real Chromium viewport sizes" : @"Closing animates real Chromium viewport sizes"];
+      [self check:motion || heights.count>=3 name:cycle==0 ? @"Opening animates real WebKit viewport sizes" : @"Closing animates real WebKit viewport sizes"];
       [self check:aligned && monotonic && unscaled name:@"Fixed bottom content follows every viewport layout without squishing or overshoot"];
       NSView *host=[self.tab valueForKey:@"browserHostView"];
       NSView *clip=[host valueForKey:@"contentView"];
@@ -152,21 +147,24 @@
     }];}];
   }];
 }
-// NSView and DOM bounds can remain correct while Chromium's internal backing
-// layer accumulates rounding error. Inspect the actual compositor container too.
-- (void)checkCompositor:(NSString *)name {
-  NSView *host=[self.tab valueForKey:@"browserHostView"];
-  NSMutableArray *views=[NSMutableArray arrayWithObject:host];
-  double error=0;NSUInteger surfaces=0;
-  for(NSUInteger i=0;i<views.count;i++){
-    NSView *view=views[i];[views addObjectsFromArray:view.subviews];
-    if(![NSStringFromClass(view.class) isEqual:@"RenderWidgetHostViewCocoa"])continue;
-    CALayer *surface=view.layer.sublayers.firstObject;
-    if(!surface || NSWidth(surface.bounds)<=0)continue;
-    surfaces++;
-    error=MAX(error,MAX(fabs(NSHeight(surface.bounds)-NSHeight(view.bounds)),fabs(NSWidth(surface.bounds)-NSWidth(view.bounds))));
-  }
-  [self.results addObject:@{@"name":name,@"passed":@(surfaces>0 && error<1),@"surfaces":@(surfaces),@"maxError":@(error)}];
+// Verify WebKit's actual rendered surface as well as its native view geometry.
+- (void)checkCompositor:(NSString *)name { [self checkCompositor:name then:^{}]; }
+- (void)checkCompositor:(NSString *)name then:(dispatch_block_t)completion {
+  WKWebView *view=self.session.webView;
+  NSSize expected=view.bounds.size;
+  CGFloat backingScale=view.window.backingScaleFactor;
+  CALayer *surface=view.layer;
+  double error=surface ? MAX(fabs(NSWidth(surface.bounds)-expected.width),fabs(NSHeight(surface.bounds)-expected.height)) : 0;
+  BOOL aligned=NSEqualRects(view.frame,view.superview.bounds);
+  WKSnapshotConfiguration *configuration=[WKSnapshotConfiguration new];configuration.afterScreenUpdates=NO;
+  [view takeSnapshotWithConfiguration:configuration completionHandler:^(NSImage *image,NSError *snapshotError){
+    NSBitmapImageRep *bitmap=image ? [NSBitmapImageRep imageRepWithData:image.TIFFRepresentation] : nil;
+    BOOL rendered=bitmap && fabs(image.size.width-expected.width)<1 && fabs(image.size.height-expected.height)<1 &&
+      fabs(bitmap.pixelsWide-expected.width*backingScale)<2 && fabs(bitmap.pixelsHigh-expected.height*backingScale)<2;
+    [self.results addObject:@{@"name":name,@"passed":@(rendered && aligned && error<1),@"surfaces":@(bitmap ? 1 : 0),@"maxError":@(error),
+      @"viewport":NSStringFromSize(expected),@"imageSize":NSStringFromSize(image.size),@"pixels":@[@(bitmap.pixelsWide),@(bitmap.pixelsHigh)],@"error":snapshotError.localizedDescription ?: @""}];
+    completion();
+  }];
 }
 - (void)testToggle:(NSUInteger)cycle {
   if(cycle==24){[self testGrowth];return;}
@@ -179,8 +177,7 @@
       fabs([page[@"total"] doubleValue]-(3000+(self.raised?0:size)))<1 &&
       fabs([page[@"spacer"] doubleValue]-(self.raised?0:size))<1;
     [self check:good name:[NSString stringWithFormat:@"Toggle %lu: exclusive equal-height space, no accumulated blank area",(unsigned long)cycle]];
-    [self checkCompositor:[NSString stringWithFormat:@"Toggle %lu compositor stays aligned",(unsigned long)cycle]];
-    [self testToggle:cycle+1];
+    [self checkCompositor:[NSString stringWithFormat:@"Toggle %lu compositor stays aligned",(unsigned long)cycle] then:^{ [self testToggle:cycle+1]; }];
   }];}];
 }
 - (void)testGrowth {
@@ -212,7 +209,7 @@
   [self.tab setValue:@1e100 forKey:@"footerCaptureNext"];
   [self eval:@"document.body.style.background='linear-gradient(rgb(200,30,40),rgb(10,40,90) 90%)';return true" then:^(id value){
     [self after:0.4 run:^{
-      NSView *root=(__bridge NSView *)[self cef]->GetHost()->GetWindowHandle();
+      NSView *root=self.session.webView;
       NSMutableArray<NSView *> *views=[NSMutableArray arrayWithObject:root];
       for(NSUInteger i=0;i<views.count;i++)[views addObjectsFromArray:views[i].subviews];
       NSMutableArray *flags=[NSMutableArray array];
@@ -228,7 +225,7 @@
         [self check:matches && [result[@"mode"] isEqual:@"pixels"]
           name:@"Gradient readback crops above the spacer instead of sampling the extension"];
         [self.results addObject:@{@"name":@"Rendered color diagnostics",@"passed":@YES,@"sample":result ?: @{}}];
-        [self check:changes==0 name:@"Content color capture never resizes the live Chromium views"];
+        [self check:changes==0 name:@"Content color capture never resizes the live WebKit views"];
         [self testBanner];
       }];
     }];
@@ -243,7 +240,7 @@
       dispatch_async(dispatch_get_main_queue(),^{[self eval:@"scrollTo(0,document.scrollingElement.scrollHeight);return canvasReady" then:^(id ready){
         [self check:[ready boolValue] name:@"WebGL backdrop renders with a non-preserved drawing buffer"];
         [self after:0.4 run:^{
-          NSView *root=(__bridge NSView *)[self cef]->GetHost()->GetWindowHandle();
+          NSView *root=self.session.webView;
           NSMutableArray<NSView *> *views=[NSMutableArray arrayWithObject:root];
           for(NSUInteger i=0;i<views.count;i++)[views addObjectsFromArray:views[i].subviews];
           NSMutableArray *flags=[NSMutableArray array];
@@ -254,7 +251,7 @@
             [NSNotificationCenter.defaultCenter removeObserver:observer];
             for(NSUInteger i=0;i<views.count;i++)views[i].postsFrameChangedNotifications=[flags[i] boolValue];
             [self check:[sample[@"applied"] boolValue] && !self.raised name:@"Native screenshot supplies the canvas extension without opening native footer"];
-            [self check:changes==0 name:@"Canvas capture never resizes Chromium views or introduces viewport blink"];
+            [self check:changes==0 name:@"Canvas capture never resizes WebKit views or introduces viewport blink"];
             [self.results addObject:@{@"name":@"Canvas strip capture diagnostics",@"passed":@YES,@"sample":sample ?: @{}}];
             dispatch_async(dispatch_get_main_queue(),^{[self eval:@"let n=document.querySelector('[data-talaria-document-footer]'),s=getComputedStyle(n).backgroundImage,c=[...s.matchAll(/rgb\\((\\d+), (\\d+), (\\d+)\\)/g)].map(m=>m.slice(1).map(Number));return {colors:c,height:n.getBoundingClientRect().height,total:document.scrollingElement.scrollHeight}" then:^(NSDictionary *page){
               NSArray *colors=page[@"colors"];
@@ -388,12 +385,11 @@
   [self.window setContentSize:NSMakeSize(3008,1698)];
   [self.browser navigateSession:self.session toURL:[NSURL URLWithString:[NSProcessInfo.processInfo.arguments[1] stringByAppendingString:@"/x-like-edge-colors"]]];
   [self after:0.5 run:^{[self waitForBridge:0 then:^{
-    // Keep the regression above the old 16 Mi pixel limit on every display.
-    // This changes only the disposable fixture's emulated device metrics.
-    CefRefPtr<CefDictionaryValue> metrics=CefDictionaryValue::Create();
-    metrics->SetInt("width",3008);metrics->SetInt("height",1698);
-    metrics->SetDouble("deviceScaleFactor",2);metrics->SetBool("mobile",false);
-    [self cef]->GetHost()->ExecuteDevToolsMethod(0,"Emulation.setDeviceMetricsOverride",metrics);
+    // Use real backing geometry; WebKit has no public device-scale override.
+    // Enlarge the fixture on 1x displays to retain the >16 Mi pixel assertion.
+    CGFloat backingScale = self.window.backingScaleFactor;
+    CGFloat factor = 2.0 / MAX(1, backingScale);
+    [self.window setContentSize:NSMakeSize(3008 * factor, 1698 * factor)];
     [self after:0.3 run:^{
       [self.tab setValue:nil forKey:@"headerContentColor"];
       [self.tab setValue:@1e100 forKey:@"footerColorNext"];
@@ -422,7 +418,6 @@
   BOOL black=header && header.redComponent==0 && header.greenComponent==0 && header.blueComponent==0;
   if(!black && attempt<30){[self after:0.1 run:^{[self awaitHighResolutionHeader:attempt+1 previousFrame:previousFrame];}];return;}
   [self check:black name:@"A cleared browser tab acquires the black X-like page color at 6K"];
-  [self cef]->GetHost()->ExecuteDevToolsMethod(0,"Emulation.clearDeviceMetricsOverride",CefDictionaryValue::Create());
   [self.window setFrame:previousFrame display:YES];
   [self after:0.3 run:^{[self testLivePage];}];
 }
@@ -430,7 +425,7 @@
   NSArray *args=NSProcessInfo.processInfo.arguments;
   if(args.count<=4){[self finish];return;}
   [self.window setContentSize:NSMakeSize(1336,1320.75)];
-  // Fractional workspace geometry exercises AppKit/Chromium rounding as well as
+  // Fractional workspace geometry exercises AppKit/WebKit rounding as well as
   // the integer-sized standalone fixture.
   for(NSLayoutConstraint *constraint in self.tab.view.superview.constraints){
     if(constraint.firstItem==self.tab.view && constraint.firstAttribute==NSLayoutAttributeTop)constraint.constant=37.5;
@@ -474,4 +469,4 @@
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app { return [self.browser prepareForApplicationTermination]?NSTerminateNow:NSTerminateLater; }
 @end
-int main(int argc,char **argv){@autoreleasepool{TLChromiumBrowserControllerConfigureMainArgs(argc,argv);TLFooterTestApplication *app=[TLFooterTestApplication sharedApplication];TLFooterTestDelegate *delegate=[TLFooterTestDelegate new];app.delegate=delegate;[app run];}return 0;}
+int main(int argc,char **argv){@autoreleasepool{if(argc>2)setenv("TL_WEBKIT_PROFILE_DIR",argv[2],1);TLFooterTestApplication *app=[TLFooterTestApplication sharedApplication];TLFooterTestDelegate *delegate=[TLFooterTestDelegate new];app.delegate=delegate;[app run];}return 0;}

@@ -3,7 +3,7 @@
 #import "TLBrowserSettingsController.h"
 #import "TLApplicationSettingsController.h"
 #import "AgentOrchestrator.h"
-#import "ChromiumBrowserController.h"
+#import "WebKitBrowserController.h"
 #import "TLModelSelectionWindowController.h"
 #import "UIComponents.h"
 #import "design_system/TLThemedButton.h"
@@ -696,7 +696,7 @@
 }
 - (void)openCredentialHelp:(NSButton *)sender {
   NSURL *url = [NSURL URLWithString:sender.identifier];
-  if ([url.scheme isEqual:@"https"]) [TLChromiumBrowserController.sharedController openURL:url fromWindow:self.view.window];
+  if ([url.scheme isEqual:@"https"]) [TLWebKitBrowserController.sharedController openURL:url fromWindow:self.view.window];
 }
 
 - (void)applyPalette:(TLThemePalette *)palette {
@@ -712,7 +712,7 @@
   self.pluginActions.palette = palette;
   self.pluginSearch.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   if (self.pluginRows) [self renderPlugins];
-  [TLChromiumBrowserController.sharedController applyDarkAppearance:palette.dark];
+  [TLWebKitBrowserController.sharedController applyDarkAppearance:palette.dark];
 }
 - (void)close {
   if (self.isClosed) return;
