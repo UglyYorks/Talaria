@@ -143,7 +143,7 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     return NO;
   }
 
-  if (version == targetVersion) {
+  if (version == targetVersion && targetVersion < 12) {
     return YES;
   }
 
@@ -331,7 +331,10 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
     if (!migrated) return NO;
     version = 11;
   }
-  if (version < 12 && targetVersion >= 12) {
+  // Independent worktrees also use version 12 for additive message metadata.
+  // Reconcile this feature's columns even when that version is already set.
+  // Existing positions and unrelated columns must survive repeated opens.
+  if (version <= 12 && targetVersion >= 12) {
     BOOL migrated = [connection performTransaction:^BOOL(NSError **transactionError) {
       TLSQLiteStatement *columns = [connection prepareSQL:"PRAGMA table_info(messages)" error:transactionError];
       if (!columns) return NO;

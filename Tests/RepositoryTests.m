@@ -1,5 +1,6 @@
 #import "Database.h"
 #import "SQLiteConnection.h"
+#import "DatabaseMigrator.h"
 #import "TLHistoryRepository.h"
 
 static void Check(BOOL value, NSString *message) {
@@ -15,11 +16,50 @@ static int CountMessageReads(void *context, int operation, const char *table, co
   return SQLITE_OK;
 }
 
+static void TestSharedSchemaVersion(NSURL *directory) {
+  NSURL *url = [directory URLByAppendingPathComponent:@"shared-version.sqlite"];
+  NSError *error = nil;
+  TLSQLiteConnection *connection = [TLSQLiteConnection openURL:url error:&error];
+  Check(connection && TLDatabaseMigrate(connection, 11, &error), @"creates pre-refactor schema");
+  Check([connection executeSQL:
+    "ALTER TABLE messages ADD COLUMN notification TEXT NOT NULL DEFAULT '{}';"
+    "ALTER TABLE messages ADD COLUMN source_message_id TEXT NOT NULL DEFAULT '';"
+    "ALTER TABLE messages ADD COLUMN source_tool_call_ids TEXT NOT NULL DEFAULT '[]';"
+    "CREATE TABLE notifications (id INTEGER PRIMARY KEY, payload TEXT);"
+    "INSERT INTO notifications VALUES (1, 'retained');"
+    "INSERT INTO chats (id, title, model) VALUES (1, 'Retained chat', 'test');"
+    "INSERT INTO messages (id, chat_id, role, content, attachments, notification, source_message_id) "
+    "VALUES (7, 1, 'user', 'first', '[{\"name\":\"retained\",\"guestPath\":\"/workspace/retained\",\"directory\":false}]', '{\"read\":true}', 'remote-7'),"
+    "(9, 1, 'assistant', 'second', '[]', '{}', 'remote-9');"
+    "INSERT INTO browser_history (id, url, title, favicon) VALUES (1, 'https://example.com/old', 'Retained visit', X'010203');"
+    "PRAGMA user_version = 12;" error:&error], @"creates another feature's version-12 database");
+  TLDatabase *database = [[TLDatabase alloc] initWithURL:url error:&error];
+  Check(database != nil && !error, @"startup reconciles columns despite a shared schema version");
+  TLChatRecord *chat = [database chatWithID:1 error:&error];
+  Check(chat.messages.count == 2 && chat.messages[0].messageID == 7 && chat.messages[1].messageID == 9,
+    @"shared-version migration preserves messages and their original order");
+  Check(chat.messages[0].attachments.count == 1 && chat.messages[0].position == 7,
+    @"migration preserves attachments and backfills message positions");
+  Check(ReadCount(connection, "SELECT COUNT(*) FROM messages WHERE source_message_id='remote-7' AND notification='{\"read\":true}'") == 1 &&
+    ReadCount(connection, "SELECT COUNT(*) FROM notifications WHERE payload='retained'") == 1,
+    @"migration preserves unrelated feature data");
+  Check(ReadCount(connection, "SELECT COUNT(*) FROM browser_history WHERE origin='https://example.com:443' AND hex(favicon)='010203'") == 1,
+    @"shared-version migration backfills origins without replacing favicons");
+  Check([connection executeSQL:"UPDATE messages SET position=20 WHERE id=7; UPDATE messages SET position=10 WHERE id=9" error:&error],
+    @"creates a subsequently reordered transcript");
+  database = nil;
+  database = [[TLDatabase alloc] initWithURL:url error:&error];
+  chat = [database chatWithID:1 error:&error];
+  Check(chat.messages.count == 2 && chat.messages[0].messageID == 9 && chat.messages[1].messageID == 7 &&
+    ReadCount(connection, "PRAGMA user_version") == 12, @"reopening is idempotent and preserves newer transcript ordering");
+}
+
 int main(void) {
   @autoreleasepool {
     NSURL *directory = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:NSUUID.UUID.UUIDString];
     TLDatabase *database = [[TLDatabase alloc] initWithURL:[directory URLByAppendingPathComponent:@"repository.sqlite"] error:nil];
     Check(database != nil, @"opens schema 12");
+    TestSharedSchemaVersion(directory);
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     [database performAsync:^(TLDatabase *store) {
       Check(!NSThread.isMainThread, @"repository work is off main");
