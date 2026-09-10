@@ -1,5 +1,6 @@
-"""Installed Hermes plugins and profile enablement over the TUI gateway."""
+"""Installed Hermes plugins and Talaria's bundled private policy over the TUI gateway."""
 from hermes_notifications import _setup_lock
+from incognito_policy import PLUGIN as INCOGNITO_PLUGIN, catalogue_entry as incognito_entry
 
 
 class Plugins:
@@ -11,6 +12,8 @@ class Plugins:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         if not isinstance(params, dict) or params.get("action") not in {"list", "set_enabled"}:
             raise ValueError("Unsupported plugin action.")
+        if params["action"] == "set_enabled" and params.get("id") == INCOGNITO_PLUGIN:
+            raise ValueError("Talaria Incognito runs automatically in Incognito windows and cannot be disabled.")
         with _setup_lock:
             # Normal, idempotent startup discovery only. Never reload the
             # registrations of an already-running session after a toggle.
@@ -73,6 +76,7 @@ class Plugins:
                     "description": description or "", "source": source, "enabled": desired,
                     "active": bool(active.get("enabled")), "error": active.get("error") or "",
                     "restart_required": desired != self.initial_states[key]})
+            plugins.append(incognito_entry())
             return {"plugins": plugins, "managed": managed,
                     "restart_required": any(item["restart_required"] for item in plugins)}
 

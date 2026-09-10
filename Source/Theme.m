@@ -184,6 +184,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.brandMarkCrossInset = 7.0;
   self.focusRingSize = 3.0;
   self.borderWidth = 1.0;
+  self.incognitoBorderWidth = 2.0;
   self.workspaceOutlineOpacity = 1.0 / 3.0;
   self.workspaceShadowRadius = 3.0;
   self.workspaceShadowOffsetY = -1.0;

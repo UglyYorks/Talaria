@@ -89,6 +89,16 @@ void TLSetSQLiteError(NSError **error, NSString *message) {
 
 @implementation TLSQLiteConnection
 
++ (instancetype)openInMemory:(NSError **)error {
+  TLSQLiteConnection *connection = [[self alloc] init];
+  if (sqlite3_open(":memory:", &connection->_handle) != SQLITE_OK) {
+    [connection setCurrentError:error];
+    return nil;
+  }
+  [connection executeSQL:"PRAGMA temp_store=MEMORY" error:error];
+  return connection;
+}
+
 + (instancetype)openURL:(NSURL *)URL error:(NSError **)error {
   TLSQLiteConnection *connection = [[self alloc] init];
   if (sqlite3_open(URL.path.fileSystemRepresentation, &connection->_handle) != SQLITE_OK) {

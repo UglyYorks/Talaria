@@ -11,6 +11,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithDatabase:(TLDatabase *)database
                 agentOrchestrator:(TLAgentOrchestrator *)agentOrchestrator
                   appStateManager:(TLAppStateManager *)appStateManager;
+@property (nonatomic, readonly, getter=isIncognito) BOOL incognito;
+@property (nonatomic, copy, nullable) dispatch_block_t incognitoDidClose;
+- (void)openBrowserTabWithURL:(NSURL *)URL;
 - (BOOL)canPerformTabCommand:(TLTabCommand)command;
 - (void)performTabCommand:(TLTabCommand)command;
 - (BOOL)canPerformFindAction:(NSTextFinderAction)action;

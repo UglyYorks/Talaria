@@ -18,6 +18,8 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                      agentClient:(id<TLAgentStreaming>)agentClient
                        vmService:(TLAgentVMService *)vmService NS_DESIGNATED_INITIALIZER;
 
+- (TLAgentOrchestrator *)incognitoOrchestratorWithDatabase:(TLDatabase *)database;
+- (void)closeIncognito;
 - (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent;
 - (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent;
 - (NSString *)displayStatusForAgent:(TLAgentRecord *)agent;

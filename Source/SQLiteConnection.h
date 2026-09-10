@@ -31,6 +31,7 @@ void TLSetSQLiteError(NSError **error, NSString *message);
 
 @property (nonatomic, readonly) sqlite3 *handle;
 
++ (nullable instancetype)openInMemory:(NSError **)error;
 + (nullable instancetype)openURL:(NSURL *)URL error:(NSError **)error;
 - (BOOL)executeSQL:(const char *)sql error:(NSError **)error;
 - (nullable TLSQLiteStatement *)prepareSQL:(const char *)sql error:(NSError **)error;

@@ -74,6 +74,8 @@ static id TLJSONValue(NSString *text) {
 @interface TLDatabase ()
 
 @property (nonatomic, strong) TLSQLiteConnection *sqliteConnection;
+@property (nonatomic, readwrite, getter=isIncognito) BOOL incognito;
+@property (nonatomic, copy) NSString *incognitoToken;
 @property (nonatomic, strong) id<TLCredentialStore> credentialStore;
 
 - (BOOL)executeSQL:(const char *)sql error:(NSError **)error;
@@ -82,6 +84,23 @@ static id TLJSONValue(NSString *text) {
 @end
 
 @implementation TLDatabase
+
+- (TLDatabase *)incognitoDatabase:(NSError **)error {
+  @synchronized (self) {
+    TLDatabase *copy = [TLDatabase new];
+    copy.incognito = YES;
+    copy.incognitoToken = [self appSettings:error].openRouterToken;
+    copy.sqliteConnection = [TLSQLiteConnection openInMemory:error];
+    if (!copy.sqliteConnection) return nil;
+    sqlite3_backup *backup = sqlite3_backup_init(copy.sqliteConnection.handle, "main", self.sqliteConnection.handle, "main");
+    if (!backup) { [copy.sqliteConnection setCurrentError:error]; return nil; }
+    int result = sqlite3_backup_step(backup, -1);
+    sqlite3_backup_finish(backup);
+    if (result != SQLITE_DONE) { [copy.sqliteConnection setCurrentError:error]; return nil; }
+    if (![copy executeSQL:"PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; DELETE FROM messages; DELETE FROM bookmarks; DELETE FROM chats; DELETE FROM browser_history; DELETE FROM notifications; DELETE FROM notification_sync;" error:error]) return nil;
+    return copy;
+  }
+}
 
 + (NSURL *)defaultDatabaseURL {
   NSURL *supportURL = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
@@ -187,7 +206,7 @@ static id TLJSONValue(NSString *text) {
     }
 
     NSError *credentialError = nil;
-    NSString *token = remember ? [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount
+    NSString *token = self.incognito ? self.incognitoToken : remember ? [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount
                                                                     error:&credentialError] : nil;
     if (credentialError) {
       if (error) { *error = credentialError; }
@@ -213,7 +232,7 @@ static id TLJSONValue(NSString *text) {
     NSString *theme = @"system";
     NSString *token = settings.rememberOpenRouterToken ? TLTrimmedString(settings.openRouterToken) : nil;
     NSError *credentialError = nil;
-    NSString *previousToken = [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount error:&credentialError];
+    NSString *previousToken = self.incognito ? self.incognitoToken : [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount error:&credentialError];
     if (credentialError) {
       if (error) { *error = credentialError; }
       return nil;
@@ -380,6 +399,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error {
+  if (self.incognito) return 0;
   NSString *scheme = URL.scheme.lowercaseString;
   if ((![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) || !URL.host.length) return 0;
   @synchronized (self) {
@@ -1315,6 +1335,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (BOOL)storeToken:(NSString *)token error:(NSError **)error {
+  if (self.incognito) { self.incognitoToken = token; return YES; }
   if (token) {
     return [self.credentialStore setCredential:token forAccount:TLOpenRouterTokenCredentialAccount error:error];
   }
@@ -1326,6 +1347,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (BOOL)migrateLegacyCredentialWithRemember:(BOOL)remember error:(NSError **)error {
+  if (self.incognito) return YES;
   NSError *readError = nil;
   NSString *legacyToken = [self settingForKey:@"openRouterToken" error:&readError];
   if (readError) {

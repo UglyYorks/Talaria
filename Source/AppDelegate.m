@@ -18,6 +18,7 @@
 @property (nonatomic, strong) TLAppStateManager *appStateManager;
 @property (nonatomic, strong) TLWorkspaceSessionStore *workspaceSessionStore;
 @property (nonatomic, strong) TalariaWindowController *windowController;
+@property (nonatomic, strong) NSMutableArray<TalariaWindowController *> *incognitoWindows;
 @property (nonatomic, strong) NSStatusItem *statusItem;
 @property (nonatomic) BOOL resetInProgress;
 
@@ -120,6 +121,7 @@
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
+  for (TalariaWindowController *controller in self.incognitoWindows.copy) [controller.window performClose:self];
   [TLChromiumBrowserController.sharedController shutdown];
 }
 
@@ -217,32 +219,70 @@
   [NSApp terminate:self];
 }
 
+- (void)newIncognitoWindow:(id)sender { [self createIncognitoWindow]; }
+
+- (void)openIncognitoURLInNewWindow:(NSURL *)URL {
+  [[self createIncognitoWindow] openBrowserTabWithURL:URL];
+}
+
+- (TalariaWindowController *)createIncognitoWindow {
+  NSError *error = nil;
+  TLDatabase *database = [self.database incognitoDatabase:&error];
+  if (!database) { [self presentStartupError:error]; return nil; }
+  TLAgentOrchestrator *orchestrator = [self.agentOrchestrator incognitoOrchestratorWithDatabase:database];
+  TalariaWindowController *controller = [[TalariaWindowController alloc] initWithDatabase:database
+    agentOrchestrator:orchestrator appStateManager:[TLAppStateManager new]];
+  if (!self.incognitoWindows) self.incognitoWindows = [NSMutableArray array];
+  [self.incognitoWindows addObject:controller];
+  __weak typeof(self) owner = self;
+  __weak TalariaWindowController *weakController = controller;
+  controller.incognitoDidClose = ^{
+    dispatch_async(dispatch_get_main_queue(), ^{ [owner.incognitoWindows removeObject:weakController]; });
+  };
+  [controller showWindow:self];
+  [controller.window makeKeyAndOrderFront:self];
+  return controller;
+}
+
+- (TalariaWindowController *)activeWorkspaceController {
+  if (NSApp.keyWindow == self.windowController.window) return self.windowController;
+  for (TalariaWindowController *controller in self.incognitoWindows)
+    if (NSApp.keyWindow == controller.window) return controller;
+  return nil;
+}
+
 - (BOOL)workspaceAcceptsTabCommands {
-  NSWindow *window = self.windowController.window;
+  NSWindow *window = self.activeWorkspaceController.window;
   return window && NSApp.keyWindow == window && !window.attachedSheet && !NSApp.modalWindow;
 }
 
 - (BOOL)handleTabShortcutEvent:(NSEvent *)event {
+  NSEventModifierFlags privateFlags = event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption | NSEventModifierFlagControl);
+  if (event.type == NSEventTypeKeyDown && privateFlags == (NSEventModifierFlagCommand | NSEventModifierFlagShift) &&
+      [event.charactersIgnoringModifiers.lowercaseString isEqual:@"n"]) {
+    if (!event.isARepeat) [self newIncognitoWindow:self];
+    return YES;
+  }
   TLTabCommand command = TLTabCommandForEvent(event);
   if (command == TLTabCommandNone || ![self workspaceAcceptsTabCommands] ||
-      (event.window && event.window != self.windowController.window)) return NO;
+      (event.window && event.window != self.activeWorkspaceController.window)) return NO;
   // Consume recognized but disabled shortcuts too: a page must not act on them.
   if ((!event.isARepeat || TLTabCommandAllowsRepeat(command)) &&
-      [self.windowController canPerformTabCommand:command]) {
-    [self.windowController performTabCommand:command];
+      [self.activeWorkspaceController canPerformTabCommand:command]) {
+    [self.activeWorkspaceController performTabCommand:command];
   }
   return YES;
 }
 
 - (void)performTabMenuCommand:(NSMenuItem *)sender {
-  if ([self workspaceAcceptsTabCommands] && [self.windowController canPerformTabCommand:sender.tag]) {
-    [self.windowController performTabCommand:sender.tag];
+  if ([self workspaceAcceptsTabCommands] && [self.activeWorkspaceController canPerformTabCommand:sender.tag]) {
+    [self.activeWorkspaceController performTabCommand:sender.tag];
   }
 }
 
 - (BOOL)handleFindShortcutEvent:(NSEvent *)event {
   if (event.type != NSEventTypeKeyDown || ![self workspaceAcceptsTabCommands] ||
-      (event.window && event.window != self.windowController.window)) return NO;
+      (event.window && event.window != self.activeWorkspaceController.window)) return NO;
   NSEventModifierFlags flags = event.modifierFlags & (NSEventModifierFlagCommand |
     NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift);
   NSString *key = event.charactersIgnoringModifiers.lowercaseString;
@@ -252,19 +292,19 @@
   else if (flags == (NSEventModifierFlagCommand | NSEventModifierFlagShift) && [key isEqualToString:@"g"]) action = NSTextFinderActionPreviousMatch;
   else if (!flags && [key isEqualToString:@"\e"]) action = NSTextFinderActionHideFindInterface;
   else return NO;
-  if (![self.windowController canPerformFindAction:action]) return NO;
+  if (![self.activeWorkspaceController canPerformFindAction:action]) return NO;
   if (!event.isARepeat || action == NSTextFinderActionNextMatch || action == NSTextFinderActionPreviousMatch)
-    [self.windowController performFindAction:action];
+    [self.activeWorkspaceController performFindAction:action];
   return YES;
 }
 - (void)performFindMenuAction:(NSMenuItem *)sender {
-  if ([self workspaceAcceptsTabCommands]) [self.windowController performFindAction:sender.tag];
+  if ([self workspaceAcceptsTabCommands]) [self.activeWorkspaceController performFindAction:sender.tag];
 }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
   if (item.action == @selector(performFindMenuAction:))
-    return [self workspaceAcceptsTabCommands] && [self.windowController canPerformFindAction:item.tag];
+    return [self workspaceAcceptsTabCommands] && [self.activeWorkspaceController canPerformFindAction:item.tag];
   if (item.action == @selector(performTabMenuCommand:)) {
-    return [self workspaceAcceptsTabCommands] && [self.windowController canPerformTabCommand:item.tag];
+    return [self workspaceAcceptsTabCommands] && [self.activeWorkspaceController canPerformTabCommand:item.tag];
   }
   return YES;
 }
@@ -283,6 +323,14 @@
   quitItem.target = NSApp;
   quitItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
   appMenuItem.submenu = appMenu;
+
+  NSMenuItem *fileMenuItem = [[NSMenuItem alloc] initWithTitle:@"File" action:nil keyEquivalent:@""];
+  NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
+  NSMenuItem *privateItem = [fileMenu addItemWithTitle:@"New Incognito Window" action:@selector(newIncognitoWindow:) keyEquivalent:@"n"];
+  privateItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  privateItem.target = self;
+  fileMenuItem.submenu = fileMenu;
+  [mainMenu addItem:fileMenuItem];
 
   NSMenuItem *editMenuItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
   [mainMenu addItem:editMenuItem];

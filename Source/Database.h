@@ -7,6 +7,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface TLDatabase : NSObject
 
 + (NSURL *)defaultDatabaseURL;
+@property (nonatomic, readonly, getter=isIncognito) BOOL incognito;
+- (nullable TLDatabase *)incognitoDatabase:(NSError **)error;
 - (nullable instancetype)initWithURL:(NSURL *)url error:(NSError **)error;
 - (nullable instancetype)initWithURL:(NSURL *)url
                     credentialStore:(id<TLCredentialStore>)credentialStore
