@@ -27,6 +27,8 @@ typedef void (^TLChromiumBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoFor
 @interface TLChromiumBrowserController : NSObject
 
 + (instancetype)sharedController;
+- (void)markWindowIncognito:(NSWindow *)window;
+- (void)forgetIncognitoWindow:(NSWindow *)window;
 - (BOOL)initializeRuntimeFromWindow:(nullable NSWindow *)window;
 - (void)openURL:(NSURL *)url fromWindow:(nullable NSWindow *)window;
 - (void)openURL:(NSURL *)url fromWindow:(nullable NSWindow *)window modifierFlags:(NSEventModifierFlags)modifierFlags;

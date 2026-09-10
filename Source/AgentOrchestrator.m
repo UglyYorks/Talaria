@@ -60,6 +60,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 @interface TLAgentOrchestrator ()
 
 @property (nonatomic, strong) TLDatabase *database;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSURL *> *incognitoAttachmentURLs;
 @property (nonatomic, strong) id<TLAgentStreaming> agentClient;
 @property (nonatomic, strong) TLAgentVMService *vmService;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *initializingAgentIDs;
@@ -87,6 +88,18 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     _chatCompletions = [NSMutableDictionary dictionary];
   }
   return self;
+}
+
+- (TLAgentOrchestrator *)incognitoOrchestratorWithDatabase:(TLDatabase *)database {
+  TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:self.vmService];
+  client.incognitoID = NSUUID.UUID.UUIDString;
+  return [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:client vmService:self.vmService];
+}
+
+- (void)closeIncognito {
+  if (self.database.incognito && [self.agentClient isKindOfClass:TLBundledAgentClient.class])
+    [(TLBundledAgentClient *)self.agentClient closeIncognito];
+  [self.incognitoAttachmentURLs removeAllObjects];
 }
 
 - (NSURL *)runtimeBundleURL {
@@ -192,6 +205,10 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     return agents.lastObject;
   }
 
+  if (self.database.incognito) {
+    if (error) *error = TLAgentOrchestratorError(@"Set up an agent in a normal Talaria window before starting private chats.");
+    return nil;
+  }
   return [self createAgentWithName:@"Default Agent" error:error];
 }
 
@@ -418,6 +435,33 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 
 - (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID agentID:(NSInteger)agentID
                   completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *, NSError *))completion {
+  if (self.database.incognito) {
+    [self withRunningAgentID:agentID > 0 ? agentID : self.database.currentAgentID completion:^(TLAgentRecord *agent, NSError *error) {
+      if (!agent || error) { completion(nil, error); return; }
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableArray *files = [NSMutableArray array];
+        NSError *readError = nil;
+        for (NSURL *URL in URLs) {
+          NSData *data = [NSData dataWithContentsOfURL:URL options:0 error:&readError];
+          if (!data || data.length > 20 * 1024 * 1024) {
+            readError = readError ?: TLAgentOrchestratorError(@"Incognito attachments must be individual files smaller than 20 MB.");
+            break;
+          }
+          [files addObject:@{@"name": URL.lastPathComponent, @"data": [data base64EncodedStringWithOptions:0]}];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (readError) { completion(nil, readError); return; }
+          [(TLBundledAgentClient *)self.agentClient uploadIncognitoAttachments:files agent:agent completion:^(NSArray *rows, NSError *uploadError) {
+            if (!self.incognitoAttachmentURLs) self.incognitoAttachmentURLs = [NSMutableDictionary dictionary];
+            if (rows.count == URLs.count) for (NSUInteger i = 0; i < rows.count; i++)
+              self.incognitoAttachmentURLs[rows[i][@"guestPath"]] = URLs[i];
+            completion(rows, uploadError);
+          }];
+        });
+      });
+    }];
+    return;
+  }
   NSError *error = nil;
   TLAgentRecord *agent = (agentID > 0 ? [self.database agentWithID:agentID error:&error] : [self defaultAgentCreatingIfNeeded:&error]);
   if (!agent || ![self.vmService prepareStorageForAgent:agent error:&error]) {
@@ -435,6 +479,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (BOOL)removeAttachmentsForSessionID:(NSString *)sessionID error:(NSError **)error {
+  if (self.database.incognito) return YES;
   NSArray *agents = [self.database listAgents:error];
   if (!agents) return NO;
   for (TLAgentRecord *agent in agents) {
@@ -446,6 +491,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (NSURL *)fileURLForAttachment:(NSDictionary *)attachment sessionID:(NSString *)sessionID {
+  if (self.database.incognito) return self.incognitoAttachmentURLs[attachment[@"guestPath"]];
   // Reading a saved attachment must never start a VM or create an agent.
   for (TLAgentRecord *agent in [self.database listAgents:nil]) {
     NSURL *workspace = [[NSURL fileURLWithPath:agent.vmDirectory] URLByAppendingPathComponent:@"workspace"];
@@ -582,7 +628,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
       if (!fetchError) {
         NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"version": @1, @"catalogue": catalogue} options:0 error:nil];
         // A cache write failure must not discard a successful live discovery.
-        [data writeToURL:TLHermesCommandCacheURL(agent) options:NSDataWritingAtomic error:nil];
+        if (!self.database.incognito) [data writeToURL:TLHermesCommandCacheURL(agent) options:NSDataWritingAtomic error:nil];
       }
       completion(fetchError ? nil : catalogue, fetchError);
     }];

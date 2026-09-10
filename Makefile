@@ -264,6 +264,7 @@ test: $(BUILD_DIR)/BookmarkTests $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/Brow
 	"$(BUILD_DIR)/BrowserHistoryTests"
 	"$(BUILD_DIR)/BrowserDownloadTests"
 	"$(BUILD_DIR)/AgentVMLockTests"
+	"$(BUILD_DIR)/IncognitoTests"
 	"$(BUILD_DIR)/NotificationDataTests"
 	"$(BUILD_DIR)/NotificationSidebarTests"
 	"$(BUILD_DIR)/NotificationNavigationTests"
@@ -537,3 +538,16 @@ include Scripts/browser-import.mk
 test: $(BUILD_DIR)/StarryEmptyStateTests
 $(BUILD_DIR)/StarryEmptyStateTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/StarryEmptyStateTests.m
 	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+
+# Private windows use independent memory-only state and dispose their runtimes on close.
+test: $(BUILD_DIR)/IncognitoTests
+$(BUILD_DIR)/IncognitoTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Tests/IncognitoTests.m
+	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+.PHONY: test-incognito-browser
+test-incognito-browser: build
+	mkdir -p "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/IncognitoBrowserProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/IncognitoBrowserIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/IncognitoBrowserProbe.app"
+	python3 Scripts/test-incognito-browser.py

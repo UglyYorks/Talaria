@@ -1,3 +1,4 @@
+#import "AppDelegate.h"
 #import "ChromiumBrowserController.h"
 #import "ChromiumRunLoop.h"
 #import "ChromiumContextMenu.h"
@@ -123,6 +124,7 @@ static BOOL TLChromiumDispositionRequestsNewTab(cef_window_open_disposition_t di
 @property (nonatomic, weak, readwrite, nullable) NSView *containerView;
 @property (nonatomic, copy, readwrite) NSString *initialURLString;
 @property (nonatomic, readwrite) NSInteger browserIdentifier;
+@property (nonatomic, copy) NSString *incognitoContextID;
 @property (nonatomic, readwrite) NSUInteger documentGeneration;
 @property (nonatomic, readwrite, getter=isFullscreen) BOOL fullscreen;
 @property (nonatomic, readwrite) BOOL devToolsVisible;
@@ -579,6 +581,10 @@ class TLChromiumClient : public CefClient,
                         const CefString &suggested_name, CefRefPtr<CefBeforeDownloadCallback> callback) override {
     CEF_REQUIRE_UI_THREAD();
     if (!item || !item->IsValid()) return false;
+    if (browser->GetHost()->GetRequestContext()->GetCachePath().empty()) {
+      callback->Continue(suggested_name, true);
+      return true;
+    }
     RecordDownload(browser, item, nullptr, TLNSStringFromCefString(suggested_name));
     auto context = browser->GetHost()->GetRequestContext();
     auto pathPref = context->GetPreference("download.default_directory");
@@ -595,6 +601,11 @@ class TLChromiumClient : public CefClient,
                          CefRefPtr<CefDownloadItemCallback> callback) override {
     CEF_REQUIRE_UI_THREAD();
     if (!item || !item->IsValid()) return;
+    if (browser->GetHost()->GetRequestContext()->GetCachePath().empty()) {
+      if (downloadURL_.length && !item->IsInProgress())
+        TLChromiumDeferToMainRunLoop(^{ if (browser->IsValid()) browser->GetHost()->CloseBrowser(true); });
+      return;
+    }
     RecordDownload(browser, item, callback);
     [browserController_ downloadUpdatedForBrowser:browser];
     if (downloadURL_.length && !item->IsInProgress()) {
@@ -1026,6 +1037,8 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
   BOOL _browserDarkAppearance;
   NSMutableDictionary<NSString *, NSAlert *> *_permissionAlerts;
   NSMutableDictionary<NSNumber *, NSView *> *_detachedDownloadContainers;
+  NSMapTable<NSWindow *, NSString *> *_incognitoWindows;
+  std::map<std::string, CefRefPtr<CefRequestContext>> _incognitoContexts;
   BOOL _initialized;
   BOOL _shuttingDown;
   BOOL _shutdownRequested;
@@ -1047,6 +1060,7 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
 - (instancetype)init {
   self = [super init];
   if (self) {
+    _incognitoWindows = [NSMapTable weakToStrongObjectsMapTable];
     _standaloneBrowserWindows = [NSMapTable strongToWeakObjectsMapTable];
     _fullscreenBrowserIdentifier = -1;
     _browserIdentifiersByContainer = [NSMutableDictionary dictionary];
@@ -1070,6 +1084,16 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
   return self;
 }
 
+- (void)markWindowIncognito:(NSWindow *)window {
+  [_incognitoWindows setObject:NSUUID.UUID.UUIDString forKey:window];
+}
+
+- (void)forgetIncognitoWindow:(NSWindow *)window {
+  NSString *identity = [_incognitoWindows objectForKey:window];
+  if (identity) _incognitoContexts.erase(identity.UTF8String);
+  [_incognitoWindows removeObjectForKey:window];
+}
+
 - (void)openURL:(NSURL *)url fromWindow:(NSWindow *)window {
   [self openURL:url fromWindow:window modifierFlags:TLChromiumCurrentModifierFlags()];
 }
@@ -1085,6 +1109,11 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
     return;
   }
 
+  if ([_incognitoWindows objectForKey:window]) {
+    if ([NSApp.delegate respondsToSelector:@selector(openIncognitoURLInNewWindow:)])
+      [(TLAppDelegate *)NSApp.delegate openIncognitoURLInNewWindow:browserURL];
+    return;
+  }
   if (![self initializeCEFIfNeededFromWindow:window]) {
     return;
   }
@@ -1110,6 +1139,7 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
   NSValue *containerKey = TLChromiumContainerKey(view);
   TLChromiumBrowserSession *session = [[TLChromiumBrowserSession alloc] initWithContainerView:view
                                                                             initialURLString:browserURL.absoluteString];
+  session.incognitoContextID = [_incognitoWindows objectForKey:window ?: view.window];
   if (containerKey) {
     _sessionsByContainer[containerKey] = session;
     if (titleHandler) {
@@ -1161,13 +1191,21 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
 - (void)startDownloadURL:(NSURL *)URL fromWindow:(NSWindow *)window {
   if (![self browserURLFromURL:URL]) return;
   if (![self initializeCEFIfNeededFromWindow:window]) return;
+  CefRefPtr<CefRequestContext> downloadContext;
+  NSString *privateIdentity = [_incognitoWindows objectForKey:window];
+  if (privateIdentity) {
+    auto &context = _incognitoContexts[privateIdentity.UTF8String];
+    if (!context) { CefRequestContextSettings settings; context = CefRequestContext::CreateContext(settings, nullptr); }
+    if (!context || !context->GetCachePath().empty()) return;
+    downloadContext = context;
+  }
   // A retry uses the same Chromium profile even when its original tab is closed.
   CefWindowInfo info;
   info.hidden = true;
   info.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
   CefBrowserSettings settings;
   if (!CefBrowserHost::CreateBrowser(info, new TLChromiumClient(self, nil, -1, URL.absoluteString),
-      "about:blank", settings, nullptr, nullptr)) {
+      "about:blank", settings, nullptr, downloadContext)) {
     [self presentCEFError:@"The download could not be started. Please try again." fromWindow:window];
   }
 }
@@ -1438,6 +1476,8 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
   [_detachedDownloadContainers removeAllObjects];
   [_standaloneBrowserWindows removeAllObjects];
   _browsers.clear();
+  _incognitoContexts.clear();
+  [_incognitoWindows removeAllObjects];
   CefShutdown();
   _cefApp = nullptr;
   _initialized = NO;
@@ -1987,6 +2027,23 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
   windowInfo.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
   CefString(&windowInfo.window_name) = TLStringFromNSString(urlString);
 
+  CefRefPtr<CefRequestContext> context;
+  if (parentView) {
+    TLChromiumBrowserSession *session = _sessionsByContainer[TLChromiumContainerKey(parentView)];
+    if (!session) return; // Tab closed while creation was queued; never fall back to a normal browser.
+    if (session.incognitoContextID.length) {
+      auto &privateContext = _incognitoContexts[session.incognitoContextID.UTF8String];
+      if (!privateContext) {
+        CefRequestContextSettings settings;
+        // Empty cache_path creates an off-the-record context. Each private window owns one.
+        settings.persist_session_cookies = false;
+        privateContext = CefRequestContext::CreateContext(settings, nullptr);
+      }
+      if (!privateContext || !privateContext->GetCachePath().empty()) return;
+      context = privateContext;
+      context->SetChromeColorScheme(_browserDarkAppearance ? CEF_COLOR_VARIANT_DARK : CEF_COLOR_VARIANT_LIGHT, 0);
+    }
+  }
   CefBrowserSettings browserSettings;
   CefRefPtr<TLChromiumClient> client(new TLChromiumClient(self, parentView));
   CefBrowserHost::CreateBrowser(
@@ -1995,7 +2052,7 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
     TLStringFromNSString(urlString),
     browserSettings,
     nullptr,
-    nullptr);
+    context);
 }
 
 - (void)openBrowserURLString:(NSString *)urlString {
@@ -2055,6 +2112,10 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
     return YES;
   }
 
+  if (browser && browser->GetHost()->GetRequestContext()->GetCachePath().empty()) {
+    browser->GetMainFrame()->LoadURL(TLStringFromNSString(browserURL.absoluteString));
+    return YES;
+  }
   [self openBrowserURLString:browserURL.absoluteString];
   return YES;
 }
@@ -2262,6 +2323,8 @@ class TLBrowserCookieImport : public CefSetCookieCallback {
   if (!_browserSettingsReady) return;
   CefRequestContext::GetGlobalContext()->SetChromeColorScheme(
     dark ? CEF_COLOR_VARIANT_DARK : CEF_COLOR_VARIANT_LIGHT, 0);
+  for (const auto &entry : _incognitoContexts)
+    entry.second->SetChromeColorScheme(dark ? CEF_COLOR_VARIANT_DARK : CEF_COLOR_VARIANT_LIGHT, 0);
 }
 
 - (NSURL *)browserURLFromURL:(NSURL *)url {
