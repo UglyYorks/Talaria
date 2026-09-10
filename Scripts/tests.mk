@@ -92,7 +92,7 @@ TEST_AgentProtocolTests_SOURCES := Source/TLAgentProtocol.m Tests/AgentProtocolT
 TEST_AgentProtocolTests_LIBS := -framework Foundation
 $(eval $(call native_test,AgentProtocolTests))
 
-INTEGRATION_TESTS := NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests AutomationsTests QuickInputTests WorkspaceRestoreTests AppStartupTests FeatureControllerTests TabShortcutTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests
+INTEGRATION_TESTS := IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests AutomationsTests QuickInputTests WorkspaceRestoreTests AppStartupTests FeatureControllerTests TabShortcutTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests
 $(addprefix $(BUILD_DIR)/,$(INTEGRATION_TESTS)): $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(CEF_WRAPPER_LIB) Scripts/tests.mk $(COMPILE_CONFIG)
 	xcrun clang++ $(filter %.o,$^) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$@"
 $(foreach test,$(INTEGRATION_TESTS),$(eval $(BUILD_DIR)/$(test): $(call test_objects,Tests/$(test).m)))
@@ -103,7 +103,7 @@ TEST_RepositoryTests_LIBS := -framework Foundation -framework Security -lsqlite3
 $(eval $(call native_test,RepositoryTests))
 
 CORE_TESTS := RepositoryTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests AppResetTests BrowserOverlayPolicyTests AgentVMLockTests AgentProtocolTests
-NATIVE_TESTS := NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests BrowserOverlayPolicyTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
+NATIVE_TESTS := IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests BrowserOverlayPolicyTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
 .PHONY: test test-core test-integration
 # GUI suites run sequentially: AppKit focus and the pasteboard are shared resources.
 test: $(addprefix $(BUILD_DIR)/,$(NATIVE_TESTS)) $(BUILD_DIR)/TerminalClientProbe test-hermes-gateway test-browser-overlay audit-theme-colors

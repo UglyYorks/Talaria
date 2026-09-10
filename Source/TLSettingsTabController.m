@@ -298,8 +298,8 @@
 - (NSView *)buildPluginsPage {
   self.pluginSearch = [[NSSearchField alloc] init];
   [self styleField:self.pluginSearch]; self.pluginSearch.delegate = self;
-  self.pluginSearch.placeholderString = @"Search installed plugins";
-  self.pluginSearch.accessibilityLabel = @"Search installed plugins";
+  self.pluginSearch.placeholderString = @"Search plugins";
+  self.pluginSearch.accessibilityLabel = @"Search plugins";
   self.refreshPluginsButton = [self button:@"Refresh" action:@selector(reloadPlugins:)];
   self.pluginActions = [[TLWrappingActionView alloc] initWithViews:@[self.refreshPluginsButton] palette:self.palette];
   self.pluginSearch.appearance = [NSAppearance appearanceNamed:self.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
@@ -335,20 +335,27 @@
   for (NSDictionary *plugin in self.plugins) {
     NSString *searchable = [NSString stringWithFormat:@"%@ %@ %@", plugin[@"name"], plugin[@"id"], plugin[@"description"]];
     if (query.length && [searchable rangeOfString:query options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location == NSNotFound) continue;
-    NSSwitch *toggle = [[NSSwitch alloc] init];
-    toggle.appearance = [NSAppearance appearanceNamed:self.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
-    toggle.identifier = plugin[@"id"]; toggle.target = self; toggle.action = @selector(togglePlugin:);
-    toggle.state = [plugin[@"enabled"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
-    toggle.enabled = !self.pluginsBusy && !self.pluginsManaged;
-    toggle.accessibilityLabel = [NSString stringWithFormat:@"Enable %@", plugin[@"name"]];
-    NSString *origin = [plugin[@"source"] isEqual:@"bundled"] ? @"Built-in" : @"Installed";
+    NSMutableArray<NSView *> *controls = [NSMutableArray array];
+    if (![plugin[@"read_only"] boolValue]) {
+      NSSwitch *toggle = [[NSSwitch alloc] init];
+      toggle.appearance = [NSAppearance appearanceNamed:self.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+      toggle.identifier = plugin[@"id"]; toggle.target = self; toggle.action = @selector(togglePlugin:);
+      toggle.state = [plugin[@"enabled"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+      toggle.enabled = !self.pluginsBusy && !self.pluginsManaged;
+      toggle.accessibilityLabel = [NSString stringWithFormat:@"Enable %@", plugin[@"name"]];
+      [controls addObject:toggle];
+    }
+    NSString *origin = [plugin[@"source"] isEqual:@"talaria"] ? @"Bundled with Talaria" :
+      ([plugin[@"source"] isEqual:@"bundled"] ? @"Built-in" : @"Installed");
     NSString *version = [plugin[@"version"] length] ? [@" · " stringByAppendingString:plugin[@"version"]] : @"";
     NSString *state = [plugin[@"restart_required"] boolValue] ? @"Restart agent to apply" :
       ([plugin[@"enabled"] boolValue] ? @"Enabled" : @"Disabled");
     if ([plugin[@"enabled"] boolValue] && ![plugin[@"restart_required"] boolValue] && [plugin[@"error"] length]) state = plugin[@"error"];
+    if ([plugin[@"scope"] isEqual:@"incognito"]) state = @"Automatic in Incognito windows";
     NSTextField *metadata = [self description:[NSString stringWithFormat:@"%@%@ · %@", origin, version, state]];
+    [controls addObject:metadata];
     NSString *description = [plugin[@"description"] length] ? plugin[@"description"] : plugin[@"id"];
-    NSView *row = [self card:plugin[@"name"] description:description controls:@[toggle, metadata]];
+    NSView *row = [self card:plugin[@"name"] description:description controls:controls];
     [self.pluginRows addArrangedSubview:row];
     [row.widthAnchor constraintEqualToAnchor:self.pluginRows.widthAnchor].active = YES;
   }
@@ -362,6 +369,8 @@
 - (void)reloadPlugins:(id)sender { [self requestPlugins:@{@"action": @"list"}]; }
 - (void)togglePlugin:(NSSwitch *)sender {
   if (self.pluginsBusy || self.pluginsManaged || self.isClosed) return;
+  for (NSDictionary *plugin in self.plugins)
+    if ([plugin[@"id"] isEqual:sender.identifier] && [plugin[@"read_only"] boolValue]) return;
   if (self.pluginsAgentID != self.database.currentAgentID) { [self refreshPluginsForSelectedAgent]; return; }
   [self requestPlugins:@{@"action": @"set_enabled", @"id": sender.identifier,
     @"enabled": @(sender.state == NSControlStateValueOn)}];
@@ -390,6 +399,8 @@
           if (![item[key] isKindOfClass:NSString.class]) valid = NO;
         for (NSString *key in @[@"enabled", @"restart_required"])
           if (![item[key] isKindOfClass:NSNumber.class]) valid = NO;
+        if (item[@"read_only"] && ![item[@"read_only"] isKindOfClass:NSNumber.class]) valid = NO;
+        if (item[@"scope"] && ![item[@"scope"] isKindOfClass:NSString.class]) valid = NO;
       }
       if (error || !valid) {
         owner.pluginStatus.stringValue = error.localizedDescription ?: @"Hermes returned an invalid plugin list. Refresh to retry.";

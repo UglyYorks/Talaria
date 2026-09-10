@@ -287,6 +287,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat brandMarkCrossInset;
 @property (nonatomic) CGFloat focusRingSize;
 @property (nonatomic) CGFloat borderWidth;
+@property (nonatomic) CGFloat incognitoBorderWidth;
 @property (nonatomic) CGFloat workspaceOutlineOpacity;
 @property (nonatomic) CGFloat workspaceShadowRadius;
 @property (nonatomic) CGFloat workspaceShadowOffsetY;

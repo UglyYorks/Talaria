@@ -1,3 +1,4 @@
+#import "design_system/TLIncognitoPill.h"
 #import "TLProviderSetupWindowController.h"
 #import "TLBookmarkEditorController.h"
 #import "TLEmptyStateTips.h"
@@ -219,6 +220,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 @property (nonatomic, strong) TLButton *createChatButton;
 @property (nonatomic, strong) TLButton *sidebarToggleButton;
+@property (nonatomic, strong) TLIncognitoPill *incognitoPill;
 @property (nonatomic, strong) TLInputSuggestionPanelView *slashCommandListView;
 @property (nonatomic, strong) TLInputSuggestionListView *slashCommandScrollView;
 @property (nonatomic, strong) NSTimer *slashCommandUpdateTimer;
@@ -496,6 +498,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                                 forOrientation:NSLayoutConstraintOrientationHorizontal];
 }
 
+- (BOOL)isIncognito { return [self.database respondsToSelector:@selector(isIncognito)] && self.database.incognito; }
+
 - (instancetype)initWithDatabase:(TLDatabase *)database
                 agentOrchestrator:(TLAgentOrchestrator *)agentOrchestrator
                   appStateManager:(TLAppStateManager *)appStateManager {
@@ -544,7 +548,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     self.messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
     self.chatPresentation.messageActivityViews = [NSMapTable strongToStrongObjectsMapTable];
     self.errorMessage = @"";
-    _sidebarVisible = YES;
+    _sidebarVisible = !database.incognito;
+    if (database.incognito) {
+      window.title = @"Talaria — Incognito";
+      [TLChromiumBrowserController.sharedController markWindowIncognito:window];
+    }
     _widgetbookMode = TLWidgetbookModeEnabled();
     if (_widgetbookMode) {
       window.title = @"Talaria Widgetbook";
@@ -554,6 +562,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self installAppStateBindings];
     [self loadInitialState];
     [self installEffectiveAppearanceObserver];
+    if (!database.incognito) {
     _notchOverlayController = [[TLNotchOverlayController alloc] initWithPalette:_palette
                                                                          target:self
                                                                          action:@selector(openFromNotchOverlay:)];
@@ -568,6 +577,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(notificationsDidActivate:)
       name:NSApplicationDidBecomeActiveNotification object:nil];
     [self startNotifications];
+    }
   }
   return self;
 }
@@ -666,6 +676,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (BOOL)windowShouldClose:(NSWindow *)sender {
+  if (self.incognito) {
+    for (TLAssistantTurnRunner *runner in self.turnRunners.allValues) [runner cancel];
+    [self.agentOrchestrator closeIncognito];
+    for (TLWorkspaceTabRuntime *runtime in self.workspaceTabRuntimes.allValues) [runtime.featureController close];
+    [TLChromiumBrowserController.sharedController forgetIncognitoWindow:sender];
+    [self.closedWorkspaceTabs removeAllObjects];
+    [self.messages removeAllObjects];
+    if (self.incognitoDidClose) self.incognitoDidClose();
+    return YES;
+  }
   [sender orderOut:self];
   return NO;
 }
@@ -912,6 +932,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.sidebarView.wantsLayer = YES;
   self.sidebarView.layer.masksToBounds = YES;
   self.sidebarView.canDragWindow = YES;
+  self.sidebarView.hidden = self.incognito;
   [self allowHorizontalWindowExpansionForView:self.sidebarView];
   self.sidebarWidthConstraint = [self.sidebarView.widthAnchor constraintEqualToConstant:[self currentSidebarContentWidth]];
   self.sidebarTileGrid = [self buildSidebarTileGrid];
@@ -943,6 +964,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [workspace addSubview:self.sidebarResizeHandle];
   [self.contentShadowView addSubview:self.contentHost];
   self.workspaceOutline = [[TLWorkspaceOutlineView alloc] init];
+  self.workspaceOutline.incognito = self.incognito;
   self.workspaceOutline.translatesAutoresizingMaskIntoConstraints = NO;
   self.workspaceOutline.layer.zPosition = 11.0;
   self.workspaceOutline.contentView = self.contentHost;
@@ -1418,6 +1440,18 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                                                                             delegate:self
                                                                              palette:self.palette];
   self.sidebarToggleButton = [self makeSidebarToggleButton];
+  if (self.incognito) {
+    self.sidebarToggleButton.hidden = YES;
+    self.incognitoPill = [TLIncognitoPill new];
+    self.incognitoPill.palette = self.palette;
+    [self.topbar addSubview:self.incognitoPill];
+    [NSLayoutConstraint activateConstraints:@[
+      [self.incognitoPill.leadingAnchor constraintEqualToAnchor:self.topbar.leadingAnchor constant:self.palette.trafficLightLeftInset + self.palette.trafficLightReservedWidth - self.palette.space5],
+      [self.incognitoPill.centerYAnchor constraintEqualToAnchor:self.topbar.centerYAnchor],
+      [self.incognitoPill.widthAnchor constraintEqualToConstant:self.incognitoPill.intrinsicContentSize.width],
+      [self.incognitoPill.heightAnchor constraintEqualToConstant:self.incognitoPill.intrinsicContentSize.height],
+    ]];
+  }
   self.createChatButton = [self makeCreateChatButton];
   __weak TLButton *animatedCreateButton = self.createChatButton;
   self.workspaceTabsController.animationActivityChanged = ^(BOOL animating) {
@@ -1729,12 +1763,12 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self startNewChatWithModel:self.settings.selectedModel focus:NO];
   }
 
-  for (NSURL *URL in browserPreferences.startupURLs) [self openBrowserTabWithURL:URL];
+  if (!self.incognito) for (NSURL *URL in browserPreferences.startupURLs) [self openBrowserTabWithURL:URL];
   self.isLoading = NO;
   self.errorMessage = @"";
   [self applyTheme];
   [self renderMessages];
-  if (!self.settings.onboardingCompleted) {
+  if (!self.incognito && !self.settings.onboardingCompleted) {
     dispatch_async(dispatch_get_main_queue(), ^{ [self showOnboardingDemoWindow:self]; });
   } else {
     // Restore suggestions immediately, then warm the VM/gateway before the first /.
@@ -4621,7 +4655,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     return sidebarWidth + self.palette.space3;
   }
 
-  return self.palette.trafficLightLeftInset + self.palette.trafficLightReservedWidth - self.palette.space5 + self.sidebarToggleButton.intrinsicContentSize.width + self.palette.space0;
+  return self.palette.trafficLightLeftInset + self.palette.trafficLightReservedWidth - self.palette.space5 + (self.incognito ? self.incognitoPill.intrinsicContentSize.width + self.palette.space3 : self.sidebarToggleButton.intrinsicContentSize.width) + self.palette.space0;
 }
 
 - (CGFloat)availableTabStripWidthForLeadingConstant:(CGFloat)leadingConstant {
@@ -4741,6 +4775,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)toggleSidebar:(id)sender {
+  if (self.incognito) return;
   self.sidebarVisible = !self.sidebarVisible;
   [self updateSidebarLayoutAnimated:YES];
 }
@@ -5526,6 +5561,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 - (void)styleHeaderButtons {
   NSColor *foreground = self.palette.labelText;
   self.sidebarToggleButton.palette = self.palette;
+  self.incognitoPill.palette = self.palette;
   self.sidebarToggleButton.contentTintColor = foreground;
   self.createChatButton.palette = self.palette;
   self.createChatButton.contentTintColor = foreground;
@@ -5877,6 +5913,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)startNotifications {
+  if (self.incognito) return;
   if (self.widgetbookMode || self.notificationsTimer) return;
   __weak typeof(self) weakSelf = self;
   self.notificationsTimer = [NSTimer timerWithTimeInterval:5 repeats:YES block:^(NSTimer *timer) {
@@ -5898,6 +5935,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)refreshNotifications {
+  if (self.incognito) return;
   if (self.widgetbookMode || !self.notificationsController || !self.agentOrchestrator) return;
   NSInteger agentID = self.database.currentAgentID;
   if (self.notificationsAgentID != agentID) {

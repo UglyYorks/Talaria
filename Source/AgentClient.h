@@ -90,6 +90,9 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLAgentModel *> *_Nullable 
 
 @interface TLBundledAgentClient : NSObject <TLAgentStreaming>
 
+@property (nonatomic, copy, nullable) NSString *incognitoID;
+- (void)closeIncognito;
+- (void)uploadIncognitoAttachments:(NSArray<NSDictionary *> *)files agent:(TLAgentRecord *)agent completion:(void (^)(NSArray * _Nullable, NSError * _Nullable))completion;
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithVMService:(TLAgentVMService *)vmService NS_DESIGNATED_INITIALIZER;
 

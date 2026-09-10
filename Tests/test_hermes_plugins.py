@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'AgentRuntime'))
 from hermes_plugins import Plugins, register_rpc
+from incognito_policy import PLUGIN as INCOGNITO_PLUGIN
 import talaria_agent as worker
 
 
@@ -37,7 +38,8 @@ class PluginTests(unittest.TestCase):
 
     def test_metadata_and_bundled_defaults_without_loading_plugins(self):
         result = self.service.handle({'action': 'list'})
-        self.assertEqual([(p['id'], p['enabled']) for p in result['plugins']], [('alpha', True), ('beta', False), ('backend', True)])
+        self.assertEqual([(p['id'], p['enabled']) for p in result['plugins']],
+                         [('alpha', True), ('beta', False), ('backend', True), (INCOGNITO_PLUGIN, True)])
         self.assertFalse(result['restart_required'])
         self.config.save_config.assert_not_called()
 
@@ -57,7 +59,23 @@ class PluginTests(unittest.TestCase):
             ('same', '1', '', 'user', '/a', 'a/same'), ('same', '1', '', 'user', '/b', 'b/same')]
         self.raw['plugins'].update(enabled=['same'], disabled=[])
         result = self.service.handle({'action': 'set_enabled', 'id': 'a/same', 'enabled': False})
-        self.assertEqual([(p['id'], p['enabled']) for p in result['plugins']], [('a/same', False), ('b/same', True)])
+        self.assertEqual([(p['id'], p['enabled']) for p in result['plugins']],
+                         [('a/same', False), ('b/same', True), (INCOGNITO_PLUGIN, True)])
+
+    def test_incognito_is_visible_without_enabling_hooks_in_normal_profile(self):
+        before = copy.deepcopy(self.raw)
+        result = self.service.handle({'action': 'list'})
+        entry = next(p for p in result['plugins'] if p['id'] == INCOGNITO_PLUGIN)
+        self.assertEqual(entry['scope'], 'incognito')
+        self.assertEqual(entry['source'], 'talaria')
+        self.assertTrue(entry['read_only'])
+        self.assertFalse(entry['active'])
+        self.assertFalse(entry['restart_required'])
+        for desired in (False, True):
+            with self.assertRaisesRegex(ValueError, 'automatically'):
+                self.service.handle({'action': 'set_enabled', 'id': INCOGNITO_PLUGIN, 'enabled': desired})
+        self.assertEqual(self.raw, before)
+        self.config.save_config.assert_not_called()
 
     def test_canonical_enable_clears_legacy_disable(self):
         self.commands._discover_all_plugins.return_value = [('leaf', '1', '', 'user', '/a', 'category/leaf')]
@@ -90,7 +108,7 @@ class PluginTests(unittest.TestCase):
             _ok=lambda rid, result: result, _err=lambda rid, code, error: {'error': error})
         register_rpc(server)
         self.assertIn('talaria.plugins', server._LONG_HANDLERS)
-        self.assertEqual(len(methods['talaria.plugins']('r', {'action': 'list'})['plugins']), 3)
+        self.assertEqual(len(methods['talaria.plugins']('r', {'action': 'list'})['plugins']), 4)
         output = io.BytesIO()
         with patch.object(worker, 'tui_gateway') as gateway:
             gateway.return_value.call.return_value = {'plugins': []}

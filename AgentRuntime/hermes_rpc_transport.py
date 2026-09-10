@@ -28,6 +28,7 @@ class HermesRPCTransport:
                 [str(python), "-u", "-m", entry_module],
                 cwd=str(home.parent), env=environment, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1,
+                start_new_session=entry_module == "incognito_entry",
             )
         threading.Thread(target=self._read, daemon=True).start()
 

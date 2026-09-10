@@ -250,6 +250,7 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 
 include Scripts/tests.mk
 
+
 test-automations: $(BUILD_DIR)/AutomationsTests
 	"$(BUILD_DIR)/AutomationsTests"
 
@@ -398,3 +399,12 @@ $(COMPILE_CONFIG): FORCE
 .PHONY: test-agent-protocol
 test-agent-protocol: $(BUILD_DIR)/AgentProtocolTests
 	"$(BUILD_DIR)/AgentProtocolTests"
+
+.PHONY: test-incognito-browser
+test-incognito-browser: build
+	mkdir -p "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/IncognitoBrowserProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/IncognitoBrowserIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) "$(CEF_WRAPPER_LIB)" $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/IncognitoBrowserProbe.app"
+	python3 Scripts/test-incognito-browser.py

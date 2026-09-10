@@ -141,6 +141,7 @@ static NSString *TLMarkdownHTML(NSString *text, TLThemePalette *palette, NSColor
 
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     configuration.suppressesIncrementalRendering = NO;
+    configuration.websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore;
     NSURL *findURL = [NSBundle.mainBundle URLForResource:@"MarkdownFind" withExtension:@"js"];
     NSString *findScript = findURL ? [NSString stringWithContentsOfURL:findURL encoding:NSUTF8StringEncoding error:nil] : nil;
     if (findScript) [configuration.userContentController addUserScript:[[WKUserScript alloc] initWithSource:findScript

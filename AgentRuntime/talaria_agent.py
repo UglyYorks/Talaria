@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 
 from hermes_gateway import HermesGateway
+import incognito_runtime
 
 
 HERMES_HOME = Path("/workspace/.hermes")
@@ -71,6 +72,8 @@ def hermes_environment(token="", model=""):
 
 
 def save_agent_soul(request):
+    if incognito_runtime.scope.get():
+        return
     # A VM hosts one Hermes instance, so its soul belongs to that instance.
     if "soul" not in request:
         return
@@ -221,6 +224,12 @@ def run_shell_command(request, output=None):
 
 def tui_gateway(token="", model=""):
     global _tui_gateway, _tui_token
+    if incognito_runtime.scope.get():
+        executable = hermes_executable()
+        if not executable:
+            raise RuntimeError("Install Hermes in a normal Talaria window before using private chats.")
+        return incognito_runtime.get_gateway(incognito_runtime.scope.get(), Path(executable).resolve().parent / "python",
+                                             hermes_environment(token, model), HERMES_HOME, HermesGateway)
     with _gateway_lock:
         if _tui_gateway is not None and token and token != _tui_token:
             if _tui_gateway.listeners:
@@ -447,6 +456,38 @@ def manage_hermes_skills(request, output=None):
 
 
 def handle_request(request, output=None, cancellation=None):
+    identity = request.get("incognito_id")
+    if request.get("operation") != "incognito_request":
+        if identity is not None:
+            error("Private requests require the Incognito transport. Update Talaria and restart the agent VM.", output)
+            return
+        return _handle_request(request, output, cancellation)
+    request = {**request, "operation": request.get("incognito_operation")}
+    context = None
+    try:
+        incognito_runtime.validate_id(identity)
+        context = incognito_runtime.scope.set(identity)
+        operation = request.get("operation")
+        if operation == "incognito_close":
+            incognito_runtime.close(identity)
+        elif operation == "incognito_keepalive":
+            incognito_runtime.keepalive(identity)
+        elif operation == "incognito_attachments":
+            rows = incognito_runtime.upload(tui_gateway(), request.get("files"))
+            emit({"type": "delta", "request_id": request.get("request_id"), "kind": "content", "text": json.dumps(rows)}, output)
+        elif operation in {"hermes_session_chat", "hermes_select_model", "hermes_commands", "models", "hermes_generate_text", "hermes_history"}:
+            return _handle_request(request, output, cancellation)
+        else:
+            raise ValueError("This operation is unavailable in Incognito. Use a normal window to change agent settings.")
+        emit({"type": "complete"}, output)
+    except Exception as exc:
+        error(str(exc), output)
+    finally:
+        if context is not None:
+            incognito_runtime.scope.reset(context)
+
+
+def _handle_request(request, output=None, cancellation=None):
     operation = request.get("operation")
     if operation == "shell_command":
         run_shell_command(request, output)
@@ -513,7 +554,8 @@ def handle_connection(connection):
 
         cancellation = StreamCancellation()
         monitor = None
-        if request.get("operation") == "hermes_session_chat":
+        if (request.get("operation") == "hermes_session_chat" or
+                (request.get("operation") == "incognito_request" and request.get("incognito_operation") == "hermes_session_chat")):
             def monitor_disconnect():
                 try:
                     # This connection carries one request. EOF means its caller stopped.

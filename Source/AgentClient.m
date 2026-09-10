@@ -43,6 +43,9 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 @interface TLBundledAgentClient ()
 
 @property (nonatomic, strong) TLAgentVMService *vmService;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLAgentRecord *> *incognitoAgents;
+@property (nonatomic, strong) NSTimer *incognitoLeaseTimer;
+@property (nonatomic) BOOL incognitoClosed;
 @property (nonatomic, strong) NSMutableSet<TLBundledAgentRequest *> *activeRequests;
 
 @end
@@ -235,6 +238,29 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 @end
 
 @implementation TLBundledAgentClient
+
+- (void)closeIncognito {
+  if (self.incognitoClosed || !self.incognitoID.length) return;
+  self.incognitoClosed = YES;
+  [self.incognitoLeaseTimer invalidate];
+  for (TLBundledAgentRequest *request in self.activeRequests.copy)
+    [request finishWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil] models:nil];
+  for (TLAgentRecord *agent in self.incognitoAgents.allValues) {
+    [self startWorkerWithAgent:agent payload:@{@"operation": @"incognito_close", @"request_id": NSUUID.UUID.UUIDString}
+      operation:@"incognito_close" delta:nil streamCompletion:^(NSError *error) {} modelCompletion:nil];
+  }
+  [self.incognitoAgents removeAllObjects];
+}
+
+- (void)uploadIncognitoAttachments:(NSArray<NSDictionary *> *)files agent:(TLAgentRecord *)agent completion:(void (^)(NSArray *, NSError *))completion {
+  NSMutableString *response = [NSMutableString string];
+  [self startWorkerWithAgent:agent payload:@{@"operation": @"incognito_attachments", @"request_id": NSUUID.UUID.UUIDString, @"files": files}
+    operation:@"incognito_attachments" delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) { [response appendString:text]; }
+    streamCompletion:^(NSError *error) {
+      NSArray *rows = !error ? [NSJSONSerialization JSONObjectWithData:[response dataUsingEncoding:NSUTF8StringEncoding] options:0 error:&error] : nil;
+      completion([rows isKindOfClass:NSArray.class] ? rows : nil, error);
+    } modelCompletion:nil];
+}
 
 - (instancetype)initWithVMService:(TLAgentVMService *)vmService {
   self = [super init];
@@ -458,6 +484,35 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     return;
   }
 
+  if (self.incognitoID.length) {
+    if (self.incognitoClosed && ![payload[@"operation"] isEqual:@"incognito_close"]) {
+      if (resultCompletion) {
+        dispatch_async(dispatch_get_main_queue(), ^{ resultCompletion(nil, TLAgentClientError(@"This Incognito window is closed.")); });
+      } else {
+      [self completeStreamCompletion:streamCompletion modelCompletion:modelCompletion models:nil error:TLAgentClientError(@"This Incognito window is closed.")];
+      }
+      return;
+    }
+    NSMutableDictionary *privatePayload = [payload mutableCopy];
+    // Old guest workers must reject the operation, never ignore a new flag and
+    // accidentally run a private prompt through their normal persistent gateway.
+    privatePayload[@"incognito_operation"] = payload[@"operation"];
+    privatePayload[@"operation"] = @"incognito_request";
+    privatePayload[@"incognito_id"] = self.incognitoID;
+    payload = privatePayload;
+    if (!self.incognitoAgents) self.incognitoAgents = [NSMutableDictionary dictionary];
+    self.incognitoAgents[@(agent.agentID)] = agent;
+    if (!self.incognitoLeaseTimer && !self.incognitoClosed) {
+      __weak typeof(self) owner = self;
+      self.incognitoLeaseTimer = [NSTimer scheduledTimerWithTimeInterval:20 repeats:YES block:^(NSTimer *timer) {
+        typeof(self) strong = owner;
+        if (!strong) { [timer invalidate]; return; }
+        for (TLAgentRecord *usedAgent in strong.incognitoAgents.allValues)
+          [strong startWorkerWithAgent:usedAgent payload:@{@"operation": @"incognito_keepalive", @"request_id": NSUUID.UUID.UUIDString}
+            operation:@"incognito_keepalive" delta:nil streamCompletion:^(NSError *error) {} modelCompletion:nil];
+      }];
+    }
+  }
   // Register before connecting so Stop also cancels a request waiting for its socket.
   TLBundledAgentRequest *request = [[TLBundledAgentRequest alloc] init];
   request.requestID = payload[@"request_id"];

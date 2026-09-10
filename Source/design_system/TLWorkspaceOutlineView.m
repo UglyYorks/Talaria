@@ -86,8 +86,8 @@
   self.outlineLayer.path = outline;
   self.outlineLayer.fillColor = TLCGColor(self.palette.transparentSurface);
   self.outlineLayer.strokeColor = TLCGColor(self.palette.controlBorder);
-  self.outlineLayer.lineWidth = self.palette.borderWidth;
-  self.outlineLayer.opacity = self.palette.workspaceOutlineOpacity;
+  self.outlineLayer.lineWidth = self.incognito ? self.palette.incognitoBorderWidth : self.palette.borderWidth;
+  self.outlineLayer.opacity = self.incognito ? 1.0 : self.palette.workspaceOutlineOpacity;
   // Reuse the exact welded outline for a single shadow. The exterior-only
   // mask prevents this overlay from shading content or the tab/content join.
   self.shadowLayer.frame = self.bounds;

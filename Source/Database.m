@@ -87,6 +87,8 @@ static id TLJSONValue(NSString *text) {
 
 @property (nonatomic, strong) TLSQLiteConnection *sqliteConnection;
 @property (nonatomic, strong) dispatch_queue_t databaseQueue;
+@property (nonatomic, readwrite, getter=isIncognito) BOOL incognito;
+@property (nonatomic, copy) NSString *incognitoToken;
 @property (nonatomic, strong) id<TLCredentialStore> credentialStore;
 
 - (BOOL)executeSQL:(const char *)sql error:(NSError **)error;
@@ -95,6 +97,52 @@ static id TLJSONValue(NSString *text) {
 @end
 
 @implementation TLDatabase
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _databaseQueue = dispatch_queue_create("com.talaria.database", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_set_specific(_databaseQueue, (__bridge void *)self, (__bridge void *)self, NULL);
+  }
+  return self;
+}
+
+- (void)registerHistoryFunctions {
+  sqlite3_create_function_v2(self.sqliteConnection.handle, "talaria_history_matches", 3, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, TLHistoryMatches, NULL, NULL, NULL);
+  sqlite3_create_function_v2(self.sqliteConnection.handle, "talaria_origin", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, TLHistoryOrigin, NULL, NULL, NULL);
+}
+
+- (TLDatabase *)incognitoDatabase:(NSError **)error {
+  if (!dispatch_get_specific((__bridge void *)self)) {
+    __block TLDatabase *copy;
+    __block NSError *copyError = nil;
+    dispatch_sync(self.databaseQueue, ^{ copy = [self incognitoDatabase:&copyError]; });
+    if (error) *error = copyError;
+    return copy;
+  }
+  TLAppSettings *settings = [self appSettings:error];
+  if (!settings) return nil;
+  TLDatabase *copy = [TLDatabase new];
+  copy.incognito = YES;
+  copy.incognitoToken = settings.openRouterToken;
+  __block BOOL copied = NO;
+  __block NSError *copyError = nil;
+  // Hold the source queue while creating a destination that is not yet shared.
+  dispatch_sync(copy.databaseQueue, ^{
+    copy.sqliteConnection = [TLSQLiteConnection openInMemory:&copyError];
+    if (!copy.sqliteConnection) return;
+    [copy registerHistoryFunctions];
+    sqlite3_backup *backup = sqlite3_backup_init(copy.sqliteConnection.handle, "main", self.sqliteConnection.handle, "main");
+    if (!backup) { [copy.sqliteConnection setCurrentError:&copyError]; return; }
+    int result = sqlite3_backup_step(backup, -1);
+    int finished = sqlite3_backup_finish(backup);
+    if (result != SQLITE_DONE || finished != SQLITE_OK) { [copy.sqliteConnection setCurrentError:&copyError]; return; }
+    copied = [copy executeSQL:"PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; DELETE FROM messages; DELETE FROM bookmarks; DELETE FROM chats; DELETE FROM browser_history; DELETE FROM notifications; DELETE FROM notification_sync;" error:&copyError];
+  });
+  if (error) *error = copyError;
+  return copied ? copy : nil;
+}
+
 
 - (TLChatRecord *)cacheHermesSession:(NSDictionary *)session messages:(NSArray<NSDictionary *> *)messages
                            agentID:(NSInteger)agentID error:(NSError **)error {
@@ -471,6 +519,7 @@ static id TLJSONValue(NSString *text) {
   if (error) *error = queryError;
   return result;
 }
+
 + (NSURL *)defaultDatabaseURL {
   NSURL *supportURL = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                             inDomains:NSUserDomainMask] firstObject];
@@ -483,13 +532,11 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (instancetype)initWithURL:(NSURL *)url credentialStore:(id<TLCredentialStore>)credentialStore error:(NSError **)error {
-  self = [super init];
+  self = [self init];
   if (!self) {
     return nil;
   }
   _credentialStore = credentialStore;
-  _databaseQueue = dispatch_queue_create("com.talaria.database", DISPATCH_QUEUE_SERIAL);
-  dispatch_queue_set_specific(_databaseQueue, (__bridge void *)self, (__bridge void *)self, NULL);
 
   NSURL *directoryURL = [url URLByDeletingLastPathComponent];
   if (![NSFileManager.defaultManager createDirectoryAtURL:directoryURL
@@ -504,8 +551,7 @@ static id TLJSONValue(NSString *text) {
   dispatch_sync(_databaseQueue, ^{
     self.sqliteConnection = [TLSQLiteConnection openURL:url error:&initializationError];
     if (!self.sqliteConnection) return;
-    sqlite3_create_function_v2(self.sqliteConnection.handle, "talaria_history_matches", 3, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, TLHistoryMatches, NULL, NULL, NULL);
-    sqlite3_create_function_v2(self.sqliteConnection.handle, "talaria_origin", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, TLHistoryOrigin, NULL, NULL, NULL);
+    [self registerHistoryFunctions];
     initialized = [self initializeSchema:&initializationError];
   });
   if (!initialized) { if (error) *error = initializationError; return nil; }
@@ -579,7 +625,7 @@ static id TLJSONValue(NSString *text) {
     }
 
     NSError *credentialError = nil;
-    NSString *token = remember ? [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount
+    NSString *token = self.incognito ? self.incognitoToken : remember ? [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount
                                                                     error:&credentialError] : nil;
     if (credentialError) {
       if (error) { *error = credentialError; }
@@ -605,7 +651,7 @@ static id TLJSONValue(NSString *text) {
     NSString *theme = @"system";
     NSString *token = settings.rememberOpenRouterToken ? TLTrimmedString(settings.openRouterToken) : nil;
     NSError *credentialError = nil;
-    NSString *previousToken = [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount error:&credentialError];
+    NSString *previousToken = self.incognito ? self.incognitoToken : [self.credentialStore credentialForAccount:TLOpenRouterTokenCredentialAccount error:&credentialError];
     if (credentialError) {
       if (error) { *error = credentialError; }
       return nil;
@@ -788,6 +834,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (NSInteger)onDatabaseQueue_recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error {
+  if (self.incognito) return 0;
   NSString *scheme = URL.scheme.lowercaseString;
   if ((![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) || !URL.host.length) return 0;
   @synchronized (self) {
@@ -1761,6 +1808,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (BOOL)storeToken:(NSString *)token error:(NSError **)error {
+  if (self.incognito) { self.incognitoToken = token; return YES; }
   if (token) {
     return [self.credentialStore setCredential:token forAccount:TLOpenRouterTokenCredentialAccount error:error];
   }
@@ -1772,6 +1820,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (BOOL)migrateLegacyCredentialWithRemember:(BOOL)remember error:(NSError **)error {
+  if (self.incognito) return YES;
   NSError *readError = nil;
   NSString *legacyToken = [self settingForKey:@"openRouterToken" error:&readError];
   if (readError) {
