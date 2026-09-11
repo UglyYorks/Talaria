@@ -1,0 +1,166 @@
+{
+  "integrated_main": "8ab4c35e0358ae395751b468230da9eaf323441e",
+  "native_suites": [
+    {
+      "name": "IncognitoTests",
+      "passed": true
+    },
+    {
+      "name": "NotificationDataTests",
+      "passed": true
+    },
+    {
+      "name": "NotificationSidebarTests",
+      "passed": true
+    },
+    {
+      "name": "NotificationNavigationTests",
+      "passed": true
+    },
+    {
+      "name": "HistoryQueryTests",
+      "passed": true
+    },
+    {
+      "name": "RepositoryTests",
+      "passed": true
+    },
+    {
+      "name": "AutomationsTests",
+      "passed": true
+    },
+    {
+      "name": "MarkdownCodeTests",
+      "passed": true
+    },
+    {
+      "name": "MarkdownTableTests",
+      "passed": true
+    },
+    {
+      "name": "MarkdownMathTests",
+      "passed": true
+    },
+    {
+      "name": "GlassPaneTests",
+      "passed": true
+    },
+    {
+      "name": "NotchOverlayViewTests",
+      "passed": true
+    },
+    {
+      "name": "TabLayoutTests",
+      "passed": true
+    },
+    {
+      "name": "PromptBuilderTests",
+      "passed": true
+    },
+    {
+      "name": "CredentialStoreTests",
+      "passed": true
+    },
+    {
+      "name": "AssistantTurnResultTests",
+      "passed": true
+    },
+    {
+      "name": "AppStateManagerTests",
+      "passed": true
+    },
+    {
+      "name": "WorkspaceSessionTests",
+      "passed": true
+    },
+    {
+      "name": "WorkspaceRestoreTests",
+      "passed": true
+    },
+    {
+      "name": "AppStartupTests",
+      "passed": true
+    },
+    {
+      "name": "TransitionCoordinatorTests",
+      "passed": true
+    },
+    {
+      "name": "FeatureControllerTests",
+      "passed": true
+    },
+    {
+      "name": "ChatAttachmentTests",
+      "passed": true
+    },
+    {
+      "name": "TabShortcutTests",
+      "passed": true
+    },
+    {
+      "name": "AppResetTests",
+      "passed": true
+    },
+    {
+      "name": "SplitWorkspaceTests",
+      "passed": true
+    },
+    {
+      "name": "BrowserOverlayPolicyTests",
+      "passed": true
+    },
+    {
+      "name": "AttachmentViewerTests",
+      "passed": true
+    },
+    {
+      "name": "BrowserDownloadTests",
+      "passed": true
+    },
+    {
+      "name": "MarkdownLinkContextTests",
+      "passed": true
+    },
+    {
+      "name": "BrowserFindTests",
+      "passed": true
+    },
+    {
+      "name": "AgentVMLockTests",
+      "passed": true
+    },
+    {
+      "name": "ChatFindTests",
+      "passed": true
+    },
+    {
+      "name": "BookmarkTests",
+      "passed": true
+    },
+    {
+      "name": "BrowserHistoryTests",
+      "passed": true
+    },
+    {
+      "name": "StarryEmptyStateTests",
+      "passed": true
+    },
+    {
+      "name": "AgentProtocolTests",
+      "passed": true
+    }
+  ],
+  "python_tests": 137,
+  "agent_runtime_tests": 13,
+  "terminal_service_tests": 7,
+  "browser_checks": 146,
+  "browser_profile_import": "passed",
+  "theme_audit": "passed",
+  "desktop_build": "passed",
+  "signature_verification": "passed",
+  "excluded_suite": {
+    "name": "QuickInputTests",
+    "reason": "Previously reproduced transparent capture-window assertion with the original controller."
+  },
+  "incognito_browser_probe": "passed: normal/private and separate-private cookie/localStorage isolation; no private marker persisted to disk"
+}

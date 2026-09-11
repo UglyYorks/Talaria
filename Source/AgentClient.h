@@ -14,7 +14,7 @@ typedef NS_ENUM(NSInteger, TLAgentStreamDeltaKind) {
   TLAgentStreamDeltaKindToolActivity,
 };
 
-typedef void (^TLAgentStreamDeltaHandler)(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text);
+typedef void (^TLAgentStreamDeltaHandler)(NSString *requestID, TLAgentStreamDeltaKind kind, id value);
 typedef void (^TLAgentStreamCompletionHandler)(NSError *_Nullable error);
 typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLAgentModel *> *_Nullable models, NSError *_Nullable error);
 

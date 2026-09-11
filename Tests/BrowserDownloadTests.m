@@ -1,3 +1,4 @@
+#import "TLChatControllerTestSupport.h"
 #import <AppKit/AppKit.h>
 #import "TLBrowserDownloadManager.h"
 #import "TLDownloadsTabController.h"
@@ -36,7 +37,7 @@ static BOOL ContainsColor(NSBitmapImageRep *image, NSColor *color) {
 - (void)reloadWorkspaceTabs {}
 - (void)renderWorkspaceTabs {}
 - (void)updateWorkspaceMode {}
-- (void)updateControlStates {}
+- (void)updateControlStatesForChat:(TLChatTabController *)chatContext {}
 @end
 static void TestWorkspaceDownloads(void) {
   TLAppStateManager *state = [[TLAppStateManager alloc] init];

@@ -4,17 +4,19 @@ LEVELDB := $(IMPORT_VENDOR)/leveldb-1.23
 SNAPPY := $(IMPORT_VENDOR)/snappy-1.1.9
 IMPORT_SOURCES := $(wildcard $(LEVELDB)/db/*.cc) $(wildcard $(LEVELDB)/table/*.cc) $(wildcard $(LEVELDB)/util/*.cc) $(wildcard $(SNAPPY)/*.cc)
 IMPORT_OBJECTS := $(patsubst $(IMPORT_VENDOR)/%.cc,$(BUILD_DIR)/browser-import/%.o,$(IMPORT_SOURCES))
-IMPORT_HEADERS := $(shell find $(IMPORT_VENDOR) -name '*.h')
 IMPORT_FLAGS := -I$(LEVELDB)/include -I$(LEVELDB) -I$(SNAPPY) -DLEVELDB_PLATFORM_POSIX=1 -DHAVE_CONFIG_H=1
 APP_OBJCXXFLAGS += $(IMPORT_FLAGS)
 APP_FRAMEWORKS += $(BUILD_DIR)/libbrowser_import.a
-$(APP_BUILD_STAMP): $(BUILD_DIR)/libbrowser_import.a
-$(APP_OBJECTS): Scripts/browser-import.mk
+$(APP_BUILD_STAMP) $(APP_LINK_EXECUTABLE) $(addprefix $(BUILD_DIR)/,$(INTEGRATION_TESTS)): $(BUILD_DIR)/libbrowser_import.a
 # Existing integration tests link APP_FRAMEWORKS and therefore need this archive.
-$(APP_OBJECTS): | $(BUILD_DIR)/libbrowser_import.a
-$(BUILD_DIR)/browser-import/%.o: $(IMPORT_VENDOR)/%.cc $(IMPORT_HEADERS)
+IMPORT_COMPILE_CONFIG := $(BUILD_DIR)/.browser-import-config
+$(IMPORT_COMPILE_CONFIG): FORCE
+	@mkdir -p "$(BUILD_DIR)"
+	@printf '%s\n' '$(IMPORT_FLAGS)' > "$@.tmp"
+	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
+$(BUILD_DIR)/browser-import/%.o: $(IMPORT_VENDOR)/%.cc Scripts/browser-import.mk $(IMPORT_COMPILE_CONFIG)
 	@mkdir -p "$(@D)"
-	xcrun clang++ -std=c++17 -O2 -fvisibility=hidden -mmacosx-version-min=13.0 $(IMPORT_FLAGS) -c $< -o $@
+	xcrun clang++ -std=c++17 -O2 -fvisibility=hidden -mmacosx-version-min=13.0 $(IMPORT_FLAGS) -MMD -MP -MF "$@.d" -c $< -o $@
 $(BUILD_DIR)/libbrowser_import.a: $(IMPORT_OBJECTS)
 	xcrun ar rcs $@ $^
 .PHONY: test-browser-import
@@ -36,3 +38,5 @@ test-browser-import-webkit: build
 .PHONY: test-browser-import-ui
 test-browser-import-ui: $(BUILD_DIR)/FeatureControllerTests
 	TL_TEST_BROWSER_IMPORT_ONLY=1 "$(BUILD_DIR)/FeatureControllerTests"
+
+-include $(IMPORT_OBJECTS:=.d)

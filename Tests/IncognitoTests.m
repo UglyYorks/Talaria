@@ -90,6 +90,19 @@ int main(void) {
     TLIncognitoTestCredentials *credentials = [TLIncognitoTestCredentials new];
     TLDatabase *normal = [[TLDatabase alloc] initWithURL:[folder URLByAppendingPathComponent:@"normal.sqlite3"] credentialStore:credentials error:&error];
     Check(normal != nil, error.localizedDescription);
+    TLBundledAgentClient *closedClient = [[TLBundledAgentClient alloc] initWithVMService:(id)[NSObject new]];
+    closedClient.incognitoID = @"closed-test-window";
+    [closedClient closeIncognito];
+    __block BOOL completed = NO;
+    [closedClient hermesHistoryWithAgent:[TLAgentRecord new] action:@"list" sessionID:@"" token:@"" model:@""
+      completion:^(NSDictionary *result, NSError *failure) {
+        Check(result == nil && [failure.localizedDescription containsString:@"closed"], @"Closed private clients complete structured requests with an error");
+        completed = YES;
+      }];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+    while (!completed && deadline.timeIntervalSinceNow > 0)
+      [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    Check(completed, @"Closing a private window cannot leave a structured request waiting");
     CheckVisiblePlugin(normal);
     TLAppSettings *settings = [normal appSettings:&error];
     settings.rememberOpenRouterToken = YES;

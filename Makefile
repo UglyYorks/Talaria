@@ -1,7 +1,9 @@
+.DEFAULT_GOAL := all
 APP_NAME := Talaria
 BUILD_DIR := build
 APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 APP_EXECUTABLE := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
+APP_LINK_EXECUTABLE := $(BUILD_DIR)/bin/$(APP_NAME)
 APP_BUILD_STAMP := $(BUILD_DIR)/.$(APP_NAME).build.stamp
 APP_ENTITLEMENTS := Entitlements.plist
 # Keep this identity persistent so the credential helper can authenticate builds.
@@ -10,7 +12,7 @@ CODE_SIGN_IDENTITY ?= Talaria Local Development
 SIGNING_CONFIG := $(BUILD_DIR)/.signing-identity
 AGENT_RUNTIME_FILES := $(wildcard AgentRuntime/*.py) AgentRuntime/talaria-init
 AGENT_LINUX_RUNTIME_DIR := $(BUILD_DIR)/agent-runtime/linux-arm64
-AGENT_LINUX_RUNTIME_STAMP := $(AGENT_LINUX_RUNTIME_DIR)/.download.stamp
+AGENT_LINUX_RUNTIME_STAMP := $(AGENT_LINUX_RUNTIME_DIR)/.initrd.stamp
 AGENT_LINUX_KERNEL_ZBOOT := $(AGENT_LINUX_RUNTIME_DIR)/vmlinuz-virt
 AGENT_LINUX_KERNEL := $(AGENT_LINUX_RUNTIME_DIR)/Image
 AGENT_LINUX_INITRD := $(AGENT_LINUX_RUNTIME_DIR)/initrd
@@ -22,11 +24,11 @@ ALPINE_NETBOOT_URL := https://dl-cdn.alpinelinux.org/alpine/$(ALPINE_RELEASE)/re
 ALPINE_KERNEL_SHA256 := 47970e0ee0478fe5c60824a89f162d5a353fa29466e5d3bddb0f9c506f1ed756
 ALPINE_INITRD_SHA256 := e47d38bc88509a3db11affc09f9762f9643b026bd29441724a4729ad8e97add6
 ALPINE_MODLOOP_SHA256 := f969d12c8e23b486c8df651f04a4a9767f32fee16aed385c23462c31ea6cb47b
-APP_HEADERS := $(wildcard Source/*.h) $(wildcard Source/design_system/*.h)
 APP_OBJC_SOURCES := $(wildcard Source/*.m) $(wildcard Source/design_system/*.m)
 APP_OBJCXX_SOURCES := $(wildcard Source/*.mm)
 APP_CXX_SOURCES := $(wildcard Source/*.cc)
 APP_SOURCES := $(APP_OBJC_SOURCES) $(APP_OBJCXX_SOURCES) $(APP_CXX_SOURCES)
+COMPILE_CONFIG := $(BUILD_DIR)/.compile-config
 APP_OBJECT_DIR := $(BUILD_DIR)/app-objects
 APP_OBJECTS := $(patsubst Source/%.m,$(APP_OBJECT_DIR)/%.m.o,$(APP_OBJC_SOURCES)) \
 	$(patsubst Source/%.mm,$(APP_OBJECT_DIR)/%.mm.o,$(APP_OBJCXX_SOURCES)) \
@@ -98,10 +100,14 @@ $(SIGNING_CONFIG): FORCE | check-signing-identity
 	@printf '%s\n' '$(CODE_SIGN_IDENTITY)' > "$@.tmp"
 	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
 
-$(APP_BUILD_STAMP): $(WEBKIT_BRIDGE) $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES)
+$(APP_LINK_EXECUTABLE): $(APP_OBJECTS) $(COMPILE_CONFIG)
+	mkdir -p "$(dir $@)"
+	xcrun clang++ $(APP_OBJECTS) $(APP_FRAMEWORKS) -o "$@"
+
+$(APP_BUILD_STAMP): $(APP_LINK_EXECUTABLE) $(WEBKIT_BRIDGE) $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"
-	xcrun clang++ $(APP_OBJECTS) $(APP_FRAMEWORKS) -o "$(APP_EXECUTABLE)"
+	cp "$(APP_LINK_EXECUTABLE)" "$(APP_EXECUTABLE)"
 	cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
 	cp "$(WEBKIT_BRIDGE)" "$(APP_BUNDLE)/Contents/Resources/BrowserWebKitBridge.js"
 	cp "$(OVERLAY_PROBE)" "$(APP_BUNDLE)/Contents/Resources/BrowserOverlayProbe.js"
@@ -125,44 +131,31 @@ $(APP_BUILD_STAMP): $(WEBKIT_BRIDGE) $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefil
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(APP_BUNDLE)"
 	touch "$(APP_BUILD_STAMP)"
 
-$(APP_OBJECT_DIR)/%.m.o: Source/%.m $(APP_HEADERS) Makefile
+$(APP_OBJECT_DIR)/%.m.o: Source/%.m $(COMPILE_CONFIG)
 	mkdir -p "$(dir $@)"
-	xcrun clang $(OBJCFLAGS) -ISource -c "$<" -o "$@"
+	xcrun clang $(OBJCFLAGS) -ISource -MMD -MP -MF "$@.d" -c "$<" -o "$@"
 
-$(APP_OBJECT_DIR)/%.mm.o: Source/%.mm $(APP_HEADERS) Makefile
+$(APP_OBJECT_DIR)/%.mm.o: Source/%.mm $(COMPILE_CONFIG)
 	mkdir -p "$(dir $@)"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource -c "$<" -o "$@"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource -MMD -MP -MF "$@.d" -c "$<" -o "$@"
 
-$(APP_OBJECT_DIR)/%.cc.o: Source/%.cc $(APP_HEADERS) Makefile
+$(APP_OBJECT_DIR)/%.cc.o: Source/%.cc $(COMPILE_CONFIG)
 	mkdir -p "$(dir $@)"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource -c "$<" -o "$@"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource -MMD -MP -MF "$@.d" -c "$<" -o "$@"
 
-$(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILES)
+# Immutable downloads and the generated guest image have separate dependencies.
+define alpine_download
+$(1):
 	mkdir -p "$(AGENT_LINUX_RUNTIME_DIR)"
-	curl -fL -o "$(AGENT_LINUX_KERNEL_ZBOOT).tmp" "$(ALPINE_NETBOOT_URL)/vmlinuz-virt"
-	mv "$(AGENT_LINUX_KERNEL_ZBOOT).tmp" "$(AGENT_LINUX_KERNEL_ZBOOT)"
-	@actual=$$(shasum -a 256 "$(AGENT_LINUX_KERNEL_ZBOOT)" | awk '{print $$1}'); \
-	if [ "$$actual" != "$(ALPINE_KERNEL_SHA256)" ]; then \
-	  rm -f "$(AGENT_LINUX_KERNEL_ZBOOT)"; \
-	  echo "Alpine kernel checksum mismatch: $$actual"; \
-	  exit 1; \
-	fi
-	curl -fL -o "$(AGENT_LINUX_BASE_INITRD).tmp" "$(ALPINE_NETBOOT_URL)/initramfs-virt"
-	mv "$(AGENT_LINUX_BASE_INITRD).tmp" "$(AGENT_LINUX_BASE_INITRD)"
-	@actual=$$(shasum -a 256 "$(AGENT_LINUX_BASE_INITRD)" | awk '{print $$1}'); \
-	if [ "$$actual" != "$(ALPINE_INITRD_SHA256)" ]; then \
-	  rm -f "$(AGENT_LINUX_BASE_INITRD)"; \
-	  echo "Alpine initrd checksum mismatch: $$actual"; \
-	  exit 1; \
-	fi
-	curl -fL -o "$(AGENT_LINUX_MODLOOP).tmp" "$(ALPINE_NETBOOT_URL)/modloop-virt"
-	mv "$(AGENT_LINUX_MODLOOP).tmp" "$(AGENT_LINUX_MODLOOP)"
-	@actual=$$(shasum -a 256 "$(AGENT_LINUX_MODLOOP)" | awk '{print $$1}'); \
-	if [ "$$actual" != "$(ALPINE_MODLOOP_SHA256)" ]; then \
-	  rm -f "$(AGENT_LINUX_MODLOOP)"; \
-	  echo "Alpine modloop checksum mismatch: $$actual"; \
-	  exit 1; \
-	fi
+	curl -fL -o "$$@.tmp" "$(ALPINE_NETBOOT_URL)/$(2)"
+	@actual=$$$$(shasum -a 256 "$$@.tmp" | awk '{print $$$$1}'); test "$$$$actual" = "$(3)" || { rm -f "$$@.tmp"; echo "Alpine checksum mismatch"; exit 1; }
+	mv "$$@.tmp" "$$@"
+endef
+$(eval $(call alpine_download,$(AGENT_LINUX_KERNEL_ZBOOT),vmlinuz-virt,$(ALPINE_KERNEL_SHA256)))
+$(eval $(call alpine_download,$(AGENT_LINUX_BASE_INITRD),initramfs-virt,$(ALPINE_INITRD_SHA256)))
+$(eval $(call alpine_download,$(AGENT_LINUX_MODLOOP),modloop-virt,$(ALPINE_MODLOOP_SHA256)))
+
+$(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_KERNEL_ZBOOT) $(AGENT_LINUX_BASE_INITRD) $(AGENT_LINUX_MODLOOP)
 	python3 Scripts/build-agent-initrd.py \
 	  --alpine-release "$(ALPINE_RELEASE)" \
 	  --zboot-kernel "$(AGENT_LINUX_KERNEL_ZBOOT)" \
@@ -178,91 +171,18 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	test -s "$(AGENT_LINUX_INITRD)"
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
-test: $(BUILD_DIR)/BookmarkTests $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/BrowserDownloadTests test-browser-overlay $(BUILD_DIR)/BrowserOverlayPolicyTests $(BUILD_DIR)/SplitWorkspaceTests $(BUILD_DIR)/TerminalClientProbe $(BUILD_DIR)/AppResetTests $(BUILD_DIR)/ChatAttachmentTests test-hermes-gateway audit-theme-colors $(TEST_EXECUTABLE) $(TAB_LAYOUT_TEST_EXECUTABLE) $(NOTCH_VIEW_TEST_EXECUTABLE) $(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/CredentialStoreTests $(BUILD_DIR)/AssistantTurnResultTests $(BUILD_DIR)/AppStateManagerTests $(BUILD_DIR)/TransitionCoordinatorTests $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/TabShortcutTests
-	"$(BUILD_DIR)/BookmarkTests"
-	"$(BUILD_DIR)/StarryEmptyStateTests"
-	"$(BUILD_DIR)/BrowserHistoryTests"
-	"$(BUILD_DIR)/BrowserDownloadTests"
-	"$(BUILD_DIR)/BrowserSettingsTests"
-	"$(BUILD_DIR)/WebKitDownloadLifecycleTests"
-	"$(BUILD_DIR)/AgentVMLockTests"
-	"$(BUILD_DIR)/IncognitoTests"
-	"$(BUILD_DIR)/NotificationDataTests"
-	"$(BUILD_DIR)/NotificationSidebarTests"
-	"$(BUILD_DIR)/NotificationNavigationTests"
-	"$(BUILD_DIR)/AutomationsTests"
-	"$(BUILD_DIR)/QuickInputTests"
-	"$(BUILD_DIR)/SplitWorkspaceTests"
-	"$(BUILD_DIR)/BrowserOverlayPolicyTests"
-	"$(BUILD_DIR)/WheelScrollAnimationTests"
-	"$(BUILD_DIR)/ChatAttachmentTests"
-	"$(BUILD_DIR)/AttachmentViewerTests"
-	python3 -B Tests/TerminalServiceTests.py
-	"$(BUILD_DIR)/AppResetTests"
-	"$(TEST_EXECUTABLE)"
-	"$(TAB_LAYOUT_TEST_EXECUTABLE)"
-	"$(NOTCH_VIEW_TEST_EXECUTABLE)"
-	"$(GLASS_PANE_TEST_EXECUTABLE)"
-	"$(BUILD_DIR)/CredentialStoreTests"
-	"$(BUILD_DIR)/AssistantTurnResultTests"
-	"$(BUILD_DIR)/AppStateManagerTests"
-	"$(BUILD_DIR)/WorkspaceSessionTests"
-	"$(BUILD_DIR)/WorkspaceRestoreTests"
-	"$(BUILD_DIR)/AppStartupTests"
-	"$(BUILD_DIR)/TransitionCoordinatorTests"
-	"$(BUILD_DIR)/FeatureControllerTests"
-	"$(BUILD_DIR)/TabShortcutTests"
-	"$(BUILD_DIR)/BrowserFindTests"
-	"$(BUILD_DIR)/ChatFindTests"
-	python3 Tests/AgentRuntimeTests.py
-	"$(BUILD_DIR)/MarkdownMathTests"
-	"$(BUILD_DIR)/MarkdownCodeTests"
-	"$(BUILD_DIR)/MarkdownLinkContextTests"
-	"$(BUILD_DIR)/MarkdownTableTests"
+include Scripts/tests.mk
 
-test: $(BUILD_DIR)/MarkdownLinkContextTests $(BUILD_DIR)/MarkdownMathTests $(BUILD_DIR)/MarkdownCodeTests $(BUILD_DIR)/MarkdownTableTests
-
-test: $(BUILD_DIR)/QuickInputTests
-
-test: $(BUILD_DIR)/AutomationsTests
-test: $(BUILD_DIR)/WorkspaceSessionTests $(BUILD_DIR)/WorkspaceRestoreTests
-test: $(BUILD_DIR)/AppStartupTests
-test: $(BUILD_DIR)/NotificationDataTests $(BUILD_DIR)/NotificationSidebarTests $(BUILD_DIR)/NotificationNavigationTests
-test-notifications: $(BUILD_DIR)/NotificationDataTests $(BUILD_DIR)/NotificationSidebarTests $(BUILD_DIR)/NotificationNavigationTests test-hermes-gateway
-	"$(BUILD_DIR)/NotificationDataTests"
-	"$(BUILD_DIR)/NotificationSidebarTests"
-	"$(BUILD_DIR)/NotificationNavigationTests"
-
-$(BUILD_DIR)/NotificationDataTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/NotificationDataTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-$(BUILD_DIR)/NotificationSidebarTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/NotificationSidebarTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-$(BUILD_DIR)/NotificationNavigationTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/NotificationNavigationTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 test-automations: $(BUILD_DIR)/AutomationsTests
 	"$(BUILD_DIR)/AutomationsTests"
 
-$(BUILD_DIR)/AutomationsTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/AutomationsTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-$(BUILD_DIR)/QuickInputTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/QuickInputTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 # Explicit native integration check; uses existing Screen Recording access only.
 .PHONY: test-screen-capture
 test-screen-capture: $(BUILD_DIR)/ScreenCaptureTests check-signing-identity
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --identifier com.talaria.chat "$<"
 	"$<"
-
-$(BUILD_DIR)/ScreenCaptureTests: Source/TLScreenCapture.m Source/TLScreenCapture.h Tests/ScreenCaptureTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework ScreenCaptureKit -o "$@"
-
-$(BUILD_DIR)/MarkdownCodeTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Tests/MarkdownCodeTests.m $(MARKDOWN_RESOURCES_STAMP)
-	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
-
-$(BUILD_DIR)/MarkdownTableTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Tests/MarkdownTableTests.m $(MARKDOWN_RESOURCES_STAMP)
-	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
 
 $(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES)
 	mkdir -p "$(BUILD_DIR)"
@@ -272,30 +192,9 @@ $(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES)
 	ditto Vendor/katex "$(BUILD_DIR)/katex"
 	touch "$@"
 
-$(BUILD_DIR)/MarkdownMathTests: Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Tests/MarkdownMathTests.m Tests/Fixtures/latex-formulas.md $(MARKDOWN_RESOURCES_STAMP)
-	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -o "$@"
-
-$(GLASS_PANE_TEST_EXECUTABLE) $(BUILD_DIR)/FeatureControllerTests $(BUILD_DIR)/MarkdownLinkContextTests: | $(MARKDOWN_RESOURCES_STAMP)
-
-$(GLASS_PANE_TEST_EXECUTABLE): Source/design_system/TLButton.m Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLAttachmentChipView.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/design_system/TLToolActivityView.m Source/design_system/TLApprovalCardView.m Source/design_system/TLThemedButton.m Source/MarkdownRenderer.m Source/design_system/TLMarkdownContentWebView.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m
-	mkdir -p "$(BUILD_DIR)"
-	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -framework WebKit -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -o "$@"
-
-$(NOTCH_VIEW_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/TLNotchSurfaceView.m Source/NotchOverlayState.m Source/NotchOverlayController.m Tests/NotchOverlayViewTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -o "$@"
-
-$(TAB_LAYOUT_TEST_EXECUTABLE): Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/WorkspaceState.m Source/design_system/TLTabIconView.m Source/design_system/TLChromeTabView.m Source/design_system/TLTransitionCoordinator.m Source/TLWorkspaceTabsController.m Tests/TabLayoutTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework QuartzCore -framework CoreText -o "$@"
-
 audit-theme-colors:
 	python3 Scripts/audit-theme-colors.py
 
-$(TEST_EXECUTABLE): Source/ChatAttachmentStore.m Source/TalariaModels.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/AgentVMService.m Source/TLAgentVMLock.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Source/WorkspaceState.m Source/AppStateManager.m Tests/PromptBuilderTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ $(TEST_FRAMEWORKS) -o "$@"
 
 close-running-app:
 	@pkill -x "$(APP_NAME)" 2>/dev/null || true
@@ -310,59 +209,16 @@ widgetbook: build close-running-app
 clean:
 	python3 -c 'import shutil; shutil.rmtree("$(BUILD_DIR)", ignore_errors=True)'
 
-$(BUILD_DIR)/CredentialStoreTests: Source/TalariaModels.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Tests/CredentialStoreTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework Security -lsqlite3 -o "$@"
-
-$(BUILD_DIR)/AssistantTurnResultTests: Source/TalariaModels.m Source/PromptMessages.m Source/PromptBuilder.m Source/StreamingBlockBuffer.m Source/AssistantTurnRunner.m Tests/AssistantTurnResultTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
-
-$(BUILD_DIR)/AppStateManagerTests: Source/WorkspaceState.m Source/AppStateManager.m Tests/AppStateManagerTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
-
-$(BUILD_DIR)/WorkspaceSessionTests: Source/WorkspaceState.m Source/AppStateManager.m Source/TLWorkspaceSessionStore.m Tests/WorkspaceSessionTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
-
-$(BUILD_DIR)/WorkspaceRestoreTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/WorkspaceRestoreTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-
-$(BUILD_DIR)/AppStartupTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/AppStartupTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-
-$(BUILD_DIR)/TransitionCoordinatorTests: Source/design_system/TLTransitionCoordinator.m Tests/TransitionCoordinatorTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework QuartzCore -o "$@"
-
-$(BUILD_DIR)/FeatureControllerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/FeatureControllerTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
-
-$(BUILD_DIR)/ChatAttachmentTests: Source/ChatAttachmentStore.m Source/TalariaModels.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Source/PromptMessages.m Source/PromptBuilder.m Source/Theme.m Source/design_system/ThemeSharedColors.m Source/design_system/ThemeLightColors.m Source/design_system/ThemeDarkColors.m Source/design_system/TLMessageInput.m Source/design_system/TLAttachmentChipView.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLGlassButton.m Tests/ChatAttachmentTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework AppKit -framework QuartzCore -framework Security -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -lsqlite3 -o "$@"
-$(BUILD_DIR)/TabShortcutTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/TabShortcutTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
-
 .PHONY: test-hermes-gateway
 test-hermes-gateway:
 	python3 -B -m unittest discover -s Tests -p "test_*.py"
 
-$(BUILD_DIR)/AppResetTests: Source/TLAppReset.m Source/TalariaModels.m Source/SQLiteConnection.m Source/DatabaseMigrator.m Source/TLCredentialStore.m Source/Database.m Tests/AppResetTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework WebKit -framework Foundation -framework Security -lsqlite3 -o "$@"
 
 $(BUILD_DIR)/TerminalClientProbe: Source/TLTerminalClient.m Tests/TerminalClientProbe.m
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
 
 # Split state, native pane geometry and real chat workspace integration.
-$(BUILD_DIR)/SplitWorkspaceTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/SplitWorkspaceTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-$(BUILD_DIR)/BrowserOverlayPolicyTests: Source/TLBrowserOverlayPolicy.m Tests/BrowserOverlayPolicyTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -o "$@"
 
 # Uses installed Chromium with a temporary profile; requires Node 22+.
 # CHROME_BIN can override the Chrome/Chromium executable path.
@@ -389,11 +245,6 @@ test-browser-navigation: build
 	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserNavigationIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserNavigationProbe.app"
 	python3 Scripts/test-browser-navigation.py
-
-test: $(BUILD_DIR)/WheelScrollAnimationTests
-
-$(BUILD_DIR)/WheelScrollAnimationTests: Tests/WheelScrollAnimationTests.m Source/TLWheelScrollAnimation.m Source/TLBrowserWheelSmoother.m Source/TLWheelScrollAnimation.h Source/TLBrowserWheelSmoother.h
-	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -framework QuartzCore -o "$@"
 
 .PHONY: test-browser-smooth-scrolling
 test-browser-smooth-scrolling: build $(BUILD_DIR)/WheelScrollAnimationTests
@@ -424,13 +275,6 @@ test-browser-user-agent: build
 	python3 Scripts/test-browser-user-agent.py
 
 # Native conversation attachment viewer, including transcript integration.
-test: $(BUILD_DIR)/AttachmentViewerTests
-
-$(BUILD_DIR)/AttachmentViewerTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/AttachmentViewerTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-
-$(BUILD_DIR)/BrowserDownloadTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BrowserDownloadTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $(filter %.m %.o %.a,$^) $(APP_FRAMEWORKS) -o "$@"
 
 .PHONY: test-browser-images
 test-browser-images: build
@@ -451,16 +295,11 @@ test-browser-links: build
 	python3 Scripts/test-browser-links.py
 
 # Shared browser/markdown link-menu parity and native context routing.
-$(BUILD_DIR)/MarkdownLinkContextTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/MarkdownLinkContextTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
-test: $(BUILD_DIR)/BrowserFindTests
 
 test-browser-find: $(BUILD_DIR)/BrowserFindTests
 	"$(BUILD_DIR)/BrowserFindTests"
 
-$(BUILD_DIR)/BrowserFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BrowserFindTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 .PHONY: test-browser-find test-browser-find-webkit
 test-browser-find-webkit: build
@@ -471,34 +310,28 @@ test-browser-find-webkit: build
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserFindProbe.app"
 	python3 Scripts/test-browser-find.py
 
-$(BUILD_DIR)/AgentVMLockTests: Source/TLAgentVMLock.m Source/AgentVMService.m Source/TalariaModels.m Tests/AgentVMLockTests.m
-	mkdir -p "$(BUILD_DIR)"
-	xcrun clang $(OBJCFLAGS) -ISource $^ -framework Foundation -framework AppKit -framework Virtualization -o "$@"
 
 # Native transcript search plus real WebKit rendering, without network or an AI runtime.
-test: $(BUILD_DIR)/ChatFindTests
-$(BUILD_DIR)/ChatFindTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/ChatFindTests.m | $(MARKDOWN_RESOURCES_STAMP)
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
-$(BUILD_DIR)/BookmarkTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BookmarkTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 # Browsing history migration, persistence and native navigation callback routing.
-test: $(BUILD_DIR)/BrowserHistoryTests
 
-$(BUILD_DIR)/BrowserHistoryTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BrowserHistoryTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
 include Scripts/browser-import.mk
 
 # Empty chat sky rendering, responsive tips and loading/message transitions.
-test: $(BUILD_DIR)/StarryEmptyStateTests
-$(BUILD_DIR)/StarryEmptyStateTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/StarryEmptyStateTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
 
-# Private windows use independent memory-only state and dispose their runtimes on close.
-test: $(BUILD_DIR)/IncognitoTests
-$(BUILD_DIR)/IncognitoTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/IncognitoTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
+# Compare effective flags so command-line overrides invalidate the right artifacts.
+$(COMPILE_CONFIG): FORCE
+	@mkdir -p "$(@D)"
+	@printf '%s\n' '$(OBJCFLAGS)' '$(APP_OBJCXXFLAGS)' '$(APP_FRAMEWORKS)' '$(TEST_FRAMEWORKS)' > "$@.tmp"
+	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
+
+-include $(APP_OBJECTS:=.d)
+
+.PHONY: test-agent-protocol
+test-agent-protocol: $(BUILD_DIR)/AgentProtocolTests
+	"$(BUILD_DIR)/AgentProtocolTests"
+
 .PHONY: test-incognito-browser
 test-incognito-browser: build
 	mkdir -p "$(BUILD_DIR)/IncognitoBrowserProbe.app/Contents/MacOS"
@@ -508,12 +341,7 @@ test-incognito-browser: build
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/IncognitoBrowserProbe.app"
 	python3 Scripts/test-incognito-browser.py
 
-# Saved browser controls must reach the native WebKit APIs, including guarded SPI.
-test: $(BUILD_DIR)/BrowserSettingsTests
-test: $(BUILD_DIR)/WebKitDownloadLifecycleTests
+# Saved browser controls and download lifecycle are part of the native suite.
+.PHONY: test-webkit-download-lifecycle
 test-webkit-download-lifecycle: $(BUILD_DIR)/WebKitDownloadLifecycleTests
 	"$(BUILD_DIR)/WebKitDownloadLifecycleTests"
-$(BUILD_DIR)/WebKitDownloadLifecycleTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/WebKitDownloadLifecycleTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"
-$(BUILD_DIR)/BrowserSettingsTests: $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Tests/BrowserSettingsTests.m
-	xcrun clang++ $(OBJCFLAGS) -ISource $^ $(APP_FRAMEWORKS) -o "$@"

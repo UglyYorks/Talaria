@@ -1,7 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
 #import "TalariaWindowController.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import "MarkdownRenderer.h"
 
 static void Check(BOOL value, NSString *message) { if (!value) { NSLog(@"FAIL: %@", message); exit(1); } }
@@ -21,7 +21,7 @@ static NSString *CSSColor(NSColor *color) {
   return [NSString stringWithFormat:@"rgb(%ld, %ld, %ld)",
     (long)lrint(rgb.redComponent * 255), (long)lrint(rgb.greenComponent * 255), (long)lrint(rgb.blueComponent * 255)];
 }
-static void Query(TLChatPresentation *chat, NSString *query, NSString *result) {
+static void Query(TLChatTabController *chat, NSString *query, NSString *result) {
   stage = [NSString stringWithFormat:@"query %@ expected %@", query, result];
   chat.findBar.searchField.stringValue = query;
   chat.findBar.queryChangedHandler();
@@ -43,7 +43,7 @@ int main(void) {
       window.releasedWhenClosed = NO;
       TalariaWindowController *owner = [[TalariaWindowController alloc] initWithWindow:window];
       [owner setValue:palette forKey:@"palette"];
-      TLChatPresentation *chat = [TLChatPresentation new];
+      TLChatTabController *chat = [TLChatTabController new];
       chat.chat = [TLChatRecord new]; chat.chat.title = @"Search fixture";
       [owner setValue:chat forKey:@"chatPresentation"];
       chat.chatWorkspace = [owner buildChatWorkspace];

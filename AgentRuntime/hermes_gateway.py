@@ -8,10 +8,10 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 import queue
-import subprocess
 import threading
 import time
-import uuid
+from hermes_rpc_transport import HermesRPCTransport, RPCError
+from hermes_sessions import SessionRegistry
 
 
 # Talaria manages these bundled skills through Hermes's own profile settings.
@@ -57,85 +57,66 @@ def model_identity(selection):
     return provider, model
 
 
-class RPCError(RuntimeError):
-    def __init__(self, payload):
-        self.code = payload.get("code")
-        super().__init__(payload.get("message") or "Hermes request failed.")
-
-
 class HermesGateway:
     def __init__(self, python, environment, home, entry_module="talaria_gateway_entry"):
         self.home = home
-        self.lock = threading.RLock()
-        self.pending = {}
-        self.listeners = {}
-        self.sessions = {}
-        self.waiting = {}
-        self.session_locks = {}
+        self.transport = HermesRPCTransport(python, environment, home, entry_module)
+        self.lock = self.transport.lock
+        self.listeners = self.transport.listeners
+        self.pending = self.transport.pending
+        self.process = self.transport.process
+        self.registry = SessionRegistry(self.lock, home / "talaria-sessions.json")
         self.skill_settings_lock = threading.Lock()
         self._skill_policy_applied = False
-        self.mapping_path = home / "talaria-sessions.json"
-        self.mappings = json.loads(self.mapping_path.read_text()) if self.mapping_path.exists() else {}
-        environment = dict(environment)
-        environment["PYTHONPATH"] = os.pathsep.join(filter(None, [str(Path(__file__).parent), environment.get("PYTHONPATH")]))
-        with (home / "talaria-tui-gateway.log").open("ab") as log:
-            self.process = subprocess.Popen(
-                [str(python), "-u", "-m", entry_module],
-                cwd=str(home.parent), env=environment, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1,
-                start_new_session=entry_module == "incognito_entry",
-            )
-        threading.Thread(target=self._read, daemon=True).start()
-
-    def _read(self):
-        try:
-            for line in self.process.stdout:
-                try:
-                    frame = json.loads(line)
-                except ValueError:
-                    continue  # Startup diagnostics must not corrupt the JSON stream.
-                if not isinstance(frame, dict):
-                    continue
-                with self.lock:
-                    if frame.get("id") in self.pending:
-                        self.pending[frame["id"]].put(frame)
-                    elif frame.get("method") == "event":
-                        event = frame.get("params", {})
-                        listener = self.listeners.get(event.get("session_id"))
-                        if listener is not None:
-                            listener.put(event)
-        finally:
-            with self.lock:
-                failure = {"error": {"message": "Hermes gateway disconnected. Retry the request."}}
-                for pending in self.pending.values():
-                    pending.put(failure)
-                for listener in self.listeners.values():
-                    listener.put({"type": "error", "payload": failure["error"]})
 
     def call(self, method, params=None, timeout=120):
-        request_id = uuid.uuid4().hex
-        result_queue = queue.Queue()
-        with self.lock:
-            if self.process.poll() is not None:
-                raise RuntimeError("Hermes gateway is not running. Retry the request.")
-            self.pending[request_id] = result_queue
-            try:
-                self.process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id,
-                                                    "method": method, "params": params or {}}) + "\n")
-                self.process.stdin.flush()
-            except (OSError, ValueError):
-                self.pending.pop(request_id, None)
-                raise RuntimeError("Could not write to the Hermes gateway.")
-        try:
-            response = result_queue.get(timeout=timeout)
-            if "error" in response:
-                raise RPCError(response["error"])
-            return response.get("result", {})
-        except queue.Empty:
-            raise RuntimeError(f"Hermes timed out during {method}.")
-        finally:
-            with self.lock:
-                self.pending.pop(request_id, None)
+        return self.transport.call(method, params, timeout)
+
+    def _session_registry(self):
+        # Also supports isolated facade tests that inject fake RPC and state.
+        if not hasattr(self, "registry"):
+            self.registry = SessionRegistry(self.lock)
+        return self.registry
+
+    @property
+    def sessions(self):
+        return self._session_registry().sessions
+
+    @sessions.setter
+    def sessions(self, value):
+        self._session_registry().sessions = value
+
+    @property
+    def waiting(self):
+        return self._session_registry().waiting
+
+    @waiting.setter
+    def waiting(self, value):
+        self._session_registry().waiting = value
+
+    @property
+    def session_locks(self):
+        return self._session_registry().session_locks
+
+    @session_locks.setter
+    def session_locks(self, value):
+        self._session_registry().session_locks = value
+
+    @property
+    def mappings(self):
+        return self._session_registry().mappings
+
+    @mappings.setter
+    def mappings(self, value):
+        self._session_registry().mappings = value
+
+    @property
+    def mapping_path(self):
+        return self._session_registry().mapping_path
+
+    @mapping_path.setter
+    def mapping_path(self, value):
+        self._session_registry().mapping_path = value
 
     def credentials(self, action, key="", value=""):
         if action not in ("list", "set", "remove"):
@@ -294,6 +275,19 @@ class HermesGateway:
         return value if isinstance(value, str) else ""
 
     def history_session(self, stored):
+        with self.lock:
+            if getattr(self, "_provider_mutating", False):
+                raise RuntimeError("Wait for provider setup to finish before opening history.")
+            gate = self._session_registry().gate(stored)
+            acquired = gate.acquire(blocking=False)
+        if not acquired:
+            raise RuntimeError("Wait for this Hermes session to finish before opening it.")
+        try:
+            return self._history_session(stored)
+        finally:
+            gate.release()
+
+    def _history_session(self, stored):
         if not stored:
             raise RuntimeError("A Hermes session ID is required.")
         with self.lock:
@@ -338,6 +332,19 @@ class HermesGateway:
         return {"messages": transcript, "model": model}
 
     def delete_history_session(self, stored):
+        with self.lock:
+            if getattr(self, "_provider_mutating", False):
+                raise RuntimeError("Wait for provider setup to finish before deleting history.")
+            gate = self._session_registry().gate(stored)
+            acquired = gate.acquire(blocking=False)
+        if not acquired:
+            raise RuntimeError("Wait for this Hermes session to finish before deleting it.")
+        try:
+            return self._delete_history_session(stored)
+        finally:
+            gate.release()
+
+    def _delete_history_session(self, stored):
         if not stored:
             raise RuntimeError("A Hermes session ID is required.")
         with self.lock:
@@ -356,9 +363,7 @@ class HermesGateway:
             raise RuntimeError("Hermes did not confirm session deletion.")
         with self.lock:
             self.mappings = {chat: target for chat, target in self.mappings.items() if target != stored}
-            temporary = self.mapping_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(self.mappings))
-            temporary.replace(self.mapping_path)
+            self._session_registry().save_mappings()
         return {"deleted": stored}
 
     def model_options(self):
@@ -372,7 +377,7 @@ class HermesGateway:
         mutating = action not in {"list", "models", "login.poll", "login.cancel"}
         if mutating:
             with self.lock:
-                if (self.listeners or any(lock.locked() for lock in self.session_locks.values())
+                if (self.listeners or getattr(self, "_support_requests", 0) or any(lock.locked() for lock in self.session_locks.values())
                         or getattr(self, "_provider_mutating", False)):
                     raise RuntimeError("Finish the active response before changing provider settings.")
                 self._provider_mutating = True
@@ -425,6 +430,17 @@ class HermesGateway:
         return result
 
     def generate_text(self, model, instructions, user_input):
+        with self.lock:
+            if getattr(self, "_provider_mutating", False):
+                raise RuntimeError("Wait for provider setup to finish before generating text.")
+            self._support_requests = getattr(self, "_support_requests", 0) + 1
+        try:
+            return self._generate_text(model, instructions, user_input)
+        finally:
+            with self.lock:
+                self._support_requests -= 1
+
+    def _generate_text(self, model, instructions, user_input):
         provider, model_id = model_identity(model)
         # A private draft runtime supplies the chosen supporting model to llm.oneshot.
         # No prompt.submit, conversation history, or persistent Talaria mapping is used.
@@ -461,11 +477,8 @@ class HermesGateway:
         if not sid or not stored:
             raise RuntimeError("Hermes returned a session without its persistent identity.")
         with self.lock:
+            self._session_registry().remember_mapping(chat_id, stored)
             self.sessions[chat_id] = {"id": sid, "model": model}
-            self.mappings[chat_id] = stored
-            temporary = self.mapping_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(self.mappings))
-            temporary.replace(self.mapping_path)
         return sid
 
     def _apply_session_model(self, sid, model):
@@ -494,6 +507,7 @@ class HermesGateway:
             log.write(json.dumps({"session_id": sid, "model": model, "verified": True, "time": time.time()}) + "\n")
 
     def session(self, chat_id, model, force_model=False):
+        chat_id = self._session_registry().runtime_owner(chat_id)
         if chat_id in getattr(self, "_stale_sessions", set()):
             state = self.sessions.get(chat_id)
             if state:
@@ -520,11 +534,16 @@ class HermesGateway:
         with self.lock:
             if getattr(self, "_provider_mutating", False):
                 raise RuntimeError("Wait for provider setup to finish before sending or switching models.")
-            session_lock = self.session_locks.setdefault(chat_id, threading.Lock())
+            chat_id = self._session_registry().runtime_owner(chat_id)
+            session_lock = self._session_registry().gate(chat_id)
             acquired = session_lock.acquire(blocking=False)
         if not acquired:
             raise RuntimeError("Wait for the current response to finish before switching models.")
         try:
+            with self.lock:
+                state = self.sessions.get(chat_id)
+                if state and state["id"] in self.listeners:
+                    raise RuntimeError("Finish the pending Hermes interaction before switching models.")
             return self.session(chat_id, model, force_model=True)
         finally:
             session_lock.release()
@@ -595,7 +614,8 @@ class HermesGateway:
         with self.lock:
             if getattr(self, "_provider_mutating", False):
                 raise RuntimeError("Wait for provider setup to finish before sending or switching models.")
-            session_lock = self.session_locks.setdefault(chat_id, threading.Lock())
+            chat_id = self._session_registry().runtime_owner(chat_id)
+            session_lock = self._session_registry().gate(chat_id)
             acquired = session_lock.acquire(blocking=False)
         control_command = (text.split(maxsplit=1) or [""])[0].lower() in {"/stop", "/interrupt", "/steer"}
         if not acquired and wait_for_previous_turn and not control_command and approval_response is None:
@@ -700,7 +720,7 @@ class HermesGateway:
                     elif kind in {"tool.generating", "tool.start", "tool.complete"}:
                         activity = tool_activity(kind, payload)
                         if activity:
-                            delta("tool_activity", json.dumps(activity, ensure_ascii=False))
+                            delta("tool_activity", activity)
                     elif kind == "message.complete":
                         if payload.get("status") == "error":
                             raise RuntimeError(payload.get("text") or "Hermes turn failed.")
@@ -717,7 +737,7 @@ class HermesGateway:
                     elif kind in {"approval.request", "clarify.request"}:
                         self.waiting[chat_id] = (sid, events, kind, payload)
                         if kind == "approval.request":
-                            delta("approval", json.dumps(payload, ensure_ascii=False))
+                            delta("approval", payload)
                             return
                         question = payload.get("question") or payload.get("command") or json.dumps(payload.get("questions", []), ensure_ascii=False)
                         suffix = "\nReply /approve or /deny." if kind == "approval.request" else "\nReply with your answer."

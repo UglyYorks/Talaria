@@ -543,7 +543,8 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     }
     NSString *requestID = NSUUID.UUID.UUIDString;
     [self.agentClient installHermesWithAgent:runningAgent requestID:requestID
-                                    progress:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
+                                    progress:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, id value) {
+    NSString *text = [value isKindOfClass:NSString.class] ? value : @"";
       if (progress && [deltaRequestID isEqualToString:requestID]) progress(text);
     } completion:^(NSError *installError) { finish(runningAgent, installError); }];
   }];
@@ -567,7 +568,8 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
                                      requestID:requestID
                                      sessionID:sessionID
                                        command:command
-                                        output:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
+                                        output:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, id value) {
+    NSString *text = [value isKindOfClass:NSString.class] ? value : @"";
       if (kind == TLAgentStreamDeltaKindContent && output) output(text);
     } completion:completion];
   }];

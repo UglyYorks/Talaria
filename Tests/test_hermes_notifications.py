@@ -322,6 +322,7 @@ class NotificationTransportTests(unittest.TestCase):
             request = {"operation": "hermes_notifications", "request_id": "r", "params": {"action": "sync", "cursor": 0}}
             worker.handle_request(request, output)
             gateway.return_value.call.assert_called_once_with("talaria.notifications.sync", {"cursor": 0})
+            self.assertEqual(json.loads(output.getvalue().splitlines()[0]), {"type": "result", "request_id": "r", "result": {"notifications": [], "cursor": 0}})
             self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["type"], "complete")
             gateway.return_value.call.side_effect = RuntimeError("method unavailable")
             output = io.BytesIO()

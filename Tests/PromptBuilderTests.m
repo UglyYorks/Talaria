@@ -141,12 +141,10 @@ static NSUInteger TLFailureCount = 0;
   delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
   if (self.approvalDelta) {
-    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:self.approvalDelta options:0 error:nil] encoding:NSUTF8StringEncoding];
-    delta(requestID, TLAgentStreamDeltaKindApproval, json);
+    delta(requestID, TLAgentStreamDeltaKindApproval, self.approvalDelta);
   }
   if (self.toolActivityDelta) {
-    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:self.toolActivityDelta options:0 error:nil] encoding:NSUTF8StringEncoding];
-    delta(requestID, TLAgentStreamDeltaKindToolActivity, json);
+    delta(requestID, TLAgentStreamDeltaKindToolActivity, self.toolActivityDelta);
   }
   completion(nil);
 }
@@ -808,8 +806,9 @@ static void TestStatusTransport(void) {
   __block BOOL finished = NO;
   NSDictionary *approvalResponse = @{@"request_id":@"approval-id", @"choice":@"deny"};
   [client streamHermesSessionWithAgent:[[TLAgentRecord alloc] init] requestID:@"status" sessionID:@"chat"
-    token:@"token" model:@"model" prompt:@"Deny" approvalResponse:approvalResponse delta:^(NSString *rid, TLAgentStreamDeltaKind kind, NSString *text) {
-      [received addObject:@[@(kind), text]];
+    token:@"token" model:@"model" prompt:@"Deny" approvalResponse:approvalResponse delta:^(NSString *rid, TLAgentStreamDeltaKind kind, id value) {
+
+      [received addObject:@[@(kind), value]];
     } completion:^(NSError *error) { finished = YES; TLAssertTrue(error == nil, @"status transport completes normally"); }];
   int descriptors[2];
   TLAssertTrue(socketpair(AF_UNIX, SOCK_STREAM, 0, descriptors) == 0, @"create status test transport");
@@ -842,7 +841,7 @@ static void TestStatusTransport(void) {
   TLAssertTrue(finished, @"status frames finish within the test deadline");
   TLAssertEqualObjects(received, (@[@[@(TLAgentStreamDeltaKindStatus), @"waiting"],
     @[@(TLAgentStreamDeltaKindStatus), @""], @[@(TLAgentStreamDeltaKindThinking), @"Reasoning"],
-    @[@(TLAgentStreamDeltaKindContent), @"Answer"], @[@(TLAgentStreamDeltaKindToolActivity), activityJSON], @[@(TLAgentStreamDeltaKindApproval), approvalJSON]]),
+    @[@(TLAgentStreamDeltaKindContent), @"Answer"], @[@(TLAgentStreamDeltaKindToolActivity), [NSJSONSerialization JSONObjectWithData:[activityJSON dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]], @[@(TLAgentStreamDeltaKindApproval), [NSJSONSerialization JSONObjectWithData:[approvalJSON dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]]]),
     @"wire transport separates approvals from content and preserves status clears");
   close(descriptors[1]);
 }
@@ -853,7 +852,8 @@ static void TestCancellationDuringStartup(void) {
     initWithDatabase:(id)[[NSObject alloc] init] agentClient:fake vmService:[[TLDeferredSocketService alloc] init]];
   __block NSUInteger completions = 0;
   [orchestrator streamChatWithDefaultAgentRequestID:@"pending" sessionID:@"chat" token:@"token" model:@"model"
-    messages:@[] delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, NSString *text) {
+    messages:@[] delta:^(NSString *requestID, TLAgentStreamDeltaKind kind, id value) {
+
       TLAssertTrue(NO, @"cancelled pending request never emits a delta");
     } completion:^(NSError *error) {
       completions++;
@@ -869,7 +869,8 @@ static void TestCancellationDuringStartup(void) {
     TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:vm];
     __block NSUInteger socketCompletions = 0;
     [client streamHermesSessionWithAgent:[[TLAgentRecord alloc] init] requestID:@"socket" sessionID:@"chat"
-      token:@"token" model:@"model" prompt:@"Hello" delta:^(NSString *rid, TLAgentStreamDeltaKind kind, NSString *text) {}
+      token:@"token" model:@"model" prompt:@"Hello" delta:^(NSString *rid, TLAgentStreamDeltaKind kind, id value) {
+    }
       completion:^(NSError *error) { socketCompletions++; TLAssertTrue(error.code == NSURLErrorCancelled,
         @"socket cancellation reports cancellation"); }];
     int descriptors[2];

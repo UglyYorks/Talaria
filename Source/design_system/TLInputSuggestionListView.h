@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^selectionHandler)(NSInteger index);
 @property (nonatomic, copy, nullable) void (^activationHandler)(NSUInteger index);
 - (CGFloat)preferredWidthWithMaximum:(CGFloat)maximum;
+- (BOOL)moveSelectionByOffset:(NSInteger)offset;
 - (BOOL)isSuggestionEnabledAtIndex:(NSUInteger)index;
 @end
 

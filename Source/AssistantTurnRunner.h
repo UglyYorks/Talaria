@@ -57,6 +57,7 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
 @interface TLAssistantTurnRunner : NSObject
 
 @property (nonatomic, readonly) BOOL running;
+@property (nonatomic, strong, readonly, nullable) TLChatMessage *streamingMessage;
 // Identity of the current turn boundary, for inserting newly discovered
 // historical tool-call rows without replacing the runner's mutable array.
 @property (nonatomic, strong, readonly, nullable) TLChatMessage *activeUserMessage;

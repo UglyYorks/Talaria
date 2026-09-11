@@ -114,6 +114,7 @@ class PluginTests(unittest.TestCase):
             gateway.return_value.call.return_value = {'plugins': []}
             worker.handle_request({'operation': 'hermes_plugins', 'request_id': 'r', 'params': {'action': 'list'}}, output)
             gateway.return_value.call.assert_called_once_with('talaria.plugins', {'action': 'list'})
+            self.assertEqual(json.loads(output.getvalue().splitlines()[0]), {'type': 'result', 'request_id': 'r', 'result': {'plugins': []}})
             self.assertEqual(json.loads(output.getvalue().splitlines()[-1])['type'], 'complete')
 
 

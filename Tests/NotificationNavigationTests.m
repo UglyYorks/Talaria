@@ -1,7 +1,7 @@
 #import <AppKit/AppKit.h>
 #import "TalariaWindowController.h"
 #import "TLMainWindow.h"
-#import "TLChatPresentation.h"
+#import "TLChatTabController.h"
 #import "TLNotificationsController.h"
 #import "AppStateManager.h"
 #import "AgentOrchestrator.h"
@@ -15,7 +15,7 @@ static void Drain(void) { [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTi
 - (void)installAppStateBindings;
 - (void)openNotification:(NSDictionary *)notification;
 - (void)renderMessagesScrollingToBottom:(BOOL)scroll;
-- (BOOL)revealNotificationInPresentation:(TLChatPresentation *)presentation;
+- (BOOL)revealNotificationInPresentation:(TLChatTabController *)presentation;
 - (void)refreshAgents;
 @end
 
@@ -121,7 +121,7 @@ int main(void) { @autoreleasepool {
   Check(gateway.reads.count == 0, @"click alone does not acknowledge unread content");
   void (^complete)(NSDictionary *, NSError *) = gateway.opens.lastObject;
   complete(reply, nil); Drain();
-  TLChatPresentation *presentation = [owner valueForKey:@"chatPresentation"];
+  TLChatTabController *presentation = [owner valueForKey:@"chatPresentation"];
   Check([presentation.chat.sourceSessionID isEqual:@"source-session"] && [presentation.chat.continuationSessionID isEqual:@"continued-session"], @"original source stays separate from reply session");
   Check(presentation.chat.sourceAgentID == agent.agentID && presentation.messages.count == 70, @"source is imported into owning agent");
   Check(gateway.reads.count == 1 && [gateway.reads[0][@"params"][@"version"] isEqual:@1], @"only displayed revision acknowledged after reveal");

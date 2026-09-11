@@ -1,3 +1,4 @@
+#import "TLChatControllerTestSupport.h"
 #import <AppKit/AppKit.h>
 #import "AppDelegate.h"
 #import "TalariaWindowController.h"
@@ -45,7 +46,7 @@ static void Check(BOOL value, NSString *message) {
 - (void)renderWorkspaceTabs {}
 - (void)reloadWorkspaceTabs {}
 - (void)updateWorkspaceMode {}
-- (void)updateControlStates {}
+- (void)updateControlStatesForChat:(TLChatTabController *)chatContext {}
 - (void)resetMessageRowCache {}
 - (void)selectActiveChatInHistory {}
 - (void)renderMessages {}

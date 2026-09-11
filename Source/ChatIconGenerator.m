@@ -137,7 +137,8 @@ NSString *TLExtractChatIcon(NSString *value) {
                                                        model:trimmedModel
                                                 instructions:systemPrompt
                                                        input:userPromptBuilder.compact.prompt
-                                                       delta:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, NSString *text) {
+                                                       delta:^(NSString *deltaRequestID, TLAgentStreamDeltaKind kind, id value) {
+    NSString *text = [value isKindOfClass:NSString.class] ? value : @"";
     if (![deltaRequestID isEqualToString:requestID] || kind != TLAgentStreamDeltaKindContent || text.length == 0) {
       return;
     }
