@@ -1,5 +1,5 @@
 #import "TLDownloadsTabController.h"
-#import "ChromiumBrowserController.h"
+#import "WebKitBrowserController.h"
 #import "design_system/TLDownloadRowView.h"
 #import "design_system/TLThemedButton.h"
 #import "design_system/TLWrappingActionView.h"
@@ -106,7 +106,7 @@
   else if ([action isEqual:@"Cancel"]) [self.manager performAction:TLBrowserDownloadActionCancel forDownload:download];
   else if ([action isEqual:@"Remove"]) [self.manager removeDownload:download];
   else if ([action isEqual:@"Retry"] && download.canRetry)
-    [TLChromiumBrowserController.sharedController startDownloadURL:[NSURL URLWithString:download.URLString] fromWindow:self.view.window];
+    [TLWebKitBrowserController.sharedController startDownloadURL:[NSURL URLWithString:download.URLString] fromWindow:self.view.window];
   else if ([@[@"Open", @"Show in Finder"] containsObject:action] && download.fileAvailable) {
     NSURL *URL = [NSURL fileURLWithPath:download.path];
     if ([action isEqual:@"Show in Finder"]) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[URL]];

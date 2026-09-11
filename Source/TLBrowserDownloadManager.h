@@ -29,7 +29,7 @@ typedef void (^TLBrowserDownloadControl)(TLBrowserDownloadAction action);
 @property (nonatomic, copy, readonly) NSString *statusText;
 @end
 
-/// Main-thread download snapshots and history; Chromium owns the actual transfers.
+/// Main-thread download snapshots and history; WebKit owns the actual transfers.
 @interface TLBrowserDownloadManager : NSObject
 + (instancetype)sharedManager;
 - (instancetype)initWithHistoryURL:(NSURL *)URL;
@@ -41,6 +41,7 @@ typedef void (^TLBrowserDownloadControl)(TLBrowserDownloadAction action);
                       state:(TLBrowserDownloadState)state failureReason:(NSString *)failureReason
                     control:(nullable TLBrowserDownloadControl)control;
 - (NSString *)reserveDestinationForDownloadID:(NSUInteger)downloadID directory:(NSString *)directory fileName:(NSString *)name;
+- (void)releaseDestinationForDownloadID:(NSUInteger)downloadID;
 - (void)performAction:(TLBrowserDownloadAction)action forDownload:(TLBrowserDownload *)download;
 - (void)removeDownload:(TLBrowserDownload *)download;
 - (void)clearFinishedDownloads;

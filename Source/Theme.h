@@ -245,6 +245,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat buttonImageReplacementDuration;
 @property (nonatomic) CGFloat messageInputMaxHeight;
 @property (nonatomic) CGFloat browserBackdropHeight;
+@property (nonatomic) CGFloat browserPromptWidth;
 @property (nonatomic) CGFloat browserToolbarButtonSize;
 @property (nonatomic) CGFloat browserToolbarIconSize;
 @property (nonatomic) CGFloat browserReducedHeightSpacing;

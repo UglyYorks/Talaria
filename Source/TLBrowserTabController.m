@@ -21,8 +21,8 @@
 @property (nonatomic, copy) NSData *historyFaviconData;
 @property (nonatomic, strong) TLBrowserPreferences *browserPreferences;
 @property (nonatomic, strong) TLAgentOrchestrator *agentOrchestrator;
-@property (nonatomic, strong) TLChromiumBrowserController *browserService;
-@property (nonatomic, strong) TLChromiumBrowserSession *browserSession;
+@property (nonatomic, strong) TLWebKitBrowserController *browserService;
+@property (nonatomic, strong) TLWebKitBrowserSession *browserSession;
 @property (nonatomic, strong) TLBrowserViewportView *browserHostView;
 @property (nonatomic, strong) TLBrowserAddressInput *browserAddressInput;
 @property (nonatomic, strong) NSLayoutConstraint *browserAddressInputWidthConstraint;
@@ -62,12 +62,12 @@
                   database:(TLDatabase *)database orchestrator:(TLAgentOrchestrator *)orchestrator
                 inputWidth:(CGFloat)inputWidth {
   return [self initWithURL:URL palette:palette database:database orchestrator:orchestrator
-               inputWidth:inputWidth browserService:TLChromiumBrowserController.sharedController];
+               inputWidth:inputWidth browserService:TLWebKitBrowserController.sharedController];
 }
 
 - (instancetype)initWithURL:(NSURL *)URL palette:(TLThemePalette *)palette
                   database:(TLDatabase *)database orchestrator:(TLAgentOrchestrator *)orchestrator
-                inputWidth:(CGFloat)inputWidth browserService:(TLChromiumBrowserController *)browserService {
+                inputWidth:(CGFloat)inputWidth browserService:(TLWebKitBrowserController *)browserService {
   self = [super initWithPalette:palette];
   if (self) {
     _database = database;
@@ -349,7 +349,7 @@
       controller.historyVisitID = 0;
       controller.historyPageOrigin = TLBrowserHistoryOrigin(URL);
       if (!([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"])) return;
-      // CEF's main-frame address callback reports committed navigations, including
+      // WebKit's committed navigation callback reports committed navigations, including
       // back/forward and same-document navigation. Metadata changes do not add visits.
       NSError *error = nil;
       controller.historyVisitID = [controller.database recordBrowserVisitToURL:URL title:@"" error:&error];
@@ -473,7 +473,7 @@
   NSTimeInterval duration = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ? 0 : self.palette.browserHeightTransitionDuration;
   self.overlayNotBefore = NSProcessInfo.processInfo.systemUptime + duration + 0.15;
   __weak typeof(self) weakSelf = self;
-  // Remove the document spacer in Chromium before exposing any native footer.
+  // Remove the document spacer in WebKit before exposing any native footer.
   [self configureDocumentFooterWithCompletion:^(BOOL applied) {
     TLBrowserTabController *owner=weakSelf;
     if(!owner || owner.isClosed || owner.footerRevealGeneration!=reveal)return;
@@ -766,8 +766,8 @@
     };
   }
   NSURL *pageURL = self.URL;
-  TLChromiumBrowserSession *session = self.browserSession;
-  TLChromiumBrowserController *service = self.browserService;
+  TLWebKitBrowserSession *session = self.browserSession;
+  TLWebKitBrowserController *service = self.browserService;
   BOOL started = [self.browserConversation sendPrompt:prompt token:settings.openRouterToken model:settings.selectedModel
     pageReader:^(void (^completion)(NSDictionary *, NSError *)) {
       [service readPageInSession:session expectedURL:pageURL completion:completion];

@@ -15,8 +15,13 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)stageLocalStorage:(NSDictionary<NSData *, NSData *> *)entries sessionCookies:(NSArray *)cookies profileURL:(NSURL *)URL error:(NSError **)error;
 + (nullable NSArray *)pendingSessionCookiesAtProfileURL:(NSURL *)URL error:(NSError **)error;
 + (BOOL)clearPendingSessionCookiesAtProfileURL:(NSURL *)URL error:(NSError **)error;
-/// Called before CEF opens its profile. Atomic merge, retaining unrelated Talaria data.
-+ (BOOL)applyPendingLocalStorageAtProfileURL:(NSURL *)URL error:(NSError **)error;
+/// Decodes imported entries for document-start replay through WebKit's own storage API.
++ (nullable NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)pendingLocalStorageByOriginAtProfileURL:(NSURL *)URL error:(NSError **)error;
+/// Acknowledge only after the matching origin's document has successfully applied its entries.
++ (BOOL)clearPendingLocalStorageForOrigin:(NSString *)origin profileURL:(NSURL *)URL error:(NSError **)error;
++ (BOOL)clearPendingLocalStorageAtProfileURL:(NSURL *)URL error:(NSError **)error;
+/// Stages the previous Talaria profile once; source files are never modified.
++ (BOOL)prepareMigrationFromLegacyProfileAtProfileURL:(NSURL *)URL error:(NSError **)error;
 /// Exposed for deterministic format tests; does not access Keychain.
 + (nullable NSData *)decryptCookie:(NSData *)encrypted password:(NSData *)password host:(NSString *)host version:(NSInteger)version;
 @end

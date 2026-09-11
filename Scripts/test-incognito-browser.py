@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the signed IncognitoBrowserProbe against loopback fixtures and inspect disk residue."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from browser_test_launcher import launch_browser_test_app
 import os
 from pathlib import Path
 import subprocess
@@ -20,8 +21,8 @@ server = ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
     with tempfile.TemporaryDirectory(prefix='talaria-native-browser-test-', dir='/tmp') as profile:
-        env = dict(os.environ, TL_CHROMIUM_PROFILE_DIR=profile, TL_BROWSER_TEST_URL=f'http://127.0.0.1:{server.server_port}')
-        subprocess.run([str(root/'build/IncognitoBrowserProbe.app/Contents/MacOS/Talaria')], env=env, check=True, timeout=50)
+        env = dict(os.environ, TL_WEBKIT_PROFILE_DIR=profile, TL_BROWSER_TEST_URL=f'http://127.0.0.1:{server.server_port}')
+        launch_browser_test_app(root/'build/IncognitoBrowserProbe.app', env=env, timeout=50)
         for file in Path(profile).rglob('*'):
             if file.is_file() and not file.is_symlink():
                 assert b'TALARIA_INCOGNITO_MARKER' not in file.read_bytes(), f'Private data written to {file.name}'

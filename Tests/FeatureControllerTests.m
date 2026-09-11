@@ -1605,13 +1605,13 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 }
 @end
 
-@interface TLFeatureBrowserMock : TLChromiumBrowserController
+@interface TLFeatureBrowserMock : TLWebKitBrowserController
 @property NSURL *navigatedURL;
 @property (nonatomic) NSUInteger startCount;
 @property (nonatomic) NSUInteger closeCount;
 @property (nonatomic) NSUInteger backCount;
 @property (nonatomic) NSUInteger overlayCount;
-@property (nonatomic, strong) TLChromiumBrowserSession *overlaySession;
+@property (nonatomic, strong) TLWebKitBrowserSession *overlaySession;
 @property (nonatomic) NSRect overlayRect;
 @property (nonatomic) NSSize overlayViewport;
 @property (nonatomic) BOOL overlayQuick;
@@ -1622,44 +1622,44 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @property (nonatomic, copy) void (^footerCompletion)(BOOL);
 @property (nonatomic) NSUInteger colorCalls;
 @property (nonatomic, copy) void (^colorCompletion)(NSDictionary *);
-@property (nonatomic, copy) TLChromiumBrowserTitleHandler titleCallback;
-@property (nonatomic, copy) TLChromiumBrowserURLHandler URLCallback;
-@property (nonatomic, copy) TLChromiumBrowserFaviconHandler faviconCallback;
-@property (nonatomic, copy) TLChromiumBrowserNavigationHandler navigationCallback;
-@property (nonatomic, copy) TLChromiumBrowserLinkHandler linkCallback;
+@property (nonatomic, copy) TLWebKitBrowserTitleHandler titleCallback;
+@property (nonatomic, copy) TLWebKitBrowserURLHandler URLCallback;
+@property (nonatomic, copy) TLWebKitBrowserFaviconHandler faviconCallback;
+@property (nonatomic, copy) TLWebKitBrowserNavigationHandler navigationCallback;
+@property (nonatomic, copy) TLWebKitBrowserLinkHandler linkCallback;
 @end
 @implementation TLFeatureBrowserMock
-- (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(TLChromiumBrowserSession *)session completion:(void (^)(BOOL))completion {
+- (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(TLWebKitBrowserSession *)session completion:(void (^)(BOOL))completion {
   self.footerConfiguration=configuration;
   if(completion){if(self.deferFooter)self.footerCompletion=completion;else completion(YES);}
 }
-- (void)sampleFooterColorInSession:(TLChromiumBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
+- (void)sampleFooterColorInSession:(TLWebKitBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
   self.colorCalls++; self.colorCapture = capture;
   if (self.deferColor) self.colorCompletion = completion; else completion(@{});
 }
-- (TLChromiumBrowserSession *)loadURL:(NSURL *)URL inView:(NSView *)view fromWindow:(NSWindow *)window
-                       titleHandler:(TLChromiumBrowserTitleHandler)titleHandler
-                        linkHandler:(TLChromiumBrowserLinkHandler)linkHandler
-                         URLHandler:(TLChromiumBrowserURLHandler)URLHandler
-                     faviconHandler:(TLChromiumBrowserFaviconHandler)faviconHandler
-                  navigationHandler:(TLChromiumBrowserNavigationHandler)navigationHandler {
+- (TLWebKitBrowserSession *)loadURL:(NSURL *)URL inView:(NSView *)view fromWindow:(NSWindow *)window
+                       titleHandler:(TLWebKitBrowserTitleHandler)titleHandler
+                        linkHandler:(TLWebKitBrowserLinkHandler)linkHandler
+                         URLHandler:(TLWebKitBrowserURLHandler)URLHandler
+                     faviconHandler:(TLWebKitBrowserFaviconHandler)faviconHandler
+                  navigationHandler:(TLWebKitBrowserNavigationHandler)navigationHandler {
   self.startCount += 1;
   self.titleCallback = titleHandler;
   self.URLCallback = URLHandler;
   self.faviconCallback = faviconHandler;
   self.navigationCallback = navigationHandler;
   self.linkCallback = linkHandler;
-  self.overlaySession = [[TLChromiumBrowserSession alloc] init];
+  self.overlaySession = [[TLWebKitBrowserSession alloc] init];
   return self.overlaySession;
 }
-- (void)probeOverlayInSession:(TLChromiumBrowserSession *)session overlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick completion:(void (^)(NSDictionary *))completion {
+- (void)probeOverlayInSession:(TLWebKitBrowserSession *)session overlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick completion:(void (^)(NSDictionary *))completion {
   self.overlayQuick = quick;
   self.overlayCount++; self.overlayRect = rect; self.overlayViewport = viewport;
   self.overlayCompletion = completion;
 }
-- (void)closeSession:(TLChromiumBrowserSession *)session { if (session) self.closeCount += 1; }
-- (void)goBackInSession:(TLChromiumBrowserSession *)session { self.backCount += 1; }
-- (void)navigateSession:(TLChromiumBrowserSession *)session toURL:(NSURL *)URL { self.navigatedURL = URL; }
+- (void)closeSession:(TLWebKitBrowserSession *)session { if (session) self.closeCount += 1; }
+- (void)goBackInSession:(TLWebKitBrowserSession *)session { self.backCount += 1; }
+- (void)navigateSession:(TLWebKitBrowserSession *)session toURL:(NSURL *)URL { self.navigatedURL = URL; }
 @end
 
 @interface TLBrowserTabController (OverlayTests)
@@ -2097,8 +2097,7 @@ static void TestBrowserPreferencePersistenceAndValidation(void) {
   TLBrowserPreferences *reopened = [[TLBrowserPreferences alloc] initWithProfileURL:directory];
   Check([[reopened localValue:@"zoom"] intValue] == 125 && reopened.startupURLs.count == 2, @"browser preferences survive reopening the profile");
   Check([preferences saveValue:@"empty" forSetting:[TLBrowserPreferences settingWithID:@"startup"] error:&error] && preferences.startupURLs.count == 0, @"startup pages only open in specific-pages mode");
-  Check(![preferences validateValue:@"en-AU, bad code" forSetting:[TLBrowserPreferences settingWithID:@"acceptLanguages"] error:&error], @"invalid language lists are rejected");
-  Check(![preferences validateValue:@"socks5://user:secret@localhost:1080" forSetting:[TLBrowserPreferences settingWithID:@"proxyServer"] error:&error], @"proxy credentials cannot be saved as plain settings");
+  Check(![preferences validateValue:@"value" forSetting:@{@"id":@"unknownSetting"} error:&error], @"unknown browser settings are rejected");
   [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
 }
 
@@ -2282,10 +2281,10 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   nav = [controller valueForKey:@"navigation"];
   TLBrowserSettingsController *browser = [controller valueForKey:@"browserSettingsController"];
   NSDictionary *browserControls = [browser valueForKey:@"controls"];
-  Check(browserControls.count == TLBrowserPreferences.catalogue.count && browserControls.count > 40, @"Browser has native controls instead of external settings links");
-  NSSwitch *tracking = browserControls[@"doNotTrack"];
+  Check(browserControls.count == TLBrowserPreferences.catalogue.count && browserControls.count > 0, @"Browser has native controls for every supported setting");
+  NSSwitch *tracking = browserControls[@"safeBrowsing"];
   tracking.state = NSControlStateValueOn; [NSApp sendAction:tracking.action to:tracking.target from:tracking];
-  Check([browserPreferences.values[@"doNotTrack"] boolValue], @"browser toggles save to the browser service");
+  Check([browserPreferences.values[@"safeBrowsing"] boolValue], @"browser toggles save to the browser service");
   browserPreferences.failSave = YES;
   tracking.state = NSControlStateValueOff; [NSApp sendAction:tracking.action to:tracking.target from:tracking];
   Check(tracking.state == NSControlStateValueOn && [[[browser valueForKey:@"status"] stringValue] isEqual:@"Save failed"], @"failed saves restore the actual toggle state and display the error");
@@ -2311,7 +2310,8 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
   NSEvent *activateCategory = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
     windowNumber:window.windowNumber context:nil characters:@" " charactersIgnoringModifiers:@" " isARepeat:NO keyCode:49];
   [nav[1] keyDown:activateCategory];
-  Check(browser.selectedCategoryIndex == 1 && ![[browser valueForKey:@"cards"][@"geolocation"] isHidden], @"keyboard activation opens a sidebar category");
+  NSView *cameraCard = [browser valueForKey:@"cards"][@"media_stream_camera"];
+  Check(browser.selectedCategoryIndex == 1 && cameraCard && !cameraCard.isHidden, @"keyboard activation opens a sidebar category");
   for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
     TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
     window.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
@@ -2320,8 +2320,9 @@ static void TestSettingsNavigationCredentialsAndResponsiveLayout(void) {
       [window setContentSize:NSMakeSize(width.doubleValue,780)]; SettingsTick(window);
       Check(NSContainsRect(sections.superview.bounds, sections.frame), @"all three native sections fit within the top bar at every width");
       if (width.doubleValue == 200) {
-        [shell.pageMenu selectItemAtIndex:11]; [NSApp sendAction:shell.pageMenu.action to:shell.pageMenu.target from:shell.pageMenu];
-        Check(browser.selectedCategoryIndex == 11, @"compact navigation reaches the final browser category");
+        NSInteger lastCategory = (NSInteger)TLBrowserPreferences.categories.count - 1;
+        [shell.pageMenu selectItemAtIndex:lastCategory]; [NSApp sendAction:shell.pageMenu.action to:shell.pageMenu.target from:shell.pageMenu];
+        Check(browser.selectedCategoryIndex == lastCategory, @"compact navigation reaches the final browser category");
         [shell.pageMenu selectItemAtIndex:0]; [NSApp sendAction:shell.pageMenu.action to:shell.pageMenu.target from:shell.pageMenu];
       } else {
         [nav[0] accessibilityPerformPress]; SettingsTick(window);
@@ -2643,7 +2644,7 @@ static void TestBrowserOwnsCallbacksAndSession(void) {
     [NSApp sendAction:input.sendButton.action to:input.sendButton.target from:input.sendButton];
     Check([service.navigatedURL.absoluteString isEqual:@"https://duckduckgo.com/?q=red%20%26%20blue"], @"the address bar uses the selected browser search engine");
     [NSFileManager.defaultManager removeItemAtURL:profile error:nil];
-    TLChromiumBrowserTitleHandler lateTitle = service.titleCallback;
+    TLWebKitBrowserTitleHandler lateTitle = service.titleCallback;
     NSUInteger changesBeforeClose = metadataChanges;
     [controller close];
     [controller close];

@@ -3,7 +3,7 @@
 #import "AgentOrchestrator.h"
 #import "AgentVMService.h"
 #import "AppStateManager.h"
-#import "ChromiumBrowserController.h"
+#import "WebKitBrowserController.h"
 #import "Database.h"
 #import "TalariaWindowController.h"
 #import "Theme.h"
@@ -27,8 +27,8 @@
 @implementation TLAppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-  // Installed and worktree builds share their database and Chromium profile.
-  // Hand off before restoring tabs can initialize a second CEF browser process.
+  // Installed and worktree builds share their database and WebKit profile.
+  // Hand off before restoring tabs can initialize a second browser runtime.
   NSRunningApplication *existing = [self earlierRunningInstance];
   if (existing) {
     if (!existing.bundleURL) {
@@ -115,14 +115,14 @@
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
-  return [TLChromiumBrowserController.sharedController prepareForApplicationTermination]
+  return [TLWebKitBrowserController.sharedController prepareForApplicationTermination]
     ? NSTerminateNow
     : NSTerminateLater;
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
   for (TalariaWindowController *controller in self.incognitoWindows.copy) [controller.window performClose:self];
-  [TLChromiumBrowserController.sharedController shutdown];
+  [TLWebKitBrowserController.sharedController shutdown];
 }
 
 - (BOOL)hasOtherRunningInstance {

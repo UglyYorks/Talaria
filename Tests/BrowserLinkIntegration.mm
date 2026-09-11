@@ -1,66 +1,32 @@
 // Explicit desktop integration test. Runs only with a disposable browser profile.
 #import <AppKit/AppKit.h>
-#import "ChromiumBrowserController.h"
+#import "WebKitBrowserController.h"
+#import "BrowserWebKitTestSupport.h"
 #import "TLBrowserPreferences.h"
-#import "ChromiumImageActions.h"
+#import "TLBrowserImageActions.h"
 #import "TLBrowserLinkActions.h"
 #import "design_system/TLActionMenuItem.h"
 #import "design_system/TLLinkServicesView.h"
-#include "include/cef_client.h"
-#include "include/cef_menu_model_delegate.h"
-#include "include/cef_application_mac.h"
-#include "include/cef_browser.h"
-#include "include/cef_request_context.h"
-#include "include/cef_devtools_message_observer.h"
-@interface TLProbeApplication : NSApplication <CefAppProtocol>
-@property BOOL handlingSendEvent;
+@interface TLProbeApplication : NSApplication
 @end
 @implementation TLProbeApplication
-- (BOOL)isHandlingSendEvent { return _handlingSendEvent; }
-@end
-@interface TLChromiumBrowserController (Integration)
-- (CefRefPtr<CefBrowser>)browserWithIdentifier:(int)identifier;
-- (void)checkBackgroundBrowsers;
-- (TLBrowserLinkOpenHandler)contextLinkHandlerForBrowser:(CefRefPtr<CefBrowser>)browser;
-- (void)browserTitleChanged:(CefRefPtr<CefBrowser>)browser title:(NSString *)title;
 @end
 static void Check(BOOL condition, NSString *message) {
   if (!condition) { fprintf(stderr,"FAIL: %s\n",message.UTF8String); exit(1); }
   fprintf(stdout,"PASS: %s\n",message.UTF8String); fflush(stdout);
 }
-class TLProbeEvaluation : public CefDevToolsMessageObserver {
- public:
- explicit TLProbeEvaluation(void (^completion)(id)) : completion_([completion copy]) {}
- void Start(CefRefPtr<CefBrowser> browser, const char *expression) {
-   registration_ = browser->GetHost()->AddDevToolsMessageObserver(this);
-   auto parameters = CefDictionaryValue::Create(); parameters->SetString("expression",expression); parameters->SetBool("returnByValue",true);
-   identifier_ = browser->GetHost()->ExecuteDevToolsMethod(0,"Runtime.evaluate",parameters);
- }
- void OnDevToolsMethodResult(CefRefPtr<CefBrowser> browser,int identifier,bool success,const void *result,size_t size) override {
-   if (identifier != identifier_) return;
-   CefRefPtr<TLProbeEvaluation> keepAlive = this;
-   NSDictionary *response = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:result length:size] options:0 error:nil];
-   auto completion = completion_; completion_ = nil; registration_ = nullptr;
-   Check(success && !response[@"exceptionDetails"],@"read browser fixture state");
-   completion(response[@"result"][@"value"]);
- }
- private:
- int identifier_ = 0;
- CefRefPtr<CefRegistration> registration_;
- void (^completion_)(id);
- IMPLEMENT_REFCOUNTING(TLProbeEvaluation);
-};
-@interface TLChromiumBrowserController (LinkTests)
-- (void)openImageURL:(NSURL *)URL fromBrowser:(CefRefPtr<CefBrowser>)browser inNewWindow:(BOOL)newWindow;
+@interface TLWebKitBrowserController (LinkTests)
+- (void)openImageURL:(NSURL *)URL inSession:(TLWebKitBrowserSession *)session inNewWindow:(BOOL)newWindow;
 @end
 @interface TLLinkProbeDelegate : NSObject <NSApplicationDelegate>
-@property TLChromiumBrowserController *browser;
+@property TLWebKitBrowserController *browser;
 @property NSWindow *window;
-@property TLChromiumBrowserSession *session;
+@property TLWebKitBrowserSession *session;
 @property NSString *baseURL;
 @property BOOL started;
 @property NSInteger menuDestination;
 @property NSURL *openedURL;
+@property id trackingObserver;
 @end
 @implementation TLLinkProbeDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -68,13 +34,13 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   Check([TLBrowserPreferences.profileURL.path hasPrefix:@"/tmp/talaria-link-test-"], @"isolated profile");
   self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,900,650) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
   [self.window makeKeyAndOrderFront:nil];
-  self.browser = [TLChromiumBrowserController new];
+  self.browser = [TLWebKitBrowserController new];
   self.session = [self.browser loadURL:[NSURL URLWithString:self.baseURL] inView:self.window.contentView fromWindow:self.window
     titleHandler:^(NSString *title) {
       if (![title isEqual:@"Link menu fixture"] || self.started) return;
       self.started = YES;
       if (NSProcessInfo.processInfo.environment[@"TL_CONTEXT_MENU_INTERACTIVE"]) return;
-      dispatch_async(dispatch_get_main_queue(), ^{ [self testMenu]; });
+      dispatch_async(dispatch_get_main_queue(), ^{ TLTestActivateWindow(self.window,^{[self waitFor:^BOOL{return !self.session.webView.loading;} then:^{[self testTrustedContext:0];} attempt:0];}); });
     } linkHandler:^(NSURL *URL, NSEventModifierFlags flags) { self.openedURL = URL; } URLHandler:nil faviconHandler:nil navigationHandler:nil];
   if (NSProcessInfo.processInfo.environment[@"TL_CONTEXT_MENU_INTERACTIVE"]) return;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,45*NSEC_PER_SEC),dispatch_get_main_queue(), ^{ Check(NO,@"link integration timeout"); });
@@ -85,6 +51,38 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{ [self waitFor:condition then:then attempt:attempt+1]; });
 }
 - (NSURL *)URL:(NSString *)path { return [NSURL URLWithString:[self.baseURL stringByAppendingString:path]]; }
+- (void)testTrustedContext:(NSUInteger)index {
+  if(index==2){[self testMenu];return;}
+  NSString *selector=index==0 ? @"a img" : @"#editor";
+  NSString *script=[NSString stringWithFormat:@"(()=>{const e=document.querySelector('%@');e.scrollIntoView({block:'center'});if(e.select)e.select();const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()",selector];
+  TLTestEvaluate(self.session.webView,script,^(NSDictionary *location){
+    self.trackingObserver=[NSNotificationCenter.defaultCenter addObserverForName:NSMenuDidBeginTrackingNotification object:nil queue:nil usingBlock:^(NSNotification *note){
+      NSMenu *menu=note.object;
+      [NSNotificationCenter.defaultCenter removeObserver:self.trackingObserver];self.trackingObserver=nil;
+      // Tracking begins before WebKit's willOpenMenu customization. Inspect the
+      // completed menu, then wait for it to close before posting another click.
+      [NSRunLoop.mainRunLoop performInModes:@[NSRunLoopCommonModes,NSEventTrackingRunLoopMode] block:^{
+        NSArray *titles=[menu.itemArray valueForKey:@"title"];
+        BOOL matches=index==0 ? ([titles containsObject:@"Open Link in New Tab"] && [titles containsObject:@"Open Image in New Tab"] && [titles containsObject:@"Save Image As…"]) :
+          ([titles containsObject:@"Copy"] && [titles containsObject:@"Paste"] && ![titles containsObject:@"Show Page Source"] && ![titles containsObject:@"Open Link in New Tab"]);
+        if(!matches)NSLog(@"Unexpected native menu for %@: %@",selector,titles);
+        Check(matches,index==0 ? @"Trusted right-click on a linked image builds the real combined menu" : @"Trusted right-click in a text field preserves native editing actions");
+        self.trackingObserver=[NSNotificationCenter.defaultCenter addObserverForName:NSMenuDidEndTrackingNotification object:menu queue:nil usingBlock:^(NSNotification *ended){
+          [NSNotificationCenter.defaultCenter removeObserver:self.trackingObserver];self.trackingObserver=nil;
+          dispatch_after(dispatch_time(DISPATCH_TIME_NOW,150*NSEC_PER_MSEC),dispatch_get_main_queue(),^{[self testTrustedContext:index+1];});
+        }];
+        [menu cancelTracking];
+      }];
+    }];
+    WKWebView *view=self.session.webView;[self.window makeKeyAndOrderFront:nil];
+    NSPoint local=NSMakePoint([location[@"x"] doubleValue],view.isFlipped ? [location[@"y"] doubleValue] : NSHeight(view.bounds)-[location[@"y"] doubleValue]);
+    NSPoint point=[view convertPoint:local toView:nil];
+    NSEvent *event=[NSEvent mouseEventWithType:NSEventTypeRightMouseDown location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:self.window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+    [NSApp postEvent:event atStart:NO];
+    NSEvent *release=[NSEvent mouseEventWithType:NSEventTypeRightMouseUp location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:self.window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:0];
+    [NSApp postEvent:release atStart:NO];
+  });
+}
 - (void)testCombinedMenu {
   NSMenu *images = [NSMenu new]; images.autoenablesItems = NO;
   __block NSInteger selectedImage = -1;
@@ -92,7 +90,7 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   for (NSUInteger i=0; i<imageTitles.count; i++) {
     if (i == TLBrowserImageSaveDownloads || i == TLBrowserImageCopyAddress || i == TLBrowserImageShare) [images addItem:NSMenuItem.separatorItem];
     NSMenuItem *item = [TLActionMenuItem itemWithTitle:imageTitles[i] action:^{ selectedImage = i; }];
-    item.tag = TLChromiumImageCommandFirst + i; item.enabled = i != TLBrowserImageLookUp;
+    item.tag = 10000 + i; item.enabled = i != TLBrowserImageLookUp;
     [images addItem:item];
   }
   [images addItem:NSMenuItem.separatorItem];
@@ -108,7 +106,7 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   Check([combined itemAtIndex:6] == imageOpen && ![combined itemWithTitle:@"Image"], @"image actions retain their targets and are directly accessible");
   Check(![combined itemWithTitle:@"Look Up"].enabled, @"combined menu preserves unavailable image-action states");
   [combined performActionForItemAtIndex:6];
-  Check(selectedImage == TLBrowserImageOpenTab && imageOpen.tag == TLChromiumImageCommandFirst, @"image selection still routes to its original image command");
+  Check(selectedImage == TLBrowserImageOpenTab && imageOpen.tag == 10000, @"image selection still routes to its original image command");
 }
 - (void)testMenu {
   [self testCombinedMenu];
@@ -147,11 +145,13 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
       [menu performActionForItemAtIndex:2];
       dispatch_async(dispatch_get_main_queue(), ^{
         Check(self.menuDestination == TLBrowserLinkSplitView && [self.openedURL isEqual:URL], @"split menu action preserves the clicked link and its destination");
-        CefRefPtr<CefBrowser> browser = [self.browser browserWithIdentifier:(int)self.session.browserIdentifier];
         __weak TLLinkProbeDelegate *weakSelf = self;
-        self.session.contextLinkHandler = ^(NSURL *link, TLBrowserLinkDestination destination) { weakSelf.openedURL = link; };
-        TLBrowserLinkOpenHandler split = [self.browser contextLinkHandlerForBrowser:browser];
-        Check(split != nil, @"CEF resolves the source session's split handler");
+        self.session.contextLinkHandler = ^(NSURL *link, TLBrowserLinkDestination destination) {
+          weakSelf.openedURL = link;
+          if (destination == TLBrowserLinkNewWindow) [weakSelf.browser openURL:link fromWindow:weakSelf.window modifierFlags:0];
+        };
+        TLBrowserLinkOpenHandler split = self.session.contextLinkHandler;
+        Check(split != nil, @"WebKit resolves the source session's split handler");
         split([self URL:@"/two"], TLBrowserLinkSplitView);
         Check([self.openedURL isEqual:[self URL:@"/two"]], @"split request reaches the originating tab");
         [self testNewWindow];
@@ -160,8 +160,7 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
   });
 }
 - (void)testNewWindow {
-  CefRefPtr<CefBrowser> browser = [self.browser browserWithIdentifier:(int)self.session.browserIdentifier];
-  [self.browser openImageURL:[self URL:@"/one"] fromBrowser:browser inNewWindow:YES];
+  [self.browser openImageURL:[self URL:@"/one"] inSession:self.session inNewWindow:YES];
   [self waitFor:^BOOL {
     for (NSWindow *window in NSApp.windows) {
       if (window != self.window && window.isVisible && [window.title isEqual:@"Link menu fixture"]) return YES;
@@ -169,30 +168,49 @@ class TLProbeEvaluation : public CefDevToolsMessageObserver {
     return NO;
   } then:^{
     Check(YES, @"new-window links still open and receive page titles");
-    [self testClosingTitle];
+    [self testScriptPopup];
   } attempt:0];
+}
+- (void)testScriptPopup {
+  NSError *error=nil;
+  Check([TLBrowserPreferences.sharedPreferences saveValue:@1 forSetting:[TLBrowserPreferences settingWithID:@"popups"] error:&error], @"Enable script popups for the isolated fixture");
+  TLTestEvaluate(self.session.webView, @"(()=>{const popup=window.open('','talaria-popup-test');if(!popup)return {created:false};window.__testPopup=popup;popup.document.open();popup.document.write('<title>Script popup fixture</title><p>Opener survives</p>');popup.document.close();return {created:true,opener:popup.opener===window,text:popup.document.body.innerText}})()", ^(NSDictionary *opened) {
+    NSLog(@"Script popup result: %@",opened);
+    Check([opened[@"created"] boolValue] && [opened[@"opener"] boolValue] && [opened[@"text"] isEqual:@"Opener survives"], @"Script popups preserve opener and inherited about:blank document access");
+    [self waitFor:^BOOL {
+      for(NSWindow *window in NSApp.windows)if(window.isVisible && [window.title isEqual:@"Script popup fixture"])return YES;
+      return NO;
+    } then:^{
+      Check(YES, @"Script popup renders its document in a native window");
+      TLTestEvaluate(self.session.webView, @"window.__testPopup.close();true", ^(id value) {
+        [self waitFor:^BOOL {
+          for(NSWindow *window in NSApp.windows)if(window.isVisible && [window.title isEqual:@"Script popup fixture"])return NO;
+          return YES;
+        } then:^{ Check(YES,@"window.close dismisses its script-created native window");[self testClosingTitle]; } attempt:0];
+      });
+    } attempt:0];
+  });
 }
 - (void)testClosingTitle {
-  CefRefPtr<CefBrowser> closing = [self.browser browserWithIdentifier:(int)self.session.browserIdentifier];
+  WKWebView *closing = self.session.webView;
+  id<WKNavigationDelegate> lateDelegate = closing.navigationDelegate;
   self.window.title = @"Host window";
   [self.browser closeSession:self.session];
-  Check([self.browser contextLinkHandlerForBrowser:closing] == nil, @"closed tabs cannot receive split requests");
-  // Deliver the callback before deferred native teardown, when CEF is still
-  // valid but the workspace tab and its title handler are already gone.
-  Check(closing && closing->IsValid(), @"exercise title event during asynchronous tab closure");
-  [self.browser browserTitleChanged:closing title:@"Late page title"];
-  Check([self.window.title isEqual:@"Host window"], @"late embedded title cannot rename the host window");
-  [self waitFor:^BOOL { return !closing->IsValid(); } then:^{
-    [self.browser browserTitleChanged:closing title:@"After view destruction"];
+  Check(self.session.contextLinkHandler == nil, @"closed tabs cannot receive split requests");
+  Check(closing != nil, @"exercise title event during asynchronous tab closure");
+  [closing evaluateJavaScript:@"document.title='Late page title'" completionHandler:^(id value, NSError *error) {
+    Check([self.window.title isEqual:@"Host window"], @"late embedded title cannot rename the host window");
+    Check(self.session.webView == nil && closing.superview == nil, @"closed browser detaches its page view");
+    if ([lateDelegate respondsToSelector:@selector(webView:didFinishNavigation:)]) [lateDelegate webView:closing didFinishNavigation:nil];
     Check([self.window.title isEqual:@"Host window"], @"title after browser destruction is safely ignored");
     dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
-  } attempt:0];
+  }];
 }
+
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender { return [self.browser prepareForApplicationTermination] ? NSTerminateNow : NSTerminateLater; }
-- (void)applicationWillTerminate:(NSNotification *)notification { [self.browser shutdown]; }
+- (void)applicationWillTerminate:(NSNotification *)notification { [self.browser shutdown]; fprintf(stdout,"TALARIA_BROWSER_TEST_COMPLETE\n"); fflush(stdout); }
 @end
 int main(int argc,char **argv) { @autoreleasepool {
-  TLChromiumBrowserControllerConfigureMainArgs(argc,argv);
   NSApplication *app = [TLProbeApplication sharedApplication];
   static TLLinkProbeDelegate *delegate; delegate = [TLLinkProbeDelegate new]; app.delegate = delegate;
   [app setActivationPolicy:NSApplicationActivationPolicyAccessory]; [app finishLaunching]; [app run]; return 0;

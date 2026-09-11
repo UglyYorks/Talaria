@@ -69,7 +69,7 @@ NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds, TLThemePalette *p
 - (void)beginPromptEditing;
 @end
 
-/// Separates clipping from the shadow so Chromium keeps its native viewport size.
+/// Separates clipping from the shadow so WebKit keeps its native viewport size.
 @interface TLBrowserViewportView : NSView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, readonly) NSView *contentView;

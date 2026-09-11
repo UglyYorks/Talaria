@@ -32,7 +32,7 @@
 }
 - (void)applyBrowserBottomInset:(CGFloat)inset {
   // Commit actual view geometry. Implicit layer animations would scale the
-  // old Chromium surface while the renderer lays out its new viewport.
+  // old WebKit surface while the renderer lays out its new viewport.
   [CATransaction begin]; [CATransaction setDisableActions:YES];
   self.browserHostBottomConstraint.constant = inset;
   [self.contentView layoutSubtreeIfNeeded];
@@ -46,9 +46,8 @@
   // reverse the motion of fixed-position content near the end of the animation.
   double eased = progress*progress*(3-2*progress);
   CGFloat inset = self.startInset+(self.targetInset-self.startInset)*eased;
-  // Chromium's hosted compositor layer autoresizes in whole AppKit points,
-  // even on Retina screens. Half-point steps repeatedly round its size up and
-  // accumulate a blank strip despite correct NSView and DOM viewport bounds.
+  // Keep intermediate native viewport steps aligned to whole points; apply
+  // the exact requested inset when the transition finishes.
   inset = progress == 1 ? self.targetInset : round(inset);
   if (inset != self.browserHostBottomConstraint.constant) [self applyBrowserBottomInset:inset];
   if (generation != self.generation) return;

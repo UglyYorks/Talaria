@@ -104,7 +104,7 @@ static NSMutableSet<TLImageSharingOperation *> *TLImageSharingOperations(void) {
 }
 + (void)saveResource:(TLBrowserImageResource *)resource URL:(NSURL *)URL destination:(NSURL *)destination
           overwrite:(BOOL)overwrite manager:(TLBrowserDownloadManager *)manager completion:(void (^)(NSError *))completion {
-  // CEF uses uint32 download IDs. Native cached-image saves occupy a separate range.
+  // Browser transfers use their own download IDs. Native cached-image saves occupy a separate range.
   static NSUInteger nextID = (NSUInteger)UINT32_MAX + 1;
   NSUInteger downloadID = nextID++;
   if (!overwrite) destination = [NSURL fileURLWithPath:[manager reserveDestinationForDownloadID:downloadID

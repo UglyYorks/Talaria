@@ -19,7 +19,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-with tempfile.TemporaryDirectory(prefix='talaria-import-cef-', dir='/tmp') as profile:
+with tempfile.TemporaryDirectory(prefix='talaria-import-webkit-', dir='/tmp') as profile:
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -32,6 +32,6 @@ with tempfile.TemporaryDirectory(prefix='talaria-import-cef-', dir='/tmp') as pr
             assert result.read_text() == 'PASS', (result.read_text(), [str(p.relative_to(profile)) for p in Path(profile).rglob('*') if 'Local Storage' in str(p) or p.name == 'Cookies'])
             assert any('private=imported' in c and 'visible=imported' in c for c in cookies), 'HTTP-only and visible cookies reach the server'
             cookies.clear()
-            print(f'PASS: {phase}: Chromium reads local storage and cookies; HTTP-only access and restart persistence verified')
+            print(f'PASS: {phase}: WebKit reads local storage and cookies; HTTP-only access and restart persistence verified')
     finally:
         server.shutdown()

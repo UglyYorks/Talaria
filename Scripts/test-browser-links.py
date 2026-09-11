@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Run native link menus and split routing against a local fixture."""
+from browser_test_launcher import launch_browser_test_app, require_unlocked_desktop
+require_unlocked_desktop()
 import http.server
 import os
 from pathlib import Path
@@ -20,7 +22,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         download = self.path.startswith('/download')
         body = b'linked file fixture' if download else b'''<!doctype html><title>Link menu fixture</title>
         <h1>Right-click a link</h1><p><a href="/one">First link</a></p><p><a href="/two">Second link</a></p>
-        <p><a href="/download">Downloadable file</a></p><p><a href="mailto:test@example.com">Mail link</a></p><a href="/one"><img src="/linked-image.svg" alt="Linked image"></a>'''
+        <input id="editor" value="Editable text"><p><a href="/download">Downloadable file</a></p><p><a href="mailto:test@example.com">Mail link</a></p><a href="/one"><img src="/linked-image.svg" alt="Linked image"></a>'''
         self.send_response(200)
         self.send_header('Content-Type', 'application/octet-stream' if download else 'text/html')
         if download: self.send_header('Content-Disposition', 'attachment; filename="linked-file.txt"')
@@ -33,6 +35,6 @@ if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='talaria-link-test-', dir='/tmp') as profile:
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        env = dict(os.environ, TL_CHROMIUM_PROFILE_DIR=profile, TL_BROWSER_TEST_URL=f'http://127.0.0.1:{server.server_port}')
-        try: subprocess.run([str(Path('build/BrowserLinkProbe.app/Contents/MacOS/Talaria').resolve())], env=env, timeout=55, check=True)
+        env = dict(os.environ, TL_WEBKIT_PROFILE_DIR=profile, TL_BROWSER_TEST_URL=f'http://127.0.0.1:{server.server_port}')
+        try: launch_browser_test_app('build/BrowserLinkProbe.app', env=env, timeout=55)
         finally: server.shutdown()

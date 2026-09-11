@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Exercise image menus, authenticated cached resources and native saves in CEF."""
+"""Exercise image menus, authenticated cached resources and native saves in WebKit."""
+from browser_test_launcher import launch_browser_test_app
 import http.server
 import os
 from pathlib import Path
@@ -14,7 +15,9 @@ IMAGES = {'/image.png': ('image/png', PNG), '/animation.gif': ('image/gif', GIF)
 
 class Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in IMAGES:
+        if self.path == '/movie.mov':
+            mime, body = 'video/quicktime', Path(__file__).resolve().parents[1].joinpath('Tests/Fixtures/attachment-preview.mov').read_bytes()
+        elif self.path in IMAGES:
             if 'image_test=yes' not in self.headers.get('Cookie', ''):
                 self.send_error(403)
                 return
@@ -39,6 +42,6 @@ if __name__ == '__main__':
         for path, (_, data) in IMAGES.items(): Path(profile, path[1:]).write_bytes(data)
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        env = dict(os.environ, TL_CHROMIUM_PROFILE_DIR=profile, TL_BROWSER_TEST_URL=f'http://127.0.0.1:{server.server_port}')
-        try: subprocess.run([str(Path('build/BrowserImageProbe.app/Contents/MacOS/Talaria').resolve())], env=env, timeout=50, check=True)
+        env = dict(os.environ, TL_WEBKIT_PROFILE_DIR=profile, TL_BROWSER_TEST_URL=f'http://127.0.0.1:{server.server_port}')
+        try: launch_browser_test_app('build/BrowserImageProbe.app', env=env, timeout=50)
         finally: server.shutdown()

@@ -1,7 +1,7 @@
 #import "TLTabShortcuts.h"
 
 // One table defines both menu equivalents and application-level routing, so
-// Chromium focus cannot change what a workspace shortcut does.
+// WebKit focus cannot change what a workspace shortcut does.
 static NSArray<NSDictionary *> *TLTabBindings(void) {
   static NSArray<NSDictionary *> *bindings;
   static dispatch_once_t once;

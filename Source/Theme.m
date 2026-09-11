@@ -144,6 +144,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.buttonImageReplacementDuration = 0.24;
   self.messageInputMaxHeight = 168.0;
   self.browserBackdropHeight = 75.0;
+  self.browserPromptWidth = 320.0;
   self.browserToolbarButtonSize = 28.0;
   self.browserToolbarIconSize = 13.0;
   self.browserReducedHeightSpacing = 40.0;
