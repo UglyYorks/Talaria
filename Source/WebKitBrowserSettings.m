@@ -1,5 +1,6 @@
 #import "WebKitBrowserSettings.h"
 #import "TLBrowserPreferences.h"
+#import "design_system/TLBrowserWebView.h"
 
 @interface WKHTTPCookieStore (TLBrowserCookiePolicy)
 - (void)_setCookieAcceptPolicy:(NSHTTPCookieAcceptPolicy)policy completionHandler:(void (^)(void))completionHandler;
@@ -94,6 +95,7 @@ static NSString *PreferenceKey(NSString *identifier) {
   [self applyNativePreferences:configuration];
 }
 + (void)applyToWebView:(WKWebView *)webView {
+  if([webView isKindOfClass:TLBrowserWebView.class])((TLBrowserWebView *)webView).smoothMouseWheelScrolling=[Value(@"smoothMouseWheelScrolling") boolValue];
   [self applyNativePreferences:webView.configuration];
   if ([webView respondsToSelector:NSSelectorFromString(@"_setPageMuted:")]) {
     @try {

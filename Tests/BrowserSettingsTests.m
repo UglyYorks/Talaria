@@ -19,6 +19,8 @@ int main(void) {
       Check([state[@"available"] boolValue], [NSString stringWithFormat:@"Visible setting %@ has a supported runtime implementation: %@", setting[@"id"], state[@"reason"]]);
     }
     Check(![TLBrowserPreferences settingWithID:@"passwords"] && ![TLBrowserPreferences settingWithID:@"automatic_downloads"] && ![TLBrowserPreferences settingWithID:@"hardwareAcceleration"], @"Unsupported controls are absent from the catalogue");
+    Check([[TLBrowserPreferences.sharedPreferences localValue:@"smoothMouseWheelScrolling"] boolValue], @"Mouse-wheel smoothing defaults on without a saved preference");
+    Save(@"smoothMouseWheelScrolling", @NO);
     Save(@"fontSize", @24); Save(@"minimumFont", @14); Save(@"javascript", @2); Save(@"images", @2); Save(@"cookies", @2); Save(@"tabLinks", @NO);
     WKWebViewConfiguration *configuration = [WKWebViewConfiguration new]; configuration.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
     [TLWebKitBrowserSettings applyToConfiguration:configuration];
@@ -54,6 +56,7 @@ int main(void) {
     Check(![TLBrowserPreferences settingWithID:@"acceptLanguages"] && ![TLBrowserPreferences settingWithID:@"spellcheck"] && ![TLBrowserPreferences settingWithID:@"doNotTrack"], @"Partial language, spelling and tracking controls are absent");
     Check(![TLBrowserPreferences settingWithID:@"proxyMode"], @"A removed WebKit proxy override is not advertised as a working setting");
     TLBrowserPreferences *reopened = [[TLBrowserPreferences alloc] initWithProfileURL:[NSURL fileURLWithPath:path isDirectory:YES]];
+    Check(![[reopened localValue:@"smoothMouseWheelScrolling"] boolValue], @"Mouse-wheel smoothing opt-out persists across service recreation");
     Check([[reopened localValue:@"fontSize"] integerValue] == 24 && [[reopened localValue:@"minimumFont"] integerValue] == 14, @"Engine preferences persist across service recreation");
     NSURL *legacySettings = [NSURL fileURLWithPath:[path stringByAppendingPathComponent:@"TalariaSettings.json"]];
     [@"{\"cookies\":4}" writeToURL:legacySettings atomically:YES encoding:NSUTF8StringEncoding error:nil];

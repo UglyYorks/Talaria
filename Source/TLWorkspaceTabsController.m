@@ -309,7 +309,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     [self updateSeparatorVisibility];
   }
   [self updateEdgeAttachmentState];
-  [self refreshContentColorsAnimated:YES];
+  [self refreshContentColorsAnimated:previousActiveTab && activeTab && !activeTabChanged];
 }
 
 - (NSTimeInterval)lifecycleDuration {
@@ -505,13 +505,16 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   [self updateSeparatorVisibility];
 }
 
+- (NSColor *)contentBackgroundColorForTabView:(TLChromeTabView *)tabView {
+  if(tabView && [self.delegate respondsToSelector:@selector(workspaceTabsController:backgroundColorForTab:)])
+    return [self.delegate workspaceTabsController:self backgroundColorForTab:tabView.representedObject];
+  return nil;
+}
+
 - (void)refreshContentColorsAnimated:(BOOL)animated {
   TLChromeTabView *active=[self activeTabView];
-  NSColor *color=nil;
-  if(active && [self.delegate respondsToSelector:@selector(workspaceTabsController:backgroundColorForTab:)])
-    color=[self.delegate workspaceTabsController:self backgroundColorForTab:active.representedObject];
   for(TLChromeTabView *tab in self.tabViews)if(tab!=active)tab.activeBackgroundColor=nil;
-  [self.selectionView setContentBackgroundColor:color animated:animated];
+  [self.selectionView setContentBackgroundColor:[self contentBackgroundColorForTabView:active] animated:animated];
   active.activeBackgroundColor=self.selectionView.displayedBackgroundColor;
 }
 
@@ -1118,6 +1121,10 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 }
 
 - (void)chromeTabViewWillSelect:(TLChromeTabView *)tabView {
+  // Apply the destination color on press, before activating its content. This
+  // also finishes any color fade still running for the outgoing tab.
+  if(!tabView.active)
+    [self.selectionView setContentBackgroundColor:[self contentBackgroundColorForTabView:tabView] animated:NO];
   if ([self.delegate respondsToSelector:@selector(workspaceTabsController:willSelectTab:)])
     [self.delegate workspaceTabsController:self willSelectTab:tabView.representedObject];
 }

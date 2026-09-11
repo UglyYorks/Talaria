@@ -4,5 +4,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface TLBrowserWebView : WKWebView
 @property (nonatomic, copy, nullable) void (^contextMenuHandler)(NSMenu *, NSEvent *);
 @property (nonatomic, copy, nullable) dispatch_block_t contextMenuClosedHandler;
+@property (nonatomic) BOOL smoothMouseWheelScrolling;
+@property (nonatomic, readonly) BOOL mouseWheelAnimationActive;
+- (void)cancelMouseWheelScrolling;
 @end
 NS_ASSUME_NONNULL_END

@@ -194,6 +194,7 @@ test: $(BUILD_DIR)/BookmarkTests $(BUILD_DIR)/AgentVMLockTests $(BUILD_DIR)/Brow
 	"$(BUILD_DIR)/QuickInputTests"
 	"$(BUILD_DIR)/SplitWorkspaceTests"
 	"$(BUILD_DIR)/BrowserOverlayPolicyTests"
+	"$(BUILD_DIR)/WheelScrollAnimationTests"
 	"$(BUILD_DIR)/ChatAttachmentTests"
 	"$(BUILD_DIR)/AttachmentViewerTests"
 	python3 -B Tests/TerminalServiceTests.py
@@ -388,6 +389,21 @@ test-browser-navigation: build
 	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserNavigationIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserNavigationProbe.app"
 	python3 Scripts/test-browser-navigation.py
+
+test: $(BUILD_DIR)/WheelScrollAnimationTests
+
+$(BUILD_DIR)/WheelScrollAnimationTests: Tests/WheelScrollAnimationTests.m Source/TLWheelScrollAnimation.m Source/TLBrowserWheelSmoother.m Source/TLWheelScrollAnimation.h Source/TLBrowserWheelSmoother.h
+	xcrun clang $(OBJCFLAGS) -ISource $(filter %.m,$^) -framework AppKit -framework WebKit -framework QuartzCore -o "$@"
+
+.PHONY: test-browser-smooth-scrolling
+test-browser-smooth-scrolling: build $(BUILD_DIR)/WheelScrollAnimationTests
+	"$(BUILD_DIR)/WheelScrollAnimationTests"
+	mkdir -p "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserSmoothScrollingIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app"
+	python3 Scripts/test-browser-smooth-scrolling.py
 
 .PHONY: test-browser-wheel-routing
 test-browser-wheel-routing: build

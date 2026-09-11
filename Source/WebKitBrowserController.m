@@ -410,6 +410,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 }
 - (void)loadURL:(NSURL *)URL session:(TLWebKitBrowserSession *)session {
   if(session.closed)return;
+  [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
   if(URL.isFileURL)[session.webView loadFileURL:URL allowingReadAccessToURL:URL.URLByDeletingLastPathComponent];
   else [session.webView loadRequest:[TLWebKitBrowserSettings requestForURL:URL]];
 }
@@ -446,6 +447,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 - (void)reloadSession:(TLWebKitBrowserSession *)session {if(!session.closed){[self resumeSession:session];[self beginNavigationCover:session];[session.webView reload];}}
 - (void)focusSession:(TLWebKitBrowserSession *)session {if(session.closed)return;[self resumeSession:session];[session.webView.window makeFirstResponder:session.webView];}
 - (void)beginNavigationCover:(TLWebKitBrowserSession *)session {
+  [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
   if(!session.webView || session.fullscreen || session.navigationCover || !session.containerView.window.visible || session.containerView.hiddenOrHasHiddenAncestor)return;
   NSUInteger generation=++session.transitionGeneration;NSSize size=session.webView.bounds.size;
   if(size.width<=0 || size.height<=0 || size.width*size.height>16*1024*1024)return;
@@ -468,6 +470,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
     if(session.titleHandler)session.titleHandler(session.webView.title);else session.standaloneWindow.title=session.webView.title;
   }
   if([keyPath isEqual:@"URL"] && session.webView.URL) {
+    [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
     NSString *host=session.webView.URL.host ?: @"";
     if(![session.lastHost isEqual:host]){session.lastFaviconURL=nil;if(session.faviconHandler)session.faviconHandler(nil);}session.lastHost=host;
     if(session.URLHandler)session.URLHandler(session.webView.URL);
@@ -485,6 +488,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   if(session.navigationHandler)session.navigationHandler(session.webView.canGoBack,session.webView.canGoForward,session.webView.loading);
 }
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
+  [(TLBrowserWebView *)webView cancelMouseWheelScrolling];
   TLWebKitBrowserSession *session=[self sessionForWebView:webView];if(!session)return;
   for(NSAlert *alert in self.alerts.copy)if(alert.window.sheetParent==session.originWindow)[session.originWindow endSheet:alert.window returnCode:NSAlertFirstButtonReturn];
   session.navigationFailed=NO;session.context=nil;session.contextFrame=nil;
@@ -970,6 +974,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 }
 - (void)closeSession:(TLWebKitBrowserSession *)session {
   if(!session || session.closed)return;
+  [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
   [self closeInspectorInSession:session];[session.webView closeAllMediaPresentationsWithCompletionHandler:nil];
   [self clearNavigationCover:session];[session.pageBridge stop];session.closed=YES;session.fullscreen=NO;
   if(session.menuCleanup)session.menuCleanup();session.menuCleanup=nil;

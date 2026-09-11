@@ -28,6 +28,8 @@ os.chdir(ROOT)
 subprocess.run(["make", "build"], check=True)
 work = Path(tempfile.mkdtemp(prefix="overlay-webkit-check-", dir=ROOT / "build"))
 profile = Path(tempfile.mkdtemp(prefix="talaria-overlay-profile-"))
+if os.environ.get("TL_BROWSER_TEST_DISABLE_SMOOTHING") == "1":
+    (profile / "TalariaSettings.json").write_text(json.dumps({"smoothMouseWheelScrolling": False}))
 server = None
 peer_server = None
 runner = None
@@ -153,7 +155,8 @@ try:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     result = work / "results.json"
     app_log = work / "application.log"
-    runner = subprocess.Popen(["open", "-n", "-W", "--stdout", str(app_log), "--stderr", str(app_log), str(app), "--args",
+    background = ["--env", "TL_BROWSER_TEST_BACKGROUND=1"] if os.environ.get("TL_BROWSER_TEST_BACKGROUND") == "1" else []
+    runner = subprocess.Popen(["open", "-n", "-W", "--stdout", str(app_log), "--stderr", str(app_log), *background, str(app), "--args",
                                f"http://127.0.0.1:{server.server_port}", str(profile), str(result),
                                *([os.environ["TALARIA_OVERLAY_LIVE_URL"]] if os.environ.get("TALARIA_OVERLAY_LIVE_URL") else [])])
     try:

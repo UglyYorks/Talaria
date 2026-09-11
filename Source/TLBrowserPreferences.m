@@ -141,6 +141,7 @@ static NSError *TLBrowserPreferenceError(NSString *message) {
     add(@"askDownload",@"Downloads",@"Ask where to save each file",@"Show a Save dialog before each download.",@"profile",@"download.prompt_for_download",@YES,nil,nil);
     add(@"pdfDownload",@"Downloads",@"Download PDF files",@"Save PDFs instead of opening them in the built-in viewer.",@"profile",@"plugins.always_open_pdf_externally",@NO,nil,nil);
     add(@"tabLinks",@"Accessibility",@"Tab through links",@"Include links when moving keyboard focus through a web page.",@"profile",@"webkit.webprefs.tabs_to_links",@YES,nil,nil);
+    add(@"smoothMouseWheelScrolling",@"Accessibility",@"Smooth mouse-wheel scrolling",@"Ease mouse-wheel steps. Trackpad scrolling stays native. Disabled while Reduce Motion is on.",@"app",@"",@YES,nil,nil);
     // Keep the catalogue limited to controls the embedded engine can honor.
     NSIndexSet *removed = [items indexesOfObjectsPassingTest:^BOOL(NSDictionary *setting, NSUInteger index, BOOL *stop) {
       return ![TLWebKitBrowserSettings supportsSettingID:setting[@"id"]];

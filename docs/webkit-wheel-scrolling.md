@@ -1,21 +1,130 @@
-# Discrete mouse-wheel smoothing: native WebKit feasibility
+# Discrete mouse-wheel smoothing
 
-## Status
+## Implementation
 
-The requested smoothing feature is not implemented. The native experiment found
-incompatibilities with wheel-consuming sites, target retention and boundary
-behavior. No application event interception, animation timer or browser preference
-was added. The existing native WebKit input path is unchanged.
+Mouse-wheel smoothing is enabled by default. Browser Settings → Accessibility →
+**Smooth mouse-wheel scrolling** disables it immediately and persists the choice.
+Reduce Motion always bypasses smoothing, regardless of the saved preference.
 
-This follows the requirement to report a concrete WebKit limitation instead of
-shipping a workaround that silently breaks those cases. A smoothing curve and
-lifecycle cancellation alone would not resolve the routing problem.
+`TLBrowserWheelSmoother` installs an AppKit local event monitor while its
+`TLBrowserWebView` is attached to a window. It handles only non-precise, unphased,
+non-momentum wheel input. Command, Control, Option, diagonal input and events
+whose native window coordinates cannot be retained are forwarded unchanged.
+Shift-wheel uses the horizontal axis already supplied by AppKit. No page scroll
+API, CSS behavior, JavaScript wheel override or private WebKit hook is used.
+
+`TLWheelScrollAnimation` emits 20% of each tick immediately, then eases the rest
+with a 100 ms cubic ease-out. Repeated ticks merge into the pending tail. The
+model accounts for cumulative displacement rather than accumulating frame errors;
+native whole-point output carries its rounding remainder between bursts. Standard
+integer wheel ticks preserve exact distance. Fractional inputs have a bounded
+subpixel remainder, discarded on cancellation. On direction or target changes,
+already accepted distance is settled at the old target before the new input starts,
+so stale-direction frames do not follow the new input. This can make a rapid
+reversal feel firmer than ordinary easing and needs hardware evaluation.
+
+Each animation captures a native receiver and position and sends a precise
+Began/Changed/Ended gesture directly to that receiver. WebKit owns DOM targeting,
+scroll-node latching, cross-origin routing and `preventDefault`. Horizontal
+synthesized gestures temporarily disable history swiping; the original setting is
+restored before actual trackpad input is forwarded. A weak timer samples elapsed
+time at up to 120 Hz and is invalidated when idle. There is no momentum tail.
+
+Navigation (including URL changes within the same document), closing or detaching
+a view, hiding a view or its ancestors, window deactivation/movement/resizing,
+application deactivation, key/modifier/button actions, Reduce Motion changes and
+disabling the setting cancel pending work. A main-loop stall longer than 250 ms
+also cancels instead of replaying a delayed backlog. Cancellation intentionally
+discards undelivered distance and ends the synthesized gesture.
+
+## Compatibility limits
+
+This is native event subdivision, not an engine-level animation of the original
+wheel event. The user chose to proceed after the feasibility findings below.
+Sites receive several smaller trusted wheel events instead of one large event.
+`preventDefault` remains WebKit's responsibility, but event-count or per-event-delta
+based site actions can behave differently. Gesture phases preserve a moving
+nested scroll target, but also engage WebKit's gesture boundary propagation and
+rubber-banding; these can differ from an ordinary wheel tick. Talaria cannot read
+WebKit's resolved scrolling node, boundary state or cancellation result through
+public macOS APIs. The opt-out restores the original native input path.
+
+A device driver that labels already-smoothed input as coarse, unphased input cannot
+be distinguished from an ordinary wheel through event metadata. Genuine precise
+and momentum input bypasses the smoother. Physical mouse-wheel feel and actual
+trackpad/Magic Mouse behavior require manual hardware checks; synthetic native
+events and unit tests are not a substitute.
+
+## Regression verification
+
+Run on an unlocked macOS desktop with the normal signing identity:
+
+```sh
+make test-browser-smooth-scrolling
+make test-browser-navigation
+python3 Tests/run-browser-overlay-webkit.py --document-footer
+```
+
+The smoothing target runs displacement/eligibility unit tests and launches a signed
+desktop fixture using the production controller and `TLBrowserWebView`. Public
+AppKit mouse-event templates provide window metadata; public Quartz APIs convert
+them into wheel events. `NSApplication.sendEvent:` exercises the production local
+monitor. Events are never posted to other applications. JavaScript only resets
+fixtures and observes native DOM events and positions.
+
+The fixture covers long pages, nested vertical/horizontal panels, a moving panel,
+a cross-origin iframe (`127.0.0.1` parent, `localhost` child), consuming wheel
+handlers, repeated/reversed steps, Shift-wheel, precise/phase/momentum and modifier
+bypasses, boundaries, preference changes, Reduce Motion and lifecycle cancellation.
+Full traces are written to `build/BrowserSmoothScrollingResults.json`.
+`BrowserSettingsTests` also checks default-on behavior and persisted opt-out.
+
+The September 11, 2026 run on macOS 27.0 (26A428) passed 19 animation/eligibility
+checks, 31 desktop smoothing scenarios with 32 page assertions, settings
+persistence checks, and the existing navigation regressions. A system alert
+prevented application activation, so native tests used the explicit
+`TL_BROWSER_TEST_BACKGROUND=1` mode; default test runs still require activation.
+Foreground interaction and physical hardware feel remain unverified.
+
+The document-footer run passed 101 of 106 checks. Five checks failed in the
+inactive desktop window: opening/closing viewport animation, offscreen-extension
+sampling, gradient readback and complex framed-banner edge capture. These have
+not been established as unrelated failures. An opt-out comparison was prepared
+with `TL_BROWSER_TEST_DISABLE_SMOOTHING=1`, but the desktop then locked and the
+runner correctly refused to continue. Both the foreground footer rerun and the
+comparison remain pending. Existing footer code was not changed.
+
+Momentum bypass is checked by pointer identity at `NSWindow.sendEvent:`: the
+original event and metadata survive the local monitor unchanged. AppKit discards
+the fixture's fabricated standalone momentum event downstream; this fixture does
+not establish a real trackpad momentum sequence. Ordinary precise/phased input is
+also checked through actual DOM events and final scroll positions.
+
+## Changed files
+
+| Files | Purpose |
+| --- | --- |
+| `Source/TLBrowserWheelSmoother.h`, `.m` | Native input filtering, routing, timer and cancellation |
+| `Source/TLWheelScrollAnimation.h`, `.m` | Short, distance-preserving easing model |
+| `Source/design_system/TLBrowserWebView.h`, `.m` | View ownership and lifecycle hooks |
+| `Source/WebKitBrowserController.m` | Navigation and session-close cancellation |
+| `Source/TLBrowserPreferences.m`, `Source/WebKitBrowserSettings.m` | Default-on setting, persistence and immediate application |
+| `Tests/WheelScrollAnimationTests.m` | Displacement and event eligibility regression tests |
+| `Tests/BrowserSmoothScrollingIntegration.mm`, `Scripts/test-browser-smooth-scrolling.py` | Real AppKit/WebKit regression fixture and assertions |
+| `Tests/BrowserSettingsTests.m` | Default and persisted opt-out checks |
+| `Tests/BrowserWebKitTestSupport.h`, `Tests/run-browser-overlay-webkit.py` | Explicit background desktop-test option; normal activation remains the default |
+| `Makefile` | Unit-test dependency and native smoothing test target |
+| `docs/webkit-wheel-scrolling.md` | Approach, compatibility findings and verification limits |
+
+## Earlier feasibility investigation
+
+The following describes the baseline investigation before the implementation.
 
 ## Existing event path and API boundary
 
-`TLBrowserWebView` subclasses `WKWebView` and customizes contextual menus. Neither
-it nor `TLWebKitBrowserController` intercepts wheel events. AppKit delivers them to
-WebKit's native content view; WebKit resolves the DOM target, dispatches the site's
+`TLBrowserWebView` subclasses `WKWebView` and customizes contextual menus. Before
+smoothing was added, neither it nor `TLWebKitBrowserController` intercepted wheel
+events. AppKit delivered them to WebKit's native content view; WebKit resolves the DOM target, dispatches the site's
 wheel event and performs the default scrolling internally.
 
 The public macOS `WKWebView` API exposes neither the resolved DOM scroll target
@@ -107,21 +216,14 @@ smoothing was implemented or passed acceptance testing.
 The existing desktop navigation suite passed all 33 checks and the document-footer
 suite passed all 106 checks. `make build` completed through the native probe target,
 strict recursive code-signature verification passed, and `make run` launched the
-actual Talaria desktop bundle from this worktree. Application source, `specs/` and
-`README.md` are unchanged by this investigation.
+actual Talaria desktop bundle from this worktree. This earlier investigation did not modify application source, `specs/` or
+`README.md`. The subsequent smoothing implementation also leaves specs and README unchanged.
 
-## What would unblock the feature
+## What would remove the compatibility limits
 
-Talaria needs an engine-level operation that eases the default scroll after
-WebKit has resolved the target and processed the site's wheel handler, or
+Talaria would need an engine-level operation that eases default scrolling after
+WebKit resolves the target and processes the site's original wheel handler, or
 equivalent supported access to those decisions and the relevant scrolling node.
 Sending the original event and then replaying smaller events cannot achieve this:
-the original may already have scrolled, and the replays are additional site events.
-Turning wheel input into a fabricated gesture changes native behavior as shown
-above. A page-scroll JavaScript override or WebKit fork is outside this request.
-
-Because no smoothing implementation is shipped, its preference, immediate
-disable/Reduce Motion behavior, animation-idle behavior and lifecycle-cancellation
-tests remain unimplemented. There is no pending Talaria wheel animation to cancel.
-Physical mouse-wheel feel and real trackpad/Magic Mouse behavior still require
-manual hardware checks; native synthesized input is not a substitute for those.
+the original may already have scrolled, and replays are additional site events.
+A page-scroll JavaScript override or WebKit fork remains outside this request.
