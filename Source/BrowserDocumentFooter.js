@@ -3,6 +3,7 @@
 (function () {
   'use strict';
   globalThis.__talariaDocumentFooter?.dispose();
+  let nativeFill=false, preparedRGB=null, lastFillState=null;
   let enabled=false, range=0, nativeWidth=1, fallbackColor='', disposed=false;
   let node=null, observedBody=null, observedRoot=null, timer=0, lastUpdate=-Infinity;
   let lastScrollActivity=-Infinity, height=0, colorCost=0;
@@ -173,7 +174,18 @@
     }
     return {color:`rgb(${winner.map(Math.round).join(',')})`,canvas:bottomCanvas,watched,cost:performance.now()-started};
   }
-  function remove() { node?.remove(); node=null; height=0;canvasSurface=null;colorObserver.disconnect();colorResizeObserver.disconnect();colorTargets.clear(); }
+  function fillState() {
+    const end=document.scrollingElement?.scrollHeight;
+    const exposed=nativeFill && preparedRGB && Number.isFinite(end) && scrollY+innerHeight+height>end;
+    return {exposed:!!exposed,rgb:preparedRGB};
+  }
+  function reportFill() {
+    const state=fillState(), key=JSON.stringify(state);
+    if(key===lastFillState)return;
+    lastFillState=key;
+    globalThis.__talariaWebKitBridge?.reportFooterFill?.(state);
+  }
+  function remove() { preparedRGB=null; reportFill(); node?.remove(); node=null; height=0;canvasSurface=null;colorObserver.disconnect();colorResizeObserver.disconnect();colorTargets.clear(); }
   function refresh() {
     if(disposed)return;
     lastUpdate=performance.now();
@@ -182,7 +194,7 @@
       resizeObserver.disconnect(); attributesObserver.disconnect(); observedRoot=root; observedBody=body;
       for(const target of [root,body])if(target){resizeObserver.observe(target);attributesObserver.observe(target,{attributes:true,attributeFilter:['style','class','bgcolor','hidden']});}
     }
-    if(!enabled || !root || !body) {remove();return;}
+    if((!enabled && !nativeFill) || !root || !body) {remove();return;}
     const rs=getComputedStyle(root), bs=getComputedStyle(body);
     // Don't introduce an outer scrollbar around a scroll-locked app or modal.
     if([rs.overflowY,bs.overflowY].some(x=>/^(hidden|clip)$/.test(x)) || bs.position==='fixed') {remove();return;}
@@ -203,15 +215,23 @@
     height=Math.max(0,range*innerWidth/Math.max(1,nativeWidth));
     if(!height){remove();return;}
     if(!node) {
-      node=document.createElement('div'); node.setAttribute('data-talaria-document-footer','');
+      node=document.createElement('div');
       node.setAttribute('aria-hidden','true'); node.inert=true;
       node.style.cssText='all:initial!important;position:absolute!important;display:block!important;box-sizing:border-box!important;left:0!important;margin:0!important;padding:0!important;border:0!important;min-height:0!important;max-height:none!important;min-width:0!important;max-width:none!important;pointer-events:none!important;contain:strict!important;overflow:hidden!important;visibility:visible!important;opacity:1!important;transform:none!important;';
       set('background-color',fallbackColor);
     }
-    set('top',`${bottom-origin}px`);set('height',`${height}px`);set('width',`${root.clientWidth}px`);
+    node.toggleAttribute('data-talaria-document-footer',!nativeFill);
+    // Native WebKit owns the extra scroll area. This zero-size color probe
+    // resolves Canvas without painting or changing document scroll geometry.
+    set('position',nativeFill ? 'fixed' : 'absolute');
+    set('top',nativeFill ? '0' : `${bottom-origin}px`);
+    set('height',nativeFill ? '0' : `${height}px`);
+    set('width',nativeFill ? '0' : `${root.clientWidth}px`);
     set('color-scheme',rs.colorScheme);set('color','Canvas');
     if(node.parentNode!==root || root.lastElementChild!==node)root.append(node);
     const sample=documentColor(bottom,root,body,rs,bs,rr,br);colorCost=sample.cost;
+    const rgb=sample.color.match(/^rgb\(([\d.]+),\s*([\d.]+),\s*([\d.]+)\)$/);
+    preparedRGB=rgb ? rgb.slice(1).map(Number) : null;
     if(sample.canvas) {
       const c=sample.canvas,r=c.getBoundingClientRect();
       const key=surfaceKey(c,r,bottom,rs.colorScheme,sample.color);
@@ -224,7 +244,7 @@
     // scrollHeight is integer-rounded; layout and composited edges can be
     // fractional. Cover that subpixel seam with ink overflow only, keeping
     // the spacer box, hit testing and document scroll range unchanged.
-    set('box-shadow',`0 -1px 0 0 ${sample.color}`);
+    set('box-shadow',nativeFill ? 'none' : `0 -1px 0 0 ${sample.color}`);
     // Border-image paints outside the box without extending scroll overflow.
     // Unlike a solid shadow it also continues each column of a sampled gradient.
     set('border-image',canvasSample ? `${canvasSample.image} 1 / 1px 0 0 / 1px 0 0 stretch` : 'none');
@@ -239,6 +259,7 @@
       }
       colorTargets=sample.watched;
     }
+    reportFill();
   }
   function schedule() {
     if(timer || disposed)return;
@@ -259,13 +280,13 @@
   document.addEventListener('load',styleLoaded,true);
   const styleSettled=event=>{if(colorTargets.has(event.target))schedule();};
   document.addEventListener('transitionend',styleSettled,true);document.addEventListener('animationend',styleSettled,true);
-  // This timestamp only gates expensive pixel readback; it never checks the
-  // document bottom, cancels input, changes scroll position, or calls native UI.
-  const scrolled=()=>{lastScrollActivity=performance.now();};
+  // Reuse the prepared color; scroll events only check whether blank space is
+  // exposed. Notify native code on state changes, without sampling or polling.
+  const scrolled=()=>{lastScrollActivity=performance.now();if(nativeFill)reportFill();};
   window.addEventListener('scroll',scrolled,{passive:true});
   globalThis.__talariaDocumentFooter={
     canvasSampleRequest() {
-      if(!enabled || !node?.isConnected || !canvasSurface)return null;
+      if(nativeFill || !enabled || !node?.isConnected || !canvasSurface)return null;
       const busy={documentExtension:true,busy:true};
       if(canvasSample || canvasSurface.version!==surfaceStyleVersion || document.visibilityState!=='visible' || performance.now()-lastScrollActivity<150)return busy;
       const c=canvasSurface.element;
@@ -297,14 +318,16 @@
       return true;
     },
     configure(config) {
-      enabled=!!config.enabled;range=Math.max(0,Number(config.height)||0);nativeWidth=Math.max(1,Number(config.width)||1);
+      nativeFill=!!config.nativeFill;enabled=!!config.enabled;range=Math.max(0,Number(config.height)||0);nativeWidth=Math.max(1,Number(config.width)||1);
       if(typeof config.fallbackColor==='string')fallbackColor=config.fallbackColor;
       if(timer){clearTimeout(timer);timer=0;}refresh();return true;
     },
     refresh,
+    preparedColor() { return nativeFill ? preparedRGB : null; },
+    fillState,
     sampleBottom() {
       // Never sample our own fill and feed it back as the page's new color.
-      return node?.isConnected ? Math.max(1,Math.min(innerHeight,node.getBoundingClientRect().top)) : innerHeight;
+      return !nativeFill && node?.isConnected ? Math.max(1,Math.min(innerHeight,node.getBoundingClientRect().top)) : innerHeight;
     },
     isScrolling(quietMS=150){return performance.now()-lastScrollActivity<Math.max(150,quietMS);},
     dispose(){disposed=true;clearTimeout(timer);resizeObserver.disconnect();attributesObserver.disconnect();mutationObserver.disconnect();

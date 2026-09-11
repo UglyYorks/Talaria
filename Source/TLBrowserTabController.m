@@ -583,8 +583,8 @@
   if (self.overlayDocumentGeneration != self.browserSession.documentGeneration) {
       self.overlayDocumentGeneration = self.browserSession.documentGeneration;
     [self useFooterBanner:nil];
-    self.headerContentColor=nil;
-    if(self.headerColorChangedHandler)self.headerColorChangedHandler();
+    // Retain the tab tint until a valid sample from the new document replaces
+    // it, avoiding a flash of the default chat color between pages.
     self.footerColorNext = 0; self.footerCaptureNext = 0; self.footerColorPrimed = NO;
     [self updateFooterContentColor:nil animated:NO];
     self.overlayGeneration++; self.overlayNextProbe = 0; self.overlayNextFullProbe = 0; self.overlayClearProofUntil = 0;

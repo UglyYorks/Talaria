@@ -39,6 +39,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == '/read': body = '<title>Readable story</title><article><h1>Story</h1><p>This is a readable article with enough text. The page bridge preserves page context for the assistant. ' * 10 + '</p></article>'
         if self.path == '/find': body = f'<p>Needle and <strong>needle</strong> and need<span>le</span>.</p><div hidden>needle</div><iframe src="http://localhost:{self.server.server_port}/find-child"></iframe>'
         if self.path == '/find-child': body = '<p>needle inside another origin</p>'
+        if self.path == '/footer-color': body = '<style>html,body{margin:0;background:white}main{height:1400px}footer{height:600px;background:black}</style><main></main><footer></footer>'
         if self.path == '/footer': body = '<p>Document footer</p>'
         data = ('<!doctype html><style>body{margin:0;min-height:2000px}</style>' + body).encode()
         self.send_response(200); self.send_header('Content-Type','text/html'); self.end_headers(); self.wfile.write(data)
@@ -62,6 +63,22 @@ assert by_path['/gradient']['top']['rgb'] == [180,30,20], by_path['/gradient']
 assert 'page bridge preserves' in by_path['/read']['text']
 assert by_path['/find']['matches'] == [[4,1],[4,2],[4,1]], by_path['/find']
 assert by_path['/find']['finding'] is False
-assert by_path['/footer']['applied'] is True
-assert by_path['/footer']['state']['height'] >= 2070, by_path['/footer']
+assert by_path['/footer-color']['sample'] == [255,255,255], by_path['/footer-color']
+assert by_path['/footer-color']['prepared'] == [0,0,0], by_path['/footer-color']
+assert by_path['/footer-color']['state'] == {'scroll':0,'height':2000}, by_path['/footer-color']
+assert by_path['/footer-color']['fillColors'] == [[255,255,255],[0,0,0],[255,255,255],[0,0,0]], by_path['/footer-color']
+assert by_path['/footer-color']['resetColor'] == [255,255,255], by_path['/footer-color']
+footer = by_path['/footer']
+baseline_height = footer['steps'][2]['state']['height']
+for row, expected in zip(footer['steps'], [70, 110, 0, 70], strict=True):
+    assert row['applied'] is True, row
+    assert row['viewHeight'] == 700, row
+    if row['native']:
+        assert row['inset'] == expected, row
+        assert row['state']['spacer'] is False, row
+        assert row['state']['height'] == baseline_height, row
+        assert row['state']['fixedBottom'] <= 700 - expected, row
+    else:
+        assert row['state']['height'] == baseline_height + expected, row
+assert footer['stoppedInset'] == 0, footer
 print('WebKitPageBridgeTests passed')
