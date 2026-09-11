@@ -48,12 +48,22 @@ CGColorRef TLCGColor(NSColor *color) {
 }
 
 @implementation TLThemePalette
+- (CGFloat)tabWaveContrastFromColor:(NSColor *)start toColor:(NSColor *)end {
+  double (^luminance)(NSColor *)=^double(NSColor *input){
+    NSColor *c=[input colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    double (^linear)(double)=^double(double v){return v<=0.04045 ? v/12.92 : pow((v+0.055)/1.055,2.4);};
+    return .2126*linear(c.redComponent)+.7152*linear(c.greenComponent)+.0722*linear(c.blueComponent);
+  };
+  return MIN(1.0,fabs(luminance(start)-luminance(end)));
+}
 - (NSColor *)textColorForContentBackground:(NSColor *)background {
   NSColor *color=[background colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
   if(!color)return self.appText;
   double (^linear)(double)=^double(double value){return value<=0.04045 ? value/12.92 : pow((value+0.055)/1.055,2.4);};
   double luminance=0.2126*linear(color.redComponent)+0.7152*linear(color.greenComponent)+0.0722*linear(color.blueComponent);
-  return (luminance+0.05)/0.05 >= 1.05/(luminance+0.05) ? self.black : self.white;
+  // Keep white labels on medium-tone page accents (including saturated blue).
+  // Switch to black only when the background is too light for 3:1 white contrast.
+  return 1.05/(luminance+0.05) >= 3.0 ? self.white : self.black;
 }
 
 
@@ -150,6 +160,9 @@ CGColorRef TLCGColor(NSColor *color) {
   self.browserReducedHeightSpacing = 40.0;
   self.browserHeightTransitionDuration = 0.20;
   self.browserFooterColorTransitionDuration = 0.40;
+  self.browserTabColorTransitionDuration = 3.0;
+  self.browserTabColorWaveMinimumPixelWidth = 1.0;
+  self.browserTabColorWaveHeightFraction = 1.0;
   self.browserHeightTransitionOvershoot = 0.04;
   self.browserChatPaneHeightFraction = 0.55;
   self.browserChatPaneTransitionDuration = 0.20;

@@ -94,13 +94,13 @@
 
 - (void)close {
   if (self.isClosed) return;
+  [super close];
   [self dismissFindBarRestoringFocus:NO];
   self.findBar.queryChangedHandler = nil;
   self.findBar.navigateHandler = nil;
   self.findBar.closeHandler = nil;
   self.browserSession.findResultsChangedHandler = nil;
   self.browserSession.documentStartedHandler = nil;
-  [super close];
   [self.overlayTimer invalidate];
   self.overlayTimer = nil;
   self.overlayGeneration++;
@@ -322,8 +322,9 @@
   if (restoreFocus && ownsFocus) [self.browserService focusSession:self.browserSession];
 }
 
-- (void)startInWindow:(NSWindow *)window {
-  if (self.isClosed || self.browserSession) return;
+- (void)startInWindow:(NSWindow *)window { [self startInWindow:window configuration:nil]; }
+- (WKWebView *)startInWindow:(NSWindow *)window configuration:(WKWebViewConfiguration *)configuration {
+  if (self.isClosed || self.browserSession) return self.browserSession.webView;
   [self.view.superview layoutSubtreeIfNeeded];
   [self.view layoutSubtreeIfNeeded];
   __weak typeof(self) weakSelf = self;
@@ -377,7 +378,9 @@
       controller.browserAddressInput.backButton.enabled = canGoBack;
       controller.browserAddressInput.forwardButton.enabled = canGoForward;
       controller.browserAddressInput.reloadButton.enabled = YES;
-    }];
+    } configuration:configuration];
+  self.browserSession.createTabHandler = self.createTabHandler;
+  self.browserSession.closeTabHandler = self.closeTabHandler;
   self.browserSession.contextLinkHandler = ^(NSURL *URL, TLBrowserLinkDestination destination) {
     TLBrowserTabController *controller = weakSelf;
     if (!controller.isClosed && controller.contextLinkHandler) controller.contextLinkHandler(URL, destination);
@@ -388,7 +391,18 @@
       if (!controller || controller.isClosed || !controller.findBarVisible || !controller.findHasQuery) return;
       [controller.findBar setMatchCount:count activeMatch:activeMatch searching:!finalUpdate && count == 0];
     };
-    self.browserSession.documentStartedHandler = ^{ [weakSelf dismissFindBarRestoringFocus:NO]; };
+    self.browserSession.documentStartedHandler = ^{
+      TLBrowserTabController *owner=weakSelf;
+      owner.footerColorNext=0;owner.footerCaptureNext=0;
+      if(owner.headerColorChangedHandler)owner.headerColorChangedHandler();
+      [owner dismissFindBarRestoringFocus:NO];
+    };
+    self.browserSession.topColorChanged=^(NSArray *rgb){[weakSelf updateTabEdgeColor:[TLBrowserContentColor colorForRGB:rgb]];};
+    self.browserSession.topScrollEnded=^{
+      TLBrowserTabController *owner=weakSelf;if(!owner || owner.isClosed)return;
+      owner.footerColorNext=0;owner.footerCaptureNext=0;
+      [owner sampleFooterContentColor];
+    };
     self.browserSession.devToolsVisibilityChangedHandler = ^{
       TLBrowserTabController *controller = weakSelf;
       if (!controller || controller.isClosed) return;
@@ -410,6 +424,7 @@
     self.overlayTimer.tolerance = 0.01;
     [NSRunLoop.mainRunLoop addTimer:self.overlayTimer forMode:NSRunLoopCommonModes];
   }
+  return self.browserSession.webView;
 }
 
 - (void)persistHistoryFavicon {
@@ -442,6 +457,11 @@
     self.overlayPolicy.manuallyOverridden ? @"Manual until next page" : @"Automatic"];
   [self.browserAddressInput.heightToggleButton setAccessibilityLabel:action];
 }
+- (void)setTabColorSampleRect:(NSRect)rect {
+  if(NSEqualRects(rect,_tabColorSampleRect))return;
+  _tabColorSampleRect=rect;self.footerColorNext=0;self.footerCaptureNext=0;
+  [self configureDocumentFooter];
+}
 - (CGFloat)footerHeight {
   return self.palette.browserReducedHeightSpacing + MAX(self.palette.composerButtonHeight, self.addressInputHeight ?: NSHeight(self.browserAddressInput.frame));
 }
@@ -453,7 +473,7 @@
   [self.browserService configureDocumentFooter:@{
     @"enabled":@(!self.browserUsesReducedHeight && !self.footerTransitionPending), @"height":@([self footerHeight]),
     @"width":@(MAX(1,NSWidth(self.browserHostView.bounds))), @"fallbackColor":[TLBrowserContentColor CSSStringForColor:self.palette.tabBackground],
-    @"banner":self.footerBanner ?: NSNull.null
+    @"topRange":@[@(NSMinX(self.tabColorSampleRect)),@(NSWidth(self.tabColorSampleRect)>0 ? NSWidth(self.tabColorSampleRect) : 1)], @"banner":self.footerBanner ?: NSNull.null
   } inSession:self.browserSession completion:completion];
 }
 - (void)applyHeightMode {
@@ -538,6 +558,14 @@
   if(color && ![color isEqual:self.footerContentColor])
     [self updateFooterContentColor:color animated:self.browserUsesReducedHeight && !self.footerTransitionPending && NSProcessInfo.processInfo.systemUptime>=self.footerColorImmediateUntil];
 }
+- (BOOL)headerColorChangesAnimated {
+  return self.headerContentColor != nil && self.browserSession != nil && !self.browserSession.webView.loading;
+}
+- (void)updateTabEdgeColor:(NSColor *)color {
+  if(!color || self.isClosed || [color isEqual:self.headerContentColor])return;
+  self.headerContentColor=color;
+  if(self.headerColorChangedHandler)self.headerColorChangedHandler();
+}
 - (void)sampleFooterContentColor {
   NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
   if (self.footerBanner[@"rgb"] && self.footerColorReady) self.footerColorReady();
@@ -547,20 +575,17 @@
   NSUInteger document = self.browserSession.documentGeneration;
   NSUInteger reveal = self.footerRevealGeneration, bannerGeneration=self.footerBannerGeneration;
   NSSize viewport = self.browserHostView.bounds.size;
+  NSRect sampleRect = self.tabColorSampleRect;
   __weak typeof(self) weakSelf = self;
   [self.browserService sampleFooterColorInSession:self.browserSession allowCapture:capture completion:^(NSDictionary *result) {
     TLBrowserTabController *owner = weakSelf; if (!owner) return;
     owner.footerColorInFlight = NO;
     NSTimeInterval completed = NSProcessInfo.processInfo.systemUptime;
     if (![owner canSampleOverlay] || bannerGeneration!=owner.footerBannerGeneration || document != owner.browserSession.documentGeneration ||
-        !NSEqualSizes(viewport,owner.browserHostView.bounds.size)) return;
+        !NSEqualSizes(viewport,owner.browserHostView.bounds.size) || !NSEqualRects(sampleRect,owner.tabColorSampleRect)) return;
     if ([result[@"captureMS"] doubleValue] > 0) owner.footerCaptureNext = completed + MAX(1,[result[@"captureMS"] doubleValue]*0.025);
     owner.footerColorNext = completed + MAX(0.2,[result[@"cpuMS"] doubleValue]*0.04);
-    NSColor *top=[TLBrowserContentColor colorForRGB:result[@"top"][@"rgb"]];
-    if(top && ![top isEqual:owner.headerContentColor]) {
-      owner.headerContentColor=top;
-      if(owner.headerColorChangedHandler)owner.headerColorChangedHandler();
-    }
+    [owner updateTabEdgeColor:[TLBrowserContentColor colorForRGB:result[@"top"][@"rgb"]]];
     if ([result[@"busy"] boolValue]) return;
     owner.footerColorPrimed = result[@"viewState"] != nil;
     NSColor *color = [TLBrowserContentColor colorForRGB:result[@"rgb"]];

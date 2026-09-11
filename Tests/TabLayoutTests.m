@@ -1737,16 +1737,16 @@ static void TestContentBackgroundContrast(TLThemePalette *palette) {
   AssertTrue([((NSTextField *)[tab valueForKey:@"titleLabel"]).textColor isEqual:palette.white],@"black content background gets white label");
   [selection setContentBackgroundColor:palette.white animated:YES];
   for(NSUInteger step=0;step<=10;step++) {
-    now=palette.browserFooterColorTransitionDuration*step/10;[clock advance];
+    now=palette.browserTabColorTransitionDuration*step/10;[clock advance];
     NSColor *background=[selection.displayedBackgroundColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
     NSColor *ink=[((NSTextField *)[tab valueForKey:@"titleLabel"]).textColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
     double (^linear)(double)=^double(double v){return v<=0.04045?v/12.92:pow((v+0.055)/1.055,2.4);};
     double l=0.2126*linear(background.redComponent)+0.7152*linear(background.greenComponent)+0.0722*linear(background.blueComponent);
     double text=ink.redComponent>0.5?1:0;
-    AssertTrue((MAX(l,text)+0.05)/(MIN(l,text)+0.05)>=4.5,@"label remains readable throughout the background fade");
+    AssertTrue((MAX(l,text)+0.05)/(MIN(l,text)+0.05)>=4.5,@"semantic label contrast follows the background transition");
   }
   AssertTrue([((NSTextField *)[tab valueForKey:@"titleLabel"]).textColor isEqual:palette.black],@"white content background gets black label");
-  [selection setContentBackgroundColor:palette.black animated:YES];now+=palette.browserFooterColorTransitionDuration*0.5;[clock advance];
+  [selection setContentBackgroundColor:palette.black animated:YES];now+=palette.browserTabColorTransitionDuration*0.5;[clock advance];
   NSColor *interrupted=selection.displayedBackgroundColor;
   [selection setContentBackgroundColor:palette.white animated:YES];
   AssertTrue([selection.displayedBackgroundColor isEqual:interrupted],@"color reversals begin at the currently visible color");

@@ -196,8 +196,8 @@ static void CheckSlowDownload(TLBrowserDownload *download, NSString *message) {
   } else if (self.downloadStage == 1 && self.firstDownload.state == TLBrowserDownloadStatePaused) {
     Check(YES, @"WebKit confirms pause in the download manager");
     [manager performAction:TLBrowserDownloadActionCancel forDownload:self.secondDownload];
-    [manager performAction:TLBrowserDownloadActionResume forDownload:self.firstDownload];
     [TLWebKitBrowserController.sharedController closeSession:self.session];
+    [manager performAction:TLBrowserDownloadActionResume forDownload:self.firstDownload];
     self.downloadStage = 2;
   } else if (self.downloadStage == 2 && self.firstDownload.state == TLBrowserDownloadStateComplete && self.secondDownload.state == TLBrowserDownloadStateCancelled) {
     Check(self.firstDownload.fileAvailable, @"resumed download finishes after its browser tab closes");

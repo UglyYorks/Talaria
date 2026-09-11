@@ -1,6 +1,6 @@
 // Installed at document start in the application's isolated content world in
 // every frame. The native handler receives WKFrameInfo, including opaque frames.
-(function (handler, channel, overlayProbe) {
+(function (handler, channel, overlayProbe, colorProbe) {
   'use strict';
   if (globalThis.__talariaWebKitBridge) return;
   const identifier = Array.from(crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16)).join('-');
@@ -20,6 +20,16 @@
     if (typeof event.data.id !== 'string') return;
     if (children.size < 128 || children.has(event.source)) children.set(event.source, event.data.id);
   });
+  if(parent===window) {
+    let settleTimer=0;
+    const report=ended=>{
+      const rgb=colorProbe?.(null,true,globalThis.__talariaTabColorRange)?.rgb;
+      window.webkit.messageHandlers[handler].postMessage({id:identifier,topRGB:rgb || null,scrollEnded:ended});
+    };
+    const settled=()=>{clearTimeout(settleTimer);settleTimer=setTimeout(()=>report(true),160);};
+    window.addEventListener('scroll',()=>{report(false);settled();},{passive:true});
+    window.addEventListener('scrollend',settled,{passive:true});
+  }
   window.addEventListener('pageshow', announce);
   window.addEventListener('pagehide', () => window.webkit.messageHandlers[handler].postMessage({id:identifier,remove:true}));
   document.addEventListener('DOMContentLoaded', announce, {once:true});

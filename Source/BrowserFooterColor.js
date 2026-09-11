@@ -1,5 +1,5 @@
 // Bounded read-only bottom-edge sample, evaluated in the existing isolated world.
-(function (banner=null, topEdge=false) {
+(function (banner=null, topEdge=false, topRange=null) {
   const extensionStart=performance.now();
   const extension=!topEdge && globalThis.__talariaDocumentFooter?.canvasSampleRequest?.();
   if(extension){const cost=performance.now()-extensionStart;return {...extension,cpuMS:cost,maxSliceMS:cost};}
@@ -11,8 +11,10 @@
   const identity=globalThis.__talariaFooterColorIdentity ||= {nodes:new WeakMap(),next:0};
   const bannerBottom=banner && Number.isFinite(banner.bottom) ? Math.max(1,banner.bottom) : null;
   const sampleBottom=topEdge ? Math.min(8,innerHeight) : bannerBottom!==null ? Math.max(1,innerHeight-bannerBottom) : (globalThis.__talariaDocumentFooter?.sampleBottom?.() ?? innerHeight);
-  const signature=[topEdge,viewState,devicePixelRatio,sampleBottom];let cacheable=true;
-  const finish = extra => { charge(); return {...extra,topEdge,viewState,sampleBottom,bannerBottom,deviceScale:devicePixelRatio,
+  const sampleLeft=topEdge && topRange ? Math.max(0,Math.min(1,topRange[0])) : 0;
+  const sampleWidth=topEdge && topRange ? Math.max(0,Math.min(1-sampleLeft,topRange[1])) : 1;
+  const signature=[topEdge,viewState,devicePixelRatio,sampleBottom,sampleLeft,sampleWidth];let cacheable=true;
+  const finish = extra => { charge(); return {...extra,topEdge,viewState,sampleBottom,sampleLeft,sampleWidth,bannerBottom,deviceScale:devicePixelRatio,
     captureKey:!extra.busy && cacheable ? JSON.stringify(signature) : undefined,
     captureReady:!globalThis.__talariaDocumentFooter?.isScrolling(),cpuMS,maxSliceMS}; };
   if (document.visibilityState !== 'visible') return finish({busy:true});
@@ -87,7 +89,7 @@
       // Five points, one bounded synchronous read. CSS is safe during scrolling;
       // only screenshot readback needs a quiet viewport. Never wait on a frame.
       if(viewState.some((v,i)=>v!==[innerWidth,innerHeight,scrollX,scrollY][i])) return finish({busy:true});
-      colors.push(colorAt(width*x,Math.max(0,sampleBottom-4)));
+      colors.push(colorAt(width*(sampleLeft+sampleWidth*x),Math.max(0,sampleBottom-4)));
     }
     if(colors.some(c=>!c))return finish({fallback:true});
     const winner=colors.find(c=>colors.filter(d=>d.every((v,i)=>Math.abs(v-c[i])<=3)).length>=4);

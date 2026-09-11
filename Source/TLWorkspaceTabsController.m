@@ -105,7 +105,19 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     _selectionView.hidden = YES;
     __weak typeof(self) weakSelf=self;
     _selectionView.backgroundColorChanged=^(NSColor *color){
-      [weakSelf activeTabView].activeBackgroundColor=color;
+      TLChromeTabView *active=[weakSelf activeTabView];
+      active.activeTextColor=weakSelf.selectionView.displayedTextColor;
+      active.activeBackgroundColor=color;
+    };
+    _selectionView.freezeTextWave=^{[[weakSelf activeTabView] freezeCurrentTextWave];};
+    __block __weak TLChromeTabView *previousWaveTab=nil;
+    _selectionView.textWaveChanged=^(NSColor *start,NSColor *end,NSRect frame,NSArray<NSNumber *> *locations,BOOL active){
+      TLWorkspaceTabsController *owner=weakSelf;
+      TLChromeTabView *tab=[owner activeTabView];
+      if(previousWaveTab && previousWaveTab!=tab)
+        [previousWaveTab showTextWaveFromColor:start toColor:end maskFrame:frame locations:locations sourceView:owner.selectionView active:NO];
+      [tab showTextWaveFromColor:start toColor:end maskFrame:frame locations:locations sourceView:owner.selectionView active:active];
+      previousWaveTab=active ? tab : nil;
     };
     [_tabStack addSubview:_selectionView positioned:NSWindowBelow relativeTo:nil];
     _tabStack.spacing = -TLChromeTabInterTabOverlapForWidth(palette.tabMaxWidth, palette);
@@ -513,8 +525,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 
 - (void)refreshContentColorsAnimated:(BOOL)animated {
   TLChromeTabView *active=[self activeTabView];
-  for(TLChromeTabView *tab in self.tabViews)if(tab!=active)tab.activeBackgroundColor=nil;
+  for(TLChromeTabView *tab in self.tabViews)if(tab!=active){tab.activeTextColor=nil;tab.activeBackgroundColor=nil;}
   [self.selectionView setContentBackgroundColor:[self contentBackgroundColorForTabView:active] animated:animated];
+  active.activeTextColor=self.selectionView.displayedTextColor;
   active.activeBackgroundColor=self.selectionView.displayedBackgroundColor;
 }
 

@@ -11,7 +11,10 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong, readonly) NSColor *displayedBackgroundColor;
+@property (nonatomic, strong, readonly) NSColor *displayedTextColor;
 @property (nonatomic, copy, nullable) void (^backgroundColorChanged)(NSColor *color);
+@property (nonatomic, copy, nullable) dispatch_block_t freezeTextWave;
+@property (nonatomic, copy, nullable) void (^textWaveChanged)(NSColor *start, NSColor *end, NSRect maskFrame, NSArray<NSNumber *> *locations, BOOL active);
 - (void)setContentBackgroundColor:(nullable NSColor *)color animated:(BOOL)animated;
 @property (nonatomic) CGFloat leadingFlareOutset;
 @property (nonatomic, readonly) NSRect selectionFrame;
@@ -48,6 +51,7 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @property (nonatomic, copy) NSString *systemIconName;
 @property (nonatomic) BOOL active;
 @property (nonatomic, strong, nullable) NSColor *activeBackgroundColor;
+@property (nonatomic, strong, nullable) NSColor *activeTextColor;
 @property (nonatomic) BOOL splitCompanion;
 @property (nonatomic) BOOL drawsActiveBackground;
 @property (nonatomic) BOOL animatesDecorationChanges;
@@ -65,6 +69,8 @@ CGFloat TLChromeTabInterTabOverlapForWidth(CGFloat width, TLThemePalette *palett
 @property (nonatomic, assign, nullable) SEL closeAction;
 
 - (void)applyCurrentState;
+- (void)freezeCurrentTextWave;
+- (void)showTextWaveFromColor:(NSColor *)start toColor:(NSColor *)end maskFrame:(NSRect)frame locations:(NSArray<NSNumber *> *)locations sourceView:(NSView *)source active:(BOOL)active;
 - (void)setReorderTranslationX:(CGFloat)translationX animated:(BOOL)animated;
 - (void)finishPointerDrag;
 - (void)cancelPointerDrag;

@@ -28,6 +28,7 @@ static void Later(double seconds, void (^action)(void)) {
 @property NSUInteger phase;
 @property NSUInteger initialGeneration;
 @property BOOL checkedCover;
+@property BOOL checkedProgressiveRendering;
 @property TLBrowserTabController *tab;
 @end
 
@@ -60,6 +61,7 @@ static void Later(double seconds, void (^action)(void)) {
     self.phase = 2;
     Later(.25,^{
       Check(self.checkedCover,@"old frame was checked while destination CSS was pending");
+      Check(self.checkedProgressiveRendering,@"destination was revealed before all resources finished");
       Check(!self.cover,@"destination paint removes the old frame");
       [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/blank"]]];
     });
@@ -89,6 +91,25 @@ static void Later(double seconds, void (^action)(void)) {
     NSColor *pixel = [[bitmap colorAtX:10 y:10] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
     Check(pixel.blueComponent > pixel.redComponent + .2,@"held image contains the blue source page, not a blank frame");
     self.checkedCover = YES;
+    Later(1.2,^{ [self checkProgressiveRendering]; });
+  });
+}
+- (void)checkProgressiveRendering {
+  WKWebView *view=self.session.webView;
+  Check(view.loading,@"slow image is still loading when the destination is revealed");
+  Check(!self.cover,@"first visible content releases the old frame before load completion");
+  Check(!view.configuration.suppressesIncrementalRendering,@"browser allows progressive rendering");
+  TLTestEvaluate(view,@"({imagePending:!document.getElementById('slow-image').complete,title:document.querySelector('h1').textContent})",^(id value){
+    Check([value[@"imagePending"] boolValue] && [value[@"title"] isEqual:@"Destination page"],@"destination content exists while its image remains pending");
+    WKSnapshotConfiguration *configuration=[WKSnapshotConfiguration new];configuration.afterScreenUpdates=NO;
+    [view takeSnapshotWithConfiguration:configuration completionHandler:^(NSImage *image,NSError *error){
+      Check(!error && image != nil && view.loading,@"rendered destination can be captured before loading finishes");
+      NSBitmapImageRep *bitmap=[NSBitmapImageRep imageRepWithData:image.TIFFRepresentation];
+      NSColor *pixel=[[bitmap colorAtX:10 y:100] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+      Check(pixel.greenComponent>pixel.blueComponent+.05 && pixel.greenComponent>pixel.redComponent+.1,
+        @"visible pixels contain the green destination, not the blue source or a blank frame");
+      self.checkedProgressiveRendering=YES;
+    }];
   });
 }
 - (void)checkResizeAndClose {

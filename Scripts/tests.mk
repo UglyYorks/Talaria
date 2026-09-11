@@ -126,3 +126,17 @@ test-integration: $(addprefix $(BUILD_DIR)/,$(INTEGRATION_TESTS))
 .PHONY: test-notifications
 test-notifications: $(addprefix $(BUILD_DIR)/,NotificationDataTests NotificationSidebarTests NotificationNavigationTests) test-hermes-gateway
 	@set -e; for test in NotificationDataTests NotificationSidebarTests NotificationNavigationTests; do "$(BUILD_DIR)/$$test"; done
+
+# Desktop WebKit tab color test uses local fixtures and a disposable profile.
+$(BUILD_DIR)/BrowserTabColorTests: $(call test_objects,Tests/BrowserTabColorTests.m) $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(COMPILE_CONFIG)
+	xcrun clang++ $(filter %.o,$^) $(APP_FRAMEWORKS) -o "$@"
+.PHONY: test-browser-tab-color
+test-browser-tab-color: $(BUILD_DIR)/BrowserTabColorTests
+	python3 Tests/run-browser-tab-color.py
+
+# Desktop WebKit popup tab test uses local fixtures and a disposable profile.
+$(BUILD_DIR)/BrowserPopupTabTests: $(call test_objects,Tests/BrowserPopupTabTests.m) $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(COMPILE_CONFIG)
+	xcrun clang++ $(filter %.o,$^) $(APP_FRAMEWORKS) -o "$@"
+.PHONY: test-browser-popup-tab
+test-browser-popup-tab: $(BUILD_DIR)/BrowserPopupTabTests
+	python3 Tests/run-browser-popup-tab.py

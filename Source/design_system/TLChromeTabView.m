@@ -100,11 +100,37 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   return path;
 }
 
+// Preserve only the small native chrome surface when a wave is interrupted.
+// This never snapshots web content, and replaces rather than accumulates layers.
+static CGImageRef TLChromeWaveImage(CALayer *layer, CGRect rect, CGFloat scale) CF_RETURNS_RETAINED {
+  size_t width=ceil(CGRectGetWidth(rect)*scale),height=ceil(CGRectGetHeight(rect)*scale);
+  if(!width || !height || width>16384 || height>1024)return nil;
+  CGColorSpaceRef space=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef context=CGBitmapContextCreate(NULL,width,height,8,0,space,(CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+  CGColorSpaceRelease(space);if(!context)return nil;
+  CGContextScaleCTM(context,scale,scale);
+  CGContextTranslateCTM(context,-CGRectGetMinX(rect),-CGRectGetMinY(rect));
+  [layer renderInContext:context];
+  CGImageRef image=CGBitmapContextCreateImage(context);CGContextRelease(context);return image;
+}
+
 @interface TLChromeTabSelectionView ()
 @property (nonatomic, strong) CAShapeLayer *backgroundLayer;
+@property (nonatomic, strong) CALayer *frozenBackground;
+@property (nonatomic, strong) CAShapeLayer *waveLayer;
+@property (nonatomic, strong) CAGradientLayer *waveMask;
+@property (nonatomic) CGFloat waveProgress;
+@property (nonatomic) CGFloat waveTimeProgress;
+@property (nonatomic) NSTimeInterval waveDuration;
+@property (nonatomic) CGFloat waveFeather;
+@property (nonatomic) CGFloat waveContrast;
+@property (nonatomic, strong) NSColor *waveStartText;
+@property (nonatomic, strong) NSColor *waveEndText;
+@property (nonatomic) BOOL waveActive;
 @property (nonatomic, strong) TLTransitionCoordinator *colorTransition;
 @property (nonatomic, strong) NSColor *contentBackgroundColor;
 @property (nonatomic, strong, readwrite) NSColor *displayedBackgroundColor;
+@property (nonatomic, strong, readwrite) NSColor *displayedTextColor;
 @property (nonatomic, readwrite) NSRect selectionFrame;
 @end
 
@@ -119,6 +145,16 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
     _colorTransition = [TLTransitionCoordinator new];
     _backgroundLayer = [CAShapeLayer layer];
     [self.layer addSublayer:_backgroundLayer];
+    _frozenBackground=[CALayer layer];_frozenBackground.hidden=YES;
+    [self.layer addSublayer:_frozenBackground];
+    _waveLayer = [CAShapeLayer layer];
+    _waveMask = [CAGradientLayer layer];
+    _waveMask.startPoint=CGPointMake(0.5,0);
+    _waveMask.endPoint=CGPointMake(0.5,1);
+    _waveMask.locations=@[@0,@0.375,@0.625,@1];
+    _waveLayer.mask = _waveMask;
+    _waveLayer.hidden = YES;
+    [self.layer addSublayer:_waveLayer];
     [self applyCurrentState];
   }
   return self;
@@ -144,18 +180,89 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   NSColor *target=color ?: self.palette.tabBackground;
   BOOL unchanged=[target isEqual:self.contentBackgroundColor ?: self.palette.tabBackground];
   self.contentBackgroundColor=color;
-  if(unchanged && self.displayedBackgroundColor && (animated || !self.colorTransition.hasTransitions))return;
+  BOOL animate=animated && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  if(unchanged && self.displayedBackgroundColor && (animate || !self.waveActive))return;
+  NSTimeInterval duration=self.waveActive ? self.waveDuration*(1-self.waveTimeProgress) : self.palette.browserTabColorTransitionDuration;
+  if(duration<=0)animate=NO;
+  if(animate && self.waveActive) {
+    CGRect rect=CGPathGetBoundingBox(self.backgroundLayer.path);
+    CGFloat scale=self.window.backingScaleFactor ?: 1;
+    CGImageRef image=TLChromeWaveImage(self.layer,rect,scale);
+    if(image) {
+      [CATransaction begin];[CATransaction setDisableActions:YES];
+      self.frozenBackground.frame=rect;self.frozenBackground.contentsScale=scale;
+      self.frozenBackground.contents=(__bridge id)image;
+      self.frozenBackground.hidden=NO;self.backgroundLayer.hidden=YES;
+      [CATransaction commit];CGImageRelease(image);
+      if(self.freezeTextWave)self.freezeTextWave();
+    }
+    [self.colorTransition cancelAllTransitions];
+  }
+  if(!animate) {
+    [self.colorTransition cancelAllTransitions];
+    [self applyCurrentState];
+    if(self.backgroundColorChanged)self.backgroundColorChanged(self.displayedBackgroundColor);
+    return;
+  }
   NSColor *start=self.displayedBackgroundColor ?: self.palette.tabBackground;
+  // Keep the original completion time so continuous scrolling cannot keep
+  // pushing the end of the reveal further into the future.
+  self.waveDuration=duration;self.waveTimeProgress=0;
+  self.waveActive=YES;self.waveProgress=0;
+  self.waveFeather=self.palette.browserTabColorWaveHeightFraction;
+  self.waveContrast=[self.palette tabWaveContrastFromColor:start toColor:target];
+  self.waveStartText=[self.palette textColorForContentBackground:start];
+  self.waveEndText=[self.palette textColorForContentBackground:target];
+  [CATransaction begin];[CATransaction setDisableActions:YES];
+  self.backgroundLayer.fillColor=TLCGColor(start);
+  self.waveLayer.fillColor=TLCGColor(target);
+  self.waveMask.colors=@[(__bridge id)TLCGColor(self.palette.white),(__bridge id)TLCGColor(self.palette.white),(__bridge id)TLCGColor(self.palette.transparentSurface),(__bridge id)TLCGColor(self.palette.transparentSurface)];
+  self.waveLayer.hidden=NO;
+  [self updateWaveMask];
+  [CATransaction commit];
   __weak typeof(self) weakSelf=self;
-  NSTimeInterval duration=animated && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ? self.palette.browserFooterColorTransitionDuration : 0;
   [self.colorTransition startTransitionForKey:@"content-color" duration:duration update:^(CGFloat progress){
     TLChromeTabSelectionView *owner=weakSelf;if(!owner)return;
-    owner.displayedBackgroundColor=TLColorByInterpolatingColors(start,target,progress);
-    [CATransaction begin];[CATransaction setDisableActions:YES];
-    owner.backgroundLayer.fillColor=TLCGColor(owner.displayedBackgroundColor);
-    [CATransaction commit];
-    if(owner.backgroundColorChanged)owner.backgroundColorChanged(owner.displayedBackgroundColor);
-  } completion:nil];
+    owner.waveTimeProgress=0.5-sin(asin(1-2*MIN(1,MAX(0,progress)))/3);
+    CGFloat contrast=owner.waveContrast;
+    // Concentrate more travel around the midpoint without a velocity jump.
+    CGFloat incoming=progress*progress,outgoing=(1-progress)*(1-progress);
+    CGFloat fasterMiddle=incoming/(incoming+outgoing);
+    CGFloat fastestMiddle=(incoming*progress)/(incoming*progress+outgoing*(1-progress));
+    owner.waveProgress=fasterMiddle+(fastestMiddle-fasterMiddle)*contrast;
+    [owner updateWaveMask];
+    // Keep semantic foreground state in sync; the visible label uses the wave mask.
+    NSColor *underLabel=progress<0.5 ? start : target;
+    if(![owner.displayedBackgroundColor isEqual:underLabel]) {
+      owner.displayedBackgroundColor=underLabel;
+      owner.displayedTextColor=[owner.palette textColorForContentBackground:underLabel];
+      if(owner.backgroundColorChanged)owner.backgroundColorChanged(underLabel);
+    }
+  } completion:^(BOOL finished){
+    TLChromeTabSelectionView *owner=weakSelf;if(!owner || !finished)return;
+    owner.waveActive=NO;
+    if(owner.textWaveChanged)owner.textWaveChanged(owner.waveStartText,owner.waveEndText,NSZeroRect,@[],NO);
+    owner.backgroundLayer.fillColor=TLCGColor(target);
+    owner.waveLayer.hidden=YES;
+    owner.backgroundLayer.hidden=NO;owner.frozenBackground.hidden=YES;owner.frozenBackground.contents=nil;
+
+  }];
+}
+- (void)updateWaveMask {
+  if(!self.waveActive)return;
+  CGRect rect=CGPathGetBoundingBox(self.backgroundLayer.path);
+  CGFloat height=CGRectGetHeight(rect);
+  if(height<=0)return;
+  CGFloat scale=self.window.backingScaleFactor ?: 1;
+  CGFloat feather=MAX(self.waveFeather,self.palette.browserTabColorWaveMinimumPixelWidth/(scale*height));
+  // The uniform feather travels fully beyond both edges. The oversized
+  // mask keeps the already-covered region opaque throughout the sweep.
+  CGFloat front=CGRectGetMinY(rect)+height*((1+feather)*self.waveProgress-feather/2);
+  [CATransaction begin];[CATransaction setDisableActions:YES];
+  self.waveMask.locations=@[@0,@(0.5-feather/8),@(0.5+feather/8),@1];
+  self.waveMask.frame=CGRectMake(CGRectGetMinX(rect),front-2*height,CGRectGetWidth(rect),4*height);
+  [CATransaction commit];
+  if(self.textWaveChanged)self.textWaveChanged(self.waveStartText,self.waveEndText,self.waveMask.frame,self.waveMask.locations,YES);
 }
 - (void)setLeadingFlareOutset:(CGFloat)leadingFlareOutset {
   _leadingFlareOutset = leadingFlareOutset;
@@ -165,7 +272,11 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 - (void)applyCurrentState {
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
+  self.waveActive=NO;self.waveLayer.hidden=YES;
+  self.backgroundLayer.hidden=NO;self.frozenBackground.hidden=YES;self.frozenBackground.contents=nil;
+  if(self.textWaveChanged)self.textWaveChanged(self.displayedTextColor ?: self.palette.appText,self.displayedTextColor ?: self.palette.appText,NSZeroRect,@[],NO);
   self.displayedBackgroundColor = self.contentBackgroundColor ?: self.palette.tabBackground;
+  self.displayedTextColor = [self.palette textColorForContentBackground:self.displayedBackgroundColor];
   self.backgroundLayer.fillColor = TLCGColor(self.displayedBackgroundColor);
   [CATransaction commit];
   [self updateBackgroundPath];
@@ -176,6 +287,8 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   self.backgroundLayer.frame = self.bounds;
+  self.waveLayer.frame = self.bounds;
+  [self updateWaveMask];
   [CATransaction commit];
 }
 
@@ -193,6 +306,8 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   self.backgroundLayer.path = path;
+  self.waveLayer.path = path;
+  [self updateWaveMask];
   [CATransaction commit];
   CGPathRelease(path);
   if (self.geometryChanged) self.geometryChanged();
@@ -232,6 +347,8 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   self.backgroundLayer.path = targetPath;
+  self.waveLayer.path = targetPath;
+  [self updateWaveMask];
   [CATransaction commit];
   if (self.geometryChanged) self.geometryChanged();
   if (!animated || duration <= 0.0 || CGPathEqualToPath(sourcePath, targetPath)) {
@@ -455,6 +572,11 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
 @property (nonatomic, strong) TLTabIconView *tabIconView;
 @property (nonatomic, strong) NSView *titleClipView;
 @property (nonatomic, strong) NSTextField *titleLabel;
+@property (nonatomic, strong) NSTextField *waveTitleLabel;
+@property (nonatomic, strong) CAGradientLayer *textWaveMask;
+@property (nonatomic, strong) CALayer *frozenText;
+@property (nonatomic, strong) NSColor *textWaveStart;
+@property (nonatomic) BOOL textWaveActive;
 @property (nonatomic, strong) TLChromeTabCloseButton *closeButton;
 @property (nonatomic, strong) NSLayoutConstraint *iconWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *iconHeightConstraint;
@@ -526,13 +648,57 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   self.closeButton.tag = tag;
 }
 
+- (void)freezeCurrentTextWave {
+  if(!self.textWaveActive)return;
+  CGFloat scale=self.window.backingScaleFactor ?: 1;
+  // The enclosing truncation mask remains live; do not bake it in twice.
+  CALayer *clipMask=self.titleClipView.layer.mask;
+  self.titleClipView.layer.mask=nil;
+  CGImageRef image=TLChromeWaveImage(self.titleClipView.layer,self.titleClipView.bounds,scale);
+  self.titleClipView.layer.mask=clipMask;
+  if(!image)return;
+  [CATransaction begin];[CATransaction setDisableActions:YES];
+  self.frozenText.frame=self.titleClipView.bounds;self.frozenText.contentsScale=scale;
+  self.frozenText.contents=(__bridge id)image;self.frozenText.hidden=NO;
+  self.titleLabel.hidden=YES;
+  [CATransaction commit];CGImageRelease(image);
+}
+- (void)showTextWaveFromColor:(NSColor *)start toColor:(NSColor *)end maskFrame:(NSRect)frame locations:(NSArray<NSNumber *> *)locations sourceView:(NSView *)source active:(BOOL)active {
+  BOOL showing=active && (![start isEqual:end] || self.frozenText.contents!=nil);
+  if(!showing && !self.textWaveActive)return;
+  self.textWaveActive=showing;
+  self.textWaveStart=start;
+  self.waveTitleLabel.hidden=!self.textWaveActive;
+  if(!self.textWaveActive){
+    self.frozenText.hidden=YES;self.frozenText.contents=nil;self.titleLabel.hidden=NO;
+    [self updateContentForeground];return;
+  }
+  self.titleLabel.textColor=start;self.waveTitleLabel.textColor=end;
+  self.waveTitleLabel.stringValue=self.title;self.waveTitleLabel.font=self.palette.labelFont;
+  [CATransaction begin];[CATransaction setDisableActions:YES];
+  self.textWaveMask.colors=@[(__bridge id)TLCGColor(self.palette.white),(__bridge id)TLCGColor(self.palette.white),(__bridge id)TLCGColor(self.palette.transparentSurface),(__bridge id)TLCGColor(self.palette.transparentSurface)];
+  self.textWaveMask.locations=locations;
+  self.textWaveMask.startPoint=CGPointMake(.5,self.waveTitleLabel.isFlipped ? 1 : 0);
+  self.textWaveMask.endPoint=CGPointMake(.5,self.waveTitleLabel.isFlipped ? 0 : 1);
+  self.textWaveMask.frame=[self.waveTitleLabel convertRect:frame fromView:source];
+  [CATransaction commit];
+}
+- (void)setActiveTextColor:(NSColor *)color {
+  if ([_activeTextColor isEqual:color] || (!_activeTextColor && !color)) return;
+  _activeTextColor = color;
+  [self updateContentForeground];
+}
 - (void)setActiveBackgroundColor:(NSColor *)color {
   if([_activeBackgroundColor isEqual:color] || (!_activeBackgroundColor && !color))return;
   _activeBackgroundColor=color;
+  [self updateContentForeground];
+}
+- (void)updateContentForeground {
+  NSColor *color=self.activeBackgroundColor;
   // A color-animation tick must not relayout the tab or reload its favicon.
   BOOL highlighted=self.active || (self.hovered && self.enabled);
-  NSColor *foreground=self.active && color ? [self.palette textColorForContentBackground:color] : (highlighted ? self.palette.appText : self.palette.labelText);
-  self.titleLabel.textColor=foreground;
+  NSColor *foreground=self.active && color ? (self.activeTextColor ?: [self.palette textColorForContentBackground:color]) : (highlighted ? self.palette.appText : self.palette.labelText);
+  self.titleLabel.textColor=self.textWaveActive ? self.textWaveStart : foreground;
   self.tabIconView.contentTintColor=foreground;
   self.closeButton.normalContentTintColor=self.active && color ? foreground : self.palette.textMuted;
   self.closeButton.hoverContentTintColor=foreground;
@@ -666,6 +832,18 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   [self.contentContainer addSubview:self.tabIconView];
   [self.contentContainer addSubview:self.titleClipView];
   [self.titleClipView addSubview:self.titleLabel];
+  self.waveTitleLabel=[self labelWithString:@""];
+  self.waveTitleLabel.wantsLayer=YES;self.waveTitleLabel.hidden=YES;
+  self.waveTitleLabel.accessibilityElement=NO;
+  self.textWaveMask=[CAGradientLayer layer];self.waveTitleLabel.layer.mask=self.textWaveMask;
+  [self.titleClipView addSubview:self.waveTitleLabel];
+  self.frozenText=[CALayer layer];self.frozenText.hidden=YES;
+  [self.titleClipView.layer insertSublayer:self.frozenText below:self.waveTitleLabel.layer];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.waveTitleLabel.leadingAnchor constraintEqualToAnchor:self.titleLabel.leadingAnchor],
+    [self.waveTitleLabel.trailingAnchor constraintEqualToAnchor:self.titleLabel.trailingAnchor],
+    [self.waveTitleLabel.topAnchor constraintEqualToAnchor:self.titleLabel.topAnchor],
+    [self.waveTitleLabel.bottomAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor]]];
   [self.contentContainer addSubview:self.closeButton];
 
   self.iconLeadingConstraint = [self.tabIconView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
@@ -764,13 +942,14 @@ static CGPathRef TLCreateTabLifecycleMaskPath(NSRect rect) CF_RETURNS_RETAINED {
   }
 
   BOOL highlighted = self.active || (self.hovered && self.enabled);
-  NSColor *foreground = self.active && self.activeBackgroundColor ? [self.palette textColorForContentBackground:self.activeBackgroundColor] : (highlighted ? self.palette.appText : self.palette.labelText);
+  NSColor *foreground = self.active && self.activeBackgroundColor ? (self.activeTextColor ?: [self.palette textColorForContentBackground:self.activeBackgroundColor]) : (highlighted ? self.palette.appText : self.palette.labelText);
   BOOL hasSystemIcon = self.systemIconName.length > 0;
   BOOL hasEmojiIcon = self.icon.length > 0 && !hasSystemIcon;
   self.titleClipView.hidden = self.pinned;
   self.titleLabel.stringValue = self.title;
   self.titleLabel.font = self.palette.labelFont;
-  self.titleLabel.textColor = foreground;
+  self.titleLabel.textColor = self.textWaveActive ? self.textWaveStart : foreground;
+  self.waveTitleLabel.stringValue=self.title;self.waveTitleLabel.font=self.palette.labelFont;
   self.tabIconView.palette = self.palette;
   self.tabIconView.image = self.image;
   self.tabIconView.icon = hasEmojiIcon ? self.icon : @"";

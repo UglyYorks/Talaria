@@ -18,6 +18,7 @@ CGColorRef TLCGColor(NSColor *color);
 #endif
 
 @interface TLThemePalette : NSObject
+- (CGFloat)tabWaveContrastFromColor:(NSColor *)start toColor:(NSColor *)end;
 
 @property (nonatomic) BOOL dark;
 // Higher-contrast theme ink for a content-derived opaque background.
@@ -251,6 +252,9 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic) CGFloat browserReducedHeightSpacing;
 @property (nonatomic) CGFloat browserHeightTransitionDuration;
 @property (nonatomic) CGFloat browserFooterColorTransitionDuration;
+@property (nonatomic) CGFloat browserTabColorTransitionDuration;
+@property (nonatomic) CGFloat browserTabColorWaveMinimumPixelWidth;
+@property (nonatomic) CGFloat browserTabColorWaveHeightFraction;
 @property (nonatomic) CGFloat browserHeightTransitionOvershoot;
 @property (nonatomic) CGFloat browserChatPaneHeightFraction;
 @property (nonatomic) CGFloat browserChatPaneTransitionDuration;

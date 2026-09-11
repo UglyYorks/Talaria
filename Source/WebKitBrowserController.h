@@ -11,6 +11,9 @@ typedef void (^TLWebKitBrowserFaviconHandler)(NSImage * _Nullable favicon);
 typedef void (^TLWebKitBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoForward, BOOL loading);
 
 @interface TLWebKitBrowserSession : NSObject
+@property (nonatomic, copy, nullable) WKWebView * _Nullable (^createTabHandler)(NSURL *URL, WKWebViewConfiguration *configuration);
+@property (nonatomic, copy, nullable) dispatch_block_t closeTabHandler;
+
 @property (nonatomic, weak, readonly, nullable) NSView *containerView;
 @property (nonatomic, strong, readonly, nullable) WKWebView *webView;
 @property (nonatomic, copy, readonly) NSString *initialURLString;
@@ -22,6 +25,8 @@ typedef void (^TLWebKitBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoForwa
 @property (nonatomic, copy, nullable) TLBrowserLinkOpenHandler contextLinkHandler;
 @property (nonatomic, copy, nullable) void (^findResultsChangedHandler)(NSInteger count, NSInteger activeMatch, BOOL finalUpdate);
 @property (nonatomic, copy, nullable) dispatch_block_t documentStartedHandler;
+@property (nonatomic, copy, nullable) dispatch_block_t topScrollEnded;
+@property (nonatomic, copy, nullable) void (^topColorChanged)(NSArray *rgb);
 @end
 
 @interface TLWebKitBrowserController : NSObject
@@ -35,6 +40,7 @@ typedef void (^TLWebKitBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoForwa
   titleHandler:(nullable TLWebKitBrowserTitleHandler)titleHandler linkHandler:(nullable TLWebKitBrowserLinkHandler)linkHandler
   URLHandler:(nullable TLWebKitBrowserURLHandler)URLHandler faviconHandler:(nullable TLWebKitBrowserFaviconHandler)faviconHandler
   navigationHandler:(nullable TLWebKitBrowserNavigationHandler)navigationHandler;
+- (nullable TLWebKitBrowserSession *)loadURL:(NSURL *)URL inView:(NSView *)view fromWindow:(nullable NSWindow *)window titleHandler:(nullable TLWebKitBrowserTitleHandler)titleHandler linkHandler:(nullable TLWebKitBrowserLinkHandler)linkHandler URLHandler:(nullable TLWebKitBrowserURLHandler)URLHandler faviconHandler:(nullable TLWebKitBrowserFaviconHandler)faviconHandler navigationHandler:(nullable TLWebKitBrowserNavigationHandler)navigationHandler configuration:(nullable WKWebViewConfiguration *)configuration;
 - (void)startDownloadURL:(NSURL *)URL fromWindow:(nullable NSWindow *)window;
 - (void)navigateSession:(nullable TLWebKitBrowserSession *)session toURL:(NSURL *)URL;
 - (void)prepareBrowserSettingsInWindow:(nullable NSWindow *)window completion:(void (^)(NSError * _Nullable))completion;

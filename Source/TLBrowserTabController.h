@@ -8,10 +8,13 @@ NS_ASSUME_NONNULL_BEGIN
 @interface TLBrowserTabController : TLFeatureTabController <TLFindActionTarget>
 @property (nonatomic, strong, readonly, nullable) NSImage *favicon;
 @property (nonatomic, strong, readonly, nullable) NSColor *headerContentColor;
+@property (nonatomic, readonly) BOOL headerColorChangesAnimated;
 @property (nonatomic, copy, nullable) void (^headerColorChangedHandler)(void);
 @property (nonatomic, copy, nullable) void (^metadataChangedHandler)(NSString *title, NSURL *URL);
 @property (nonatomic, copy, nullable) void (^historyChangedHandler)(void);
 @property (nonatomic, copy, nullable) void (^faviconChangedHandler)(void);
+@property (nonatomic, copy, nullable) WKWebView * _Nullable (^createTabHandler)(NSURL *URL, WKWebViewConfiguration *configuration);
+@property (nonatomic, copy, nullable) dispatch_block_t closeTabHandler;
 @property (nonatomic, copy, nullable) TLWebKitBrowserLinkHandler linkHandler;
 @property (nonatomic, copy, nullable) TLBrowserLinkOpenHandler contextLinkHandler;
 @property (nonatomic, copy, nullable) TLAppSettings * _Nullable (^settingsProvider)(void);
@@ -23,11 +26,13 @@ NS_ASSUME_NONNULL_BEGIN
                   database:(TLDatabase *)database orchestrator:(TLAgentOrchestrator *)orchestrator
                 inputWidth:(CGFloat)inputWidth browserService:(TLWebKitBrowserController *)browserService;
 @property (nonatomic, readonly) BOOL findBarVisible;
+@property (nonatomic) NSRect tabColorSampleRect;
 - (void)showFindBar;
 - (void)reloadBrowser:(nullable id)sender;
 - (void)findNext:(BOOL)forward;
 - (void)hideFindBar;
 - (void)startInWindow:(nullable NSWindow *)window;
+- (nullable WKWebView *)startInWindow:(nullable NSWindow *)window configuration:(nullable WKWebViewConfiguration *)configuration;
 - (void)setAddressInputWidth:(CGFloat)width;
 @end
 NS_ASSUME_NONNULL_END

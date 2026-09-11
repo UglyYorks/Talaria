@@ -977,7 +977,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self.workspaceOutline.bottomAnchor constraintEqualToAnchor:workspace.bottomAnchor],
   ]];
   __weak TLWorkspaceOutlineView *outline = self.workspaceOutline;
-  self.workspaceTabsController.selectionView.geometryChanged = ^{ [outline updateOutline]; };
+  __weak typeof(self) colorOwner = self;
+  self.workspaceTabsController.selectionView.geometryChanged = ^{
+    [outline updateOutline];
+    [colorOwner updateBrowserTabColorSample];
+  };
   self.contentLeadingConstraint = [self.contentShadowView.leadingAnchor constraintEqualToAnchor:workspace.leadingAnchor
                                                                                        constant:[self contentLeadingOffsetForSidebarWidth:[self currentSidebarWidth]]];
   self.sidebarActionStackLeadingConstraint =
@@ -2225,10 +2229,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)openBrowserTabWithURL:(NSURL *)URL replacingChatTab:(TLWorkspaceTab *)source {
-  if (![self isBrowserURL:URL]) return;
+  [self openBrowserTabWithURL:URL replacingChatTab:source configuration:nil];
+}
+
+- (WKWebView *)openBrowserTabWithURL:(NSURL *)URL replacingChatTab:(TLWorkspaceTab *)source configuration:(WKWebViewConfiguration *)configuration {
+  if (!configuration && ![self isBrowserURL:URL]) return nil;
   TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser
     tabID:self.nextBrowserTabID++ title:[self browserTabTitleForURL:URL]
     toolTip:URL.absoluteString URL:URL closeable:YES];
+  // Install the supplied WebKit configuration before activation can create a runtime.
+  if (configuration) [self ensureBrowserRuntimeForTab:tab configuration:configuration];
   if (source) {
     // Replacement retains the tab's position and presentation identity, which
     // also keeps an existing split attached to the same pane.
@@ -2242,10 +2252,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   } else {
     [self.appStateManager addWorkspaceTab:tab afterTab:[self activeWorkspaceTab] activate:YES];
   }
-  [self ensureBrowserRuntimeForTab:tab];
+  if (configuration) [self ensureBrowserRuntimeForTab:tab configuration:configuration];
+  else [self ensureBrowserRuntimeForTab:tab];
   [self updateWorkspaceMode];
   [self reloadWorkspaceTabs];
   [self updateControlStates];
+  if (!configuration) return nil;
+  TLBrowserTabController *controller = (id)[self runtimeForTab:tab].featureController;
+  return [controller startInWindow:self.window configuration:configuration];
 }
 
 - (void)handleContextLinkURL:(NSURL *)URL destination:(TLBrowserLinkDestination)destination sourceIdentity:(NSString *)identity {
@@ -2263,14 +2277,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (source) [self handleContextLinkURL:URL destination:TLBrowserLinkSplitView sourceIdentity:TLWorkspaceTabIdentity(source)];
 }
 
-- (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab {
+- (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab { [self ensureBrowserRuntimeForTab:tab configuration:nil]; }
+- (void)ensureBrowserRuntimeForTab:(TLWorkspaceTab *)tab configuration:(WKWebViewConfiguration *)configuration {
   TLWorkspaceTabRuntime *existing = [self runtimeForTab:tab];
   if (existing) {
     if (existing.contentView) [self addWorkspaceContentView:existing.contentView];
     return;
   }
   NSURL *URL = tab.URL;
-  if (![self isBrowserURL:URL]) return;
+  if (!configuration && ![self isBrowserURL:URL]) return;
   CGFloat inputWidth = [self messageInputWidthForWindowWidth:NSWidth(self.window.frame)
     sidebarWidth:[self currentSidebarWidth] contentLeadingPadding:[self contentLeadingPadding]];
   TLBrowserTabController *controller = [[TLBrowserTabController alloc] initWithURL:URL palette:self.palette
@@ -2292,7 +2307,12 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   };
   controller.historyChangedHandler = ^{ [weakSelf reloadHistoryPanel]; };
   controller.faviconChangedHandler = ^{ [weakSelf reloadWorkspaceTabs]; };
-  controller.headerColorChangedHandler = ^{ [weakSelf.workspaceTabsController refreshContentColorsAnimated:YES]; };
+  __weak TLBrowserTabController *weakBrowser = controller;
+  __block BOOL hasInitialHeaderColor = NO;
+  controller.headerColorChangedHandler = ^{
+    [weakSelf.workspaceTabsController refreshContentColorsAnimated:hasInitialHeaderColor && weakBrowser.headerColorChangesAnimated];
+    hasInitialHeaderColor = weakBrowser.headerContentColor != nil;
+  };
   controller.linkHandler = ^(NSURL *linkedURL, NSEventModifierFlags flags) {
     [weakSelf handleBrowserTabRequestURL:linkedURL modifierFlags:flags];
   };
@@ -2300,10 +2320,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   controller.contextLinkHandler = ^(NSURL *linkedURL, TLBrowserLinkDestination destination) {
     [weakSelf handleContextLinkURL:linkedURL destination:destination sourceIdentity:sourceIdentity];
   };
+  controller.createTabHandler = ^WKWebView *(NSURL *URL, WKWebViewConfiguration *configuration) {
+    return [weakSelf openBrowserTabWithURL:URL replacingChatTab:nil configuration:configuration];
+  };
+  controller.closeTabHandler = ^{ [weakSelf closeBrowserTabWithID:tabID]; };
   controller.settingsProvider = ^{ return weakSelf.settings; };
   controller.settingsRequiredHandler = ^{ [weakSelf showSettings:weakSelf]; };
   [self addWorkspaceContentView:controller.view];
-  [controller startInWindow:self.window];
+  if (configuration) [controller startInWindow:self.window configuration:configuration];
+  else [controller startInWindow:self.window];
 }
 
 - (void)reloadBookmarks {
@@ -5347,6 +5372,19 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [(TLBrowserTabController *)runtime.featureController setAddressInputWidth:MAX(0, MIN(self.palette.messageInputMaxWidth, paneWidth - self.palette.space11 * 2))];
   }
 }
+// Infer the solid tab color from the corresponding horizontal page edge.
+- (void)updateBrowserTabColorSample {
+  TLBrowserTabController *browser=[self activeBrowserController];
+  if(!browser || !browser.view.window)return;
+  TLChromeTabSelectionView *selection=self.workspaceTabsController.selectionView;
+  NSRect page=[browser.view convertRect:browser.view.bounds toView:selection];
+  CGPathRef outline=[selection newOutlinePath];
+  NSRect tab=NSRectFromCGRect(CGPathGetBoundingBox(outline));CGPathRelease(outline);
+  CGFloat left=MAX(NSMinX(page),NSMinX(tab)),right=MIN(NSMaxX(page),NSMaxX(tab));
+  browser.tabColorSampleRect=NSWidth(page)>0 && right>left
+    ? NSMakeRect((left-NSMinX(page))/NSWidth(page),0,(right-left)/NSWidth(page),1) : NSZeroRect;
+}
+
 - (void)updateSplitContentSizes {
   if (self.updatingSplitLayout || !self.splitWorkspace) return;
   self.updatingSplitLayout = YES;
@@ -5371,6 +5409,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [(TLBrowserTabController *)runtime.featureController setAddressInputWidth:width];
   }
   self.updatingSplitLayout = NO;
+  [self updateBrowserTabColorSample];
 }
 
 - (TLWorkspaceTab *)splitCompanionForTab:(TLWorkspaceTab *)tab preferred:(TLWorkspaceTab *)preferred {

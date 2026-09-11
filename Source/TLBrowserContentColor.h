@@ -7,6 +7,7 @@ FOUNDATION_EXPORT const NSUInteger TLBrowserContentColorMaximumImagePixels;
 @interface TLBrowserContentColor : NSObject
 + (NSArray<NSNumber *> *)dominantRGBForImageData:(NSData *)data;
 + (NSArray<NSNumber *> *)dominantRGBForImageData:(NSData *)data bottomFraction:(double)bottomFraction;
++ (NSArray<NSNumber *> *)dominantRGBForImageData:(NSData *)data bottomFraction:(double)bottomFraction leftFraction:(double)leftFraction widthFraction:(double)widthFraction;
 + (NSArray<NSArray<NSNumber *> *> *)horizontalRGBStripForImageData:(NSData *)data bottomFraction:(double)bottomFraction widthFraction:(double)widthFraction;
 + (NSString *)CSSStringForColor:(NSColor *)color;
 + (NSColor *)colorForRGB:(NSArray *)rgb;
