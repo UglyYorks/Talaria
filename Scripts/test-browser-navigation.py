@@ -28,6 +28,11 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             body = b'<!doctype html><body>Slow page</body>'
         elif self.path == '/blank':
             body = b'<!doctype html><html></html>'
+        elif self.path.startswith('/history'):
+            body = b'''<!doctype html><title>History</title><h1>Start</h1><a href="#section">Section</a><div id="section">Section</div>
+                <script>window.fixtureScriptRan=true;addEventListener('popstate', e => {
+                  document.querySelector('h1').textContent=e.state?.page === 1 ? 'One' : 'Start';
+                });</script>'''
         else:
             body = (f'<!doctype html><title>Source</title><style>body{{background:#153d70;color:white}}'
                     f'a{{position:absolute;left:16px;top:16px;padding:24px;color:white}}</style>'
@@ -52,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='talaria-native-navigation-test-', dir='
                TL_BROWSER_TEST_URL=f'http://127.0.0.1:{server.server_port}')
     app = 'build/BrowserNavigationProbe.app'
     try:
-        launch_browser_test_app(app, env=env, timeout=25)
+        launch_browser_test_app(app, env=env, timeout=55)
         assert requests['/start'] == 1, requests
         assert requests['/next'] == 1, requests
         print('PASS: the source and destination each receive one page request')

@@ -453,6 +453,10 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
     if(![session.lastHost isEqual:host]){session.lastFaviconURL=nil;if(session.faviconHandler)session.faviconHandler(nil);}session.lastHost=host;
     if(session.URLHandler)session.URLHandler(session.webView.URL);
   }
+  // Same-document Back/Forward completes loading without didFinishNavigation.
+  // Fragment links can change only URL; history entries can share the same URL.
+  if(([keyPath isEqual:@"loading"] || [keyPath isEqual:@"URL"]) && !session.webView.loading)
+    [self revealNavigationInWebView:session.webView];
   [self updateSession:session];
 }
 - (void)updateSession:(TLWebKitBrowserSession *)session {
@@ -477,14 +481,19 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 }
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
   TLWebKitBrowserSession *session=[self sessionForWebView:webView];[session.pageBridge install];
+  [self revealNavigationInWebView:webView];
+  [self updateSession:session];
+}
+- (void)revealNavigationInWebView:(WKWebView *)webView {
+  TLWebKitBrowserSession *session=[self sessionForWebView:webView];
+  if(!session || session.closed)return;
   NSUInteger generation=session.transitionGeneration;
-  dispatch_block_t painted=^{if(generation==session.transitionGeneration)[self clearNavigationCover:session];};
+  dispatch_block_t painted=^{if(generation==session.transitionGeneration && !webView.loading)[self clearNavigationCover:session];};
   // A covering native snapshot can throttle requestAnimationFrame. Observe the
   // compositor when available and bound the wait after the document finishes.
   SEL presented=NSSelectorFromString(@"_doAfterNextPresentationUpdate:");
   if([webView respondsToSelector:presented])((void (*)(id,SEL,dispatch_block_t))objc_msgSend)(webView,presented,painted);
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,150*NSEC_PER_MSEC),dispatch_get_main_queue(),painted);
-  [self updateSession:session];
 }
 - (void)navigationFailedInWebView:(WKWebView *)webView error:(NSError *)error {
   TLWebKitBrowserSession *session=[self sessionForWebView:webView];[self clearNavigationCover:session];[self updateSession:session];

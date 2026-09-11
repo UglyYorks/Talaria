@@ -2,6 +2,9 @@
 #import <AppKit/AppKit.h>
 #import "WebKitBrowserController.h"
 #import "BrowserWebKitTestSupport.h"
+#import "TLBrowserTabController.h"
+#import "TLBrowserPreferences.h"
+#import "design_system/UIComponents.h"
 
 @interface TLNavigationTestApplication : NSApplication
 @end
@@ -25,6 +28,7 @@ static void Later(double seconds, void (^action)(void)) {
 @property NSUInteger phase;
 @property NSUInteger initialGeneration;
 @property BOOL checkedCover;
+@property TLBrowserTabController *tab;
 @end
 
 @implementation TLNavigationTestDelegate
@@ -40,7 +44,7 @@ static void Later(double seconds, void (^action)(void)) {
   self.session = [TLWebKitBrowserController.sharedController loadURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/start"]]
     inView:self.window.contentView fromWindow:self.window titleHandler:nil linkHandler:nil URLHandler:nil faviconHandler:nil
     navigationHandler:^(BOOL back, BOOL forward, BOOL loading) { if (!loading) [self loaded]; }];
-  Later(20,^{ Check(NO,@"navigation test timeout"); });
+  Later(50,^{ Check(NO,@"navigation test timeout"); });
 }
 - (NSImageView *)cover {
   for (NSView *view in self.window.contentView.subviews)
@@ -96,9 +100,118 @@ static void Later(double seconds, void (^action)(void)) {
     [TLWebKitBrowserController.sharedController closeSession:self.session];
     Later(.3,^{
       Check(!self.cover,@"closing a tab prevents delayed captures from reappearing");
-      [NSApp terminate:nil];
+      [self checkHistory];
     });
   });
+}
+- (TLBrowserAddressInput *)address { return [self.tab valueForKey:@"browserAddressInput"]; }
+- (void)waitForPath:(NSString *)path attempt:(NSUInteger)attempt then:(dispatch_block_t)next {
+  WKWebView *view=self.session.webView;
+  if(!view.loading && [[view.URL.path stringByAppendingString:view.URL.fragment.length ? [@"#" stringByAppendingString:view.URL.fragment] : @""] isEqual:path]) {
+    Later(.3,next);return;
+  }
+  if(attempt>=80)Check(NO,[NSString stringWithFormat:@"navigation reaches %@ (actual %@)",path,view.URL]);
+  Later(.05,^{[self waitForPath:path attempt:attempt+1 then:next];});
+}
+- (void)checkHistory {
+  // Exercise the production tab and toolbar, not only the engine's methods.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnonnull"
+  self.tab=[[TLBrowserTabController alloc] initWithURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/history"]]
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight] database:nil orchestrator:nil inputWidth:600];
+#pragma clang diagnostic pop
+  self.window.contentView=self.tab.view;[self.window.contentView layoutSubtreeIfNeeded];
+  [self.tab startInWindow:self.window];self.session=[self.tab valueForKey:@"browserSession"];
+  [self waitForPath:@"/history" attempt:0 then:^{
+    Check(!self.address.backButton.enabled && !self.address.forwardButton.enabled,@"new tab disables both history buttons");
+    TLTestEvaluate(self.session.webView,@"history.pushState({page:1}, '', '/history/one');document.querySelector('h1').textContent='One';",^(id value){
+      [self waitForPath:@"/history/one" attempt:0 then:^{
+        Check(self.address.backButton.enabled,@"pushState enables the real Back button");
+        [self.address.backButton performClick:nil];
+        [self waitForPath:@"/history" attempt:0 then:^{
+          Check(![self.session valueForKey:@"navigationCover"],@"Back to same-document history reveals the restored page immediately");
+          Check(!self.address.backButton.enabled && self.address.forwardButton.enabled,@"Back updates both toolbar buttons");
+          TLTestEvaluate(self.session.webView,@"document.querySelector('h1').textContent",^(id value){
+            Check([value isEqual:@"Start"],@"Back runs the site's popstate handler");
+            [self.address.forwardButton performClick:nil];
+            [self waitForPath:@"/history/one" attempt:0 then:^{
+              Check(![self.session valueForKey:@"navigationCover"],@"Forward to same-document history reveals the restored page immediately");
+              Check(self.address.backButton.enabled && !self.address.forwardButton.enabled,@"Forward updates both toolbar buttons");
+              [self checkRepeatedURLHistory];
+            }];
+          });
+        }];
+      }];
+    });
+  }];
+}
+- (void)checkRepeatedURLHistory {
+  TLTestEvaluate(self.session.webView,@"history.pushState({page:2}, '', location.href);",^(id value){
+    [self.address.backButton performClick:nil];
+    Later(.4,^{TLTestEvaluate(self.session.webView,@"history.state.page",^(id value){
+      Check([value isEqual:@1] && ![self.session valueForKey:@"navigationCover"],@"Back reveals a history entry even when the URL is unchanged");
+      [self.address.forwardButton performClick:nil];
+      Later(.4,^{TLTestEvaluate(self.session.webView,@"history.state.page",^(id value){
+        Check([value isEqual:@2] && ![self.session valueForKey:@"navigationCover"],@"Forward reveals a history entry even when the URL is unchanged");
+        [self checkFragmentHistory];
+      });});
+    });});
+  });
+}
+- (void)checkFragmentHistory {
+  TLTestEvaluate(self.session.webView,@"document.querySelector('a').click();",^(id value){
+    [self waitForPath:@"/history/one#section" attempt:0 then:^{
+      Check(![self.session valueForKey:@"navigationCover"],@"fragment link releases the old page image");
+      [self.address.backButton performClick:nil];
+      [self waitForPath:@"/history/one" attempt:0 then:^{
+        Check(![self.session valueForKey:@"navigationCover"],@"Back through fragment history reveals the page");
+        [self.address.forwardButton performClick:nil];
+        [self waitForPath:@"/history/one#section" attempt:0 then:^{
+          Check(![self.session valueForKey:@"navigationCover"],@"Forward through fragment history reveals the page");
+          [self checkCrossDocumentHistory];
+        }];
+      }];
+    }];
+  });
+}
+- (void)checkCrossDocumentHistory {
+  [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/history/second"]]];
+  [self waitForPath:@"/history/second" attempt:0 then:^{
+    [self.address.backButton performClick:nil];
+    [self waitForPath:@"/history/one#section" attempt:0 then:^{
+      Check(![self.session valueForKey:@"navigationCover"],@"cross-document Back reveals the restored page");
+      Check([self.address.textView.toolTip hasSuffix:@"/history/one#section"],@"Back restores the address bar URL");
+      [self.address.forwardButton performClick:nil];
+      [self waitForPath:@"/history/second" attempt:0 then:^{
+        Check(![self.session valueForKey:@"navigationCover"],@"cross-document Forward reveals the restored page");
+        Check(!self.address.forwardButton.enabled,@"Forward disables itself at the end of history");
+        [self checkHistoryWithoutPageScripts];
+      }];
+    }];
+  }];
+}
+- (void)checkHistoryWithoutPageScripts {
+  TLBrowserPreferences *preferences=TLBrowserPreferences.sharedPreferences;
+  Check([preferences persistValue:@2 forSetting:[TLBrowserPreferences settingWithID:@"javascript"] error:nil],@"disable site JavaScript in the disposable profile");
+  [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/history/noscript"]]];
+  [self waitForPath:@"/history/noscript" attempt:0 then:^{
+    TLTestEvaluate(self.session.webView,@"window.fixtureScriptRan === true",^(id value){
+      Check([value isEqual:@NO],@"fixture's page script is disabled");
+      [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/history/noscript#section"]]];
+      [self waitForPath:@"/history/noscript#section" attempt:0 then:^{
+        Check(![self.session valueForKey:@"navigationCover"],@"address-bar fragment navigation releases the old image without page scripts");
+        [self.address.backButton performClick:nil];
+        [self waitForPath:@"/history/noscript" attempt:0 then:^{
+          Check(![self.session valueForKey:@"navigationCover"],@"Back works with site JavaScript disabled");
+          [self.address.forwardButton performClick:nil];
+          [self waitForPath:@"/history/noscript#section" attempt:0 then:^{
+            Check(![self.session valueForKey:@"navigationCover"],@"Forward works with site JavaScript disabled");
+            [self.tab close];[NSApp terminate:nil];
+          }];
+        }];
+      }];
+    });
+  }];
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
   return [TLWebKitBrowserController.sharedController prepareForApplicationTermination] ? NSTerminateNow : NSTerminateLater;
