@@ -24,7 +24,7 @@
   [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
   [self next];
 }
-- (NSArray *)paths { return @[@"/fixed",@"/closed",@"/pointer",@"/frame",@"/clear",@"/gradient",@"/read",@"/find",@"/footer"]; }
+- (NSArray *)paths { return @[@"/fixed",@"/closed",@"/pointer",@"/frame",@"/clear",@"/gradient",@"/read",@"/find",@"/footer-color",@"/footer"]; }
 - (void)next {
   if (self.index == self.paths.count) {
     [self.bridge stop];
@@ -62,14 +62,61 @@
     }];
   } else if ([path isEqual:@"/gradient"]) {
     [self.bridge sampleFooterColorAllowingCapture:YES completion:^(NSDictionary *sample) { [self record:sample]; }];
-  } else if ([path isEqual:@"/footer"]) {
-    [self.bridge configureDocumentFooter:@{@"enabled":@YES,@"height":@70,@"width":@1000,@"color":@"rgb(10,20,30)"} completion:^(BOOL applied) {
-      [self.webView evaluateJavaScript:@"({ready:!!globalThis.__talariaDocumentFooter,height:document.scrollingElement.scrollHeight})" inFrame:nil inContentWorld:self.bridge.contentWorld completionHandler:^(id value, NSError *error) {
-        [self record:@{@"applied":@(applied),@"state":value ?: @{}}];
-      }];
+  } else if ([path isEqual:@"/footer-color"]) {
+    [self.bridge configureDocumentFooter:@{@"enabled":@YES,@"height":@70,@"width":@1000} completion:^(BOOL applied) {
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW,300*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        [self.bridge sampleFooterColorAllowingCapture:YES completion:^(NSDictionary *sample) {
+          [self.webView evaluateJavaScript:@"({scroll:scrollY,height:document.scrollingElement.scrollHeight})" completionHandler:^(id state, NSError *error) {
+            NSMutableDictionary *result=[@{@"sample":sample[@"rgb"] ?: @[],@"prepared":sample[@"extensionRGB"] ?: @[],@"state":state ?: @{},@"applied":@(applied)} mutableCopy];
+            [self checkFillVisibility:0 result:result colors:[NSMutableArray array]];
+          }];
+        }];
+      });
     }];
+  } else if ([path isEqual:@"/footer"]) {
+    [self checkFooterStep:0 results:[NSMutableArray array]];
   } else [self.bridge probeOverlayRect:NSMakeRect(100,20,800,48) viewportSize:NSMakeSize(1000,700) quick:YES completion:^(NSDictionary *result) { [self record:result]; }];
 }
+- (void)checkFillVisibility:(NSUInteger)step result:(NSMutableDictionary *)result colors:(NSMutableArray *)colors {
+  if(step==4) {
+    [self.bridge resetForNavigation];
+    NSColor *reset=[self.webView.underPageBackgroundColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    result[@"resetColor"]=@[@((int)round(reset.redComponent*255)),@((int)round(reset.greenComponent*255)),@((int)round(reset.blueComponent*255))];
+    result[@"fillColors"]=colors;
+    [self record:result];return;
+  }
+  NSString *script=step%2 ? @"scrollTo(0,document.scrollingElement.scrollHeight)" : @"scrollTo(0,0)";
+  [self.webView evaluateJavaScript:script completionHandler:^(id value,NSError *error){
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,150*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+      NSColor *color=[self.webView.underPageBackgroundColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+      [colors addObject:@[@((int)round(color.redComponent*255)),@((int)round(color.greenComponent*255)),@((int)round(color.blueComponent*255))]];
+      [self checkFillVisibility:step+1 result:result colors:colors];
+    });
+  }];
+}
+- (void)checkFooterStep:(NSUInteger)step results:(NSMutableArray *)results {
+  NSArray *heights = @[@70, @110, @0, @70];
+  if (step == heights.count) {
+    [self.bridge stop];
+    CGFloat stoppedInset = 0;
+    if (@available(macOS 26.0, *)) stoppedInset = self.webView.obscuredContentInsets.bottom;
+    [self record:@{@"steps":results, @"stoppedInset":@(stoppedInset)}];
+    return;
+  }
+  CGFloat height = [heights[step] doubleValue];
+  [self.bridge configureDocumentFooter:@{@"enabled":@(height > 0), @"height":@(height), @"width":@1000, @"fallbackColor":@"rgb(10,20,30)"} completion:^(BOOL applied) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,200*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+      NSString *script = @"let fixed=document.getElementById('footer-fixed'); if(!fixed){fixed=document.createElement('div');fixed.id='footer-fixed';fixed.style='position:fixed;bottom:0;height:20px;width:20px';document.body.append(fixed);} return {height:document.scrollingElement.scrollHeight,viewport:innerHeight,fixedBottom:fixed.getBoundingClientRect().bottom,spacer:!!document.querySelector('[data-talaria-document-footer]')};";
+      [self.webView callAsyncJavaScript:script arguments:@{} inFrame:nil inContentWorld:self.bridge.contentWorld completionHandler:^(id value, NSError *error) {
+        CGFloat inset = 0; BOOL native = NO;
+        if (@available(macOS 26.0, *)) { inset = self.webView.obscuredContentInsets.bottom; native = YES; }
+        [results addObject:@{@"applied":@(applied), @"native":@(native), @"inset":@(inset), @"viewHeight":@(NSHeight(self.webView.bounds)), @"state":value ?: @{}}];
+        [self checkFooterStep:step + 1 results:results];
+      }];
+    });
+  }];
+}
+
 @end
 int main(void) {
   @autoreleasepool {

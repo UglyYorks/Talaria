@@ -448,6 +448,15 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 - (void)focusSession:(TLWebKitBrowserSession *)session {if(session.closed)return;[self resumeSession:session];[session.webView.window makeFirstResponder:session.webView];}
 - (void)beginNavigationCover:(TLWebKitBrowserSession *)session {
   [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
+  if (@available(macOS 26.0, *)) {
+    // WKSnapshot omits live content in obscured insets. Covering the web view
+    // with that image introduces a blank footer as soon as navigation begins.
+    // Keep the live view visible while WebKit loads the replacement document.
+    if (session.webView.obscuredContentInsets.bottom > 0) {
+      [self clearNavigationCover:session];
+      return;
+    }
+  }
   if(!session.webView || session.fullscreen || session.navigationCover || !session.containerView.window.visible || session.containerView.hiddenOrHasHiddenAncestor)return;
   NSUInteger generation=++session.transitionGeneration;NSSize size=session.webView.bounds.size;
   if(size.width<=0 || size.height<=0 || size.width*size.height>16*1024*1024)return;

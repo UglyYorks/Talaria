@@ -29,6 +29,7 @@ static NSError *TLPageError(NSString *message) {
 @property(nonatomic, strong) NSMutableDictionary<NSString *, WKFrameInfo *> *frames;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, id> *pending;
 @property(nonatomic, copy) NSDictionary *configuration, *pixelSample, *overlayHint;
+@property(nonatomic, copy) NSString *footerDocumentIdentifier;
 - (void)receiveMessage:(WKScriptMessage *)message;
 - (void)evaluateBody:(NSString *)body arguments:(NSDictionary *)arguments frame:(WKFrameInfo *)frame completion:(void (^)(id, NSError *))completion;
 @end
@@ -157,6 +158,11 @@ static NSError *TLPageError(NSString *message) {
   if (self.stopped || message.webView != self.webView || ![message.body isKindOfClass:NSDictionary.class]) return;
   NSString *identifier = message.body[@"id"];
   if (![identifier isKindOfClass:NSString.class] || identifier.length > 64) return;
+  if ([message.body[@"footerFill"] isKindOfClass:NSDictionary.class]) {
+    if (message.frameInfo.mainFrame && [identifier isEqual:self.footerDocumentIdentifier])
+      [self applyFooterFill:message.body[@"footerFill"]];
+    return;
+  }
   if ([message.body[@"remove"] isEqual:@YES]) [self.frames removeObjectForKey:identifier];
   else if (self.frames.count < 128 || self.frames[identifier]) self.frames[identifier] = message.frameInfo;
 }
@@ -175,7 +181,14 @@ static NSError *TLPageError(NSString *message) {
   [self.webView callAsyncJavaScript:body arguments:arguments inFrame:frame inContentWorld:self.contentWorld completionHandler:finish];
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,4*NSEC_PER_SEC),dispatch_get_main_queue(),^{ finish(nil,TLPageError(@"The browser page did not respond. Please try again.")); });
 }
+- (void)applyFooterFill:(NSDictionary *)state {
+  NSColor *color = [state[@"exposed"] isEqual:@YES] && [self.configuration[@"enabled"] boolValue]
+    ? [TLBrowserContentColor colorForRGB:state[@"rgb"]] : nil;
+  self.webView.underPageBackgroundColor = color;
+}
 - (void)resetForNavigation {
+  self.footerDocumentIdentifier = nil;
+  self.webView.underPageBackgroundColor = nil;
   [self stopFinding]; self.generation++; self.ready = NO;
   self.configuration = nil; self.pixelSample = nil; self.overlayHint = nil; self.overlayCursor = 0;
   [self.frames removeAllObjects];
@@ -184,6 +197,7 @@ static NSError *TLPageError(NSString *message) {
 }
 - (void)stop {
   if (self.stopped) return;
+  if (@available(macOS 26.0, *)) self.webView.obscuredContentInsets = NSEdgeInsetsMake(0, 0, 0, 0);
   [self.webView evaluateJavaScript:@"globalThis.__talariaDocumentFooter?.dispose(); globalThis.__talariaWebKitBridge?.clearSelection();"
     inFrame:nil inContentWorld:self.contentWorld completionHandler:nil];
   [self resetForNavigation]; self.stopped = YES;
@@ -203,6 +217,15 @@ static NSError *TLPageError(NSString *message) {
   }];
 }
 - (void)probeOverlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick completion:(void (^)(NSDictionary *))completion {
+  if (@available(macOS 26.0, *)) {
+    CGFloat bottom = self.webView.obscuredContentInsets.bottom;
+    if (bottom > 0 && NSMaxY(rect) <= bottom) {
+      // WebKit already keeps interactive page layout above this entire band.
+      completion(@{@"obstructed":@NO, @"scanComplete":@YES}); return;
+    }
+    rect.origin.y -= bottom;
+    viewport.height -= bottom;
+  }
   if (!self.overlaySource.length || NSIsEmptyRect(rect) || viewport.width <= 0 || viewport.height <= 0) { completion(@{@"obstructed":NSNull.null}); return; }
   NSMutableDictionary *geometry = [@{@"left":@(NSMinX(rect)), @"bottom":@(NSMinY(rect)), @"width":@(NSWidth(rect)), @"height":@(NSHeight(rect)),
     @"currentWidth":@(viewport.width), @"currentHeight":@(viewport.height), @"cursor":@(self.overlayCursor), @"quick":@(quick)} mutableCopy];
@@ -223,12 +246,32 @@ static NSError *TLPageError(NSString *message) {
   }];
 }
 - (void)configureDocumentFooter:(NSDictionary *)configuration completion:(void (^)(BOOL))completion {
+  if (self.stopped || !self.webView) { if (completion) completion(NO); return; }
   self.configuration = [configuration copy];
+  NSMutableDictionary *documentConfiguration = [configuration mutableCopy];
+  if (@available(macOS 26.0, *)) {
+    // Keep the full WKWebView rendering behind the floating input. WebKit owns
+    // the unobscured viewport, scroll limits, and fixed/sticky element placement.
+    // A DOM spacer here would add a second footer to the native inset.
+    CGFloat height = [configuration[@"height"] doubleValue];
+    CGFloat bottom = [configuration[@"enabled"] boolValue] && isfinite(height) ? MAX(0, height) : 0;
+    self.webView.obscuredContentInsets = NSEdgeInsetsMake(0, 0, bottom, 0);
+    documentConfiguration[@"enabled"] = @NO;
+    documentConfiguration[@"nativeFill"] = @(bottom > 0);
+  }
   if (!self.footerSource.length) { if (completion) completion(NO); return; }
-  NSString *body = [NSString stringWithFormat:@"if (!globalThis.__talariaDocumentFooter) (%@)(); return globalThis.__talariaDocumentFooter.configure(configuration);",self.footerSource];
-  [self evaluateBody:body arguments:@{@"configuration":configuration} frame:nil completion:^(id applied, NSError *error) {
-    if (!error && [applied isEqual:@YES]) self.ready = YES;
-    if (completion) completion(!error && [applied isEqual:@YES]);
+  NSString *body = [NSString stringWithFormat:@"if (!globalThis.__talariaDocumentFooter) (%@)(); const footer=globalThis.__talariaDocumentFooter; return {applied:footer.configure(configuration),fill:footer.fillState(),id:globalThis.__talariaWebKitBridge?.identifier};",self.footerSource];
+  [self evaluateBody:body arguments:@{@"configuration":documentConfiguration} frame:nil completion:^(id value, NSError *error) {
+    NSDictionary *result = [value isKindOfClass:NSDictionary.class] ? value : nil;
+    BOOL applied = !error && [result[@"applied"] isEqual:@YES];
+    if (applied) {
+      self.ready = YES;
+      if ([self.configuration isEqual:configuration]) {
+        self.footerDocumentIdentifier = result[@"id"];
+        [self applyFooterFill:result[@"fill"]];
+      }
+    }
+    if (completion) completion(applied);
   }];
 }
 static BOOL TLColorNeedsPixels(NSDictionary *sample) {
@@ -253,7 +296,7 @@ static void TLRestoreColorPixels(NSMutableDictionary *sample, NSDictionary *cach
 }
 - (void)sampleFooterColorAllowingCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
   if (!self.ready || !self.colorSource.length) { completion(@{}); return; }
-  NSString *body = [NSString stringWithFormat:@"const read=(%@); const top=read(null,true); const bottom=read(banner); return {...bottom,top,cpuMS:(top.cpuMS||0)+(bottom.cpuMS||0),maxSliceMS:(top.cpuMS||0)+(bottom.cpuMS||0)};",self.colorSource];
+  NSString *body = [NSString stringWithFormat:@"const read=(%@); const top=read(null,true); const bottom=read(banner); return {...bottom,top,extensionRGB:globalThis.__talariaDocumentFooter?.preparedColor?.(),cpuMS:(top.cpuMS||0)+(bottom.cpuMS||0),maxSliceMS:(top.cpuMS||0)+(bottom.cpuMS||0)};",self.colorSource];
   NSUInteger generation = self.generation;
   [self evaluateBody:body arguments:@{@"banner":self.configuration[@"banner"] ?: NSNull.null} frame:nil completion:^(id value, NSError *error) {
     if (error || ![value isKindOfClass:NSDictionary.class]) { completion(@{}); return; }
@@ -276,6 +319,10 @@ static void TLRestoreColorPixels(NSMutableDictionary *sample, NSDictionary *cach
     // and all image analysis runs off the main thread.
     WKSnapshotConfiguration *configuration = [WKSnapshotConfiguration new];
     configuration.afterScreenUpdates = NO;
+    if (@available(macOS 26.0, *)) {
+      CGFloat bottomInset = self.webView.obscuredContentInsets.bottom;
+      if (bottomInset > 0) configuration.rect = CGRectMake(0, 0, NSWidth(self.webView.bounds), MAX(1, NSHeight(self.webView.bounds) - bottomInset));
+    }
     __block BOOL finished = NO;
     void (^finish)(NSDictionary *) = ^(NSDictionary *result) {
       if (finished) return; finished = YES;

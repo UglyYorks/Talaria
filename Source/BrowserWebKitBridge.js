@@ -109,5 +109,8 @@
     flush(); return matches;
   }
   globalThis.__talariaWebKitBridge = {identifier,candidate,pointerCandidate,count,announce,
+    reportFooterFill(state) {
+      if(parent===window)window.webkit.messageHandlers[handler].postMessage({id:identifier,footerFill:state});
+    },
     clearSelection() { getSelection()?.removeAllRanges(); }};
 })

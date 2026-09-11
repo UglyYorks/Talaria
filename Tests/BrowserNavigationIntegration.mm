@@ -100,9 +100,26 @@ static void Later(double seconds, void (^action)(void)) {
     [TLWebKitBrowserController.sharedController closeSession:self.session];
     Later(.3,^{
       Check(!self.cover,@"closing a tab prevents delayed captures from reappearing");
-      [self checkHistory];
+      [self checkInsetNavigation];
     });
   });
+}
+- (void)checkInsetNavigation {
+  self.session=[TLWebKitBrowserController.sharedController loadURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/inset-source"]]
+    inView:self.window.contentView fromWindow:self.window titleHandler:nil linkHandler:nil URLHandler:nil faviconHandler:nil navigationHandler:nil];
+  [self waitForPath:@"/inset-source" attempt:0 then:^{
+    if (@available(macOS 26.0, *)) self.session.webView.obscuredContentInsets=NSEdgeInsetsMake(0,0,70,0);
+    else { [TLWebKitBrowserController.sharedController closeSession:self.session];[self checkHistory];return; }
+    [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/slow"]]];
+    Later(.4,^{
+      Check(self.session.webView.loading,@"inset regression examines the pending address navigation");
+      Check(![self.session valueForKey:@"navigationCover"],@"overlay input keeps the live page instead of a snapshot with a blank inset band");
+      Later(.3,^{
+        Check(![self.session valueForKey:@"navigationCover"],@"delayed snapshot cannot introduce an inset band during loading");
+        [TLWebKitBrowserController.sharedController closeSession:self.session];[self checkHistory];
+      });
+    });
+  }];
 }
 - (TLBrowserAddressInput *)address { return [self.tab valueForKey:@"browserAddressInput"]; }
 - (void)waitForPath:(NSString *)path attempt:(NSUInteger)attempt then:(dispatch_block_t)next {
