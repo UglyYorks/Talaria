@@ -133,7 +133,7 @@ static NSError *TLPageError(NSString *message) {
     _colorSource = TLPageResource(@"BrowserFooterColor");
     NSString *bridgeSource = TLPageResource(@"BrowserWebKitBridge");
     if (bridgeSource.length && _overlaySource.length)
-      _installationSource = [NSString stringWithFormat:@"(%@)(%@,%@,(%@));",bridgeSource,TLPageJSON(_handlerName),TLPageJSON(NSUUID.UUID.UUIDString),_overlaySource];
+      _installationSource = [NSString stringWithFormat:@"(%@)(%@,%@,(%@),(%@));",bridgeSource,TLPageJSON(_handlerName),TLPageJSON(NSUUID.UUID.UUIDString),_overlaySource,_colorSource.length ? _colorSource : @"null"];
   }
   return self;
 }
@@ -158,6 +158,9 @@ static NSError *TLPageError(NSString *message) {
   if (self.stopped || message.webView != self.webView || ![message.body isKindOfClass:NSDictionary.class]) return;
   NSString *identifier = message.body[@"id"];
   if (![identifier isKindOfClass:NSString.class] || identifier.length > 64) return;
+  if(message.frameInfo.mainFrame && [message.body[@"scrollEnded"] isEqual:@YES] && self.topScrollEnded)self.topScrollEnded();
+  if(message.frameInfo.mainFrame && [message.body[@"topRGB"] isKindOfClass:NSArray.class] && self.topColorChanged)
+    self.topColorChanged(message.body[@"topRGB"]);
   if ([message.body[@"footerFill"] isKindOfClass:NSDictionary.class]) {
     if (message.frameInfo.mainFrame && [identifier isEqual:self.footerDocumentIdentifier])
       [self applyFooterFill:message.body[@"footerFill"]];
@@ -197,10 +200,11 @@ static NSError *TLPageError(NSString *message) {
 }
 - (void)stop {
   if (self.stopped) return;
+  self.stopped = YES;
   if (@available(macOS 26.0, *)) self.webView.obscuredContentInsets = NSEdgeInsetsMake(0, 0, 0, 0);
   [self.webView evaluateJavaScript:@"globalThis.__talariaDocumentFooter?.dispose(); globalThis.__talariaWebKitBridge?.clearSelection();"
     inFrame:nil inContentWorld:self.contentWorld completionHandler:nil];
-  [self resetForNavigation]; self.stopped = YES;
+  [self resetForNavigation];
   [self.webView.configuration.userContentController removeScriptMessageHandlerForName:self.handlerName contentWorld:self.contentWorld];
 }
 - (void)dealloc {
@@ -260,7 +264,7 @@ static NSError *TLPageError(NSString *message) {
     documentConfiguration[@"nativeFill"] = @(bottom > 0);
   }
   if (!self.footerSource.length) { if (completion) completion(NO); return; }
-  NSString *body = [NSString stringWithFormat:@"if (!globalThis.__talariaDocumentFooter) (%@)(); const footer=globalThis.__talariaDocumentFooter; return {applied:footer.configure(configuration),fill:footer.fillState(),id:globalThis.__talariaWebKitBridge?.identifier};",self.footerSource];
+  NSString *body = [NSString stringWithFormat:@"if (!globalThis.__talariaDocumentFooter) (%@)(); const footer=globalThis.__talariaDocumentFooter; globalThis.__talariaTabColorRange=configuration.topRange; return {applied:footer.configure(configuration),fill:footer.fillState(),id:globalThis.__talariaWebKitBridge?.identifier};",self.footerSource];
   [self evaluateBody:body arguments:@{@"configuration":documentConfiguration} frame:nil completion:^(id value, NSError *error) {
     NSDictionary *result = [value isKindOfClass:NSDictionary.class] ? value : nil;
     BOOL applied = !error && [result[@"applied"] isEqual:@YES];
@@ -273,6 +277,19 @@ static NSError *TLPageError(NSString *message) {
     }
     if (completion) completion(applied);
   }];
+}
+// Encode only the sampled edge, not an entire high-resolution page. A complex
+// viewport can exceed the analyzer's byte limit even though its edge is tiny.
+static NSData *TLColorEdgeData(NSBitmapImageRep *bitmap, double bottomFraction, double leftFraction, double widthFraction) {
+  CGImageRef image=bitmap.CGImage;
+  if(!image || !isfinite(bottomFraction) || bottomFraction<=0 || bottomFraction>1 ||
+     !isfinite(leftFraction) || !isfinite(widthFraction) || leftFraction<0 || widthFraction<=0 || leftFraction+widthFraction>1.000001)return nil;
+  double width=CGImageGetWidth(image),height=CGImageGetHeight(image);
+  double bottom=MAX(1,floor(height*bottomFraction));
+  CGImageRef edge=CGImageCreateWithImageInRect(image,CGRectMake(floor(width*leftFraction),MAX(0,bottom-12),MAX(1,floor(width*widthFraction)),MIN(12,bottom)));
+  if(!edge)return nil;
+  NSBitmapImageRep *strip=[[NSBitmapImageRep alloc] initWithCGImage:edge];CGImageRelease(edge);
+  return [strip representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
 }
 static BOOL TLColorNeedsPixels(NSDictionary *sample) {
   return sample && ![sample[@"rgb"] isKindOfClass:NSArray.class] && ![sample[@"busy"] boolValue] && [sample[@"captureReady"] boolValue];
@@ -296,9 +313,9 @@ static void TLRestoreColorPixels(NSMutableDictionary *sample, NSDictionary *cach
 }
 - (void)sampleFooterColorAllowingCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
   if (!self.ready || !self.colorSource.length) { completion(@{}); return; }
-  NSString *body = [NSString stringWithFormat:@"const read=(%@); const top=read(null,true); const bottom=read(banner); return {...bottom,top,extensionRGB:globalThis.__talariaDocumentFooter?.preparedColor?.(),cpuMS:(top.cpuMS||0)+(bottom.cpuMS||0),maxSliceMS:(top.cpuMS||0)+(bottom.cpuMS||0)};",self.colorSource];
+  NSString *body = [NSString stringWithFormat:@"const read=(%@); const top=read(null,true,topRange); const bottom=read(banner); return {...bottom,top,extensionRGB:globalThis.__talariaDocumentFooter?.preparedColor?.(),cpuMS:(top.cpuMS||0)+(bottom.cpuMS||0),maxSliceMS:(top.cpuMS||0)+(bottom.cpuMS||0)};",self.colorSource];
   NSUInteger generation = self.generation;
-  [self evaluateBody:body arguments:@{@"banner":self.configuration[@"banner"] ?: NSNull.null} frame:nil completion:^(id value, NSError *error) {
+  [self evaluateBody:body arguments:@{@"banner":self.configuration[@"banner"] ?: NSNull.null,@"topRange":self.configuration[@"topRange"] ?: NSNull.null} frame:nil completion:^(id value, NSError *error) {
     if (error || ![value isKindOfClass:NSDictionary.class]) { completion(@{}); return; }
     NSMutableDictionary *sample = [value mutableCopy];
     NSMutableDictionary *top = [sample[@"top"] isKindOfClass:NSDictionary.class] ? [sample[@"top"] mutableCopy] : nil;
@@ -335,11 +352,12 @@ static void TLRestoreColorPixels(NSMutableDictionary *sample, NSDictionary *cach
       if (snapshotError || !image || self.generation != generation) { finish(sample); return; }
       dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
         NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithData:image.TIFFRepresentation];
-        NSData *data = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
         double bottom = [sample[@"sampleBottom"] doubleValue];
-        NSArray *topRGB = captureTop ? [TLBrowserContentColor dominantRGBForImageData:data bottomFraction:[top[@"sampleBottom"] doubleValue]/height] : nil;
-        NSArray *rgb = captureFooter && !extension ? [TLBrowserContentColor dominantRGBForImageData:data bottomFraction:bottom > 0 ? bottom/height : 1] : nil;
-        NSArray *colors = extension ? [TLBrowserContentColor horizontalRGBStripForImageData:data bottomFraction:bottom/height widthFraction:[sample[@"contentWidth"] doubleValue]/width] : nil;
+        NSData *topData = captureTop ? TLColorEdgeData(bitmap,[top[@"sampleBottom"] doubleValue]/height,[top[@"sampleLeft"] doubleValue],top[@"sampleWidth"] ? [top[@"sampleWidth"] doubleValue] : 1) : nil;
+        NSData *footerData = captureFooter ? TLColorEdgeData(bitmap,bottom>0 ? bottom/height : 1,0,extension ? [sample[@"contentWidth"] doubleValue]/width : 1) : nil;
+        NSArray *topRGB = topData ? [TLBrowserContentColor dominantRGBForImageData:topData] : nil;
+        NSArray *rgb = footerData && !extension ? [TLBrowserContentColor dominantRGBForImageData:footerData] : nil;
+        NSArray *colors = footerData && extension ? [TLBrowserContentColor horizontalRGBStripForImageData:footerData bottomFraction:1 widthFraction:1] : nil;
         dispatch_async(dispatch_get_main_queue(),^{
           if (finished) return;
           sample[@"captureMS"] = @((NSProcessInfo.processInfo.systemUptime-started)*1000);

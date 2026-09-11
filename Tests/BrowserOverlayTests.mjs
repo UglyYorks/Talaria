@@ -334,9 +334,13 @@ try {
   }
   await load('<style>html,body{background:rgb(20,30,150)}</style><header style="height:80px;background:rgb(180,30,20)">Page header</header>');
   const topRead=()=>evaluate(`(${colorSource})(null,true)`,context);
+  await evaluate(`document.querySelector('header').insertAdjacentHTML('beforeend','<div style="position:absolute;top:0;left:20%;width:20%;height:16px;background:rgb(36,104,66)"></div>')`);
+  assert.deepEqual((await evaluate(`(${colorSource})(null,true,[.2,.2])`,context)).rgb,[36,104,66],'CSS sample is local to the selected tab');
+  await evaluate("document.querySelector('header div').remove()");
   assert.deepEqual((await topRead()).rgb,[180,30,20]);
   assert.deepEqual((await evaluate(`(${colorSource})()`,context)).rgb,[20,30,150]);
-  await evaluate('scrollTo(0,300)');assert.deepEqual((await topRead()).rgb,[20,30,150],'top tracks visible viewport rather than document start');
+  await evaluate('scrollTo(0,300)');assert.deepEqual((await topRead()).rgb,[20,30,150],'top color follows the visible page edge while scrolling');
+  await evaluate('scrollTo(0,0)');
   await evaluate(`document.body.insertAdjacentHTML("beforeend",'<header style="position:fixed;top:0;height:60px;width:100%;background:rgb(10,140,70)">Sticky navigation</header>')`);
   assert.deepEqual((await topRead()).rgb,[10,140,70]);
   await evaluate('globalThis.__talariaDocumentFooter={canvasSampleRequest:()=>({documentExtension:true,busy:true}),isScrolling:()=>false}',context);

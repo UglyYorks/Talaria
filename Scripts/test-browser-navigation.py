@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise a real desktop link navigation while the new document cannot paint."""
+"""Verify old content survives blocked paint, then reveal before slow images load."""
 from collections import Counter
 from browser_test_launcher import launch_browser_test_app
 import http.server
@@ -18,11 +18,15 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         kind = 'text/html'
         if self.path == '/next':
             time.sleep(.3)
-            body = b'<!doctype html><link rel="stylesheet" href="/delayed.css"><title>Destination</title><body>Destination page</body>'
+            body = b'<!doctype html><link rel="stylesheet" href="/delayed.css"><title>Destination</title><body><h1>Destination page</h1><img id="slow-image" src="/delayed-image.svg"></body>'
         elif self.path == '/delayed.css':
             time.sleep(1.2)
             body = b'body { background: #1b5944; color: white; }'
             kind = 'text/css'
+        elif self.path == '/delayed-image.svg':
+            time.sleep(5)
+            body = b'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="green"/></svg>'
+            kind = 'image/svg+xml'
         elif self.path == '/slow':
             time.sleep(2)
             body = b'<!doctype html><body>Slow page</body>'

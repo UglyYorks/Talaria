@@ -48,7 +48,10 @@ const NSUInteger TLBrowserContentColorMaximumImagePixels = 32 * 1024 * 1024;
   return [self dominantRGBForImageData:data bottomFraction:1];
 }
 + (NSArray<NSNumber *> *)dominantRGBForImageData:(NSData *)data bottomFraction:(double)bottomFraction {
-  if(!isfinite(bottomFraction) || bottomFraction<=0 || bottomFraction>1)return nil;
+  return [self dominantRGBForImageData:data bottomFraction:bottomFraction leftFraction:0 widthFraction:1];
+}
++ (NSArray<NSNumber *> *)dominantRGBForImageData:(NSData *)data bottomFraction:(double)bottomFraction leftFraction:(double)leftFraction widthFraction:(double)widthFraction {
+  if(!isfinite(bottomFraction) || bottomFraction<=0 || bottomFraction>1 || !isfinite(leftFraction) || !isfinite(widthFraction) || leftFraction<0 || widthFraction<=0 || leftFraction+widthFraction>1.000001)return nil;
   if(!data.length || data.length>8*1024*1024)return nil;
   CGImageSourceRef source=CGImageSourceCreateWithData((__bridge CFDataRef)data,NULL);
   if(!source)return nil;
@@ -61,7 +64,7 @@ const NSUInteger TLBrowserContentColorMaximumImagePixels = 32 * 1024 * 1024;
   // Crop the returned image, never the live WebKit render widget. Image-space
   // y starts at the top; sampling the bottom strip must not average the page.
   double bottom=MAX(1,floor(imageHeight*bottomFraction));
-  CGImageRef edge=CGImageCreateWithImageInRect(image,CGRectMake(0,MAX(0,bottom-12),imageWidth,MIN(12,bottom)));
+  CGImageRef edge=CGImageCreateWithImageInRect(image,CGRectMake(floor(imageWidth*leftFraction),MAX(0,bottom-12),MAX(1,floor(imageWidth*widthFraction)),MIN(12,bottom)));
   CGImageRelease(image);if(!edge)return nil;
   NSUInteger width=MIN(256,CGImageGetWidth(edge)),height=1;
   NSMutableData *pixels=[NSMutableData dataWithLength:width*height*4];

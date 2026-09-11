@@ -345,3 +345,13 @@ test-incognito-browser: build
 .PHONY: test-webkit-download-lifecycle
 test-webkit-download-lifecycle: $(BUILD_DIR)/WebKitDownloadLifecycleTests
 	"$(BUILD_DIR)/WebKitDownloadLifecycleTests"
+
+# Real media and a deliberately unresponsive page, in a disposable desktop app.
+.PHONY: test-browser-close
+test-browser-close: build
+	mkdir -p "$(BUILD_DIR)/BrowserCloseProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/BrowserCloseProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserCloseProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserCloseIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserCloseProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserCloseProbe.app"
+	python3 Scripts/test-browser-close.py

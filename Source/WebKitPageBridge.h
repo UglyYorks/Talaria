@@ -9,6 +9,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) WKContentWorld *contentWorld;
 @property(nonatomic, readonly) BOOL ready;
 @property(nonatomic, readonly) BOOL finding;
+@property(nonatomic, copy, nullable) dispatch_block_t topScrollEnded;
+@property(nonatomic, copy, nullable) void (^topColorChanged)(NSArray *rgb);
 - (instancetype)initWithWebView:(WKWebView *)webView;
 - (void)install;
 - (void)resetForNavigation;
