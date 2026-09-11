@@ -5,6 +5,18 @@ launches a Chromium helper, downloads a browser runtime during the build, or run
 a separate CEF message loop. WebKit security and engine updates arrive with the
 installed system software.
 
+Browser pages identify as the installed Safari release. Talaria reads Safari's
+`CFBundleShortVersionString` at startup and sets WebKit's public
+`applicationNameForUserAgent` before creating browser views, including private
+pages and script popups. This adds `Version/<installed version> Safari/605.1.15`
+to WebKit's native user agent for requests and JavaScript without injecting a
+page override. Restarting Talaria picks up Safari updates. If Safari's version
+cannot be read, the browser retains WebKit's default identity. The compatibility
+tokens `Mac OS X 10_15_7` and `605.1.15` are intentionally frozen by Safari; they
+do not identify the installed OS or engine build. The missing browser/version
+tokens in macOS WKWebView's default identity are documented in
+[WebKit issue 278284](https://bugs.webkit.org/show_bug.cgi?id=278284).
+
 ## Application features
 
 The WebKit controller retains browser tabs, split panes, private windows, URL and

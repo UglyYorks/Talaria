@@ -18,6 +18,22 @@ static NSError *TLWebKitError(NSString *message) {
 static BOOL TLBrowserURLSupported(NSURL *URL) {
   return TLBrowserImageURLIsSupported(URL) || URL.isFileURL || [URL.absoluteString isEqual:@"about:blank"];
 }
+static NSString *TLBrowserSafariApplicationName(void) {
+  static NSString *name;
+  static dispatch_once_t once;
+  dispatch_once(&once,^{
+    NSURL *URL=[NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:@"com.apple.Safari"];
+    NSBundle *safari=[NSBundle bundleWithURL:URL ?: [NSURL fileURLWithPath:@"/Applications/Safari.app"]];
+    NSString *version=[safari objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    if(![safari.bundleIdentifier isEqual:@"com.apple.Safari"] || ![version isKindOfClass:NSString.class] || !version.length)return;
+    NSRange match=[version rangeOfString:@"[0-9]+(?:\\.[0-9]+){1,2}" options:NSRegularExpressionSearch];
+    if(!NSEqualRanges(match,NSMakeRange(0,version.length)))return;
+    // Safari's compatibility token is frozen; the Version token tracks Safari
+    // updates independently of macOS. Keep WebKit's own UA prefix untouched.
+    name=[NSString stringWithFormat:@"Version/%@ Safari/605.1.15",version];
+  });
+  return name;
+}
 static NSString *TLBrowserJSON(id object) {
   NSData *data=[NSJSONSerialization dataWithJSONObject:object ?: NSNull.null options:NSJSONWritingFragmentsAllowed error:nil];
   return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"null";
@@ -332,6 +348,9 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   session.browserIdentifier=nextIdentifier++;session.initialURLString=URL.absoluteString;session.incognito=[self.incognitoWindows objectForKey:session.originWindow]!=nil;
   session.titleHandler=titleHandler;session.linkHandler=linkHandler;session.URLHandler=URLHandler;session.faviconHandler=faviconHandler;session.navigationHandler=navigationHandler;
   WKWebViewConfiguration *configuration=providedConfiguration ?: [WKWebViewConfiguration new];
+  // Set before constructing any web view, including script-created windows, so
+  // the first request, child frames and navigator all share the Safari identity.
+  configuration.applicationNameForUserAgent=TLBrowserSafariApplicationName();
   if(!providedConfiguration)configuration.websiteDataStore=[self storeForWindow:session.originWindow];
   else configuration.userContentController=[WKUserContentController new];
   [TLWebKitBrowserSettings applyToConfiguration:configuration];

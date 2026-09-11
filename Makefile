@@ -389,6 +389,24 @@ test-browser-navigation: build
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserNavigationProbe.app"
 	python3 Scripts/test-browser-navigation.py
 
+.PHONY: test-browser-wheel-routing
+test-browser-wheel-routing: build
+	mkdir -p "$(BUILD_DIR)/BrowserWheelRoutingProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/BrowserWheelRoutingProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserWheelRoutingProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserWheelRoutingWebKitTests.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserWheelRoutingProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserWheelRoutingProbe.app"
+	python3 Scripts/test-browser-wheel-routing.py
+
+.PHONY: test-browser-user-agent
+test-browser-user-agent: build
+	mkdir -p "$(BUILD_DIR)/BrowserUserAgentProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/BrowserUserAgentProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserUserAgentProbe.app"
+	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserUserAgentIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserUserAgentProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserUserAgentProbe.app"
+	python3 Scripts/test-browser-user-agent.py
+
 # Native conversation attachment viewer, including transcript integration.
 test: $(BUILD_DIR)/AttachmentViewerTests
 
