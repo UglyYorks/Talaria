@@ -79,20 +79,20 @@ bypasses, boundaries, preference changes, Reduce Motion and lifecycle cancellati
 Full traces are written to `build/BrowserSmoothScrollingResults.json`.
 `BrowserSettingsTests` also checks default-on behavior and persisted opt-out.
 
-The September 11, 2026 run on macOS 27.0 (26A428) passed 19 animation/eligibility
-checks, 31 desktop smoothing scenarios with 32 page assertions, settings
-persistence checks, and the existing navigation regressions. A system alert
-prevented application activation, so native tests used the explicit
-`TL_BROWSER_TEST_BACKGROUND=1` mode; default test runs still require activation.
-Foreground interaction and physical hardware feel remain unverified.
+The final September 11, 2026 run on macOS 27.0 (26A428), after integrating the
+latest main-branch chat and build refactor, passed the full `make -j6 test` suite,
+19 animation/eligibility checks, 31 desktop smoothing scenarios with 32 page
+assertions, 33 navigation checks and 30 installed-Safari identity checks. Native
+browser probes used their normal foreground mode on an unlocked desktop.
+Settings persistence and the tab-layout regressions also passed. The signed
+desktop build passed strict recursive code-signature verification.
 
-The document-footer run passed 101 of 106 checks. Five checks failed in the
-inactive desktop window: opening/closing viewport animation, offscreen-extension
-sampling, gradient readback and complex framed-banner edge capture. These have
-not been established as unrelated failures. An opt-out comparison was prepared
-with `TL_BROWSER_TEST_DISABLE_SMOOTHING=1`, but the desktop then locked and the
-runner correctly refused to continue. Both the foreground footer rerun and the
-comparison remain pending. Existing footer code was not changed.
+All 106 document-footer rendering checks passed with smoothing enabled in the
+normal desktop run. The five failures from the earlier inactive-window run did
+not reproduce: opening/closing viewport animation, offscreen-extension sampling,
+gradient readback and complex framed-banner edge capture all passed. No footer
+production code was changed for this rerun. Physical hardware feel and actual
+trackpad/Magic Mouse behavior remain unverified.
 
 Momentum bypass is checked by pointer identity at `NSWindow.sendEvent:`: the
 original event and metadata survive the local monitor unchanged. AppKit discards
@@ -113,7 +113,7 @@ also checked through actual DOM events and final scroll positions.
 | `Tests/BrowserSmoothScrollingIntegration.mm`, `Scripts/test-browser-smooth-scrolling.py` | Real AppKit/WebKit regression fixture and assertions |
 | `Tests/BrowserSettingsTests.m` | Default and persisted opt-out checks |
 | `Tests/BrowserWebKitTestSupport.h`, `Tests/run-browser-overlay-webkit.py` | Explicit background desktop-test option; normal activation remains the default |
-| `Makefile` | Unit-test dependency and native smoothing test target |
+| `Makefile`, `Scripts/tests.mk` | Unit-test dependency and native smoothing test target |
 | `docs/webkit-wheel-scrolling.md` | Approach, compatibility findings and verification limits |
 
 ## Earlier feasibility investigation
