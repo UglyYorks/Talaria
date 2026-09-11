@@ -74,53 +74,51 @@ need separate product and platform integration work.
 
 ## Tests
 
-Validation on September 10–11, 2026 included a signed desktop build and the full
-`make test` compilation. The packaged app links system WebKit, contains no CEF
-engine symbols, libraries or helper bundles, and includes the current browser
-and Markdown scripts. Its strict recursive code-signature verification passed;
-the minimum supported OS remains macOS 13. The gateway, theme audit, JavaScript
-and native unit suites passed except `QuickInputTests`, which fails the window-server assertion
-that a fully transparent capture window receives mouse events beside the notch.
-The existing pre-migration binary fails the identical assertion under the same
-host conditions; its test and Quick Input/selection-window implementation are
-unchanged on this branch. This may also be related to the locked desktop and
-requires an unlocked-session retest. The remaining unit executables were run
-individually after that failure and passed.
+The full regression pass completed on September 11, 2026 on Apple silicon running
+macOS 27.0 (26A428). Browser integration suites were launched through LaunchServices
+as signed desktop bundles from the WebKit worktree, using disposable profiles and
+local fixtures.
 
-Focused regressions cover WebKit settings persistence, native cookie blocking
-without disabling local storage, native HTTPS navigation policy and preserved
-POST requests, legacy profile migration, reset-store isolation, settings
-navigation after unsupported controls are removed, and asynchronous download
-resume/pause/cancel races. `BrowserSettingsTests`, `BrowserProfileImportTests`,
-`AppResetTests`, `FeatureControllerTests` and `WebKitDownloadLifecycleTests`
-passed. Browser integration suites are launched as desktop bundles from this
-worktree and use isolated test profiles.
+The final `make -j6 test` pass covers the native unit suites, Hermes gateway and
+runtime checks, theme-color audit, profile importer, and JavaScript regressions.
+The unlocked desktop also passes `QuickInputTests`; its earlier window-server
+failure does not reproduce in this session.
 
-The host session was found to be locked (`CGSSessionScreenIsLocked=Yes`), keeping
-applications inactive and WebKit documents hidden. Native checks that depend on
-visible rendering, foreground input, fullscreen, developer tools or compositor
-sampling remain pending an unlocked desktop; results from the locked session do
-not establish rendering parity. The latest GET-download fallback lifecycle tests
-and theme audit passed without requiring foreground access. The HTTP download
-fixture now distinguishes true byte-range resumption from a full GET restart and
-checks the complete downloaded payload for both paths.
+The browser integration results are:
 
-The final two-launch preferences/download integration passed: page script and
-font settings, zoom, background suspension/resume, cache/cookie clearing,
-concurrent destinations, nonzero byte-range resumption after closing the source
-tab, cancelled-download retry, explicit GET restart without range support, exact
-four-megabyte payloads, and persisted download history. The three-launch import
-test also passed, including a `__proto__` storage key, Unicode values, HttpOnly
-protection and one-time session-cookie replay. Image-loader redirect cookie
-scoping and response-size checks passed.
+| Suite | Verified behavior |
+| --- | --- |
+| Preferences and downloads | Saved native settings, zoom, suspension, clearing data, unique destinations, true byte-range resume, GET restart fallback, cancelled-download retry, complete payloads and persistent history |
+| Navigation | Native navigation callbacks, history, reload, navigation covers, resize and closure |
+| Links | Trusted link/image/editing menus, copy and Services, split/window routing, blank script popups, opener access, `window.close` and late-callback cleanup |
+| Images and media | Original PNG/GIF/SVG/blob bytes, copy/save, error handling, image-service inputs and actual H.264 decoding and playback; AAC capability advertisement |
+| Private browsing | Persistent versus private storage, isolation between private windows, shared storage within one private window and cleanup |
+| Find | Match counts, forward/backward navigation, wraparound, no matches, page changes and focus |
+| Profile import | Three launches covering local storage, Unicode and `__proto__` keys, cookies, HttpOnly protection, persistence and one-time session-cookie replay |
+| Page bridge | Fixed, closed-shadow and framed overlays, clear pages, edge colors, readable content, frame-aware find and document extension |
+| Document footer | All 106 rendering checks, including viewport animation, 24 repeated mode changes, compositor alignment, scrolling, content colors, canvas layouts, frames and large captures |
+| Overlay integration | 13 probe cases, seven native latency cases and 72 rapid footer toggles |
+| Fullscreen | All 40 checks for element, video and iframe fullscreen, native geometry, Escape, navigation, tab closure and layout restoration |
+| Page commands and inspector | All 36 checks for native menus, source, WebArchive save/reopen, Save/Print cancellation and inspector window lifecycle |
+| Image loader | Cookie scoping across redirects and bounded response sizes |
 
-After unlocking the desktop, finish these checks before declaring feature parity:
+The JavaScript suites pass 33 document-footer checks and 114 overlay/color checks.
+The native 20,000-node full scan completed with 207 samples, 120 ms of measured
+CPU work and a longest slice of 4 ms. Typical banner fixtures were detected within
+390 ms and settled within 592 ms in the recorded run. These are observed test
+results, not performance guarantees for arbitrary websites.
 
-- `make test` (repeat the window-server/Quick Input check in an unlocked session).
-- `make test-browser-links` (real right-click menus and script-popup opener/close).
-- `python3 Tests/run-browser-overlay-webkit.py --fullscreen`.
-- `python3 Tests/run-browser-overlay-webkit.py --devtools` (native menus, source,
-  WebArchive save/reopen, print-dialog cancellation and inspector lifecycle).
-- `python3 Tests/run-browser-overlay-webkit.py --document-footer`.
-- `python3 Tests/run-browser-overlay-webkit.py`.
-- `python3 Tests/run-webkit-page-bridge.py` (final visible-rendering rerun).
+Verification found and fixed five migration defects: profile refresh discarded
+injected scripts; empty script-popup URLs were rejected; ordinary pages could get
+image menus; full scans could consume their deadline waiting between short CPU
+slices; and the inspector initially docked inside the page instead of opening its
+own window. Native fixtures now wait for completed menus/fullscreen transitions,
+use real video, and return large JavaScript results directly through WebKit rather
+than transporting them in page titles.
+
+The signed app links system WebKit, contains no CEF engine libraries or helper
+bundles, and packages the current browser scripts. Strict recursive code-signature
+verification passes. Deployment still targets macOS 13, but this pass did not run
+on older macOS versions or Intel hardware. Local media tests do not establish live
+X-feed or DRM compatibility. The separate product work listed above remains outside
+this migration's verified feature set.

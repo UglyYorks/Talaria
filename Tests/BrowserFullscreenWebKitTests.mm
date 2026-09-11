@@ -33,6 +33,11 @@
 - (WKWebView *)webView { return self.session.webView; }
 - (NSView *)nativeView { return self.session.webView; }
 - (void)check:(BOOL)passed name:(NSString *)name { NSLog(@"%@: %@",passed ? @"PASS" : @"FAIL",name); [self.results addObject:@{@"name":name,@"passed":@(passed)}]; }
+- (void)waitFor:(BOOL (^)(void))condition then:(dispatch_block_t)completion attempt:(NSUInteger)attempt {
+  if(condition()){completion();return;}
+  if(attempt>=120){NSLog(@"Fullscreen state=%ld session=%d view=%@ host=%@",(long)self.webView.fullscreenState,self.session.fullscreen,self.webView,self.webView.superview);[self check:NO name:@"Native fullscreen transition completes"];[self finish];return;}
+  [self after:0.05 run:^{[self waitFor:condition then:completion attempt:attempt+1];}];
+}
 - (void)eval:(NSString *)code then:(void (^)(id))completion {
   self.reply=completion; self.scriptID++;
   NSString *script=[NSString stringWithFormat:@"Promise.resolve((()=>{%@})()).then(value=>{document.title=JSON.stringify({test:%lu,value})}).catch(error=>{document.title=JSON.stringify({test:%lu,value:{error:String(error)}})})",code,(unsigned long)self.scriptID,(unsigned long)self.scriptID];
@@ -89,6 +94,9 @@
 }
 - (void)cycle:(NSUInteger)index {
   if(index==4){[self finish];return;}
+  TLTestActivateWindow(self.window,^{[self beginCycle:index];});
+}
+- (void)beginCycle:(NSUInteger)index {
   if(index==1)[self.tab toggleBrowserHeightMode:nil];
   [self after:0.6 run:^{
     self.originalHost=[self nativeView].superview;
@@ -98,7 +106,7 @@
     [self enterFullscreen:target then:^(id entered){
       if(![entered isEqual:@YES])NSLog(@"Fullscreen request result: %@",entered);
       [self check:[entered isEqual:@YES] name:@"Renderer accepts user-initiated fullscreen"];
-      [self after:0.4 run:^{[self verifyEntry:index];}];
+      [self waitFor:^BOOL{return self.webView.fullscreenState==WKFullscreenStateInFullscreen;} then:^{[self after:0.35 run:^{[self verifyEntry:index];}];} attempt:0];
     }];
   }];
 }
@@ -115,7 +123,8 @@
   [self check:![self.tab canSampleOverlay] name:@"Footer probes pause in fullscreen"];
   [self eval:@"let f=document.querySelector('[data-talaria-document-footer]');return {fullscreen:!!document.fullscreenElement,spacer:f?f.getBoundingClientRect().height:0,width:innerWidth,height:innerHeight}" then:^(NSDictionary *state){
     [self check:[state[@"fullscreen"] boolValue] && [state[@"spacer"] doubleValue]==0 name:@"Fullscreen has no document extension"];
-    [self check:fullscreenWindow && fabs([state[@"width"] doubleValue]-NSWidth(fullscreenWindow.screen.frame))<1 && fabs([state[@"height"] doubleValue]-NSHeight(fullscreenWindow.screen.frame))<1 name:@"Renderer viewport matches native fullscreen size"];
+    NSLog(@"Fullscreen geometry: page=%@ view=%@ window=%@",state,NSStringFromRect(view.bounds),NSStringFromRect(fullscreenWindow.frame));
+    [self check:fullscreenWindow && fabs([state[@"width"] doubleValue]-NSWidth(view.bounds))<1 && fabs([state[@"height"] doubleValue]-NSHeight(view.bounds))<1 name:@"Renderer viewport matches native fullscreen content size"];
     if(index==3){
       [self.tab close];
       [self check:!fullscreenWindow.isVisible && !view.inFullScreenMode name:@"Closing fullscreen tab restores native presentation"];
@@ -131,7 +140,7 @@
     }else{
       [self eval:@"return document.exitFullscreen().then(()=>true)" then:^(id result){}];
     }
-    [self after:0.7 run:^{
+    [self waitFor:^BOOL{return self.webView.fullscreenState==WKFullscreenStateNotInFullscreen && view.window==self.window && NSEqualRects(view.frame,host.bounds);} then:^{
       [self check:!self.session.fullscreen && !(self.session.webView.fullscreenState == WKFullscreenStateInFullscreen) && view.superview==host name:@"Exit restores the browser to its original host"];
       [self check:NSEqualRects(view.frame,host.bounds) && NSEqualRects(self.window.frame,self.originalWindow) name:@"Exit restores exact browser and window geometry"];
       if(index!=2)[self check:self.originalInset==[[self.tab valueForKey:@"browserHostBottomConstraint"] constant] name:@"Exit preserves manual footer mode"];
@@ -139,7 +148,7 @@
         [self check:[cleared isEqual:@YES] name:@"Exit also clears renderer fullscreen"];
         [self cycle:index+1];
       }];
-    }];
+    } attempt:0];
   }];
 }
 - (void)finish {

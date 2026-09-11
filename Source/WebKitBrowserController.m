@@ -47,6 +47,7 @@ static void TLStyleBrowserPrompt(NSAlert *alert, TLThemePalette *palette) {
 @property (nonatomic, readwrite) NSUInteger documentGeneration;
 @property (nonatomic, readwrite, getter=isFullscreen) BOOL fullscreen;
 @property (nonatomic, readwrite) BOOL devToolsVisible;
+@property (nonatomic) BOOL inspectorNeedsDetach;
 @property (nonatomic) TLWebKitPageBridge *pageBridge;
 @property (nonatomic, copy) TLWebKitBrowserTitleHandler titleHandler;
 @property (nonatomic, copy) TLWebKitBrowserLinkHandler linkHandler;
@@ -381,7 +382,9 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   for(TLWebKitBrowserSession *session in self.sessions.allValues) {
     if(session.incognito || session.closed)continue;
     WKUserContentController *content=session.webView.configuration.userContentController;
-    NSArray *scripts=content.userScripts;[content removeAllUserScripts];
+    // WebKit returns a live array wrapper. Snapshot it before clearing, or a
+    // profile refresh also discards the browser UI and page-integration scripts.
+    NSArray *scripts=[content.userScripts mutableCopy];[content removeAllUserScripts];
     for(WKUserScript *script in scripts)if(![script.source hasPrefix:@"/* Talaria pending profile import */"])[content addUserScript:script];
     [self installPendingStorageInConfiguration:session.webView.configuration];
   }
@@ -517,7 +520,10 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   decisionHandler(download ? WKNavigationResponsePolicyDownload : WKNavigationResponsePolicyAllow);
 }
 - (WKWebView *)webView:(WKWebView *)webView createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration forNavigationAction:(WKNavigationAction *)action windowFeatures:(WKWindowFeatures *)features {
-  TLWebKitBrowserSession *session=[self sessionForWebView:webView];NSURL *URL=action.request.URL ?: [NSURL URLWithString:@"about:blank"];
+  TLWebKitBrowserSession *session=[self sessionForWebView:webView];NSURL *URL=action.request.URL;
+  // window.open('') supplies an empty URL rather than nil. It still creates an
+  // inherited about:blank document that scripts can populate through the opener.
+  if(!URL.absoluteString.length)URL=[NSURL URLWithString:@"about:blank"];
   if(!session || session.closed)return nil;
   if(action.navigationType==WKNavigationTypeLinkActivated) {[self openLink:URL session:session flags:action.modifierFlags destination:TLBrowserLinkNewTab];return nil;}
   if(!TLBrowserURLSupported(URL))return nil;
@@ -620,8 +626,8 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   // until that menu consumes it instead of expiring it while WebKit prepares.
   NSDictionary *context=session.context;WKFrameInfo *contextFrame=session.contextFrame;
   session.context=nil;session.contextFrame=nil;
-  NSURL *link=[context[@"url"] isKindOfClass:NSString.class] ? [NSURL URLWithString:context[@"url"]] : nil;
-  NSURL *imageURL=[context[@"image"] isKindOfClass:NSString.class] ? [NSURL URLWithString:context[@"image"]] : nil;
+  NSURL *link=[context[@"url"] isKindOfClass:NSString.class] && [context[@"url"] length] ? [NSURL URLWithString:context[@"url"]] : nil;
+  NSURL *imageURL=[context[@"image"] isKindOfClass:NSString.class] && [context[@"image"] length] ? [NSURL URLWithString:context[@"image"]] : nil;
   if([context[@"editable"] boolValue])return;
   NSMenu *replacement;
   NSMenu *images=imageURL ? [self imageMenuForURL:imageURL inSession:session frame:contextFrame hasImage:[context[@"hasImage"] boolValue]] : nil;
@@ -639,6 +645,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 }
 - (void)inspectSession:(TLWebKitBrowserSession *)session atPoint:(NSPoint)point {
   if(session.closed)return;
+  session.inspectorNeedsDetach=YES;
   NSMenuItem *nativeInspector=objc_getAssociatedObject(session,@selector(inspectSession:atPoint:));
   objc_setAssociatedObject(session,@selector(inspectSession:atPoint:),nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   if(nativeInspector.action && [NSApp sendAction:nativeInspector.action to:nativeInspector.target from:nativeInspector]) {
@@ -810,6 +817,11 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
     if(session.closed)continue;
     id inspector=TLWebKitOptionalValue(session.webView,@"_inspector");
     BOOL visible=[TLWebKitOptionalValue(inspector,@"visible") boolValue] || [TLWebKitOptionalValue(session.webView,@"_isBeingInspected") boolValue];
+    // WebKit initially docks its inspector inside the page. Wait until the
+    // frontend is visible, then give it the separate window used by Talaria.
+    if(session.inspectorNeedsDetach && [TLWebKitOptionalValue(inspector,@"visible") boolValue]) {
+      TLWebKitOptionalAction(inspector,@"detach");session.inspectorNeedsDetach=NO;
+    }
     if(visible!=session.devToolsVisible){session.devToolsVisible=visible;if(session.devToolsVisibilityChangedHandler)session.devToolsVisibilityChangedHandler();}
     NSView *container=session.containerView;
     BOOL hidden=container && (!container.window.visible || container.hiddenOrHasHiddenAncestor);

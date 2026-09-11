@@ -59,12 +59,20 @@ try:
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path == "/movie.mov":
+                data = (ROOT / "Tests/Fixtures/attachment-preview.mov").read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "video/quicktime")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             banner = '<div style="position:fixed;bottom:0;left:0;right:0;height:90px;background:#eee">Cookies</div>'
             if "thin" in self.path:
                 banner = banner.replace("height:90px", "height:24px")
             body = banner
             if self.path.startswith("/fullscreen"):
-                body = '<div id="target" style="background:#204080;width:200px;height:180px">Fullscreen content</div><video controls width="200" height="120"></video><iframe src="about:blank" allowfullscreen></iframe>'
+                body = '<div id="target" style="background:#204080;width:200px;height:180px">Fullscreen content</div><video controls muted preload="auto" src="/movie.mov" width="200" height="120"></video><iframe src="about:blank" allowfullscreen></iframe>'
             if self.path.startswith("/closed"):
                 body = '<div id="host"></div><script>document.querySelector("#host").attachShadow({mode:"closed"}).innerHTML=' + json.dumps(banner) + ';</script>'
             if self.path == "/frame":
@@ -209,7 +217,9 @@ try:
         assert records[8]["result"]["samples"] <= 3, "Shallow closed-shadow banners must be found in one quick pass"
         for record in records[:probe_count]:
             probe = record["result"]
-            assert abs(probe["costMS"] - probe["cpuMS"] - probe["hitTests"]) < 0.001, "Transport latency must not become CPU cooldown"
+            # WebKit measures candidate work in the page and includes it in
+            # cpuMS; it needs no extra per-hit estimate from the old CDP bridge.
+            assert abs(probe["costMS"] - probe["cpuMS"]) < 0.001, "Transport latency must not become CPU cooldown"
         assert all(r["result"]["maxSliceMS"] < 25 for r in records[:probe_count]), "Inspection must not create long synchronous slices"
         assert len(records) == probe_count + (8 if os.environ.get("TALARIA_OVERLAY_LIVE_URL") else 7)
         assert all(0 <= r["detectionMS"] < 500 for r in records[probe_count:probe_count+6]), "Typical-page detection should take under 500ms"

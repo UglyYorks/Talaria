@@ -59,13 +59,19 @@ static void Check(BOOL condition, NSString *message) {
     self.trackingObserver=[NSNotificationCenter.defaultCenter addObserverForName:NSMenuDidBeginTrackingNotification object:nil queue:nil usingBlock:^(NSNotification *note){
       NSMenu *menu=note.object;
       [NSNotificationCenter.defaultCenter removeObserver:self.trackingObserver];self.trackingObserver=nil;
-      NSArray *titles=[menu.itemArray valueForKey:@"title"];
-      BOOL matches=index==0 ? ([titles containsObject:@"Open Link in New Tab"] && [titles containsObject:@"Open Image in New Tab"] && [titles containsObject:@"Save Image As…"]) :
-        ([titles containsObject:@"Copy"] && [titles containsObject:@"Paste"] && ![titles containsObject:@"Show Page Source"] && ![titles containsObject:@"Open Link in New Tab"]);
+      // Tracking begins before WebKit's willOpenMenu customization. Inspect the
+      // completed menu, then wait for it to close before posting another click.
       [NSRunLoop.mainRunLoop performInModes:@[NSRunLoopCommonModes,NSEventTrackingRunLoopMode] block:^{
-        [menu cancelTracking];
+        NSArray *titles=[menu.itemArray valueForKey:@"title"];
+        BOOL matches=index==0 ? ([titles containsObject:@"Open Link in New Tab"] && [titles containsObject:@"Open Image in New Tab"] && [titles containsObject:@"Save Image As…"]) :
+          ([titles containsObject:@"Copy"] && [titles containsObject:@"Paste"] && ![titles containsObject:@"Show Page Source"] && ![titles containsObject:@"Open Link in New Tab"]);
+        if(!matches)NSLog(@"Unexpected native menu for %@: %@",selector,titles);
         Check(matches,index==0 ? @"Trusted right-click on a linked image builds the real combined menu" : @"Trusted right-click in a text field preserves native editing actions");
-        dispatch_async(dispatch_get_main_queue(),^{[self testTrustedContext:index+1];});
+        self.trackingObserver=[NSNotificationCenter.defaultCenter addObserverForName:NSMenuDidEndTrackingNotification object:menu queue:nil usingBlock:^(NSNotification *ended){
+          [NSNotificationCenter.defaultCenter removeObserver:self.trackingObserver];self.trackingObserver=nil;
+          dispatch_after(dispatch_time(DISPATCH_TIME_NOW,150*NSEC_PER_MSEC),dispatch_get_main_queue(),^{[self testTrustedContext:index+1];});
+        }];
+        [menu cancelTracking];
       }];
     }];
     WKWebView *view=self.session.webView;[self.window makeKeyAndOrderFront:nil];
@@ -168,8 +174,9 @@ static void Check(BOOL condition, NSString *message) {
 - (void)testScriptPopup {
   NSError *error=nil;
   Check([TLBrowserPreferences.sharedPreferences saveValue:@1 forSetting:[TLBrowserPreferences settingWithID:@"popups"] error:&error], @"Enable script popups for the isolated fixture");
-  TLTestEvaluate(self.session.webView, @"(()=>{const popup=window.open('','talaria-popup-test');if(!popup)return false;window.__testPopup=popup;popup.document.open();popup.document.write('<title>Script popup fixture</title><p>Opener survives</p>');popup.document.close();return popup.opener===window && popup.document.body.innerText==='Opener survives'})()", ^(NSNumber *opened) {
-    Check(opened.boolValue, @"Script popups preserve opener and inherited about:blank document access");
+  TLTestEvaluate(self.session.webView, @"(()=>{const popup=window.open('','talaria-popup-test');if(!popup)return {created:false};window.__testPopup=popup;popup.document.open();popup.document.write('<title>Script popup fixture</title><p>Opener survives</p>');popup.document.close();return {created:true,opener:popup.opener===window,text:popup.document.body.innerText}})()", ^(NSDictionary *opened) {
+    NSLog(@"Script popup result: %@",opened);
+    Check([opened[@"created"] boolValue] && [opened[@"opener"] boolValue] && [opened[@"text"] isEqual:@"Opener survives"], @"Script popups preserve opener and inherited about:blank document access");
     [self waitFor:^BOOL {
       for(NSWindow *window in NSApp.windows)if(window.isVisible && [window.title isEqual:@"Script popup fixture"])return YES;
       return NO;

@@ -4,7 +4,8 @@
 // Desktop launch completion precedes activation on some macOS releases. Wait
 // for the real application state before exercising rendering or native input.
 static inline void TLTestActivateWindowAtAttempt(NSWindow *window, NSUInteger attempt, dispatch_block_t completion) {
-  if(attempt==0){NSLog(@"Desktop activation policy: %ld",(long)NSApp.activationPolicy);[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];}
+  if(attempt==0 && NSApp.activationPolicy!=NSApplicationActivationPolicyRegular)
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   [window makeKeyAndOrderFront:nil];
   [NSRunningApplication.currentApplication activateWithOptions:NSApplicationActivateAllWindows|NSApplicationActivateIgnoringOtherApps];
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(),^{

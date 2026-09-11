@@ -281,7 +281,20 @@ try {
     assert.ok(result.samples<=3);
     assert.equal(result.fallbacks.length,1,'Empty quick scans need only one browser hit test');
   }});
-  await check('scrolling during inspection discards the result','<p>Article</p>'.repeat(20000),null,{setup:'setTimeout(()=>scrollTo(0,100),80)'});
+  await load('<p>Article</p>'.repeat(20000));
+  // Scroll at the first yielded slice, so this still exercises in-flight
+  // invalidation when the complete scan finishes faster than a fixed timer.
+  await evaluate(`{
+    const nativeTimeout=globalThis.setTimeout;
+    globalThis.setTimeout=(callback,delay,...args)=>{
+      globalThis.setTimeout=nativeTimeout;
+      scrollTo(0,100);
+      return nativeTimeout(callback,delay,...args);
+    };
+  }`,context);
+  assert.equal((await inspect()).obstructed,null,'Scrolling during inspection discards the result');
+  assert.equal(await evaluate('scrollY'),100,'Fixture must scroll during the scan');
+  console.log('PASS scrolling during inspection discards the result');count++;
   await load('<p>Offscreen content</p>'.repeat(2000));
   await evaluate('globalThis.stalledFrames=0;globalThis.requestAnimationFrame=()=>++globalThis.stalledFrames;globalThis.cancelAnimationFrame=()=>{}',context);
   const stalled=await inspect();

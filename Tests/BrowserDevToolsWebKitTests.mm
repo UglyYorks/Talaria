@@ -122,18 +122,27 @@ static NSTextView *TLFindTestTextView(NSView *view) {
   __weak TLDevToolsTestDelegate *weakSelf=self;
   self.menuObserver=[NSNotificationCenter.defaultCenter addObserverForName:NSMenuDidBeginTrackingNotification object:nil queue:nil usingBlock:^(NSNotification *note){
     NSMenu *menu=note.object;
-    NSLog(@"Native context tracking items: %@",[menu.itemArray valueForKey:@"title"]);
-    NSInteger index=[menu indexOfItemWithTitle:title];
-    if(index<0)return;
     [weakSelf after:0.1 run:^{
+      // AppKit announces tracking before WebKit customizes the native menu.
+      NSInteger index=[menu indexOfItemWithTitle:title];
+      NSLog(@"Native context tracking items: %@",[menu.itemArray valueForKey:@"title"]);
+      if(index<0){[weakSelf check:NO name:[@"Native menu contains " stringByAppendingString:title]];[menu cancelTracking];[weakSelf finish];return;}
       NSArray *expected=@[@"Reload Page",@"",@"Show Page Source",@"Save Page As…",@"",@"Print Page…",@"",@"Inspect Element"];
       NSMutableArray *actual=[NSMutableArray array];
       for(NSMenuItem *item in menu.itemArray)[actual addObject:item.separatorItem ? @"" : item.title];
       [weakSelf check:[actual isEqual:expected] name:@"Plain-page native menu matches the reference order and separators"];
       [weakSelf check:[menu itemWithTitle:@"Print Page…"].image!=nil name:@"Print Page has its native printer icon"];
       [NSNotificationCenter.defaultCenter removeObserver:weakSelf.menuObserver];weakSelf.menuObserver=nil;
-      [menu performActionForItemAtIndex:index];[menu cancelTracking];
-      [weakSelf after:0.1 run:completion];
+      weakSelf.menuObserver=[NSNotificationCenter.defaultCenter addObserverForName:NSMenuDidEndTrackingNotification object:menu queue:nil usingBlock:^(NSNotification *ended){
+        [NSNotificationCenter.defaultCenter removeObserver:weakSelf.menuObserver];weakSelf.menuObserver=nil;
+        [weakSelf after:0.15 run:^{
+          // Schedule the assertion before invoking actions such as Print, which
+          // enter a modal loop. The timer also runs inside that modal loop.
+          [weakSelf after:0.1 run:completion];
+          [menu performActionForItemAtIndex:index];
+        }];
+      }];
+      [menu cancelTracking];
     }];
   }];
   NSView *view=self.session.webView;
@@ -242,6 +251,7 @@ static NSTextView *TLFindTestTextView(NSView *view) {
 }
 - (void)verifyOpen {
   NSWindow *inspector=[self visibleInspector];
+  if(!inspector){for(NSWindow *window in NSApp.windows)NSLog(@"Inspector candidate: %@ title=%@ visible=%d webView=%@",window,window.title,window.visible,TLFindTestWebView(window.contentView));NSLog(@"Inspected web view geometry: %@",NSStringFromRect(self.webView.frame));}
   [self check:self.session.devToolsVisible && inspector!=nil name:@"DevTools opens and reports visibility on its source session"];
   if(!inspector){[self finish];return;}
   NSView *pageView=self.session.webView;

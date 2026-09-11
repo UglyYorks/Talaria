@@ -32,8 +32,6 @@
 @property(nonatomic,strong) TLBrowserTabController *tab;
 @property(nonatomic,strong) NSWindow *window;
 @property(nonatomic,strong) NSMutableArray *results;
-@property(nonatomic,copy) void (^reply)(id);
-@property(nonatomic) NSUInteger scriptID;
 @property(nonatomic) double initialHeight, appVisibleAt;
 @property(nonatomic) BOOL appReplacesRaisedFooter;
 @property(nonatomic,strong) NSNumber *liveRaisedTotal;
@@ -45,9 +43,10 @@
 - (WKWebView *)webView { return self.session.webView; }
 - (void)check:(BOOL)passed name:(NSString *)name { NSLog(@"%@: %@",passed ? @"PASS" : @"FAIL",name); [self.results addObject:@{@"name":name,@"passed":@(passed)}]; }
 - (void)eval:(NSString *)code then:(void (^)(id))completion {
-  self.reply=completion; self.scriptID++;
-  NSString *script=[NSString stringWithFormat:@"Promise.resolve((()=>{%@})()).then(value=>{document.title=JSON.stringify({footerTest:%lu,value})})",code,(unsigned long)self.scriptID];
-  [self.session.webView evaluateJavaScript:script completionHandler:nil];
+  [self.session.webView callAsyncJavaScript:code arguments:@{} inFrame:nil inContentWorld:WKContentWorld.pageWorld completionHandler:^(id value,NSError *error){
+    if(error){[self check:NO name:[@"JavaScript fixture: " stringByAppendingString:error.localizedDescription]];[self finish];}
+    else completion(value);
+  }];
 }
 - (void)wheel:(double)delta {
   if (!NSApp.isActive) { [self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES]; }
@@ -71,11 +70,6 @@
   __weak TLFooterTestDelegate * weakSelf=self;
   self.tab.metadataChangedHandler=^(NSString *title,NSURL *URL){
     if([title hasPrefix:@"viewport-app-visible:"])weakSelf.appVisibleAt=NSProcessInfo.processInfo.systemUptime;
-    NSData *data=[title dataUsingEncoding:NSUTF8StringEncoding];
-    id value=[NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if([value isKindOfClass:NSDictionary.class] && [value[@"footerTest"] unsignedIntegerValue]==weakSelf.scriptID && weakSelf.reply){
-      void (^callback)(id)=weakSelf.reply;weakSelf.reply=nil;callback(value[@"value"]);
-    }
   };
   NSView *content=self.window.contentView;[content addSubview:self.tab.view];
   [NSLayoutConstraint activateConstraints:@[[self.tab.view.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],[self.tab.view.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],[self.tab.view.topAnchor constraintEqualToAnchor:content.topAnchor],[self.tab.view.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]]];

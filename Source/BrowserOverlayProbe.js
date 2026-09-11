@@ -382,10 +382,12 @@
         // A native navigation snapshot or an occluded window can stop animation
         // frames. Keep the inspection responsive without counting this wait as
         // CPU work, and release both callbacks whichever one resumes us first.
+        // Yield to a task without waiting a whole display frame per small slice;
+        // those accumulated waits can exhaust the deadline on large documents.
         await new Promise(resolve=>{
           let frame, timer;
           const resume=()=>{cancelAnimationFrame(frame);clearTimeout(timer);resolve();};
-          frame=requestAnimationFrame(resume);timer=setTimeout(resume,32);
+          frame=requestAnimationFrame(resume);timer=setTimeout(resume,0);
         });
         sliceStart=performance.now();
         if(performance.now()-started>2000 || innerWidth!==initial[0] || innerHeight!==initial[1] || scrollX!==initial[2] || scrollY!==initial[3]) return finish(null);
