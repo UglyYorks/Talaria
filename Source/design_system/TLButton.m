@@ -12,6 +12,24 @@
 }
 @end
 
+// The native control receives pointer events inside the reusable button.
+@interface TLButtonControl : NSButton
+@property (nonatomic, weak) TLButton *owner;
+@end
+@implementation TLButtonControl
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+  return self.owner.contextMenuProvider ? [self.owner menuForEvent:event] : [super menuForEvent:event];
+}
+- (void)mouseDown:(NSEvent *)event {
+  if (self.owner.contextMenuProvider && (event.modifierFlags & NSEventModifierFlagControl)) {
+    NSMenu *menu = [self menuForEvent:event];
+    if (menu) [NSMenu popUpContextMenu:menu withEvent:event forView:self];
+    return;
+  }
+  [super mouseDown:event];
+}
+@end
+
 @interface TLButton ()
 @property (nonatomic, strong) NSButton *button;
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
@@ -39,7 +57,8 @@
 - (void)buildInterface {
   self.hoverBackgroundLayer = [CALayer layer];
   [self.layer addSublayer:self.hoverBackgroundLayer];
-  self.button = [[NSButton alloc] init];
+  TLButtonControl *control = [TLButtonControl new]; control.owner = self;
+  self.button = control;
   self.button.cell = [[TLButtonImageCell alloc] init];
   self.button.translatesAutoresizingMaskIntoConstraints = NO;
   self.button.bordered = NO;
@@ -114,6 +133,11 @@
   [super viewDidMoveToWindow];
   [self updateHoverStateFromCurrentMouseLocation];
   [self applyCurrentState];
+}
+
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+  if (self.contextMenuProvider) return self.enabled ? self.contextMenuProvider() : nil;
+  return [super menuForEvent:event];
 }
 
 - (void)performAction:(id)sender {

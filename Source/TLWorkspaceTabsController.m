@@ -32,6 +32,7 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 @end
 
 @interface TLWorkspaceTabsController () <TLChromeTabViewDelegate>
+@property (nonatomic, strong) NSView *paneDropMarker;
 
 @property (nonatomic, strong) NSStackView *tabStack;
 @property (nonatomic, strong) NSMutableArray<TLChromeTabView *> *tabViews;
@@ -50,7 +51,9 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
 @property (nonatomic, strong, nullable) TLWorkspaceTab *draggedTab;
 @property (nonatomic) BOOL draggingOutsideStrip;
 @property (nonatomic) BOOL dragCancelled;
-@property (nonatomic, strong) id dragEscapeMonitor;
+@property (nonatomic, strong) id dragEventMonitor;
+@property (nonatomic, strong) TLChromeTabView *draggedTabView;
+@property (nonatomic, copy) NSArray *dragCancellationObservers;
 @property (nonatomic) NSUInteger draggedStartIndex;
 @property (nonatomic) NSUInteger draggedCurrentIndex;
 @property (nonatomic) BOOL newTabButtonHovered;
@@ -676,14 +679,16 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     if (!closeAction) {
       continue;
     }
-    NSButton *sender = [[NSButton alloc] init];
+    NSMenuItem *sender = [NSMenuItem new];
+    sender.representedObject = tab;
     sender.tag = tab.tabID;
     [NSApp sendAction:closeAction to:self.target from:sender];
   }
 }
 
 - (void)dealloc {
-  if (_dragEscapeMonitor) [NSEvent removeMonitor:_dragEscapeMonitor];
+  if (_dragEventMonitor) [NSEvent removeMonitor:_dragEventMonitor];
+  for (id observer in _dragCancellationObservers) [NSNotificationCenter.defaultCenter removeObserver:observer];
   [_widthPreservationHost removeTrackingArea:_widthPreservationTrackingArea];
 }
 
@@ -796,9 +801,6 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   availableWidth = MAX(self.palette.space0, availableWidth);
 
   CGFloat tabCount = (CGFloat)self.tabWidthConstraints.count;
-  NSUInteger pinnedCount = 0;
-  for (NSLayoutConstraint *constraint in self.tabWidthConstraints) if ([(TLChromeTabView *)constraint.firstItem pinned]) pinnedCount++;
-  CGFloat pinnedWidth = self.palette.tabIconSize + self.palette.tabIconLeadingInset * 2;
   CGFloat sharedBoundaryCount = MAX(self.palette.space0, tabCount - 1.0);
   // Solve against the actual overlap function, including its partially
   // compressed flare range, so spacing changes never expand the window.
@@ -806,19 +808,18 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   CGFloat upperWidth = [self preferredTabWidth];
   for (NSUInteger iteration = 0; iteration < 48; iteration++) {
     CGFloat candidate = (lowerWidth + upperWidth) * 0.5;
-    CGFloat compactWidth = MIN(candidate, pinnedWidth);
-    CGFloat occupiedWidth = (tabCount - pinnedCount) * candidate + pinnedCount * compactWidth - sharedBoundaryCount *
-      TLChromeTabInterTabOverlapForWidth(pinnedCount ? compactWidth : candidate, self.palette);
+    CGFloat occupiedWidth = tabCount * candidate - sharedBoundaryCount *
+      TLChromeTabInterTabOverlapForWidth(candidate, self.palette);
     if (occupiedWidth <= availableWidth) lowerWidth = candidate;
     else upperWidth = candidate;
   }
   CGFloat equalWidth = lowerWidth;
   // A smaller window may still compress tabs, but closing tabs cannot grow them.
   if (self.preservedTabWidth > 0) equalWidth = MIN(equalWidth, self.preservedTabWidth);
-  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(pinnedCount ? MIN(equalWidth, pinnedWidth) : equalWidth, self.palette);
+  CGFloat overlap = TLChromeTabInterTabOverlapForWidth(equalWidth, self.palette);
   self.tabStack.spacing = -overlap;
   for (NSLayoutConstraint *constraint in self.tabWidthConstraints) {
-    constraint.constant = [(TLChromeTabView *)constraint.firstItem pinned] ? MIN(equalWidth, pinnedWidth) : equalWidth;
+    constraint.constant = equalWidth;
   }
   return YES;
 }
@@ -1024,15 +1025,41 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     [self.transitionCoordinator finishAllTransitions];
     [self updateSeparatorVisibilityWithoutAnimation];
   }
-  if (!self.dragEscapeMonitor) {
+  if (!self.dragEventMonitor) {
     __weak typeof(self) weakSelf = self;
-    __weak TLChromeTabView *weakTab = tabView;
-    self.dragEscapeMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *key) {
-      if (key.keyCode != 53) return key;
-      weakSelf.dragCancelled = YES;
-      [weakSelf chromeTabViewDidEndDragging:weakTab];
+    __weak NSWindow *dragWindow = tabView.window;
+    self.draggedTabView = tabView;
+    // The source is detached from the stack while floating. Route the rest of
+    // the gesture explicitly instead of relying on AppKit's original hit view.
+    self.dragEventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:
+      NSEventMaskKeyDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp | NSEventMaskLeftMouseDown
+      handler:^NSEvent *(NSEvent *event) {
+      TLWorkspaceTabsController *owner = weakSelf;
+      TLChromeTabView *source = owner.draggedTabView;
+      if (!source) return event;
+      if (event.type == NSEventTypeKeyDown) {
+        if (event.keyCode != 53) return event;
+        [owner cancelActiveTabDrag]; return nil;
+      }
+      if (event.type == NSEventTypeLeftMouseDown || (dragWindow && event.window != dragWindow)) {
+        [owner cancelActiveTabDrag]; return event;
+      }
+      if (event.type == NSEventTypeLeftMouseDragged) [source mouseDragged:event];
+      else {
+        [owner chromeTabView:source didDragWithEvent:event];
+        [owner chromeTabViewDidEndDragging:source];
+      }
       return nil;
     }];
+    NSMutableArray *observers = [NSMutableArray new];
+    for (NSNotificationName name in @[NSApplicationDidResignActiveNotification,NSWindowDidResignKeyNotification,NSWindowWillCloseNotification]) {
+      id object = [name isEqual:NSApplicationDidResignActiveNotification] ? NSApp : dragWindow;
+      if (!object) continue;
+      [observers addObject:[NSNotificationCenter.defaultCenter addObserverForName:name object:object queue:nil usingBlock:^(NSNotification *note) {
+        [weakSelf cancelActiveTabDrag];
+      }]];
+    }
+    self.dragCancellationObservers = observers;
   }
   if ([self.delegate respondsToSelector:@selector(workspaceTabsController:dragTab:atWindowPoint:)]) {
     self.draggingOutsideStrip = [self.delegate workspaceTabsController:self dragTab:self.draggedTab atWindowPoint:event.locationInWindow];
@@ -1040,10 +1067,15 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
       self.draggedCurrentIndex = self.draggedStartIndex;
       [self resetReorderGap];
       [self resetDragEdgeGeometry];
-      [tabView setReorderTranslationX:-tabView.dragTranslationX animated:NO];
+      // The workspace draws the floating drag badge. Remove its strip slot
+      // while keeping the original view alive for the rest of the gesture.
+      tabView.hidden = YES;
+      [self restoreTabContentLayering];
+      [(self.tabStack.superview ?: self.tabStack) layoutSubtreeIfNeeded];
       [self updateSelectionForLifecycle];
       return;
     }
+    tabView.hidden = NO;
     [tabView setReorderTranslationX:0 animated:NO];
   }
   [self promoteSelectionAndDraggedTabView:tabView];
@@ -1068,9 +1100,19 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   }
 }
 
+- (void)cancelActiveTabDrag {
+  if (!self.draggedTab) return;
+  self.dragCancelled = YES;
+  [self chromeTabViewDidEndDragging:self.draggedTabView];
+}
+
 - (void)chromeTabViewDidEndDragging:(TLChromeTabView *)tabView {
+  if (!self.draggedTab) return;
   TLWorkspaceTab *movedTab = self.draggedTab;
-  if (self.dragEscapeMonitor) { [NSEvent removeMonitor:self.dragEscapeMonitor]; self.dragEscapeMonitor = nil; }
+  if (self.dragEventMonitor) { [NSEvent removeMonitor:self.dragEventMonitor]; self.dragEventMonitor = nil; }
+  for (id observer in self.dragCancellationObservers) [NSNotificationCenter.defaultCenter removeObserver:observer];
+  self.dragCancellationObservers = nil;
+  self.draggedTabView = nil;
   BOOL external = self.draggingOutsideStrip || self.dragCancelled;
   BOOL cancelled = self.dragCancelled;
   self.draggingOutsideStrip = NO;
@@ -1098,6 +1140,20 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   }
   if (!external && movedTab && targetIndex != NSNotFound && sourceIndex != targetIndex) {
     [self.delegate workspaceTabsController:self moveTab:movedTab toIndex:targetIndex];
+  }
+
+  if (external) {
+    // A successful split may have removed this tab from the strip. Never
+    // reattach it through the ordinary reorder-settling animation.
+    if ([self.tabViews containsObject:tabView]) tabView.hidden = NO;
+    self.settlingDrop = NO;
+    [self restoreTabContentLayering];
+    [(self.tabStack.superview ?: self.tabStack) layoutSubtreeIfNeeded];
+    [self updateSelectionForLifecycle];
+    [self updateEdgeAttachmentState];
+    [self updateSeparatorVisibilityWithoutAnimation];
+    [self refreshAnimationActivity];
+    return;
   }
 
   [self.tabStack layoutSubtreeIfNeeded];
@@ -1132,6 +1188,23 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
     [owner refreshAnimationActivity];
   }];
 }
+
+- (NSUInteger)insertionIndexAtWindowPoint:(NSPoint)point {
+  CGFloat x = [self.tabStack convertPoint:point fromView:nil].x;
+  NSUInteger index = 0;
+  for (TLChromeTabView *view in self.tabViews) if (x > NSMidX(view.frame)) index++;
+  return index;
+}
+- (void)showPaneDropAtWindowPoint:(NSPoint)point {
+  if (!self.paneDropMarker) { self.paneDropMarker = [NSView new]; self.paneDropMarker.wantsLayer = YES; }
+  self.paneDropMarker.layer.backgroundColor = self.palette.controlFocus.CGColor;
+  NSUInteger index = [self insertionIndexAtWindowPoint:point];
+  CGFloat x = index < self.tabViews.count ? NSMinX(self.tabViews[index].frame) : NSMaxX(self.tabViews.lastObject.frame);
+  self.paneDropMarker.frame = NSMakeRect(x, self.palette.space3, self.palette.focusRingSize, MAX(0,NSHeight(self.tabStack.bounds)-self.palette.space3*2));
+  [self.tabStack addSubview:self.paneDropMarker positioned:NSWindowAbove relativeTo:nil];
+  self.paneDropMarker.layer.zPosition = 3;
+}
+- (void)clearPaneDrop { [self.paneDropMarker removeFromSuperview]; }
 
 - (void)chromeTabViewWillSelect:(TLChromeTabView *)tabView {
   // Apply the destination color on press, before activating its content. This
@@ -1207,7 +1280,21 @@ constrainedHorizontalTranslationForEvent:(NSEvent *)event
   return MAX(pinnedCount, MIN(targetIndex, self.tabViews.count - 1));
 }
 
+- (void)restoreTabContentLayering {
+  [self.tabStack addSubview:self.selectionView positioned:NSWindowBelow relativeTo:nil];
+  self.selectionView.layer.zPosition = -1.0;
+  for (TLChromeTabView *view in self.tabViews) view.layer.zPosition = view.active ? 1.0 : 0.0;
+}
+
 - (void)promoteSelectionAndDraggedTabView:(TLChromeTabView *)draggedTabView {
+  if (!draggedTabView.active) {
+    // The fallback tab can be selected while the source is dragged. Its
+    // selection background must stay underneath its icon and title.
+    [self restoreTabContentLayering];
+    [self.tabStack addSubview:draggedTabView positioned:NSWindowAbove relativeTo:nil];
+    draggedTabView.layer.zPosition = 2.0;
+    return;
+  }
   [self.tabStack addSubview:self.selectionView positioned:NSWindowAbove relativeTo:nil];
   [self.tabStack addSubview:draggedTabView positioned:NSWindowAbove relativeTo:self.selectionView];
   self.selectionView.layer.zPosition = 1.5;

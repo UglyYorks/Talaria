@@ -17,6 +17,7 @@
 - (TLWorkspaceTab *)activeWorkspaceTab;
 - (void)splitTab:(TLWorkspaceTab *)tab besideTab:(TLWorkspaceTab *)other onLeft:(BOOL)left;
 - (void)startNewChatWithModel:(NSString *)model focus:(BOOL)focus;
+- (void)focusSplitPane:(BOOL)right;
 @end
 @interface TLTabColorTestController : TalariaWindowController
 @end
@@ -189,8 +190,23 @@ static void Later(double seconds, dispatch_block_t block) {
   Check(matches,@"Large canvas initial load infers its blue edge without scrolling");
   [session.webView evaluateJavaScript:@"scrollY" completionHandler:^(id value,NSError *error){
     Check(!error && [value doubleValue]==0,@"Color inference did not require a scroll");
+  TLWorkspaceTab *browserTab = [self.owner activeWorkspaceTab];
+  [self.owner startNewChatWithModel:@"test" focus:NO];
+  [self.owner splitTab:browserTab besideTab:[self.owner activeWorkspaceTab] onLeft:YES];
+  TLWorkspaceTabsController *tabs = [self.owner valueForKey:@"workspaceTabsController"];
+  Later(.2, ^{
+    [tabs refreshContentColorsAnimated:NO];
+    TLThemePalette *palette = [self.owner valueForKey:@"palette"];
+    Check([tabs.selectionView.displayedBackgroundColor isEqual:palette.tabBackground], @"Split view uses the chat background even with a colored browser focused");
+    [self.browser setValue:palette.controlFocus forKey:@"headerContentColor"];
+    if (self.browser.headerColorChangedHandler) self.browser.headerColorChangedHandler();
+    Check([tabs.selectionView.displayedBackgroundColor isEqual:palette.tabBackground] && ![[tabs.selectionView valueForKey:@"waveActive"] boolValue], @"Page color changes never recolor the split tab");
+    [self.owner focusSplitPane:YES];
+    [tabs refreshContentColorsAnimated:NO];
+    Check([tabs.selectionView.displayedBackgroundColor isEqual:palette.tabBackground], @"Changing focused panes keeps the split background constant");
   Later([NSProcessInfo.processInfo.arguments containsObject:@"--inspect"] ? 25 : 0,^{
     NSLog(@"BrowserTabColorTests passed");[NSApp terminate:nil];
+  });
   });
   }];
 }

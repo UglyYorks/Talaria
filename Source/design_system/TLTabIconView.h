@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *icon;
 @property (nonatomic, copy) NSString *systemIconName;
 @property (nonatomic, strong, nullable) NSColor *contentTintColor;
+@property (nonatomic) BOOL centersEmojiVertically;
 @property (nonatomic, readonly) BOOL hasIcon;
 
 - (void)applyCurrentState;

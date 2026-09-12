@@ -174,7 +174,7 @@
   self.emojiView.emoji = hasEmojiIcon ? self.icon : @"";
   self.emojiView.font = self.palette.tabIconFont;
   self.emojiView.textColor = foreground;
-  self.emojiView.verticalOffset = self.palette.tabEmojiVerticalOffset;
+  self.emojiView.verticalOffset = self.centersEmojiVertically ? self.palette.space0 : self.palette.tabEmojiVerticalOffset;
   self.emojiWidthConstraint.constant = [self emojiDrawingLength];
   self.emojiHeightConstraint.constant = [self emojiDrawingLength];
 
@@ -244,6 +244,11 @@
 
 - (void)setContentTintColor:(NSColor *)contentTintColor {
   _contentTintColor = contentTintColor;
+  [self applyCurrentState];
+}
+
+- (void)setCentersEmojiVertically:(BOOL)centersEmojiVertically {
+  _centersEmojiVertically = centersEmojiVertically;
   [self applyCurrentState];
 }
 

@@ -54,6 +54,9 @@ NS_ASSUME_NONNULL_BEGIN
                         delegate:(nullable id<TLWorkspaceTabsControllerDelegate>)delegate
                          palette:(TLThemePalette *)palette
            transitionCoordinator:(TLTransitionCoordinator *)transitionCoordinator;
+- (NSUInteger)insertionIndexAtWindowPoint:(NSPoint)point;
+- (void)showPaneDropAtWindowPoint:(NSPoint)point;
+- (void)clearPaneDrop;
 - (void)reloadTabs;
 - (void)refreshContentColorsAnimated:(BOOL)animated;
 - (void)setNewTabButtonHovered:(BOOL)hovered;

@@ -648,15 +648,12 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     }
 
     if ([signal.name isEqual:TLAppSignalWorkspaceTabRemoved]) {
-      TLWorkspaceSplitGroup *closingGroup = nil;
-      for (TLWorkspaceSplitGroup *candidate in strongSelf.splitState.groups) {
-        if (![strongSelf tabWithPresentationIdentity:candidate.leftIdentity] ||
-            ![strongSelf tabWithPresentationIdentity:candidate.rightIdentity]) { closingGroup = candidate; break; }
-      }
-      if (closingGroup && closingGroup == [strongSelf.splitState groupForTab:strongSelf.displayedWorkspaceTab]) {
-        TLWorkspaceTab *survivor = [strongSelf tabWithPresentationIdentity:closingGroup.leftIdentity] ?:
-          [strongSelf tabWithPresentationIdentity:closingGroup.rightIdentity];
-        if (survivor) [strongSelf activateTabKind:survivor.kind tabID:survivor.tabID];
+      TLWorkspaceSplitGroup *closingGroup = [strongSelf.splitState groupForTab:strongSelf.displayedWorkspaceTab];
+      if (closingGroup && ![strongSelf tabWithPresentationIdentity:TLWorkspaceTabIdentity(strongSelf.displayedWorkspaceTab)]) {
+        for (NSString *identity in closingGroup.identities) {
+          TLWorkspaceTab *survivor = [strongSelf tabWithPresentationIdentity:identity];
+          if (survivor) { [strongSelf activateTabKind:survivor.kind tabID:survivor.tabID]; break; }
+        }
       }
       [strongSelf.splitState reconcileTabs:snapshot.workspaceTabs];
     }
@@ -691,15 +688,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (NSUInteger)activeWorkspaceTabIndex {
-  TLAppStateSnapshot *snapshot = self.appStateManager.snapshot;
-  return [snapshot.workspaceTabs indexOfObjectPassingTest:^BOOL(TLWorkspaceTab *tab, NSUInteger index, BOOL *stop) {
-    return tab.kind == snapshot.activeTabKind && tab.tabID == snapshot.activeTabID;
+  return [[self workspaceTabsForTabsController:self.workspaceTabsController] indexOfObjectPassingTest:^BOOL(TLWorkspaceTab *tab, NSUInteger index, BOOL *stop) {
+    return [self workspaceTabsController:self.workspaceTabsController isTabActive:tab];
   }];
 }
 
 - (BOOL)canPerformTabCommand:(TLTabCommand)command {
   if (self.widgetbookMode) return NO;
-  NSUInteger count = [self workspaceTabs].count;
+  NSUInteger count = [self workspaceTabsForTabsController:self.workspaceTabsController].count;
   NSUInteger index = [self activeWorkspaceTabIndex];
   if (command >= TLTabCommandSelectFirst && command <= TLTabCommandSelectLast) {
     return command == TLTabCommandSelectLast ? count > 0 : (NSUInteger)(command - TLTabCommandSelectFirst) < count;
@@ -718,7 +714,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)selectWorkspaceTabAtIndex:(NSUInteger)index {
-  NSArray<TLWorkspaceTab *> *tabs = [self workspaceTabs];
+  NSArray<TLWorkspaceTab *> *tabs = [self workspaceTabsForTabsController:self.workspaceTabsController];
   if (index >= tabs.count || index == [self activeWorkspaceTabIndex]) return;
   TLWorkspaceTab *tab = tabs[index];
   SEL action = [self runtimeForTab:tab].openAction;
@@ -730,7 +726,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)performTabCommand:(TLTabCommand)command {
   if (![self canPerformTabCommand:command]) return;
-  NSUInteger count = [self workspaceTabs].count;
+  NSUInteger count = [self workspaceTabsForTabsController:self.workspaceTabsController].count;
   NSUInteger index = [self activeWorkspaceTabIndex];
   if (command >= TLTabCommandSelectFirst && command <= TLTabCommandSelectLast) {
     [self selectWorkspaceTabAtIndex:command == TLTabCommandSelectLast ? count - 1 : command - TLTabCommandSelectFirst];
@@ -802,8 +798,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     case TLWorkspaceTabKindAutomations: [self showAutomations:self]; break;
   }
   if (tab && [self.appStateManager hasWorkspaceTabWithKind:tab.kind tabID:tab.tabID]) {
-    [self workspaceTabsController:self.workspaceTabsController moveTab:tab
+    [self.appStateManager moveWorkspaceTabWithKind:tab.kind tabID:tab.tabID
                           toIndex:MIN(closed.index, [self workspaceTabs].count - 1)];
+    [self renderWorkspaceTabs];
   }
 }
 
@@ -838,13 +835,17 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)closeActiveTabOrWindow:(id)sender {
-  NSArray<TLWorkspaceTab *> *tabs = [self workspaceTabs];
+  NSArray<TLWorkspaceTab *> *tabs = [self workspaceTabsForTabsController:self.workspaceTabsController];
   if (tabs.count <= 1) {
     [self.window performClose:sender];
     return;
   }
 
   TLWorkspaceTab *activeTab = [self activeWorkspaceTab];
+  if ([self.splitState groupForTab:activeTab]) {
+    NSMenuItem *groupSender = [NSMenuItem new]; groupSender.representedObject = activeTab;
+    [self closeSplitTab:groupSender]; return;
+  }
   TLWorkspaceTabRuntime *runtime = [self runtimeForTab:activeTab];
   if (!activeTab || !runtime.closeAction) {
     return;
@@ -2014,6 +2015,30 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)startNewChatFromButton:(id)sender {
   [self startNewChatWithModel:self.settings.selectedModel focus:YES];
+}
+
+- (NSMenu *)newTabContextMenu {
+  NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
+  NSMenuItem *tab = [[NSMenuItem alloc] initWithTitle:@"Open new tab" action:@selector(startNewChatFromButton:) keyEquivalent:@""];
+  tab.target = self; tab.enabled = self.createChatButton.enabled && !self.widgetbookMode;
+  [menu addItem:tab];
+  NSMenuItem *sideview = [[NSMenuItem alloc] initWithTitle:@"Open new tab in a sideview" action:@selector(startNewChatInSideview:) keyEquivalent:@""];
+  sideview.target = self;
+  sideview.enabled = tab.enabled && [self.splitState availableNeighborForTab:[self activeWorkspaceTab] placement:NULL] != nil;
+  [menu addItem:sideview];
+  return menu;
+}
+
+- (void)startNewChatInSideview:(id)sender {
+  if (self.widgetbookMode || !self.createChatButton.enabled) return;
+  TLSplitPlacement placement;
+  NSString *identity = [self.splitState availableNeighborForTab:[self activeWorkspaceTab] placement:&placement];
+  TLWorkspaceTab *neighbor = [self tabWithPresentationIdentity:identity];
+  // Recheck capacity when invoked so a stale menu cannot create a tenth tab.
+  if (!neighbor) return;
+  [self startNewChatFromButton:sender];
+  [self splitTab:[self activeWorkspaceTab] besideTab:neighbor placement:placement];
+  [self.window makeFirstResponder:self.promptTextView];
 }
 
 - (void)showHistoryScreen:(id)sender {
@@ -4645,6 +4670,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   button.hoverChanged = ^(BOOL hovered) {
     [weakSelf.workspaceTabsController setNewTabButtonHovered:hovered];
   };
+  button.contextMenuProvider = ^NSMenu *{ return [weakSelf newTabContextMenu]; };
   return button;
 }
 
@@ -5162,40 +5188,47 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (NSArray<TLWorkspaceTab *> *)workspaceTabsForTabsController:(TLWorkspaceTabsController *)controller {
-  return [self workspaceTabs];
+  NSMutableArray *tabs = [NSMutableArray new];
+  NSMutableSet *seen = [NSMutableSet new];
+  for (TLWorkspaceTab *tab in [self workspaceTabs]) {
+    TLWorkspaceSplitGroup *group = [self.splitState groupForTab:tab];
+    if (group && [seen containsObject:group]) continue;
+    if (group) [seen addObject:group];
+    [tabs addObject:tab];
+  }
+  return tabs;
 }
-
-- (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller isTabSplitCompanion:(TLWorkspaceTab *)tab {
-  TLWorkspaceSplitGroup *group = [self.splitState groupForTab:[self activeWorkspaceTab]];
-  return group && group == [self.splitState groupForTab:tab] && ![self isWorkspaceTabActive:tab];
-}
+- (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller isTabSplitCompanion:(TLWorkspaceTab *)tab { return NO; }
 - (BOOL)workspaceTabsController:(TLWorkspaceTabsController *)controller isTabActive:(TLWorkspaceTab *)tab {
-  return [self isWorkspaceTabActive:tab];
+  TLWorkspaceSplitGroup *group = [self.splitState groupForTab:tab];
+  return [self isWorkspaceTabActive:tab] || (group && group == [self.splitState groupForTab:[self activeWorkspaceTab]]);
 }
 
 - (NSColor *)workspaceTabsController:(TLWorkspaceTabsController *)controller backgroundColorForTab:(TLWorkspaceTab *)tab {
+  TLWorkspaceSplitGroup *group = [self.splitState groupForTab:tab];
+  if (group) return self.palette.tabBackground;
   id feature=[self runtimeForTab:tab].featureController;
   return [feature isKindOfClass:TLBrowserTabController.class] ? ((TLBrowserTabController *)feature).headerContentColor : nil;
 }
 
 - (NSString *)workspaceTabsController:(TLWorkspaceTabsController *)controller displayTitleForTab:(TLWorkspaceTab *)tab {
-  return [self displayTitleForWorkspaceTab:tab];
+  return [self.splitState groupForTab:tab] ? @"Split view" : [self displayTitleForWorkspaceTab:tab];
 }
 
 - (NSImage *)workspaceTabsController:(TLWorkspaceTabsController *)controller displayImageForTab:(TLWorkspaceTab *)tab {
-  return [self displayImageForWorkspaceTab:tab];
+  return [self.splitState groupForTab:tab] ? nil : [self displayImageForWorkspaceTab:tab];
 }
 
 - (NSString *)workspaceTabsController:(TLWorkspaceTabsController *)controller displayIconForTab:(TLWorkspaceTab *)tab {
-  return [self displayIconForWorkspaceTab:tab];
+  return [self.splitState groupForTab:tab] ? @"" : [self displayIconForWorkspaceTab:tab];
 }
 
 - (NSString *)workspaceTabsController:(TLWorkspaceTabsController *)controller displaySystemIconNameForTab:(TLWorkspaceTab *)tab {
-  return [self displaySystemIconNameForWorkspaceTab:tab];
+  return [self.splitState groupForTab:tab] ? @"rectangle.3.group" : [self displaySystemIconNameForWorkspaceTab:tab];
 }
 
 - (NSString *)workspaceTabsController:(TLWorkspaceTabsController *)controller displayToolTipForTab:(TLWorkspaceTab *)tab {
-  return [self displayToolTipForWorkspaceTab:tab];
+  return [self.splitState groupForTab:tab] ? @"Split view" : [self displayToolTipForWorkspaceTab:tab];
 }
 
 - (SEL)workspaceTabsController:(TLWorkspaceTabsController *)controller openActionForTab:(TLWorkspaceTab *)tab {
@@ -5203,7 +5236,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (SEL)workspaceTabsController:(TLWorkspaceTabsController *)controller closeActionForTab:(TLWorkspaceTab *)tab {
-  return [self runtimeForTab:tab].closeAction;
+  return [self.splitState groupForTab:tab] ? @selector(closeSplitTab:) : [self runtimeForTab:tab].closeAction;
 }
 
 - (NSRect)workspaceTabsControllerContentDragBoundsInWindow:(TLWorkspaceTabsController *)controller {
@@ -5231,10 +5264,37 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller moveTab:(TLWorkspaceTab *)tab toIndex:(NSUInteger)index {
-  [self.appStateManager moveWorkspaceTabWithKind:tab.kind tabID:tab.tabID toIndex:index];
-  // The drag controller clears its temporary translations before returning.
-  // Apply the committed order now so it never paints the pre-drag positions.
+  NSMutableArray *visible = [[self workspaceTabsForTabsController:controller] mutableCopy];
+  TLWorkspaceSplitGroup *movingGroup = [self.splitState groupForTab:tab];
+  NSUInteger from = [visible indexOfObjectPassingTest:^BOOL(TLWorkspaceTab *candidate, NSUInteger i, BOOL *stop) {
+    return [TLWorkspaceTabIdentity(candidate) isEqual:TLWorkspaceTabIdentity(tab)] || (movingGroup && movingGroup == [self.splitState groupForTab:candidate]);
+  }];
+  if (from == NSNotFound) return;
+  TLWorkspaceTab *representative = visible[from];
+  [visible removeObjectAtIndex:from]; [visible insertObject:representative atIndex:MIN(index,visible.count)];
+  NSMutableArray *ordered = [NSMutableArray new];
+  for (TLWorkspaceTab *entry in visible) {
+    TLWorkspaceSplitGroup *group = [self.splitState groupForTab:entry];
+    for (TLWorkspaceTab *member in [self workspaceTabs])
+      if (group ? [group.identities containsObject:TLWorkspaceTabIdentity(member)] : [TLWorkspaceTabIdentity(entry) isEqual:TLWorkspaceTabIdentity(member)]) [ordered addObject:member];
+  }
+  for (NSUInteger i=0;i<ordered.count;i++) {
+    TLWorkspaceTab *entry=ordered[i]; [self.appStateManager moveWorkspaceTabWithKind:entry.kind tabID:entry.tabID toIndex:i];
+  }
   [self renderWorkspaceTabs];
+}
+- (void)closePaneWithIdentity:(NSString *)identity {
+  TLWorkspaceTab *tab = [self tabWithPresentationIdentity:identity];
+  if (!tab || !tab.closeable) return;
+  NSButton *sender = [NSButton new]; sender.tag = tab.tabID;
+  SEL action = [self runtimeForTab:tab].closeAction;
+  if (action) [NSApp sendAction:action to:self from:sender];
+}
+- (void)closeSplitTab:(id)sender {
+  TLWorkspaceTab *tab = [sender respondsToSelector:@selector(representedObject)] ? [sender representedObject] : nil;
+  if (!tab) return;
+  NSArray *identities = [[self.splitState groupForTab:tab].identities copy];
+  for (NSString *identity in identities) [self closePaneWithIdentity:identity];
 }
 
 - (BOOL)isWorkspaceTabActive:(TLWorkspaceTab *)tab {
@@ -5279,23 +5339,18 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.splitWorkspace.palette = self.palette;
   [self mountWorkspaceView:self.splitWorkspace inHost:self.contentHost];
   __weak typeof(self) weakSelf = self;
-  self.splitWorkspace.focusPane = ^(BOOL right) { [weakSelf focusSplitPane:right]; };
-  self.splitWorkspace.expandPane = ^(BOOL right) {
-    TalariaWindowController *owner = weakSelf;
-    [owner focusSplitPane:right];
-    [owner.splitState removeGroupForTab:[owner activeWorkspaceTab]];
-    [owner updateWorkspaceMode]; [owner reloadWorkspaceTabs];
-  };
-  self.splitWorkspace.swapPanes = ^{
-    TalariaWindowController *owner = weakSelf;
-    TLWorkspaceSplitGroup *group = [owner.splitState groupForTab:[owner activeWorkspaceTab]];
-    NSString *left = group.leftIdentity; group.leftIdentity = group.rightIdentity; group.rightIdentity = left;
-    group.fraction = 1 - group.fraction;
-    [owner updateWorkspaceMode];
+  self.splitWorkspace.focusIdentity = ^(NSString *identity) { [weakSelf focusWorkspaceTab:[weakSelf tabWithPresentationIdentity:identity]]; };
+  self.splitWorkspace.closeIdentity = ^(NSString *identity) { [weakSelf closePaneWithIdentity:identity]; };
+  self.splitWorkspace.dragPane = ^(NSString *identity, NSPoint point, BOOL ended, BOOL cancelled) {
+    [weakSelf dragSplitPane:identity atWindowPoint:point ended:ended cancelled:cancelled];
   };
   self.splitWorkspace.fractionChanged = ^(CGFloat fraction) {
     TalariaWindowController *owner = weakSelf;
     [owner.splitState groupForTab:[owner activeWorkspaceTab]].fraction = fraction;
+  };
+  self.splitWorkspace.layoutWeightsChanged = ^(NSDictionary *weights) {
+    TalariaWindowController *owner = weakSelf;
+    [owner.splitState groupForTab:[owner activeWorkspaceTab]].layoutWeights = weights;
   };
   self.splitWorkspace.contentSizeChanged = ^{ [weakSelf updateSplitContentSizes]; };
   self.paneFocusMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:
@@ -5318,8 +5373,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     NSPoint point = [owner.splitWorkspace convertPoint:event.locationInWindow fromView:nil];
     // Scrolling does not steal typing focus. Native scroll views still receive it.
     if (event.type != NSEventTypeScrollWheel) {
-      if (NSPointInRect(point, owner.splitWorkspace.leftHost.frame)) [owner focusSplitPane:NO];
-      else if (NSPointInRect(point, owner.splitWorkspace.rightHost.frame)) [owner focusSplitPane:YES];
+      NSString *identity = [owner.splitWorkspace identityAtPoint:point];
+      if (identity) [owner focusWorkspaceTab:[owner tabWithPresentationIdentity:identity]];
     }
     return event;
   }];
@@ -5357,18 +5412,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return group && group == [self.splitState groupForTab:tab];
 }
 - (void)prepareSplitContentWidths:(CGFloat)workspaceWidth {
-  CGFloat available = MAX(0, workspaceWidth - self.palette.space5);
-  CGFloat minimum = MIN(self.palette.windowMinimumWidth, available * 0.35);
-  CGFloat left = MAX(minimum, MIN(available - minimum, available * self.splitWorkspace.fraction));
+  CGFloat scale = workspaceWidth / MAX(1,NSWidth(self.splitWorkspace.bounds));
   for (TLChatTabController *presentation in self.chatPresentations.allValues) {
     if (presentation.chatWorkspace.isHiddenOrHasHiddenAncestor) continue;
-    CGFloat paneWidth = presentation.chatWorkspace.superview == self.splitWorkspace.rightHost ? available - left : left;
+    CGFloat paneWidth = NSWidth(presentation.chatWorkspace.superview.bounds) * scale;
     presentation.messageInputWidthConstraint.constant = MAX(0, MIN(self.palette.messageInputMaxWidth, paneWidth - self.palette.space11 * 2));
   }
   for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) {
     TLWorkspaceTabRuntime *runtime = [self runtimeForTab:tab];
     if (runtime.contentView.isHiddenOrHasHiddenAncestor) continue;
-    CGFloat paneWidth = runtime.contentView.superview == self.splitWorkspace.rightHost ? available - left : left;
+    CGFloat paneWidth = NSWidth(runtime.contentView.superview.bounds) * scale;
     [(TLBrowserTabController *)runtime.featureController setAddressInputWidth:MAX(0, MIN(self.palette.messageInputMaxWidth, paneWidth - self.palette.space11 * 2))];
   }
 }
@@ -5426,13 +5479,34 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return tabs[index > 0 ? index - 1 : 1];
 }
 - (void)splitTab:(TLWorkspaceTab *)tab besideTab:(TLWorkspaceTab *)other onLeft:(BOOL)left {
+  [self splitTab:tab besideTab:other placement:left ? TLSplitPlacementLeft : TLSplitPlacementRight];
+}
+- (void)splitTab:(TLWorkspaceTab *)tab besideTab:(TLWorkspaceTab *)other placement:(TLSplitPlacement)placement {
   tab = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(tab)];
   other = [self tabWithPresentationIdentity:TLWorkspaceTabIdentity(other)];
   if (!tab || !other || [TLWorkspaceTabIdentity(tab) isEqual:TLWorkspaceTabIdentity(other)]) return;
   // Materialize both chat presentations before exposing the pair.
   if (other.kind == TLWorkspaceTabKindChat && !self.chatPresentations[@(other.tabID)]) [self loadChatWithID:other.tabID];
   if (tab.kind == TLWorkspaceTabKindChat && !self.chatPresentations[@(tab.tabID)]) [self loadChatWithID:tab.tabID];
-  [self.splitState splitTab:tab besideTab:other onLeft:left];
+  TLWorkspaceSplitGroup *previousGroup = [self.splitState groupForTab:other];
+  NSString *previousLeftIdentity = previousGroup.leftIdentity;
+  BOOL alreadySideBySide = previousGroup.columns.count == 2 && previousGroup.identities.count == 2 &&
+    [previousGroup.identities containsObject:TLWorkspaceTabIdentity(tab)];
+  if (![self.splitState splitTab:tab besideTab:other placement:placement]) return;
+  TLWorkspaceSplitGroup *group = [self.splitState groupForTab:tab];
+  BOOL browserAndChat = (tab.kind == TLWorkspaceTabKindBrowser && other.kind == TLWorkspaceTabKindChat) ||
+    (tab.kind == TLWorkspaceTabKindChat && other.kind == TLWorkspaceTabKindBrowser);
+  if (alreadySideBySide && browserAndChat && group.columns.count == 2 &&
+      ![previousLeftIdentity isEqual:group.leftIdentity]) {
+    // Swapping the pair keeps each view's share, including a manual resize.
+    group.fraction = 1 - group.fraction;
+    group.layoutWeights = nil;
+  } else if (!alreadySideBySide && browserAndChat && group.identities.count == 2 && group.columns.count == 2 &&
+      NSWidth(self.splitWorkspace.bounds) > 1200) {
+    TLWorkspaceTab *browser = tab.kind == TLWorkspaceTabKindBrowser ? tab : other;
+    group.fraction = [group.leftIdentity isEqual:TLWorkspaceTabIdentity(browser)] ? 0.7 : 0.3;
+    group.layoutWeights = nil;
+  }
   [self focusWorkspaceTab:tab];
   [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
 }
@@ -5453,18 +5527,18 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
   NSPoint topbarPoint = [self.topbar convertPoint:point fromView:nil];
   BOOL outside = !NSPointInRect(topbarPoint, NSInsetRect(self.topbar.bounds, 0, -self.palette.space3));
-  if (!outside) {
-    [self.splitWorkspace clearDropPreview]; self.splitDropSide = TLSplitDropSideNone;
-    self.splitDropTarget = nil;
-    [self focusWorkspaceTab:tab];
-    return NO;
-  }
-  self.splitDropTarget = [self splitCompanionForTab:tab preferred:self.tabBeforePointerSelection];
+  TLWorkspaceTab *companion = [self splitCompanionForTab:tab preferred:self.tabBeforePointerSelection];
+  BOOL grouped = [self.splitState groupForTab:tab] != nil;
+  // Reveal all destinations on the first drag movement, even over the tab bar.
+  if (companion && !grouped) [self focusWorkspaceTab:companion];
   NSPoint local = [self.splitWorkspace convertPoint:point fromView:nil];
-  self.splitDropSide = self.splitDropTarget ? [self.splitWorkspace dropSideAtPoint:local] : TLSplitDropSideNone;
-  if (self.splitDropTarget && NSPointInRect(local, self.splitWorkspace.bounds)) [self focusWorkspaceTab:self.splitDropTarget];
+  [self.splitWorkspace prepareDropTargetsWithValidator:^BOOL(NSString *identity, TLSplitDropSide side) {
+    return !grouped && [self.splitState canSplitTab:tab besideTab:[self tabWithPresentationIdentity:identity] placement:[self placementForDropSide:side]];
+  }];
+  self.splitDropSide = outside ? [self.splitWorkspace dropSideAtPoint:local] : TLSplitDropSideNone;
+  self.splitDropTarget = [self tabWithPresentationIdentity:[self.splitWorkspace dropIdentityAtPoint:local]] ?: companion;
   [self.splitWorkspace showDropSide:self.splitDropSide title:[self displayTitleForWorkspaceTab:tab] point:local];
-  return YES;
+  return outside;
 }
 - (void)workspaceTabsController:(TLWorkspaceTabsController *)controller endDraggingTab:(TLWorkspaceTab *)tab cancelled:(BOOL)cancelled {
   BOOL bookmarkDrop = self.bookmarkDropTarget;
@@ -5475,9 +5549,44 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.splitWorkspace clearDropPreview];
   self.splitDropTarget = nil; self.splitDropSide = TLSplitDropSideNone;
   if (!cancelled && bookmarkDrop) [self showBookmarkEditorForTab:tab];
-  else if (!cancelled && side != TLSplitDropSideNone && other) [self splitTab:tab besideTab:other onLeft:side == TLSplitDropSideLeft];
+  else if (!cancelled && side != TLSplitDropSideNone && other) [self splitTab:tab besideTab:other placement:[self placementForDropSide:side]];
   else if (other) [self focusWorkspaceTab:self.tabBeforePointerSelection ?: tab];
   self.tabBeforePointerSelection = nil;
+}
+- (TLSplitPlacement)placementForDropSide:(TLSplitDropSide)side {
+  switch (side) {
+    case TLSplitDropSideAbove: return TLSplitPlacementAbove;
+    case TLSplitDropSideBelow: return TLSplitPlacementBelow;
+    case TLSplitDropSideRight: return TLSplitPlacementRight;
+    default: return TLSplitPlacementLeft;
+  }
+}
+- (void)dragSplitPane:(NSString *)identity atWindowPoint:(NSPoint)point ended:(BOOL)ended cancelled:(BOOL)cancelled {
+  TLWorkspaceTab *tab = [self tabWithPresentationIdentity:identity];
+  if (!tab) return;
+  BOOL inStrip = NSPointInRect([self.topbar convertPoint:point fromView:nil],self.topbar.bounds);
+  NSPoint local = [self.splitWorkspace convertPoint:point fromView:nil];
+  [self.splitWorkspace prepareDropTargetsWithValidator:^BOOL(NSString *candidate, TLSplitDropSide side) {
+    return [self.splitState canSplitTab:tab besideTab:[self tabWithPresentationIdentity:candidate] placement:[self placementForDropSide:side]];
+  }];
+  TLWorkspaceTab *other = [self tabWithPresentationIdentity:[self.splitWorkspace dropIdentityAtPoint:local]];
+  TLSplitDropSide side = [self.splitWorkspace dropSideAtPoint:local];
+  if (!ended) {
+    if (inStrip) [self.workspaceTabsController showPaneDropAtWindowPoint:point]; else [self.workspaceTabsController clearPaneDrop];
+    [self.splitWorkspace showDropSide:inStrip ? TLSplitDropSideNone : side title:[self displayTitleForWorkspaceTab:tab] point:local];
+    return;
+  }
+  [self.splitWorkspace clearDropPreview];
+  [self.workspaceTabsController clearPaneDrop];
+  if (cancelled) return;
+  if (inStrip) {
+    NSUInteger index = [self.workspaceTabsController insertionIndexAtWindowPoint:point];
+    [self.splitState detachTab:tab];
+    [self workspaceTabsController:self.workspaceTabsController moveTab:tab toIndex:index];
+    [self focusWorkspaceTab:tab]; [self updateWorkspaceMode]; [self reloadWorkspaceTabs];
+  } else if (side != TLSplitDropSideNone) {
+    [self splitTab:tab besideTab:other placement:[self placementForDropSide:side]];
+  }
 }
 - (NSMenu *)workspaceTabsController:(TLWorkspaceTabsController *)controller contextMenuForTab:(TLWorkspaceTab *)tab {
   NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
@@ -5489,12 +5598,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   pin.target = self; pin.representedObject = tab; [menu addItem:pin];
   [menu addItem:NSMenuItem.separatorItem];
   TLWorkspaceTab *other = [self splitCompanionForTab:tab preferred:[self activeWorkspaceTab]];
-  for (NSNumber *left in @[@YES, @NO]) {
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:left.boolValue ? @"Open in Split View on Left" : @"Open in Split View on Right"
-      action:@selector(splitTabFromMenu:) keyEquivalent:@""];
-    item.target = self; item.enabled = other != nil;
-    item.representedObject = @{ @"tab":tab, @"left":left };
-    [menu addItem:item];
+  NSArray *titles = @[@"Open in Split View on Left", @"Open in Split View on Right", @"Open in Split View Above", @"Open in Split View Below"];
+  for (NSUInteger placement=0;placement<titles.count;placement++) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:titles[placement] action:@selector(splitTabFromMenu:) keyEquivalent:@""];
+    item.target = self; item.enabled = [self.splitState canSplitTab:tab besideTab:other placement:placement];
+    item.representedObject = @{ @"tab":tab, @"placement":@(placement) }; [menu addItem:item];
   }
   if (tab.kind == TLWorkspaceTabKindChat || tab.kind == TLWorkspaceTabKindBrowser) {
     [menu addItem:NSMenuItem.separatorItem];
@@ -5519,11 +5627,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 - (void)splitTabFromMenu:(NSMenuItem *)sender {
   TLWorkspaceTab *tab = sender.representedObject[@"tab"];
   TLWorkspaceTab *other = [self splitCompanionForTab:tab preferred:[self activeWorkspaceTab]];
-  if (other) [self splitTab:tab besideTab:other onLeft:[sender.representedObject[@"left"] boolValue]];
+  if (other) [self splitTab:tab besideTab:other placement:[sender.representedObject[@"placement"] integerValue]];
 }
 - (void)separateSplitFromMenu:(NSMenuItem *)sender {
   TLWorkspaceTab *tab = sender.representedObject;
-  [self.splitState removeGroupForTab:tab]; [self focusWorkspaceTab:tab];
+  [self.splitState detachTab:tab]; [self focusWorkspaceTab:tab];
   [self updateWorkspaceMode]; [self reloadWorkspaceTabs];
 }
 
@@ -5534,15 +5642,25 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.splitState reconcileTabs:[self workspaceTabs]];
   TLWorkspaceTab *active = [self activeWorkspaceTab];
   TLWorkspaceSplitGroup *group = [self.splitState groupForTab:active];
-  TLWorkspaceTab *left = group ? [self tabWithPresentationIdentity:group.leftIdentity] : active;
-  TLWorkspaceTab *right = group ? [self tabWithPresentationIdentity:group.rightIdentity] : nil;
-  self.splitWorkspace.split = group != nil;
-  if (group) self.splitWorkspace.fraction = group.fraction;
-  self.splitWorkspace.rightFocused = right && [TLWorkspaceTabIdentity(right) isEqual:TLWorkspaceTabIdentity(active)];
-  self.splitWorkspace.leftTitle = left ? [self displayTitleForWorkspaceTab:left] : @"";
-  self.splitWorkspace.rightTitle = right ? [self displayTitleForWorkspaceTab:right] : @"";
-  NSView *leftView = [self contentViewForTab:left];
-  NSView *rightView = [self contentViewForTab:right];
+  self.splitWorkspace.columns = group ? group.columns : (active ? @[@[TLWorkspaceTabIdentity(active)]] : @[]);
+  if (group) {
+    self.splitWorkspace.fraction = group.fraction;
+    [self.splitWorkspace restoreLayoutWeights:group.layoutWeights];
+  }
+  self.splitWorkspace.focusedIdentity = active ? TLWorkspaceTabIdentity(active) : @"";
+  NSMutableArray<NSView *> *visibleViews = [NSMutableArray new];
+  NSArray *identities = group ? group.identities : (active ? @[TLWorkspaceTabIdentity(active)] : @[]);
+  BOOL downloadsVisible = NO, historyVisible = NO;
+  for (NSString *identity in identities) {
+    TLWorkspaceTab *tab = [self tabWithPresentationIdentity:identity];
+    NSView *view = [self contentViewForTab:tab];
+    if (view) [visibleViews addObject:view];
+    [self.splitWorkspace setTitle:[self displayTitleForWorkspaceTab:tab] image:[self displayImageForWorkspaceTab:tab]
+      icon:[self displayIconForWorkspaceTab:tab] systemIcon:[self displaySystemIconNameForWorkspaceTab:tab] forIdentity:identity];
+    [self mountWorkspaceView:view inHost:[self.splitWorkspace hostForIdentity:identity]];
+    downloadsVisible |= tab.kind == TLWorkspaceTabKindDownloads;
+    historyVisible |= tab.kind == TLWorkspaceTabKindHistory;
+  }
   // Only visible content participates in pane layout. Hidden feature screens
   // can carry their own minimum widths; retain them in their runtimes instead
   // of letting those constraints enlarge a different tab's split.
@@ -5554,15 +5672,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (self.chatWorkspace) [contentViews addObject:self.chatWorkspace];
   if (self.historyPanelController.panelView) [contentViews addObject:self.historyPanelController.panelView];
   for (NSView *view in contentViews) {
-    BOOL visible = view == leftView || view == rightView;
+    BOOL visible = [visibleViews containsObject:view];
     view.hidden = !visible;
     if (!visible) [view removeFromSuperview];
   }
-  [self mountWorkspaceView:leftView inHost:self.splitWorkspace.leftHost];
-  [self mountWorkspaceView:rightView inHost:self.splitWorkspace.rightHost];
-  leftView.hidden = NO; rightView.hidden = NO;
-  if (left.kind == TLWorkspaceTabKindDownloads || (right && right.kind == TLWorkspaceTabKindDownloads)) [self.downloadsController refresh];
-  BOOL historyVisible = left.kind == TLWorkspaceTabKindHistory || (right && right.kind == TLWorkspaceTabKindHistory);
+  if (downloadsVisible) [self.downloadsController refresh];
   BOOL refreshHistory = historyVisible && (!self.historyWasVisible || self.historyAgentID != self.database.currentAgentID);
   self.historyWasVisible = historyVisible;
   self.historyPanelController.visible = historyVisible;
