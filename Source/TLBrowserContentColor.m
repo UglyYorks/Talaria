@@ -35,6 +35,7 @@ const NSUInteger TLBrowserContentColorMaximumImagePixels = 32 * 1024 * 1024;
 + (NSString *)CSSStringForColor:(NSColor *)color {
   // Serialize the same content-derived (or theme fallback) color for the DOM spacer.
   color=[color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  if (color.alphaComponent < 1) return [NSString stringWithFormat:@"rgba(%ld,%ld,%ld,%.4f)", (long)round(color.redComponent*255), (long)round(color.greenComponent*255), (long)round(color.blueComponent*255), color.alphaComponent];
   return [NSString stringWithFormat:@"rgb(%d,%d,%d)",(int)round(color.redComponent*255),(int)round(color.greenComponent*255),(int)round(color.blueComponent*255)];
 }
 + (NSColor *)colorForRGB:(NSArray *)rgb {

@@ -104,8 +104,8 @@ CGColorRef TLCGColor(NSColor *color) {
 
 - (void)assignSharedLayoutTokens {
   self.topbarHeight = 40.0;
-  self.windowInitialWidth = 1200.0;
-  self.windowInitialHeight = 720.0;
+  self.windowInitialWidth = 1600.0;
+  self.windowInitialHeight = 1000.0;
   self.windowMinimumWidth = 200.0;
   self.windowMinimumHeight = 520.0;
   self.trafficLightLeftInset = 15.0;
@@ -153,7 +153,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.messageInputSendButtonSize = 32.0;
   self.buttonImageReplacementDuration = 0.24;
   self.messageInputMaxHeight = 168.0;
-  self.browserBackdropHeight = 75.0;
+  self.browserBottomBlurRadius = 16.0;
   self.browserPromptWidth = 320.0;
   self.browserToolbarButtonSize = 28.0;
   self.browserToolbarIconSize = 13.0;
@@ -199,6 +199,10 @@ CGColorRef TLCGColor(NSColor *color) {
   self.focusRingSize = 3.0;
   self.borderWidth = 1.0;
   self.incognitoBorderWidth = 2.0;
+  self.browserLoadingLineWidth = 2.0;
+  self.browserLoadingProgressDuration = 0.4;
+  self.browserLoadingCompletionHoldDuration = 0.2;
+  self.browserLoadingFadeDuration = 0.2;
   self.workspaceOutlineOpacity = 1.0 / 3.0;
   self.workspaceShadowRadius = 3.0;
   self.workspaceShadowOffsetY = -1.0;

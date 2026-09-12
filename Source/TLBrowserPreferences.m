@@ -65,10 +65,10 @@ static NSError *TLBrowserPreferenceError(NSString *message) {
   return self;
 }
 + (NSArray<NSString *> *)categories {
-  NSArray *order = @[@"Privacy & security", @"Site permissions", @"Search engine", @"Appearance", @"On startup", @"Performance", @"Downloads", @"Accessibility", @"Reset settings", @"Import profiles"];
+  NSArray *order = @[@"Default browser", @"Privacy & security", @"Site permissions", @"Search engine", @"Appearance", @"On startup", @"Performance", @"Downloads", @"Accessibility", @"Reset settings", @"Import profiles"];
   NSMutableArray *categories = [NSMutableArray array];
   for (NSString *category in order) {
-    BOOL present = [@[@"Reset settings", @"Import profiles"] containsObject:category];
+    BOOL present = [@[@"Default browser", @"Reset settings", @"Import profiles"] containsObject:category];
     for (NSDictionary *setting in self.catalogue) if ([setting[@"category"] isEqual:category]) { present = YES; break; }
     if (present) [categories addObject:category];
   }

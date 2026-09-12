@@ -1,4 +1,14 @@
 #import "TLWorkspaceSessionStore.h"
+#import <math.h>
+
+static BOOL TLSessionRGB(id value) {
+  if (![value isKindOfClass:NSArray.class] || [value count] != 3) return NO;
+  for (id component in value) {
+    if (![component isKindOfClass:NSNumber.class] || !isfinite([component doubleValue]) ||
+        [component doubleValue] < 0 || [component doubleValue] > 255) return NO;
+  }
+  return YES;
+}
 
 static BOOL TLSessionInteger(id value) {
   return [value isKindOfClass:NSNumber.class] &&
@@ -59,6 +69,7 @@ static BOOL TLSessionTabKind(id value) {
     NSString *toolTip = [entry[@"toolTip"] isKindOfClass:NSString.class] ? entry[@"toolTip"] : title;
     TLWorkspaceTab *tab = [TLWorkspaceTab tabWithKind:kind tabID:tabID title:title toolTip:toolTip
       URL:kind == TLWorkspaceTabKindBrowser ? URL : nil closeable:YES];
+    if (kind == TLWorkspaceTabKindBrowser && TLSessionRGB(entry[@"browserHeaderRGB"])) tab.browserHeaderRGB = entry[@"browserHeaderRGB"];
     tab.pinned = [entry[@"pinned"] isKindOfClass:NSNumber.class] && [entry[@"pinned"] boolValue];
     [tabs addObject:tab];
     [identities addObject:identity];
@@ -88,6 +99,7 @@ static BOOL TLSessionTabKind(id value) {
     for (TLWorkspaceTab *tab in snapshot.workspaceTabs) {
       NSMutableDictionary *entry = [@{@"kind":@(tab.kind), @"tabID":@(tab.tabID),
         @"title":tab.title ?: @"", @"toolTip":tab.toolTip ?: @"", @"pinned":@(tab.pinned)} mutableCopy];
+      if (tab.kind == TLWorkspaceTabKindBrowser && TLSessionRGB(tab.browserHeaderRGB)) entry[@"browserHeaderRGB"] = tab.browserHeaderRGB;
       if (tab.URL) entry[@"url"] = tab.URL.absoluteString;
       [tabs addObject:entry];
     }

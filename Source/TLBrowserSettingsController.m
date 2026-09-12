@@ -17,6 +17,9 @@
 @property NSMutableDictionary<NSString *, NSDictionary *> *importSources;
 @property NSMutableDictionary<NSString *, NSPopUpButton *> *profilePickers;
 @property BOOL ready;
+@property TLThemedButton *defaultBrowserButton;
+@property NSTextField *defaultBrowserStatus;
+@property BOOL requestingDefaultBrowser;
 @property (nonatomic) BOOL busy;
 @end
 @implementation TLBrowserSettingsController
@@ -26,6 +29,7 @@
   _buttons = [NSMutableArray array]; _extraRows = [NSMutableArray array];
   _importSources = [NSMutableDictionary dictionary]; _profilePickers = [NSMutableDictionary dictionary];
   [self buildContent];
+  [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshDefaultBrowser) name:NSApplicationDidBecomeActiveNotification object:nil];
   return self;
 }
 - (NSStackView *)stack:(NSArray *)views {
@@ -90,6 +94,12 @@
     [content.topAnchor constraintEqualToAnchor:document.topAnchor constant:self.palette.space8],
     [content.bottomAnchor constraintEqualToAnchor:document.bottomAnchor constant:-self.palette.space8]]];
   for (NSView *view in content.arrangedSubviews) [view.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
+  self.defaultBrowserButton = [self button:@"Make Talaria my default browser" action:@selector(makeDefaultBrowser:) identifier:@"defaultBrowser"];
+  self.defaultBrowserStatus = [self wrappingLabelWithString:@"" font:self.palette.smallFont colorToken:@"textMuted"];
+  NSView *defaultRow = [self card:@"Default browser" detail:@"Open web links from other apps in Talaria." controls:@[self.defaultBrowserButton, self.defaultBrowserStatus]];
+  [self.extraRows addObject:@{@"category":@"Default browser", @"search":@"Default browser Make Talaria my default browser Open web links from other apps", @"row":defaultRow}];
+  [self addRow:defaultRow];
+  [self refreshDefaultBrowser];
   for (NSDictionary *setting in TLBrowserPreferences.catalogue) {
     NSString *identifier = setting[@"id"], *type = setting[@"type"];
     NSControl *control; NSMutableArray *views = [NSMutableArray array];
@@ -128,7 +138,53 @@
   self.empty = [self wrappingLabelWithString:@"No matching settings. Try another search." font:self.palette.bodyFont colorToken:@"textMuted"];
   [self addRow:self.empty]; [self filter:nil];
 }
+// Overridable workspace boundary keeps tests from changing the user's defaults.
+- (NSWorkspace *)browserWorkspace { return NSWorkspace.sharedWorkspace; }
+- (NSURL *)browserApplicationURL { return NSBundle.mainBundle.bundleURL; }
+- (BOOL)isDefaultForScheme:(NSString *)scheme {
+  NSURL *handler = [[self browserWorkspace] URLForApplicationToOpenURL:[NSURL URLWithString:[scheme stringByAppendingString:@"://example.com"]]];
+  if (!handler) return NO;
+  NSString *identifier = [NSBundle bundleWithURL:[self browserApplicationURL]].bundleIdentifier;
+  return identifier.length && [[NSBundle bundleWithURL:handler].bundleIdentifier isEqual:identifier];
+}
+- (void)refreshDefaultBrowser {
+  if (self.isClosed) return;
+  BOOL isDefault = [self isDefaultForScheme:@"http"] && [self isDefaultForScheme:@"https"];
+  self.defaultBrowserButton.enabled = !isDefault && !self.requestingDefaultBrowser;
+  if (!self.requestingDefaultBrowser) self.defaultBrowserStatus.stringValue = isDefault ? @"Talaria is your default browser." : @"";
+}
+- (void)makeDefaultBrowser:(id)sender {
+  if (self.requestingDefaultBrowser || self.isClosed) return;
+  self.requestingDefaultBrowser = YES;
+  self.defaultBrowserButton.enabled = NO;
+  self.defaultBrowserStatus.stringValue = @"Confirm your choice in macOS.";
+  [self requestDefaultBrowserSchemeAtIndex:0];
+}
+- (void)requestDefaultBrowserSchemeAtIndex:(NSUInteger)index {
+  NSArray *schemes = @[@"http", @"https"];
+  if (index == schemes.count) {
+    self.requestingDefaultBrowser = NO;
+    [self refreshDefaultBrowser];
+    if (self.defaultBrowserButton.enabled) self.defaultBrowserStatus.stringValue = @"The default browser was not changed. You can try again.";
+    return;
+  }
+  NSString *scheme = schemes[index];
+  if ([self isDefaultForScheme:scheme]) { [self requestDefaultBrowserSchemeAtIndex:index + 1]; return; }
+  __weak typeof(self) weakSelf = self;
+  [[self browserWorkspace] setDefaultApplicationAtURL:[self browserApplicationURL] toOpenURLsWithScheme:scheme completionHandler:^(NSError *error) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      typeof(self) owner = weakSelf;
+      if (!owner || owner.isClosed) return;
+      if (error) {
+        owner.requestingDefaultBrowser = NO;
+        [owner refreshDefaultBrowser];
+        if (owner.defaultBrowserButton.enabled) owner.defaultBrowserStatus.stringValue = error.localizedDescription ?: @"The default browser was not changed.";
+      } else [owner requestDefaultBrowserSchemeAtIndex:index + 1];
+    });
+  }];
+}
 - (void)prepareInWindow:(NSWindow *)window {
+  [self refreshDefaultBrowser];
   if (self.ready || self.busy || self.isClosed) return;
   self.busy = YES; __weak typeof(self) weakSelf = self;
   [self.preferences prepareInWindow:window completion:^(NSError *error) {
@@ -147,6 +203,7 @@
   }
   for (TLThemedButton *button in self.buttons) button.enabled = !busy && self.ready && (button.tag == 1 || !self.controls[button.identifier] || self.controls[button.identifier].enabled);
   for (NSPopUpButton *picker in self.profilePickers.allValues) picker.enabled = !busy;
+  [self refreshDefaultBrowser];
 }
 - (NSArray<NSDictionary *> *)detectedImportBrowsers { return [TLBrowserProfileImporter installedBrowsers]; }
 - (void)reloadImportSources:(id)sender {
@@ -256,6 +313,7 @@
     else [(NSTextField *)control setStringValue:[value isKindOfClass:NSString.class] ? value : [value description]];
   }
   for (TLThemedButton *button in self.buttons) button.enabled = self.ready && (button.tag == 1 || !self.controls[button.identifier] || self.controls[button.identifier].enabled);
+  [self refreshDefaultBrowser];
 }
 - (void)change:(NSControl *)sender {
   if (!self.ready || self.busy) return;
@@ -342,6 +400,7 @@
   for (TLThemedButton *button in self.buttons) button.palette = palette;
 }
 - (void)close {
+  [NSNotificationCenter.defaultCenter removeObserver:self];
   [super close]; self.search.delegate = nil;
   for (NSControl *control in self.controls.allValues) { control.target = nil; }
   for (TLThemedButton *button in self.buttons) button.target = nil;

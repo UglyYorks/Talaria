@@ -1,3 +1,5 @@
+#import "TLMainWindow.h"
+#import <Carbon/Carbon.h>
 #import "AppDelegate.h"
 #import "AgentClient.h"
 #import "AgentOrchestrator.h"
@@ -21,10 +23,25 @@
 @property (nonatomic, strong) NSMutableArray<TalariaWindowController *> *incognitoWindows;
 @property (nonatomic, strong) NSStatusItem *statusItem;
 @property (nonatomic) BOOL resetInProgress;
+@property (nonatomic, strong) NSMutableArray<NSURL *> *pendingWebURLs;
 
 @end
 
 @implementation TLAppDelegate
+
+- (void)applicationWillFinishLaunching:(NSNotification *)notification {
+  // Install before AppKit dispatches the launch URL event. This also supports
+  // the programmatic NSApplication entry point used by our desktop executable.
+  [NSAppleEventManager.sharedAppleEventManager setEventHandler:self
+    andSelector:@selector(handleOpenWebURLEvent:replyEvent:)
+    forEventClass:kInternetEventClass andEventID:kAEGetURL];
+}
+- (void)handleOpenWebURLEvent:(NSAppleEventDescriptor *)event replyEvent:(NSAppleEventDescriptor *)reply {
+  NSString *value = [event paramDescriptorForKeyword:keyDirectObject].stringValue;
+  NSURL *URL = value.length ? [NSURL URLWithString:value] : nil;
+  if (URL) [self application:NSApp openURLs:@[URL]];
+}
+
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   // Installed and worktree builds share their database and WebKit profile.
@@ -43,16 +60,26 @@
     configuration.allowsRunningApplicationSubstitution = NO;
     configuration.activates = YES;
     configuration.promptsUserIfNeeded = NO;
-    [NSWorkspace.sharedWorkspace openApplicationAtURL:existing.bundleURL configuration:configuration
-      completionHandler:^(NSRunningApplication *application, NSError *error) {
+    void (^completeHandoff)(NSRunningApplication *, NSError *) = ^(NSRunningApplication *application, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
           if (error || !application) {
             [existing unhide];
             [existing activateWithOptions:NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows];
           }
-          [NSApp terminate:nil];
+          if (self.pendingWebURLs.count && existing.bundleURL) {
+            [NSWorkspace.sharedWorkspace openURLs:self.pendingWebURLs.copy withApplicationAtURL:existing.bundleURL configuration:configuration completionHandler:^(NSRunningApplication *app, NSError *openError) {
+              dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+            }];
+          } else [NSApp terminate:nil];
         });
-      }];
+      };
+    if (self.pendingWebURLs.count) {
+      NSArray *URLs = self.pendingWebURLs.copy;
+      [self.pendingWebURLs removeAllObjects];
+      [NSWorkspace.sharedWorkspace openURLs:URLs withApplicationAtURL:existing.bundleURL configuration:configuration completionHandler:completeHandoff];
+    } else {
+      [NSWorkspace.sharedWorkspace openApplicationAtURL:existing.bundleURL configuration:configuration completionHandler:completeHandoff];
+    }
     return;
   }
 
@@ -97,12 +124,29 @@
   self.windowController = [[TalariaWindowController alloc] initWithDatabase:self.database
                                                             agentOrchestrator:self.agentOrchestrator
                                                               appStateManager:self.appStateManager];
+  self.windowController.shouldCascadeWindows = NO;
+  if (!TLWidgetbookModeEnabled()) [(TLMainWindow *)self.windowController.window restorePlacementWithName:@"TalariaMainWindow"];
   [self.workspaceSessionStore observeStateManager:self.appStateManager];
   [self installStatusItem];
   [self presentMainWindow:self];
+  for (NSURL *URL in self.pendingWebURLs.copy) [self.windowController openBrowserTabWithURL:URL];
+  [self.pendingWebURLs removeAllObjects];
   dispatch_async(dispatch_get_main_queue(), ^{
     [self presentMainWindow:self];
   });
+}
+
+- (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)URLs {
+  NSMutableArray<NSURL *> *webURLs = [NSMutableArray array];
+  for (NSURL *URL in URLs) if ([@[@"http", @"https"] containsObject:URL.scheme.lowercaseString] && URL.host.length) [webURLs addObject:URL];
+  if (!webURLs.count) return;
+  if (self.windowController) {
+    [self presentMainWindow:self];
+    for (NSURL *URL in webURLs) [self.windowController openBrowserTabWithURL:URL];
+  } else {
+    if (!self.pendingWebURLs) self.pendingWebURLs = [NSMutableArray array];
+    [self.pendingWebURLs addObjectsFromArray:webURLs];
+  }
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {

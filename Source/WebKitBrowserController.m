@@ -403,7 +403,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
     if(!owner.closed && owner.topScrollEnded)owner.topScrollEnded();
   };
   self.sessions[@(session.browserIdentifier)]=session;
-  for(NSString *key in @[@"title",@"URL",@"canGoBack",@"canGoForward",@"loading",@"fullscreenState"])[webView addObserver:self forKeyPath:key options:0 context:NULL];
+  for(NSString *key in @[@"title",@"URL",@"canGoBack",@"canGoForward",@"loading",@"estimatedProgress",@"fullscreenState"])[webView addObserver:self forKeyPath:key options:0 context:NULL];
   view.postsFrameChangedNotifications=YES;
   session.resizeObserver=[NSNotificationCenter.defaultCenter addObserverForName:NSViewFrameDidChangeNotification object:view queue:nil usingBlock:^(NSNotification *note){[weakSelf clearNavigationCover:weakSession];}];
   [view addSubview:webView];
@@ -518,7 +518,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 }
 - (void)updateSession:(TLWebKitBrowserSession *)session {
   if(!session || session.closed)return;
-  NSArray *state=@[@(session.webView.canGoBack),@(session.webView.canGoForward),@(session.webView.loading)];
+  NSArray *state=@[@(session.webView.canGoBack),@(session.webView.canGoForward),@(session.webView.loading),@(session.webView.estimatedProgress)];
   if([state isEqual:session.lastNavigationState])return;session.lastNavigationState=state;
   if(session.navigationHandler)session.navigationHandler(session.webView.canGoBack,session.webView.canGoForward,session.webView.loading);
 }
@@ -1033,7 +1033,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   [self clearNavigationCover:session];[session.pageBridge stop];
   if(session.menuCleanup)session.menuCleanup();session.menuCleanup=nil;
   for(NSAlert *alert in self.alerts.copy)if(alert.window.sheetParent==session.originWindow)[session.originWindow endSheet:alert.window returnCode:NSAlertFirstButtonReturn];
-  for(NSString *key in @[@"title",@"URL",@"canGoBack",@"canGoForward",@"loading",@"fullscreenState"])[session.webView removeObserver:self forKeyPath:key];
+  for(NSString *key in @[@"title",@"URL",@"canGoBack",@"canGoForward",@"loading",@"estimatedProgress",@"fullscreenState"])[session.webView removeObserver:self forKeyPath:key];
   if(session.resizeObserver)[NSNotificationCenter.defaultCenter removeObserver:session.resizeObserver];session.resizeObserver=nil;
   session.titleHandler=nil;session.linkHandler=nil;session.URLHandler=nil;session.faviconHandler=nil;session.navigationHandler=nil;session.contextLinkHandler=nil;session.createTabHandler=nil;session.closeTabHandler=nil;session.findResultsChangedHandler=nil;session.documentStartedHandler=nil;session.topScrollEnded=nil;session.topColorChanged=nil;
   session.devToolsVisible=NO;if(session.devToolsVisibilityChangedHandler)session.devToolsVisibilityChangedHandler();session.devToolsVisibilityChangedHandler=nil;

@@ -80,9 +80,6 @@ TEST_AppResetTests_SOURCES := Source/TLAppReset.m Tests/AppResetTests.m $(STORAG
 TEST_AppResetTests_LIBS := -framework WebKit -framework Foundation -framework Security -lsqlite3
 $(eval $(call native_test,AppResetTests))
 
-TEST_BrowserOverlayPolicyTests_SOURCES := Source/TLBrowserOverlayPolicy.m Tests/BrowserOverlayPolicyTests.m
-TEST_BrowserOverlayPolicyTests_LIBS := -framework Foundation
-$(eval $(call native_test,BrowserOverlayPolicyTests))
 
 TEST_AgentVMLockTests_SOURCES := Source/TLAgentVMLock.m Source/AgentVMService.m Source/TalariaModels.m Tests/AgentVMLockTests.m
 TEST_AgentVMLockTests_LIBS := -framework Foundation -framework AppKit -framework Virtualization
@@ -106,8 +103,8 @@ TEST_RepositoryTests_SOURCES := $(STORAGE_SOURCES) Source/TLHistoryRepository.m 
 TEST_RepositoryTests_LIBS := -framework Foundation -framework Security -lsqlite3
 $(eval $(call native_test,RepositoryTests))
 
-CORE_TESTS := RepositoryTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests AppResetTests BrowserOverlayPolicyTests AgentVMLockTests AgentProtocolTests
-NATIVE_TESTS := WheelScrollAnimationTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests BrowserOverlayPolicyTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
+CORE_TESTS := RepositoryTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests AppResetTests AgentVMLockTests AgentProtocolTests
+NATIVE_TESTS := WheelScrollAnimationTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
 .PHONY: test test-core test-integration
 # GUI suites run sequentially: AppKit focus and the pasteboard are shared resources.
 test: $(addprefix $(BUILD_DIR)/,$(NATIVE_TESTS)) $(BUILD_DIR)/TerminalClientProbe test-hermes-gateway test-browser-overlay audit-theme-colors
@@ -140,3 +137,12 @@ $(BUILD_DIR)/BrowserPopupTabTests: $(call test_objects,Tests/BrowserPopupTabTest
 .PHONY: test-browser-popup-tab
 test-browser-popup-tab: $(BUILD_DIR)/BrowserPopupTabTests
 	python3 Tests/run-browser-popup-tab.py
+
+# Desktop WebKit blur geometry plus a live compositor fixture for visual QA.
+$(BUILD_DIR)/BrowserBackdropTests: Tests/BrowserBackdropTests.m Source/design_system/TLProgressiveBlurView.m $(THEME_SOURCES)
+	mkdir -p "$(BUILD_DIR)"
+	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework WebKit -framework CoreImage -framework QuartzCore -o "$@"
+
+.PHONY: test-browser-backdrop
+test-browser-backdrop: $(BUILD_DIR)/BrowserBackdropTests
+	python3 Tests/run-browser-backdrop.py

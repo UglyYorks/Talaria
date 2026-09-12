@@ -29,7 +29,13 @@ int main(void) {
     NSArray *tabs = @[Tab(TLWorkspaceTabKindChat, 42), Tab(TLWorkspaceTabKindBrowser, 42),
       Tab(TLWorkspaceTabKindChat, -8), Tab(TLWorkspaceTabKindSettings, 0), Tab(TLWorkspaceTabKindHistory, 0),
       Tab(TLWorkspaceTabKindAgents, 0), Tab(TLWorkspaceTabKindAutomations, 0), Tab(TLWorkspaceTabKindDebug, 0), Tab(TLWorkspaceTabKindDownloads, 0)];
+    ((TLWorkspaceTab *)tabs[1]).browserHeaderRGB = @[@12, @34.5, @210];
     for (TLWorkspaceTab *tab in tabs) [state addWorkspaceTab:tab activate:YES];
+    Check([[Restore(URL) workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42].browserHeaderRGB isEqual:@[@12, @34.5, @210]], @"sampled browser color survives state copies and a fresh session restore");
+    TLWorkspaceTab *colored = [state workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42];
+    colored.browserHeaderRGB = @[@80, @90, @100];
+    [state upsertWorkspaceTab:colored activate:NO];
+    Check([[Restore(URL) workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42].browserHeaderRGB isEqual:@[@80, @90, @100]], @"a color-only update saves the latest page color");
     [state moveWorkspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42 toIndex:0];
     for (TLWorkspaceTab *tab in tabs) {
       [state activateWorkspaceTabKind:tab.kind tabID:tab.tabID];
@@ -76,6 +82,14 @@ int main(void) {
 
     NSDictionary *valid = @{@"kind":@(TLWorkspaceTabKindBrowser), @"tabID":@9, @"title":@"Valid",
       @"url":@"https://example.com/restored"};
+    for (id badColor in @[NSNull.null, @"red", @[@1,@2], @[@1,@2,@256], @[@-1,@2,@3], @[@1,@"2",@3]]) {
+      NSMutableDictionary *entry = valid.mutableCopy; entry[@"browserHeaderRGB"] = badColor;
+      Write(URL, @{@"version":@1, @"tabs":@[entry]});
+      TLWorkspaceTab *restoredTab = Restore(URL).snapshot.workspaceTabs.firstObject;
+      Check(restoredTab != nil && restoredTab.browserHeaderRGB == nil, @"malformed optional color is ignored without losing the browser tab");
+    }
+    Write(URL, @{@"version":@1, @"tabs":@[valid]});
+    Check(Restore(URL).snapshot.workspaceTabs.firstObject.browserHeaderRGB == nil, @"older sessions without colors remain compatible");
     Write(URL, @{@"version":@1, @"activeKind":@(TLWorkspaceTabKindChat), @"activeID":@999,
       @"tabs":@[NSNull.null, @"bad", @{}, @{@"kind":@100, @"tabID":@1},
         @{@"kind":@0, @"tabID":@"1"}, @{@"kind":@0, @"tabID":@1.5},

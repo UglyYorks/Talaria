@@ -188,6 +188,7 @@
   function remove() { preparedRGB=null; reportFill(); node?.remove(); node=null; height=0;canvasSurface=null;colorObserver.disconnect();colorResizeObserver.disconnect();colorTargets.clear(); }
   function refresh() {
     if(disposed)return;
+
     lastUpdate=performance.now();
     const root=document.documentElement, body=document.body;
     if(root!==observedRoot || body!==observedBody) {

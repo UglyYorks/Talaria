@@ -3,6 +3,7 @@
 
 void TLApplyLightThemeColors(TLThemePalette *palette) {
   palette.appText = palette.gray900;
+  palette.browserLoadingProgress = [NSColor colorWithSRGBRed:10.0 / 255.0 green:132.0 / 255.0 blue:1.0 alpha:1.0];
   palette.transparentSurface = [NSColor clearColor];
   palette.appBackground = palette.transparentSurface;
   palette.appContentBackground = palette.white;

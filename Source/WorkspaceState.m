@@ -24,6 +24,7 @@
   copy.tabID = self.tabID;
   copy.presentationIdentity = self.presentationIdentity;
   copy.URL = self.URL;
+  copy.browserHeaderRGB = self.browserHeaderRGB;
   copy.title = self.title;
   copy.toolTip = self.toolTip;
   copy.closeable = self.closeable;

@@ -25,8 +25,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithURL:(NSURL *)URL palette:(TLThemePalette *)palette
                   database:(TLDatabase *)database orchestrator:(TLAgentOrchestrator *)orchestrator
                 inputWidth:(CGFloat)inputWidth browserService:(TLWebKitBrowserController *)browserService;
+@property (nonatomic, readonly, getter=isLoading) BOOL loading;
+@property (nonatomic, readonly) double loadingProgress;
+@property (nonatomic, copy, nullable) dispatch_block_t loadingChangedHandler;
 @property (nonatomic, readonly) BOOL findBarVisible;
 @property (nonatomic) NSRect tabColorSampleRect;
+- (void)restoreHeaderContentColor:(nullable NSColor *)color;
 - (void)showFindBar;
 - (void)reloadBrowser:(nullable id)sender;
 - (void)findNext:(BOOL)forward;

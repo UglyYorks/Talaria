@@ -16,13 +16,11 @@
 @property (nonatomic, strong) TLInputSuggestionListView *suggestionList;
 @property (nonatomic, strong) NSScreen *presentationScreen;
 @property (nonatomic) CGFloat inputHeight;
-@property (nonatomic) NSRect anchorRect;
 @property (nonatomic) BOOL layingOut;
 @property (nonatomic, strong) NSMutableSet<NSMenu *> *trackingMenus;
 @property (nonatomic) BOOL focusCheckPending;
 @property (nonatomic) BOOL showingSettings;
 @property (nonatomic) BOOL sheetInteractionActive;
-@property (nonatomic) BOOL notchPresentation;
 @property (nonatomic, strong) TLNotchSurfaceView *notchSurface;
 @property (nonatomic, strong) NSView *inputContainer;
 @property (nonatomic, strong) TLTransitionCoordinator *notchTransition;
@@ -51,15 +49,15 @@
     _trackingMenus = [NSMutableSet set];
     _inputHeight = palette.composerButtonHeight;
     _notchTransition = [[TLTransitionCoordinator alloc] init];
-    panel.title = @"Talaria Quick Input";
+    panel.title = @"Talaria Notch Input";
     panel.delegate = self;
     panel.opaque = NO;
-    panel.hasShadow = YES;
+    panel.hasShadow = NO;
     panel.releasedWhenClosed = NO;
     panel.hidesOnDeactivate = NO;
     panel.canHide = NO;
     panel.becomesKeyOnlyIfNeeded = NO;
-    panel.level = NSFloatingWindowLevel;
+    panel.level = NSStatusWindowLevel + 1;
     panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
     panel.contentView.wantsLayer = YES;
     panel.contentView.layer.masksToBounds = YES;
@@ -74,7 +72,6 @@
 
     _notchSurface = [[TLNotchSurfaceView alloc] initWithFrame:panel.contentView.bounds];
     _notchSurface.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    _notchSurface.hidden = YES;
     [panel.contentView addSubview:_notchSurface];
     // Keep the input at its final width while the surrounding notch resizes.
     _inputContainer = [[NSView alloc] initWithFrame:panel.contentView.bounds];
@@ -83,7 +80,7 @@
     _screenCapture = [[TLScreenCapture alloc] init];
 
     _messageInput = [[TLGlassMessageInput alloc] init];
-    _messageInput.usesChatBackdrop = YES;
+    _messageInput.showsBackground = NO;
     _messageInput.attachmentsEnabled = YES;
     _messageInput.showsSettingsButton = YES;
     _messageInput.textView.delegate = self;
@@ -194,42 +191,18 @@
   });
 }
 
-- (void)presentOnScreen:(NSScreen *)screen {
-  [self presentBelowRect:NSMakeRect(NSMidX(screen.frame), NSMaxY(screen.visibleFrame), 0, 0) onScreen:screen];
-}
-
-- (void)presentBelowRect:(NSRect)anchorRect onScreen:(NSScreen *)screen {
-  if (self.window.attachedSheet || self.captureInProgress) return;
-  [self cancelNotchTransition];
-  self.notchPresentation = NO;
-  [self presentWithAnchorRect:anchorRect onScreen:screen fromFrame:NSZeroRect];
-}
-
 - (void)presentInNotchOnScreen:(NSScreen *)screen {
   [self presentInNotchOnScreen:screen fromFrame:NSZeroRect];
 }
 
 - (void)presentInNotchOnScreen:(NSScreen *)screen fromFrame:(NSRect)frame {
   if (self.window.attachedSheet || self.captureInProgress) return;
-  self.notchPresentation = YES;
-  [self presentWithAnchorRect:NSMakeRect(NSMidX(screen.frame), NSMaxY(screen.frame), 0, 0)
-                    onScreen:screen fromFrame:frame];
-}
-
-- (void)presentWithAnchorRect:(NSRect)anchorRect onScreen:(NSScreen *)screen fromFrame:(NSRect)frame {
-  if (self.window.attachedSheet) return;
   if (self.presentationScreen != screen) [self cancelNotchTransition];
   BOOL wasVisible = self.window.visible;
   self.presentationScreen = screen;
-  self.anchorRect = anchorRect;
-  ((TLQuickInputPanel *)self.window).pinsToScreenTop = self.notchPresentation;
-  self.window.level = self.notchPresentation ? NSStatusWindowLevel + 1 : NSFloatingWindowLevel;
-  self.window.hasShadow = !self.notchPresentation;
-  self.notchSurface.hidden = !self.notchPresentation;
-  self.messageInput.showsBackground = !self.notchPresentation;
   [self applyPalette:self.palette];
   [self updateSuggestions];
-  if (!wasVisible && self.notchPresentation && !NSIsEmptyRect(frame)) {
+  if (!wasVisible && !NSIsEmptyRect(frame)) {
     [self expandNotchFromFrame:frame];
   }
   [self.window makeKeyAndOrderFront:self];
@@ -258,7 +231,7 @@
 - (void)applyPalette:(TLThemePalette *)palette {
   self.palette = palette;
   // The hardware notch remains black in both app themes; resolve its content for that surface.
-  TLThemePalette *contentPalette = self.notchPresentation ? [TLThemePalette paletteForPreference:TLThemePreferenceDark] : palette;
+  TLThemePalette *contentPalette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
   self.window.appearance = [NSAppearance appearanceNamed:contentPalette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   self.window.backgroundColor = palette.transparentSurface;
   self.notchSurface.palette = palette;
@@ -294,13 +267,12 @@
   self.layingOut = YES;
   TLThemePalette *palette = self.palette;
   NSRect visibleFrame = self.presentationScreen.visibleFrame;
-  CGFloat inset = self.notchPresentation ? palette.notchOverlayTopFlareOutset + palette.space4 : 0;
-  CGFloat inputWidth = self.notchPresentation ? palette.notchInputMaxWidth : palette.messageInputMaxWidth;
+  CGFloat inset = palette.notchOverlayTopFlareOutset + palette.space4;
+  CGFloat inputWidth = palette.notchInputMaxWidth;
   CGFloat width = MIN(inputWidth + inset * 2, NSWidth(visibleFrame) - palette.space11 * 2);
   CGFloat cameraInset = self.presentationScreen.safeAreaInsets.top;
-  CGFloat topPadding = self.notchPresentation ?
-    (cameraInset > 0 ? MAX(cameraInset, palette.notchOverlayMinimumHeight) : palette.notchInputVerticalPadding) : 0;
-  CGFloat bottomPadding = self.notchPresentation ? palette.notchInputVerticalPadding : 0;
+  CGFloat topPadding = cameraInset > 0 ? MAX(cameraInset, palette.notchOverlayMinimumHeight) : palette.notchInputVerticalPadding;
+  CGFloat bottomPadding = palette.notchInputVerticalPadding;
   self.inputLeadingConstraint.constant = inset;
   self.inputTrailingConstraint.constant = -inset;
   self.inputTopConstraint.constant = topPadding;
@@ -308,9 +280,8 @@
     MIN(self.suggestionList.contentHeight + palette.space2 * 2, (palette.slashCommandRowHeight + palette.space2) * 8);
   self.suggestionList.scrollingEnabled = self.suggestionList.contentHeight + palette.space2 * 2 > suggestionsHeight;
   CGFloat gap = suggestionsHeight > 0 ? palette.space5 : 0;
-  CGFloat x = MIN(MAX(NSMidX(self.anchorRect) - width / 2, NSMinX(visibleFrame)), NSMaxX(visibleFrame) - width);
-  CGFloat topEdge = self.notchPresentation ? NSMaxY(self.presentationScreen.frame) :
-    MIN(NSMinY(self.anchorRect), NSMaxY(visibleFrame)) - palette.space5;
+  CGFloat x = MIN(MAX(NSMidX(self.presentationScreen.frame) - width / 2, NSMinX(visibleFrame)), NSMaxX(visibleFrame) - width);
+  CGFloat topEdge = NSMaxY(self.presentationScreen.frame);
   // A width change may cause TextKit to update the input's height during layout.
   for (NSUInteger pass = 0; pass < 2; pass++) {
     CGFloat height = topPadding + self.inputHeight + gap + suggestionsHeight + bottomPadding;
@@ -375,7 +346,7 @@
 }
 
 - (void)updateSelectionWindow {
-  BOOL enabled = self.notchPresentation && self.window.visible && !self.captureInProgress &&
+  BOOL enabled = self.window.visible && !self.captureInProgress &&
     !self.sheetInteractionActive && !self.window.attachedSheet && !self.trackingMenus.count && !self.showingSettings;
   if (!enabled) { [self.selectionWindow orderOut:self]; return; }
   if (!self.selectionWindow) {
@@ -413,7 +384,7 @@
 }
 
 - (void)captureSelection:(NSRect)rect {
-  if (self.captureInProgress || !self.notchPresentation || !self.window.visible) return;
+  if (self.captureInProgress || !self.window.visible) return;
   [self.notchTransition finishAllTransitions];
   self.captureInProgress = YES;
   NSUInteger generation = ++self.captureGeneration;
