@@ -945,7 +945,7 @@ static CGImageRef TLChromeWaveImage(CALayer *layer, CGRect rect, CGFloat scale) 
   NSColor *foreground = self.active && self.activeBackgroundColor ? (self.activeTextColor ?: [self.palette textColorForContentBackground:self.activeBackgroundColor]) : (highlighted ? self.palette.appText : self.palette.labelText);
   BOOL hasSystemIcon = self.systemIconName.length > 0;
   BOOL hasEmojiIcon = self.icon.length > 0 && !hasSystemIcon;
-  self.titleClipView.hidden = self.pinned;
+  self.titleClipView.hidden = NO;
   self.titleLabel.stringValue = self.title;
   self.titleLabel.font = self.palette.labelFont;
   self.titleLabel.textColor = self.textWaveActive ? self.textWaveStart : foreground;
@@ -1016,10 +1016,6 @@ static CGImageRef TLChromeWaveImage(CALayer *layer, CGRect rect, CGFloat scale) 
 }
 
 - (void)updateHorizontalContentInset {
-  if (self.pinned) {
-    self.iconLeadingConstraint.constant = MAX(self.palette.space0, (NSWidth(self.bounds) - self.palette.tabIconSize) / 2);
-    return;
-  }
   CGFloat width = NSWidth(self.bounds);
   CGFloat defaultFlareOutset = width > self.palette.space0
     ? MIN(self.palette.tabFlareRadius, width * 0.18)
@@ -1461,7 +1457,7 @@ static CGImageRef TLChromeWaveImage(CALayer *layer, CGRect rect, CGFloat scale) 
 - (void)closeTab:(id)sender {
   if (self.closeAction) {
     self.closeButton.tag = self.tag;
-    [NSApp sendAction:self.closeAction to:self.target from:self.closeButton];
+    [NSApp sendAction:self.closeAction to:self.target from:self];
   }
 }
 

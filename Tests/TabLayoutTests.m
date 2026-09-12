@@ -246,8 +246,8 @@ static void TestPinnedLayout(TLThemePalette *palette) {
   [controller updateTabWidthsForAvailableWidth:500];
   [window.contentView layoutSubtreeIfNeeded];
   NSArray<TLChromeTabView *> *views = [controller valueForKey:@"tabViews"];
-  if (NSWidth(views[0].frame) >= NSWidth(views[1].frame) || ![[views[0] valueForKey:@"titleClipView"] isHidden]) {
-    NSLog(@"FAIL pinned tabs must be compact and show only their icon: %@ %@ hidden=%d widths=%@", NSStringFromRect(views[0].frame), NSStringFromRect(views[1].frame), [[views[0] valueForKey:@"titleClipView"] isHidden], [[controller valueForKey:@"tabWidthConstraints"] valueForKey:@"constant"]); exit(1);
+  if (fabs(NSWidth(views[0].frame) - NSWidth(views[1].frame)) > 0.5 || [[views[0] valueForKey:@"titleClipView"] isHidden]) {
+    NSLog(@"FAIL pinned tabs must show their icon and name: %@ %@ hidden=%d widths=%@", NSStringFromRect(views[0].frame), NSStringFromRect(views[1].frame), [[views[0] valueForKey:@"titleClipView"] isHidden], [[controller valueForKey:@"tabWidthConstraints"] valueForKey:@"constant"]); exit(1);
   }
   for (NSNumber *width in @[@50,@150,@500]) {
     [controller updateTabWidthsForAvailableWidth:width.doubleValue]; [window.contentView layoutSubtreeIfNeeded];

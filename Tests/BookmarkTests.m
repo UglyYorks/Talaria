@@ -172,7 +172,7 @@ static void TestTabMenu(TLBookmarkTestController *owner, TLAppStateManager *stat
     for (NSMenuItem *item in menu.itemArray) [labels addObject:item.separatorItem ? @"---" : item.title];
     NSMutableArray *expected = [NSMutableArray array];
     if (tab.kind == TLWorkspaceTabKindBrowser) [expected addObject:@"Reload"];
-    [expected addObjectsFromArray:@[@"Pin tab", @"---", @"Open in Split View on Left", @"Open in Split View on Right", @"---", @"Add to bookmarks", @"---", @"Close", @"Close Other Tabs"]];
+    [expected addObjectsFromArray:@[@"Pin tab", @"---", @"Open in Split View on Left", @"Open in Split View on Right", @"Open in Split View Above", @"Open in Split View Below", @"---", @"Add to bookmarks", @"---", @"Close", @"Close Other Tabs"]];
     Check([labels isEqual:expected], @"complete tab context menu follows requested order and separators");
     NSInteger selectedID = state.snapshot.activeTabID;
     NSMenuItem *pin = [menu itemWithTitle:@"Pin tab"];

@@ -24,6 +24,7 @@ typedef NS_ENUM(NSInteger, TLButtonSize) {
 @property (nonatomic, getter=isEnabled) BOOL enabled;
 @property (nonatomic) BOOL hoverSuppressed;
 @property (nonatomic, copy, nullable) void (^hoverChanged)(BOOL hovered);
+@property (nonatomic, copy, nullable) NSMenu * _Nullable (^contextMenuProvider)(void);
 
 @end
 
