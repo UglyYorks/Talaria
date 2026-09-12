@@ -48,33 +48,40 @@ int main(void) { @autoreleasepool {
   for (id timeout in @[@0, @121, @YES, @1.5, @"2"])
     Check(!TLValidateHostCommand(@{@"command":@"x", @"cwd":@"", @"timeout_seconds":timeout}), @"invalid timeouts fail closed");
 
-  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 400)
-    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-  window.releasedWhenClosed = NO;
-  [window orderFront:nil];
-  for (NSNumber *choice in @[@(NSAlertFirstButtonReturn), @(NSAlertSecondButtonReturn), @(NSAlertThirdButtonReturn), @(NSAlertThirdButtonReturn + 1)]) {
+  for (NSString *choice in @[@"once", @"chat", @"always", @"deny"]) {
     [bridge setPolicy:@"ask" forAgent:@"a"];
     __block NSDictionary *completed = nil;
+    __block TLQuestionRequest *question = nil;
     TLHostCommandOperation *op = [bridge runRequest:Request(@"printf consent", 3) agent:@"a" name:@"Test Agent"
-      chat:@"one" privateScope:@"" window:window completion:^(NSDictionary *output) { completed = output; }];
-    WaitFor(^BOOL{ return window.attachedSheet != nil || completed != nil; });
-    Check(window.attachedSheet != nil, [NSString stringWithFormat:@"native consent appears: %@", completed]);
-    Check(completed == nil, @"no command runs while waiting for native consent");
-    NSView *consent = window.attachedSheet.contentView;
-    [consent layoutSubtreeIfNeeded];
-    NSBitmapImageRep *image = [consent bitmapImageRepForCachingDisplayInRect:consent.bounds];
-    [consent cacheDisplayInRect:consent.bounds toBitmapImageRep:image];
-    [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
-      writeToFile:[NSString stringWithFormat:@"build/host-consent-%@.png", choice] atomically:YES];
-    [window endSheet:window.attachedSheet returnCode:choice.integerValue];
+      chat:@"one" privateScope:@"" presentQuestion:^(TLQuestionRequest *request) { question = request; }
+      completion:^(NSDictionary *output) { completed = output; }];
+    Check(question.pending && completed == nil, @"inline consent waits without running the command");
+    Check([question.presentation[@"command"] isEqual:@"Folder: /private/tmp\n\nprintf consent"], @"review includes exact command and directory");
+    Check(![question respondWithOption:@"unknown"] && question.pending, @"invalid option cannot grant access");
+    Check([question respondWithOption:choice], @"question accepts a valid option");
+    Check(![question respondWithOption:choice], @"duplicate response is rejected");
     WaitFor(^BOOL{ return completed != nil; });
-    if (choice.integerValue <= NSAlertThirdButtonReturn) Check([completed[@"stdout"] isEqual:@"consent"], @"approved command executes");
+    if (![choice isEqual:@"deny"]) Check([completed[@"stdout"] isEqual:@"consent"], @"approved command executes");
     else Check([completed[@"denied"] boolValue] && !completed[@"stdout"], @"denied command does not execute");
-    Check([bridge isAllowedForAgent:@"a" chat:@"one" privateScope:@""] == (choice.integerValue == NSAlertSecondButtonReturn || choice.integerValue == NSAlertThirdButtonReturn), @"once and deny do not grant ongoing permission");
-    Check([bridge isAllowedForAgent:@"a" chat:@"two" privateScope:@""] == (choice.integerValue == NSAlertThirdButtonReturn), @"only always applies to another chat");
+    Check([bridge isAllowedForAgent:@"a" chat:@"one" privateScope:@""] == ([choice isEqual:@"chat"] || [choice isEqual:@"always"]), @"once and deny do not grant ongoing permission");
+    Check([bridge isAllowedForAgent:@"a" chat:@"two" privateScope:@""] == [choice isEqual:@"always"], @"only always applies to another chat");
     [op cancel];
   }
-  [window close];
+  [bridge setPolicy:@"ask" forAgent:@"a"];
+  for (NSNumber *expire in @[@NO, @YES]) {
+    __block TLQuestionRequest *question = nil;
+    __block NSUInteger completions = 0;
+    TLHostCommandOperation *op = [bridge runRequest:Request(@"printf must-not-run", 3) agent:@"a" name:@"Test"
+      chat:@"one" privateScope:@"" presentQuestion:^(TLQuestionRequest *value) { question = value; }
+      completion:^(NSDictionary *result) { completions++; Check(!result[@"stdout"], @"cancelled or expired approval never runs"); }];
+    if (expire.boolValue) [(NSTimer *)[op valueForKey:@"timer"] fire];
+    else [op cancel];
+    WaitFor(^BOOL{ return !question.pending; });
+    Check(![question respondWithOption:@"always"], @"late consent cannot start a command or persist a grant");
+    Check(![bridge isAllowedForAgent:@"a" chat:@"one" privateScope:@""], @"late click does not grant access");
+    [op cancel];
+    Check(completions == 1, @"cancel and expiry complete exactly once");
+  }
   [defaults removePersistentDomainForName:suite];
   NSLog(@"HostCommandTests passed");
 } return 0; }

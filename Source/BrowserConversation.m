@@ -1,3 +1,4 @@
+#import "TLQuestionRequest.h"
 #import "BrowserConversation.h"
 #import "BrowserPageContext.h"
 
@@ -27,7 +28,11 @@
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)toolActivities {
   return self.messages.count > self.turnStart ? self.messages.lastObject.toolActivities : @[];
 }
+- (NSArray<TLQuestionRequest *> *)questions {
+  return self.messages.count > self.turnStart ? self.messages.lastObject.questions : @[];
+}
 - (BOOL)loading {
+  for (TLQuestionRequest *question in self.questions) if (question.pending) return NO;
   return self.busy && !self.pendingApproval && !self.toolActivities.count && (self.messages.count <= self.turnStart || !self.messages.lastObject.content.length);
 }
 - (NSDictionary *)pendingApproval {
@@ -39,14 +44,16 @@
 - (BOOL)respondToApproval:(NSString *)requestID choice:(NSString *)choice token:(NSString *)token model:(NSString *)model {
   NSDictionary *pending = self.pendingApproval;
   NSArray *choices = [pending[@"choices"] isKindOfClass:NSArray.class] ? pending[@"choices"] : @[@"once", @"deny"];
-  NSString *title = @{@"once":@"Allow once", @"session":@"Allow this session", @"always":@"Always allow", @"deny":@"Deny"}[choice];
-  if (self.busy || ![pending[@"request_id"] isEqual:requestID] || ![choices containsObject:choice] || !title) return NO;
+  BOOL clarification = [pending[@"kind"] isEqual:@"clarification"];
+  NSString *title = clarification ? choice : @{@"once":@"Allow once", @"session":@"Allow this session", @"always":@"Always allow", @"deny":@"Deny"}[choice];
+  if (self.busy || ![pending[@"request_id"] isEqual:requestID] || (!clarification && ![choices containsObject:choice]) || !title.length) return NO;
   TLChatMessage *origin = nil;
   for (TLChatMessage *message in self.messages) if (message.approvalRequest == pending) origin = message;
   NSMutableDictionary *submitted = [pending mutableCopy];
   submitted[@"submitted"] = @YES;
   origin.approvalRequest = submitted;
-  self.runner.approvalResponse = @{@"request_id":requestID, @"choice":choice};
+  self.runner.approvalResponse = clarification ? @{@"kind":@"clarification", @"request_id":requestID,
+    @"question_id":pending[@"question_id"] ?: @"", @"answer":choice} : @{@"request_id":requestID, @"choice":choice};
   BOOL started = [self sendPrompt:title token:token model:model pageReader:^(void (^completion)(NSDictionary *, NSError *)) { completion(@{}, nil); }];
   self.runner.approvalResponse = nil;
   if (!started || (!self.busy && !self.lastTurnResult) ||

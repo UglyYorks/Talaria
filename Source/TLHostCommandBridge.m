@@ -1,5 +1,4 @@
 #import "TLHostCommandBridge.h"
-#import "Theme.h"
 #import <spawn.h>
 #import <sys/wait.h>
 #import <poll.h>
@@ -12,7 +11,7 @@ static const NSUInteger TLHostOutputLimit = 65536;
 
 @interface TLHostCommandOperation ()
 @property (atomic, readwrite) BOOL cancelled;
-@property (nonatomic, strong) NSAlert *alert;
+@property (nonatomic, copy) void (^cancelApproval)(void);
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic) pid_t processGroup;
 @property (nonatomic, strong) id terminationObserver;
@@ -33,7 +32,8 @@ static const NSUInteger TLHostOutputLimit = 65536;
     if (self.processGroup > 0) kill(-self.processGroup, SIGKILL);
   }
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (self.alert.window.sheetParent) [self.alert.window.sheetParent endSheet:self.alert.window returnCode:NSModalResponseCancel];
+    if (self.cancelApproval) self.cancelApproval();
+    self.cancelApproval = nil;
     [self.timer invalidate];
     self.timer = nil;
   });
@@ -211,7 +211,8 @@ NSDictionary *TLExecuteHostCommand(NSDictionary *request, TLHostCommandOperation
 - (void)clearPrivateScope:(NSString *)privateScope { [self.privateChats removeObjectForKey:privateScope]; }
 
 - (TLHostCommandOperation *)runRequest:(NSDictionary *)request agent:(NSString *)agentKey name:(NSString *)agentName
-                                 chat:(NSString *)chatID privateScope:(NSString *)privateScope window:(NSWindow *)window
+                                 chat:(NSString *)chatID privateScope:(NSString *)privateScope
+                      presentQuestion:(void (^)(TLQuestionRequest *))presentQuestion
                            completion:(void (^)(NSDictionary *))completion {
   NSAssert(NSThread.isMainThread, @"Host consent belongs to the main thread");
   TLHostCommandOperation *operation = [TLHostCommandOperation new];
@@ -229,61 +230,43 @@ NSDictionary *TLExecuteHostCommand(NSDictionary *request, TLHostCommandOperation
     completion(@{@"error":@"Host commands are blocked in Agent Settings.", @"denied":@YES});
   } else if ([self isAllowedForAgent:agentKey chat:chatID privateScope:privateScope]) {
     execute();
-  } else if (!window) {
-    completion(@{@"error":@"Open the chat window to approve host commands.", @"denied":@YES});
+  } else if (!presentQuestion) {
+    completion(@{@"error":@"Open the chat to approve host commands.", @"denied":@YES});
   } else {
-    NSAlert *alert = [NSAlert new];
-    alert.messageText = [NSString stringWithFormat:@"Allow %@ to run a command on your Mac?", agentName];
-    alert.informativeText = [NSString stringWithFormat:@"This command runs with your macOS account and can change files and apps. Chat access applies only to the chat that requested it. Always allow applies to this agent and can be changed in Agent Settings.%@",
-      privateScope.length ? @" Incognito commands can still change files on your Mac." : @""];
-    TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem effectiveAppearance:window.effectiveAppearance];
-    NSScrollView *preview = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, palette.settingsSheetWidth - palette.space16 * 2, palette.fieldHeight * 4)];
-    preview.hasVerticalScroller = YES;
-    NSTextView *code = [[NSTextView alloc] initWithFrame:preview.bounds];
-    code.editable = NO; code.selectable = YES; code.richText = NO;
-    code.verticallyResizable = YES; code.horizontallyResizable = NO;
-    code.autoresizingMask = NSViewWidthSizable;
-    code.textContainer.widthTracksTextView = YES;
-    code.textContainer.containerSize = NSMakeSize(NSWidth(preview.bounds), CGFLOAT_MAX);
-    code.maxSize = NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX);
-    code.textContainerInset = NSMakeSize(palette.space4, palette.space4);
-    code.string = [NSString stringWithFormat:@"Folder: %@\n\n%@", [request[@"cwd"] length] ? request[@"cwd"] : NSHomeDirectory(), request[@"command"]];
-    preview.documentView = code;
-    alert.accessoryView = preview;
-    for (NSString *title in @[@"Allow once", @"Allow in this chat", @"Always allow", @"Deny"]) [alert addButtonWithTitle:title];
-    for (NSButton *button in alert.buttons) button.keyEquivalent = @"";
-    alert.buttons.lastObject.keyEquivalent = @"\e";
-    operation.alert = alert;
-    // Sheets are queued per window and expire if there is no user response.
-    double deadline = NSProcessInfo.processInfo.systemUptime + 180;
+    NSDictionary *presentation = @{
+      @"title":[NSString stringWithFormat:@"Allow %@ to run a command on your Mac?", agentName],
+      @"description":[@"Runs with your macOS account and can change files and apps. You can change Always allow in Agent Settings."
+        stringByAppendingString:privateScope.length ? @" Incognito commands can still change files on your Mac." : @""],
+      @"command":[NSString stringWithFormat:@"Folder: %@\n\n%@", [request[@"cwd"] length] ? request[@"cwd"] : NSHomeDirectory(), request[@"command"]],
+      @"options":@[@{@"id":@"once", @"title":@"Allow once", @"primary":@YES},
+        @{@"id":@"chat", @"title":@"Allow in this chat"}, @{@"id":@"always", @"title":@"Always allow"}, @{@"id":@"deny", @"title":@"Deny"}]};
     __weak TLHostCommandOperation *weakOperation = operation;
-    operation.timer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
+    TLQuestionRequest *question = [[TLQuestionRequest alloc] initWithPresentation:presentation response:^(NSString *choice) {
       TLHostCommandOperation *op = weakOperation;
-      if (!op || op.cancelled) { [timer invalidate]; return; }
-      alert.window.appearance = window.effectiveAppearance;
-      TLThemePalette *currentPalette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem effectiveAppearance:window.effectiveAppearance];
-      code.font = currentPalette.markdownCodeFont;
-      code.textColor = currentPalette.markdownCodeText;
-      code.backgroundColor = currentPalette.markdownCodeSurface;
-      preview.backgroundColor = currentPalette.markdownCodeSurface;
-      if (!window.visible || NSProcessInfo.processInfo.systemUptime >= deadline) {
-        if (alert.window.sheetParent) [window endSheet:alert.window returnCode:NSModalResponseCancel];
-        else { [op cancel]; completion(@{@"error":@"Host command approval expired.", @"denied":@YES}); }
-        return;
-      }
-      if (window.attachedSheet) return;
-      [alert beginSheetModalForWindow:window completionHandler:^(NSModalResponse response) {
-        [op.timer invalidate]; op.timer = nil; op.alert = nil;
-        @synchronized (op) {
-          if (op.cancelled || response < NSAlertFirstButtonReturn || response > NSAlertThirdButtonReturn) {
-            completion(@{@"error":@"Host command denied or cancelled.", @"denied":@YES}); return;
-          }
-          if (response == NSAlertSecondButtonReturn) [self allowChat:chatID agent:agentKey privateScope:privateScope];
-          if (response == NSAlertThirdButtonReturn) [self setPolicy:@"always" forAgent:agentKey];
-          execute();
+      if (!op) return;
+      [op.timer invalidate]; op.timer = nil; op.cancelApproval = nil;
+      @synchronized (op) {
+        if (op.cancelled || [choice isEqual:@"deny"]) {
+          completion(@{@"error":@"Host command denied or cancelled.", @"denied":@YES}); return;
         }
-      }];
+        if ([choice isEqual:@"chat"]) [self allowChat:chatID agent:agentKey privateScope:privateScope];
+        if ([choice isEqual:@"always"]) [self setPolicy:@"always" forAgent:agentKey];
+        execute();
+      }
     }];
+    operation.cancelApproval = ^{
+      if (!question.pending) return;
+      [question finishWithStatus:@"Command cancelled"];
+      completion(@{@"error":@"Host command cancelled.", @"cancelled":@YES});
+    };
+    operation.timer = [NSTimer scheduledTimerWithTimeInterval:180 repeats:NO block:^(NSTimer *timer) {
+      TLHostCommandOperation *op = weakOperation;
+      if (!op || !question.pending) return;
+      op.cancelApproval = nil; op.timer = nil;
+      [question finishWithStatus:@"Request expired"];
+      completion(@{@"error":@"Host command approval expired.", @"denied":@YES});
+    }];
+    presentQuestion(question);
   }
   return operation;
 }

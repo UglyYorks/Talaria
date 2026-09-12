@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import Mock, patch, call
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'AgentRuntime'))
-from hermes_gateway import HermesGateway, RPCError, clarification_text
+from hermes_gateway import HermesGateway, RPCError, clarification_request
 import talaria_agent as worker
 
 
@@ -351,27 +351,39 @@ class GatewayTests(unittest.TestCase):
         chunks = []
         emit = lambda kind, text: chunks.append((kind, text))
         self.gateway.run('chat', 'model', 'Find a hotel', emit)
-        self.assertIn('What dates and how many guests?', chunks[-1][1])
-        self.assertNotIn('qid', chunks[-1][1])
-        self.assertNotIn('null', chunks[-1][1])
+        self.assertEqual(chunks[-1][0], 'clarification')
+        self.assertEqual(chunks[-1][1]['title'], 'What dates and how many guests?')
+        self.assertEqual(chunks[-1][1]['options'], [])
+        self.assertTrue(chunks[-1][1]['allows_text'])
         self.gateway.run('chat', 'model', 'October 1–3, two guests', emit)
         self.gateway.call.assert_called_with('clarify.respond', {'session_id': 'runtime',
             'request_id': 'ask', 'question_id': 'q0', 'answer': 'October 1–3, two guests'})
-        self.assertIn('Question 2 of 2', chunks[-1][1])
-        self.assertIn('- Private', chunks[-1][1])
+        self.assertEqual(chunks[-1][1]['description'], 'Question 2 of 2')
+        self.assertEqual(chunks[-1][1]['options'][1]['title'], 'Private')
         self.assertIn('chat', self.gateway.waiting)
-        self.gateway.run('chat', 'model', 'Private', emit)
+        self.gateway.run('chat', 'model', 'ignored prompt', emit, approval_response={
+            'kind': 'clarification', 'request_id': 'ask', 'question_id': 'q1', 'answer': 'Private'})
         self.gateway.call.assert_called_with('clarify.respond', {'session_id': 'runtime',
             'request_id': 'ask', 'question_id': 'q1', 'answer': 'Private'})
         self.assertEqual(chunks[-1], ('content', 'Here are hotels.'))
         self.assertNotIn('chat', self.gateway.waiting)
 
     def test_legacy_clarification_and_multiple_choices(self):
-        text = clarification_text({'question': 'Which days?', 'choices': ['Monday', 'Friday'], 'multi_select': True})
-        self.assertIn('Which days?', text)
-        self.assertIn('- Monday', text)
-        self.assertIn('more than one', text)
-        self.assertNotIn('multi_select', text)
+        request = clarification_request({'request_id': 'ask', 'question': 'Which days?',
+                                         'choices': ['Monday', 'Friday'], 'multi_select': True})
+        self.assertEqual(request['title'], 'Which days?')
+        self.assertEqual([option['title'] for option in request['options']], ['Monday', 'Friday'])
+        self.assertTrue(request['multi_select'])
+        self.assertTrue(request['allows_text'])
+
+    def test_clarification_rejects_stale_question_responses(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
+        payload = {'request_id': 'ask', 'questions': [{'qid': 'q1', 'question': 'Current question?'}]}
+        self.gateway.waiting['chat'] = ('runtime', queue.Queue(), 'clarify.request', payload)
+        with self.assertRaisesRegex(RuntimeError, 'expired or was replaced'):
+            self.gateway.run('chat', 'model', '', lambda *_: None, approval_response={
+                'kind': 'clarification', 'request_id': 'ask', 'question_id': 'q0', 'answer': 'stale'})
+        self.gateway.call.assert_not_called()
 
     def test_spinner_updates_are_status_snapshots_and_empty_updates_clear(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}

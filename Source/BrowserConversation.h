@@ -12,6 +12,7 @@ typedef void (^TLBrowserPageReader)(void (^completion)(NSDictionary *_Nullable p
 @property (nonatomic, copy, readonly) NSString *title;
 @property (nonatomic, copy, readonly) NSArray<NSDictionary<NSString *, NSString *> *> *toolActivities;
 @property (nonatomic, copy, readonly, nullable) NSDictionary *pendingApproval;
+@property (nonatomic, copy, readonly) NSArray<TLQuestionRequest *> *questions;
 - (BOOL)respondToApproval:(NSString *)requestID choice:(NSString *)choice token:(NSString *)token model:(NSString *)model;
 @property (nonatomic, strong, readonly, nullable) TLAssistantTurnResult *lastTurnResult;
 @property (nonatomic) BOOL minimized;

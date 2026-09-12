@@ -57,22 +57,20 @@ def model_identity(selection):
     return provider, model
 
 
-def clarification_text(payload):
-    """Present one question at a time without exposing gateway metadata."""
+def clarification_request(payload):
+    """Structured question for the shared native question-and-options card."""
     questions = payload.get("questions")
     index = payload.get("_talaria_question_index", 0)
     question = questions[index] if isinstance(questions, list) and questions else payload
-    text = question.get("question") or "What would you like to clarify?"
-    if isinstance(questions, list) and len(questions) > 1:
-        text = f"Question {index + 1} of {len(questions)}\n\n{text}"
-    choices = question.get("choices")
-    if isinstance(choices, list) and choices:
-        labels = [item if isinstance(item, str) else item.get("label", item.get("text", ""))
-                  for item in choices if isinstance(item, (str, dict))]
-        text += "\n\n" + "\n".join(f"- {label}" for label in labels if label)
-        if question.get("multi_select"):
-            text += "\n\nYou can choose more than one option."
-    return text + "\n\nReply with your answer."
+    choices = question.get("choices") or []
+    labels = [item if isinstance(item, str) else item.get("label", item.get("text", ""))
+              for item in choices if isinstance(item, (str, dict))]
+    return {"kind": "clarification", "request_id": payload.get("request_id", ""),
+            "question_id": question.get("qid", ""),
+            "title": question.get("question") or "What would you like to clarify?",
+            "description": f"Question {index + 1} of {len(questions)}" if isinstance(questions, list) and len(questions) > 1 else "",
+            "options": [{"id": str(i), "title": label} for i, label in enumerate(labels) if label],
+            "multi_select": bool(question.get("multi_select")), "allows_text": True}
 
 
 class HermesGateway:
@@ -665,7 +663,7 @@ class HermesGateway:
             if cancellation and cancellation.cancelled():
                 return
             waiting = self.waiting.get(chat_id)
-            if approval_response is not None and (not waiting or waiting[2] != "approval.request"):
+            if approval_response is not None and (not waiting or waiting[2] not in {"approval.request", "clarify.request"}):
                 raise RuntimeError("This approval is no longer pending. Send your request again.")
             if waiting:
                 sid, events, kind, payload = waiting
@@ -681,6 +679,16 @@ class HermesGateway:
                         raise RuntimeError("Reply /approve or /deny to the pending Hermes command.")
                     result = self.call("approval.respond", {"session_id": sid, "request_id": payload.get("request_id"), "choice": choice})
                 else:
+                    if approval_response is not None:
+                        current = clarification_request(payload)
+                        if (not isinstance(approval_response, dict)
+                                or approval_response.get("kind") != "clarification"
+                                or approval_response.get("request_id") != current["request_id"]
+                                or approval_response.get("question_id", "") != current["question_id"]
+                                or not isinstance(approval_response.get("answer"), str)
+                                or not approval_response["answer"].strip()):
+                            raise RuntimeError("This question has expired or was replaced. Use the current question card.")
+                        text = approval_response["answer"]
                     params = {"session_id": sid, "request_id": payload.get("request_id"), "answer": text}
                     questions = payload.get("questions")
                     index = payload.get("_talaria_question_index", 0)
@@ -693,7 +701,7 @@ class HermesGateway:
                     if isinstance(questions, list) and index + 1 < len(questions):
                         payload = dict(payload, _talaria_question_index=index + 1)
                         self.waiting[chat_id] = (sid, events, kind, payload)
-                        delta("content", clarification_text(payload))
+                        delta("clarification", clarification_request(payload))
                         return
                 self.waiting.pop(chat_id, None)
                 if result.get("expired") or (kind == "approval.request" and result.get("resolved") is False):
@@ -776,7 +784,7 @@ class HermesGateway:
                         if kind == "approval.request":
                             delta("approval", payload)
                             return
-                        delta("content", "\n" + clarification_text(payload))
+                        delta("clarification", clarification_request(payload))
                         return
                     elif kind in {"sudo.request", "secret.request"}:
                         self.call("session.interrupt", {"session_id": sid})

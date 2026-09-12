@@ -1,3 +1,4 @@
+#import "TLQuestionRequest.h"
 #import "AssistantTurnRunner.h"
 #import "PromptMessages.h"
 #import "PromptBuilder.h"
@@ -164,6 +165,10 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
       return;
     }
 
+    for (TLQuestionRequest *question in assistantMessage.questions) {
+      [question finishWithStatus:@"Request ended"];
+      question.changeHandler = nil;
+    }
     BOOL cancelled = [streamError.domain isEqualToString:NSURLErrorDomain] && streamError.code == NSURLErrorCancelled;
     // Flush even on stream failure: unfinished markdown and thinking are still
     // the user's generated content and must remain available for recovery.
@@ -181,7 +186,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
       if (originalAnswer && currentIndex != NSNotFound) messages[currentIndex] = originalAnswer;
       else [messages removeObjectIdenticalTo:assistantMessage];
       resultAssistant = nil;
-    } else if (streamError && assistantContent.length == 0 && assistantThinking.length == 0 && !assistantMessage.toolActivities.count) {
+    } else if (streamError && assistantContent.length == 0 && assistantThinking.length == 0 && !assistantMessage.toolActivities.count && !assistantMessage.questions.count) {
       [messages removeObjectIdenticalTo:assistantMessage];
       resultAssistant = nil;
     } else {
@@ -196,6 +201,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
       }
       if (savedAssistant && !assistantSaveError) {
         savedAssistant.approvalRequest = assistantMessage.approvalRequest;
+        savedAssistant.questions = assistantMessage.questions;
         savedAssistant.toolActivities = assistantMessage.toolActivities;
         resultAssistant = savedAssistant;
         NSUInteger currentIndex = [messages indexOfObjectIdenticalTo:assistantMessage];
@@ -224,15 +230,27 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     assistantMessage.thinkingActive = (kind == TLAgentStreamDeltaKindThinking ||
       (kind == TLAgentStreamDeltaKindStatus && text.length > 0));
     BOOL displayChanged = wasThinking != assistantMessage.thinkingActive;
-    if (kind == TLAgentStreamDeltaKindToolActivity) {
+    if (kind == TLAgentStreamDeltaKindQuestion) {
+      TLQuestionRequest *question = [value isKindOfClass:NSDictionary.class] ? value[@"question"] : nil;
+      if (![question isKindOfClass:TLQuestionRequest.class] || [assistantMessage.questions containsObject:question]) return;
+      assistantMessage.questions = [assistantMessage.questions arrayByAddingObject:question];
+      question.changeHandler = ^{
+        TLAssistantTurnRunner *owner = weakSelf;
+        if (owner.running && [owner.activeRequestID isEqual:requestID] && updateHandler) updateHandler();
+      };
+      assistantStatus = @"";
+      displayChanged = YES;
+    } else if (kind == TLAgentStreamDeltaKindToolActivity) {
       id activity = value;
       displayChanged = [assistantMessage applyToolActivity:activity] || displayChanged;
       if (!displayChanged) return;
       assistantStatus = @"";
-    } else if (kind == TLAgentStreamDeltaKindApproval) {
+    } else if (kind == TLAgentStreamDeltaKindApproval || kind == TLAgentStreamDeltaKindClarification) {
       id request = value;
       if (![request isKindOfClass:NSDictionary.class] || ![request[@"request_id"] isKindOfClass:NSString.class] ||
-          ![request[@"request_id"] length] || ![request[@"command"] isKindOfClass:NSString.class]) return;
+          ![request[@"request_id"] length] ||
+          (kind == TLAgentStreamDeltaKindApproval && ![request[@"command"] isKindOfClass:NSString.class]) ||
+          (kind == TLAgentStreamDeltaKindClarification && (![request[@"title"] isKindOfClass:NSString.class] || ![request[@"options"] isKindOfClass:NSArray.class]))) return;
       assistantMessage.approvalRequest = request;
       assistantStatus = @"";
       displayChanged = YES;

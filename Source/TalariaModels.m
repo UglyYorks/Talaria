@@ -100,6 +100,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
     _content = @"";
     _attachments = @[];
     _toolActivities = @[];
+    _questions = @[];
     _sourceMessageID = @"";
     _sourceToolCallIDs = @[];
   }
@@ -114,6 +115,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.thinkingActive = self.thinkingActive;
   copy.approvalRequest = self.approvalRequest;
   copy.approvalResponse = self.approvalResponse;
+  copy.questions = self.questions;
   copy.toolActivities = self.toolActivities;
   copy.attachments = self.attachments;
   copy.sourceMessageID = self.sourceMessageID;

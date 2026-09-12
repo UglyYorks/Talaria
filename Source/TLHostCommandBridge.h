@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import "TLQuestionRequest.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -18,7 +19,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)allowChat:(NSString *)chatID agent:(NSString *)agentKey privateScope:(NSString *)privateScope;
 - (void)clearPrivateScope:(NSString *)privateScope;
 - (TLHostCommandOperation *)runRequest:(NSDictionary *)request agent:(NSString *)agentKey name:(NSString *)agentName
-                                 chat:(NSString *)chatID privateScope:(NSString *)privateScope window:(nullable NSWindow *)window
+                                 chat:(NSString *)chatID privateScope:(NSString *)privateScope
+                      presentQuestion:(nullable void (^)(TLQuestionRequest *question))presentQuestion
                            completion:(void (^)(NSDictionary *result))completion;
 @end
 

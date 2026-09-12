@@ -48,7 +48,7 @@ static void TLProtocolError(NSError **error, NSString *message) {
         if (![event[@"kind"] isKindOfClass:NSString.class]) {
           TLProtocolError(error, @"Agent VM returned an invalid delta kind."); _failed = YES; return nil;
         }
-        BOOL structured = [@[@"approval", @"tool_activity", @"host_command"] containsObject:event[@"kind"]];
+        BOOL structured = [@[@"approval", @"clarification", @"tool_activity", @"host_command"] containsObject:event[@"kind"]];
         if (structured) {
           id payload = event[@"payload"];
           if (!payload && [event[@"text"] isKindOfClass:NSString.class]) {

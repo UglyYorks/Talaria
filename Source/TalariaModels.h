@@ -51,6 +51,8 @@ NSString * _Nullable TLBrowserHistoryOrigin(NSURL *URL);
 @property (nonatomic, copy, nullable) NSData *faviconData;
 @end
 
+@class TLQuestionRequest;
+
 @interface TLChatMessage : NSObject <NSCopying>
 
 @property (nonatomic, copy) NSString *role;
@@ -61,6 +63,8 @@ NSString * _Nullable TLBrowserHistoryOrigin(NSURL *URL);
 // Runtime-only structured approval state; never sent as model context or loaded as a live request from history.
 @property (nonatomic, copy, nullable) NSDictionary *approvalRequest;
 @property (nonatomic, copy, nullable) NSDictionary *approvalResponse;
+// Native questions and their callbacks are transient, scoped to this message.
+@property (nonatomic, copy) NSArray<TLQuestionRequest *> *questions;
 // Bounded, runtime-only tool snapshots. Never used as model context or restored as running work.
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *toolActivities;
 - (BOOL)applyToolActivity:(NSDictionary *)activity;

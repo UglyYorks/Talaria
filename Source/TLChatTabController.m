@@ -1,3 +1,4 @@
+#import "TLQuestionRequest.h"
 #import "TLChatTabController.h"
 #import "MarkdownRenderer.h"
 #import "design_system/TLNotificationMessageCardView.h"
@@ -279,7 +280,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 - (CGFloat)messageStackSpacingAfterMessageAtIndex:(NSUInteger)index {
   TLChatMessage *message = self.messages[index];
   if ([message.role isEqual:TLRoleAssistant] && !message.content.length && !message.attachments.count &&
-      !message.notification && !message.approvalRequest) return self.palette.space0;
+      !message.notification && !message.approvalRequest && !message.questions.count) return self.palette.space0;
   if ([self isUserMessageAtIndex:index] && [self isUserMessageAtIndex:index + 1]) {
     return self.palette.space3;
   }
@@ -379,6 +380,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
         ![previous.attachments isEqual:current.attachments] ||
         ![(previous.notification ?: @{}) isEqual:current.notification ?: @{}] ||
         ![previous.toolActivities isEqual:current.toolActivities] ||
+        ![previous.questions isEqual:current.questions] ||
         ![(previous.approvalRequest ?: @{}) isEqual:current.approvalRequest ?: @{}]) return;
     [self.messageRowViews setObject:row forKey:current];
     [self.messageRowSignatures setObject:[self.messageRowSignatures objectForKey:previous] forKey:current];
@@ -552,6 +554,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   TLChatMessage *message = self.messages.lastObject;
   BOOL running = self.streamingProvider && self.streamingProvider() && !self.isLoading && !self.errorMessage.length &&
     [message.role isEqualToString:TLRoleAssistant] && !message.approvalRequest;
+  for (TLQuestionRequest *question in message.questions) if (question.pending) running = NO;
   NSDictionary *active = nil;
   if (running) {
     for (NSDictionary *activity in message.toolActivities.reverseObjectEnumerator) {
@@ -663,6 +666,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 - (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
   BOOL user = [message.role isEqualToString:TLRoleUser];
   NSString *mode = message.approvalRequest ? [@"approval:" stringByAppendingString:message.approvalRequest.description] : @"content";
+  for (TLQuestionRequest *question in message.questions) mode = [mode stringByAppendingFormat:@" question:%@", question.presentation];
   if (message.notification) mode = [mode stringByAppendingFormat:@" notification:%@", message.notification];
   CGFloat layoutWidth = self.messageInputWidthConstraint.constant > 0.0
     ? self.messageInputWidthConstraint.constant
@@ -841,6 +845,12 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     NSString *requestID = message.approvalRequest[@"request_id"];
     __weak typeof(self) weakSelf = self;
     card.choiceHandler = ^BOOL(NSString *choice) { return weakSelf.approvalHandler ? weakSelf.approvalHandler(requestID, choice) : NO; };
+    [stack addArrangedSubview:card];
+    [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+  }
+  if (!user) for (TLQuestionRequest *question in message.questions) {
+    TLQuestionCardView *card = [[TLQuestionCardView alloc] initWithRequest:question.presentation palette:self.palette];
+    card.choiceHandler = ^BOOL(NSString *choice) { return [question respondWithOption:choice]; };
     [stack addArrangedSubview:card];
     [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
   }

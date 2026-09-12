@@ -142,7 +142,7 @@ static NSUInteger TLFailureCount = 0;
   delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
   if (self.approvalDelta) {
-    delta(requestID, TLAgentStreamDeltaKindApproval, self.approvalDelta);
+    delta(requestID, [self.approvalDelta[@"kind"] isEqual:@"clarification"] ? TLAgentStreamDeltaKindClarification : TLAgentStreamDeltaKindApproval, self.approvalDelta);
   }
   if (self.toolActivityDelta) {
     delta(requestID, TLAgentStreamDeltaKindToolActivity, self.toolActivityDelta);
@@ -851,7 +851,7 @@ static void TestHostCommandTransport(void) {
   NSString *suite = [@"HostTransportTests." stringByAppendingString:NSUUID.UUID.UUIDString];
   NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
   TLHostCommandBridge *bridge = [[TLHostCommandBridge alloc] initWithDefaults:defaults];
-  for (NSString *policy in @[@"deny", @"always"]) {
+  for (NSString *policy in @[@"deny", @"always", @"ask"]) {
     [bridge setPolicy:policy forAgent:@"host-agent"];
     TLDeferredSocketService *vm = [TLDeferredSocketService new];
     TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:vm];
@@ -859,7 +859,12 @@ static void TestHostCommandTransport(void) {
     TLAgentRecord *agent = [TLAgentRecord new]; agent.vmDirectory = @"host-agent";
     __block BOOL finished = NO;
     [client streamHermesSessionWithAgent:agent requestID:@"turn" sessionID:@"native-chat" token:@"" model:@"m" prompt:@"host test"
-      delta:^(NSString *rid, TLAgentStreamDeltaKind kind, id value) { TLAssertTrue(NO, @"host requests are not exposed as model content"); }
+      delta:^(NSString *rid, TLAgentStreamDeltaKind kind, id value) {
+        TLAssertTrue([policy isEqual:@"ask"] && kind == TLAgentStreamDeltaKindQuestion && [rid isEqual:@"turn"], @"native question targets the original live turn");
+        TLQuestionRequest *question = value[@"question"];
+        TLAssertTrue(question.pending && !finished, @"question does not end the original chat turn");
+        [question respondWithOption:@"once"];
+      }
       completion:^(NSError *error) { TLAssertTrue(!error, @"host transport completes"); finished = YES; }];
     TLAgentVMConnectionCompletionHandler originalConnect = vm.connected;
     int stream[2]; socketpair(AF_UNIX, SOCK_STREAM, 0, stream);
@@ -1272,6 +1277,12 @@ static void TestBrowserConversation(void) {
   TLAssertEqualObjects(client.capturedSessionID, summary.hermesSessionID, @"approval resumes the same Hermes session");
   TLAssertTrue(!conversation.pendingApproval && [conversation.markdown containsString:@"Approved answer"], @"browser clears completed approval and displays continuation");
   client.contentDelta = @"";
+  client.approvalDelta = @{@"kind":@"clarification", @"request_id":@"question", @"question_id":@"q1", @"title":@"Which room?", @"options":@[]};
+  [conversation sendPrompt:@"Find a hotel" token:@"token" model:@"test/model" pageReader:^(void (^completion)(NSDictionary *, NSError *)) { completion(@{}, nil); }];
+  TLAssertEqualObjects(conversation.pendingApproval, client.approvalDelta, @"browser exposes the shared question card");
+  client.approvalDelta = nil;
+  TLAssertTrue([conversation respondToApproval:@"question" choice:@"Private room" token:@"token" model:@"test/model"], @"browser question accepts a typed answer");
+  TLAssertEqualObjects(client.capturedApprovalResponse, (@{@"kind":@"clarification", @"request_id":@"question", @"question_id":@"q1", @"answer":@"Private room"}), @"browser question sends exact identities and answer");
   client.toolActivityDelta = @{@"id":@"tool-1", @"name":@"terminal", @"state":@"running", @"detail":@"pwd"};
   __block BOOL sawLiveTool = NO;
   __weak TLBrowserConversation *weakConversation = conversation;

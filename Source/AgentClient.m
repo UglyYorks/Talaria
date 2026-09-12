@@ -193,6 +193,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   TLAgentStreamDeltaKind kind;
   if ([kindString isEqualToString:@"thinking"]) kind = TLAgentStreamDeltaKindThinking;
   else if ([kindString isEqualToString:@"status"]) kind = TLAgentStreamDeltaKindStatus;
+  else if ([kindString isEqualToString:@"clarification"]) kind = TLAgentStreamDeltaKindClarification;
   else if ([kindString isEqualToString:@"approval"]) kind = TLAgentStreamDeltaKindApproval;
   else if ([kindString isEqualToString:@"tool_activity"]) kind = TLAgentStreamDeltaKindToolActivity;
   else if ([kindString isEqualToString:@"content"]) kind = TLAgentStreamDeltaKindContent;
@@ -230,7 +231,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     self.finished = YES;
     self.receivedTerminalEvent = YES;
     // Invalidate consent synchronously with disconnect/Stop, before a queued
-    // main-thread sheet response can start another command.
+    // main-thread question response can start another command.
     for (TLHostCommandOperation *command in self.hostCommands) [command cancel];
     [self closeConnection];
   }
@@ -551,7 +552,6 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     TLHostCommandBridge *bridge = self.hostBridge;
     NSString *chatID = payload[@"session_id"];
     NSString *privateScope = self.incognitoID ?: @"";
-    __weak NSWindow *chatWindow = NSApp.keyWindow;
     __weak typeof(self) hostClient = self;
     request.hostCommandHandler = ^(NSDictionary *hostRequest, TLBundledAgentRequest *owner) {
       NSString *identifier = hostRequest[@"request_id"];
@@ -562,7 +562,10 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
       }
       [owner.hostCommandIDs addObject:identifier];
       TLHostCommandOperation *command = [bridge runRequest:hostRequest
-        agent:agent.vmDirectory name:agent.name chat:chatID privateScope:privateScope window:chatWindow
+        agent:agent.vmDirectory name:agent.name chat:chatID privateScope:privateScope
+        presentQuestion:owner.deltaHandler ? ^(TLQuestionRequest *question) {
+          owner.deltaHandler(owner.requestID, TLAgentStreamDeltaKindQuestion, @{@"question":question});
+        } : nil
         completion:^(NSDictionary *result) {
           if (owner.finished) return;
           [hostClient performJSONOperation:@"hermes_host_response" agent:agent
