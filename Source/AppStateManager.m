@@ -331,7 +331,8 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
   }
   BOOL sameMetadata = existing && [existing.title isEqual:tab.title] &&
     [existing.toolTip isEqual:tab.toolTip] && existing.closeable == tab.closeable &&
-    (existing.URL == tab.URL || [existing.URL isEqual:tab.URL]);
+    (existing.URL == tab.URL || [existing.URL isEqual:tab.URL]) &&
+    (existing.browserHeaderRGB == tab.browserHeaderRGB || [existing.browserHeaderRGB isEqual:tab.browserHeaderRGB]);
   BOOL alreadyActive = self.snapshot.activeTabKind == tab.kind && self.snapshot.activeTabID == tab.tabID;
   if (sameMetadata && (!activate || alreadyActive)) return;
 

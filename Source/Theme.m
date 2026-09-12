@@ -153,7 +153,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.messageInputSendButtonSize = 32.0;
   self.buttonImageReplacementDuration = 0.24;
   self.messageInputMaxHeight = 168.0;
-  self.browserBackdropHeight = 75.0;
+  self.browserBottomBlurRadius = 16.0;
   self.browserPromptWidth = 320.0;
   self.browserToolbarButtonSize = 28.0;
   self.browserToolbarIconSize = 13.0;
@@ -199,6 +199,8 @@ CGColorRef TLCGColor(NSColor *color) {
   self.focusRingSize = 3.0;
   self.borderWidth = 1.0;
   self.incognitoBorderWidth = 2.0;
+  self.browserLoadingLineWidth = 2.0;
+  self.browserLoadingProgressDuration = 0.4;
   self.workspaceOutlineOpacity = 1.0 / 3.0;
   self.workspaceShadowRadius = 3.0;
   self.workspaceShadowOffsetY = -1.0;

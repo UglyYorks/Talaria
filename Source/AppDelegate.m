@@ -21,6 +21,7 @@
 @property (nonatomic, strong) NSMutableArray<TalariaWindowController *> *incognitoWindows;
 @property (nonatomic, strong) NSStatusItem *statusItem;
 @property (nonatomic) BOOL resetInProgress;
+@property (nonatomic, strong) NSMutableArray<NSURL *> *pendingWebURLs;
 
 @end
 
@@ -50,7 +51,11 @@
             [existing unhide];
             [existing activateWithOptions:NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows];
           }
-          [NSApp terminate:nil];
+          if (self.pendingWebURLs.count && existing.bundleURL) {
+            [NSWorkspace.sharedWorkspace openURLs:self.pendingWebURLs.copy withApplicationAtURL:existing.bundleURL configuration:configuration completionHandler:^(NSRunningApplication *app, NSError *openError) {
+              dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+            }];
+          } else [NSApp terminate:nil];
         });
       }];
     return;
@@ -100,9 +105,24 @@
   [self.workspaceSessionStore observeStateManager:self.appStateManager];
   [self installStatusItem];
   [self presentMainWindow:self];
+  for (NSURL *URL in self.pendingWebURLs.copy) [self.windowController openBrowserTabWithURL:URL];
+  [self.pendingWebURLs removeAllObjects];
   dispatch_async(dispatch_get_main_queue(), ^{
     [self presentMainWindow:self];
   });
+}
+
+- (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)URLs {
+  NSMutableArray<NSURL *> *webURLs = [NSMutableArray array];
+  for (NSURL *URL in URLs) if ([@[@"http", @"https"] containsObject:URL.scheme.lowercaseString] && URL.host.length) [webURLs addObject:URL];
+  if (!webURLs.count) return;
+  if (self.windowController) {
+    [self presentMainWindow:self];
+    for (NSURL *URL in webURLs) [self.windowController openBrowserTabWithURL:URL];
+  } else {
+    if (!self.pendingWebURLs) self.pendingWebURLs = [NSMutableArray array];
+    [self.pendingWebURLs addObjectsFromArray:webURLs];
+  }
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {

@@ -20,6 +20,8 @@ typedef NS_ENUM(NSInteger, TLWorkspaceTabKind) {
 // Preserves the visual tab when a draft receives a persistent database ID.
 @property (nonatomic, copy, nullable) NSString *presentationIdentity;
 @property (nonatomic, strong, nullable) NSURL *URL;
+// Last sampled page color, in sRGB components from 0 to 255.
+@property (nonatomic, copy, nullable) NSArray<NSNumber *> *browserHeaderRGB;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *toolTip;
 @property (nonatomic) BOOL closeable;

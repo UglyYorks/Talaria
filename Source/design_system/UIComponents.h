@@ -58,15 +58,14 @@ NSBezierPath *TLCreateIncomingMessageBubblePath(NSRect bounds, TLThemePalette *p
 @end
 
 @interface TLBrowserAddressInput : TLGlassMessageInput <NSTextViewDelegate>
+- (void)setLoading:(BOOL)loading progress:(double)progress;
 @property (nonatomic, readonly) BOOL hasUserDraft;
 @property (nonatomic, strong, readonly) NSButton *backButton;
 @property (nonatomic, strong, readonly) NSButton *forwardButton;
 @property (nonatomic, strong, readonly) NSButton *reloadButton;
-@property (nonatomic, strong, readonly) NSButton *heightToggleButton;
 @property (nonatomic, strong, readonly) NSButton *chatButton;
 @property (nonatomic) NSUInteger responseCount;
 @property (nonatomic, getter=isChatVisible) BOOL chatVisible;
-@property (nonatomic, getter=isReducedHeight) BOOL reducedHeight;
 - (void)setDisplayedAddress:(NSString *)address;
 - (void)updateDisplayedAddress:(NSString *)address;
 - (void)beginPromptEditing;
@@ -77,9 +76,6 @@ NSBezierPath *TLCreateIncomingMessageBubblePath(NSRect bounds, TLThemePalette *p
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, readonly) NSView *contentView;
 @property (nonatomic) CGFloat footerRevealFraction;
-@end
-
-@interface TLBrowserBackdropView : NSView
 @end
 
 typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {

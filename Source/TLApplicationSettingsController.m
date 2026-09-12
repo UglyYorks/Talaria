@@ -74,7 +74,7 @@
   self.clearShortcutButton = [self button:@"Clear" action:@selector(clearShortcut:)];
   TLWrappingActionView *actions = [[TLWrappingActionView alloc] initWithViews:@[self.shortcutRecorder, self.clearShortcutButton] palette:self.palette];
   self.shortcutStatus = [self wrappingLabelWithString:@"" font:self.palette.smallFont colorToken:@"textMuted"];
-  NSView *shortcut = [self row:@"Quick input shortcut" detail:@"Open quick input from any app, even with the notch off. Click to record a combination; Escape cancels."
+  NSView *shortcut = [self row:@"Notch / main window shortcut" detail:@"Open the notch from any app, or the main window when the notch is off. Click to record a combination; Escape cancels."
     controls:@[actions, self.shortcutStatus]];
   NSStackView *content = [self stack:@[login, notch, shortcut]];
   NSScrollView *scroll = [[NSScrollView alloc] init]; scroll.drawsBackground = NO;

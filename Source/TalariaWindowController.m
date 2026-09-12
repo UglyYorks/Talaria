@@ -1,3 +1,4 @@
+#import "TLBrowserContentColor.h"
 #import "design_system/TLIncognitoPill.h"
 #import "TLProviderSetupWindowController.h"
 #import "TLBookmarkEditorController.h"
@@ -2315,6 +2316,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     sidebarWidth:[self currentSidebarWidth] contentLeadingPadding:[self contentLeadingPadding]];
   TLBrowserTabController *controller = [[TLBrowserTabController alloc] initWithURL:URL palette:self.palette
     database:self.database orchestrator:self.agentOrchestrator inputWidth:inputWidth];
+  [controller restoreHeaderContentColor:[TLBrowserContentColor colorForRGB:tab.browserHeaderRGB]];
   TLWorkspaceTabRuntime *runtime = [TLWorkspaceTabRuntime runtimeWithContentView:controller.view
     openAction:@selector(openBrowserTab:) closeAction:@selector(closeBrowserTab:)];
   runtime.featureController = controller;
@@ -2333,8 +2335,17 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   controller.historyChangedHandler = ^{ [weakSelf reloadHistoryPanel]; };
   controller.faviconChangedHandler = ^{ [weakSelf reloadWorkspaceTabs]; };
   __weak TLBrowserTabController *weakBrowser = controller;
-  __block BOOL hasInitialHeaderColor = NO;
+  __block BOOL hasInitialHeaderColor = controller.headerContentColor != nil;
   controller.headerColorChangedHandler = ^{
+    NSColor *color = [weakBrowser.headerContentColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    TLWorkspaceTab *coloredTab = [weakSelf browserTabWithID:tabID];
+    if (color && coloredTab) {
+      NSArray *RGB = @[@(color.redComponent * 255), @(color.greenComponent * 255), @(color.blueComponent * 255)];
+      if (![coloredTab.browserHeaderRGB isEqual:RGB]) {
+        coloredTab.browserHeaderRGB = RGB;
+        [weakSelf.appStateManager upsertWorkspaceTab:coloredTab activate:NO];
+      }
+    }
     [weakSelf.workspaceTabsController refreshContentColorsAnimated:hasInitialHeaderColor && weakBrowser.headerColorChangesAnimated];
     hasInitialHeaderColor = weakBrowser.headerContentColor != nil;
   };
@@ -5208,7 +5219,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLWorkspaceSplitGroup *group = [self.splitState groupForTab:tab];
   if (group) return self.palette.tabBackground;
   id feature=[self runtimeForTab:tab].featureController;
-  return [feature isKindOfClass:TLBrowserTabController.class] ? ((TLBrowserTabController *)feature).headerContentColor : nil;
+  if (tab.kind != TLWorkspaceTabKindBrowser) return nil;
+  NSColor *live = [feature isKindOfClass:TLBrowserTabController.class] ? ((TLBrowserTabController *)feature).headerContentColor : nil;
+  return live ?: [TLBrowserContentColor colorForRGB:tab.browserHeaderRGB];
 }
 
 - (NSString *)workspaceTabsController:(TLWorkspaceTabsController *)controller displayTitleForTab:(TLWorkspaceTab *)tab {
@@ -5910,6 +5923,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)openFromNotchOverlay:(id)sender {
+  if (!self.notchOverlayController.enabled) {
+    [self showWindow:sender];
+    [NSApp activateIgnoringOtherApps:YES];
+    return;
+  }
   if (!self.quickInputController) {
     self.quickInputController = [[TLQuickInputWindowController alloc] initWithPalette:self.palette];
     self.quickInputController.model = self.settings.selectedModel;
@@ -5936,8 +5954,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   for (NSScreen *candidate in NSScreen.screens) {
     if (NSPointInRect(location, candidate.frame)) { screen = candidate; break; }
   }
-  if (self.notchOverlayController.enabled) [self.quickInputController presentInNotchOnScreen:screen];
-  else [self.quickInputController presentOnScreen:screen];
+  [self.quickInputController presentInNotchOnScreen:screen];
 }
 
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)fileURLs {

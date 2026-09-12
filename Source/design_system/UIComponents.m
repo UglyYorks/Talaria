@@ -1877,21 +1877,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 @end
 
-@implementation TLBrowserBackdropView
-
-// This full-width visual layer must not intercept page controls beside the bar.
-- (NSView *)hitTest:(NSPoint)point { return nil; }
-
-- (instancetype)initWithFrame:(NSRect)frameRect {
-  self = [super initWithFrame:frameRect];
-  if (self) {
-    self.translatesAutoresizingMaskIntoConstraints = NO;
-  }
-  return self;
-}
-
-@end
-
 @interface TLSidebarShortcutButton ()
 @property (nonatomic, strong) NSImageView *imageView;
 @property (nonatomic, strong) NSLayoutConstraint *widthConstraint;
@@ -2360,6 +2345,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 @end
 
 @interface TLBrowserAddressInput ()
+@property (nonatomic, strong) CAShapeLayer *loadingLine;
 @property (nonatomic, strong) NSTextField *domainLabel;
 @property (nonatomic) BOOL addressFocused;
 @property (nonatomic, readwrite) BOOL hasUserDraft;
@@ -2367,7 +2353,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 @property (nonatomic, strong, readwrite) NSButton *backButton;
 @property (nonatomic, strong, readwrite) NSButton *forwardButton;
 @property (nonatomic, strong, readwrite) NSButton *reloadButton;
-@property (nonatomic, strong, readwrite) NSButton *heightToggleButton;
 @property (nonatomic, strong, readwrite) NSButton *chatButton;
 @property (nonatomic, strong) NSTextField *responseCountLabel;
 @property (nonatomic, strong) NSStackView *trailingStack;
@@ -2428,11 +2413,16 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   if (self) {
+    _loadingLine = [CAShapeLayer layer];
+    _loadingLine.hidden = YES;
+    _loadingLine.strokeEnd = 0;
+    _loadingLine.zPosition = 1;
+    _loadingLine.lineCap = kCALineCapRound;
+    [self.layer addSublayer:_loadingLine];
     self.sendButton.hoverSurfaceOnly = YES;
     _backButton = [self toolbarButtonWithToolTip:@"Back"];
     _forwardButton = [self toolbarButtonWithToolTip:@"Forward"];
     _reloadButton = [self toolbarButtonWithToolTip:@"Reload"];
-    _heightToggleButton = [self toolbarButtonWithToolTip:@"Use reduced-height browser"];
     _chatButton = [self toolbarButtonWithToolTip:@"Show chat"];
     _chatButton.hidden = YES;
     _responseCountLabel = [NSTextField labelWithString:@"0"];
@@ -2451,7 +2441,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     [_navigationStack addArrangedSubview:_backButton];
     [_navigationStack addArrangedSubview:_forwardButton];
     [_navigationStack addArrangedSubview:_reloadButton];
-    _trailingStack = [NSStackView stackViewWithViews:@[_chatButton, _responseCountLabel, _heightToggleButton]];
+    _trailingStack = [NSStackView stackViewWithViews:@[_chatButton, _responseCountLabel]];
     _trailingStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     _trailingStack.alignment = NSLayoutAttributeCenterY;
     _trailingStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2478,7 +2468,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
       input.sendButton.enabled = [input.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length > 0;
     };
     NSMutableArray<NSLayoutConstraint *> *buttonSizeConstraints = [NSMutableArray array];
-    for (NSButton *button in @[_backButton, _forwardButton, _reloadButton, _chatButton, _heightToggleButton]) {
+    for (NSButton *button in @[_backButton, _forwardButton, _reloadButton, _chatButton]) {
       [buttonSizeConstraints addObject:[button.widthAnchor constraintEqualToConstant:self.palette.browserToolbarButtonSize]];
       [buttonSizeConstraints addObject:[button.heightAnchor constraintEqualToConstant:self.palette.browserToolbarButtonSize]];
     }
@@ -2495,7 +2485,60 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   [self applyBrowserPalette];
 }
 
+- (void)setLoading:(BOOL)loading progress:(double)progress {
+  CGFloat next = loading ? MIN(1, MAX(0, isfinite(progress) ? progress : 0)) : 0;
+  BOOL wasLoading = !self.loadingLine.hidden;
+  CGFloat target = self.loadingLine.strokeEnd;
+  if (wasLoading == loading && target == next) return;
+  // Retarget from the currently displayed stroke, including an interrupted animation.
+  CGFloat previous = wasLoading && next >= target
+    ? ((CAShapeLayer *)self.loadingLine.presentationLayer ?: self.loadingLine).strokeEnd : 0;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  [self.loadingLine removeAnimationForKey:@"loadingProgress"];
+  self.loadingLine.hidden = !loading;
+  self.loadingLine.strokeEnd = next;
+  if (loading && next > previous && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:@"strokeEnd"];
+    animation.fromValue = @(previous);
+    animation.toValue = @(next);
+    animation.duration = self.palette.browserLoadingProgressDuration;
+    animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [self.loadingLine addAnimation:animation forKey:@"loadingProgress"];
+  }
+  [CATransaction commit];
+}
+
+- (void)layoutLoadingLine {
+  if (!self.loadingLine) return;
+  CGFloat inset = self.palette.browserLoadingLineWidth / 2;
+  CGRect rect = CGRectInset(self.bounds, inset, inset);
+  if (CGRectIsEmpty(rect)) return;
+  CGFloat radius = MAX(0, MIN(self.palette.messageInputCornerRadius - inset, MIN(rect.size.width, rect.size.height) / 2));
+  CGFloat left = CGRectGetMinX(rect), right = CGRectGetMaxX(rect), middle = CGRectGetMidY(rect);
+  // Build in unflipped coordinates, then mirror for the input's flipped view.
+  CGFloat bottom = CGRectGetMinY(rect);
+  CGMutablePathRef path = CGPathCreateMutable();
+  CGPathMoveToPoint(path, NULL, left, middle);
+  CGPathAddArcToPoint(path, NULL, left, bottom, left + radius, bottom, radius);
+  CGPathAddArcToPoint(path, NULL, right, bottom, right, bottom + radius, radius);
+  CGPathAddLineToPoint(path, NULL, right, middle);
+  CGAffineTransform transform = self.isFlipped ? CGAffineTransformMake(1, 0, 0, -1, 0, NSHeight(self.bounds)) : CGAffineTransformIdentity;
+  CGPathRef resolved = CGPathCreateCopyByTransformingPath(path, &transform);
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.loadingLine.frame = self.bounds;
+  self.loadingLine.path = resolved;
+  self.loadingLine.fillColor = TLCGColor(self.palette.transparentSurface);
+  self.loadingLine.strokeColor = TLCGColor(self.palette.browserLoadingProgress);
+  self.loadingLine.lineWidth = self.palette.browserLoadingLineWidth;
+  [CATransaction commit];
+  CGPathRelease(resolved);
+  CGPathRelease(path);
+}
+
 - (void)applyBrowserPalette {
+  [self layoutLoadingLine];
   TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
   glass.palette = self.palette;
   glass.cornerRadius = self.palette.messageInputCornerRadius;
@@ -2513,7 +2556,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   for (NSLayoutConstraint *constraint in self.buttonSizeConstraints) {
     constraint.constant = self.palette.browserToolbarButtonSize;
   }
-  for (NSButton *button in @[self.backButton, self.forwardButton, self.reloadButton, self.chatButton, self.heightToggleButton]) {
+  for (NSButton *button in @[self.backButton, self.forwardButton, self.reloadButton, self.chatButton]) {
     button.contentTintColor = self.palette.controlText;
     ((TLHoverIconButton *)button).palette = self.palette;
   }
@@ -2531,6 +2574,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   }
   [super layout];
   [self layoutDomainLabel];
+  [self layoutLoadingLine];
 }
 
 - (NSString *)idleAddress {
@@ -2669,19 +2713,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   self.backButton.image = [self toolbarImageWithSystemName:@"chevron.left" accessibilityDescription:@"Back"];
   self.forwardButton.image = [self toolbarImageWithSystemName:@"chevron.right" accessibilityDescription:@"Forward"];
   self.reloadButton.image = [self toolbarImageWithSystemName:@"arrow.clockwise" accessibilityDescription:@"Reload"];
-  NSString *toggleName = @"inset.filled.bottomthird.square";
-  NSString *toggleDescription = self.isReducedHeight ? @"Use full-height browser" : @"Use reduced-height browser";
-  self.heightToggleButton.image = [self toolbarImageWithSystemName:toggleName accessibilityDescription:toggleDescription];
-  self.heightToggleButton.toolTip = toggleDescription;
-  [self.heightToggleButton setAccessibilityLabel:toggleDescription];
-}
-
-- (void)setReducedHeight:(BOOL)reducedHeight {
-  if (_reducedHeight == reducedHeight) {
-    return;
-  }
-  _reducedHeight = reducedHeight;
-  [self updateToolbarImages];
 }
 
 - (void)setResponseCount:(NSUInteger)responseCount {

@@ -12,8 +12,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^settingsHandler)(void);
 @property (nonatomic, copy, nullable) void (^visibilityChangeHandler)(BOOL visible);
 - (instancetype)initWithPalette:(TLThemePalette *)palette;
-- (void)presentOnScreen:(NSScreen *)screen;
-- (void)presentBelowRect:(NSRect)anchorRect onScreen:(NSScreen *)screen;
 - (void)presentInNotchOnScreen:(NSScreen *)screen;
 - (void)presentInNotchOnScreen:(NSScreen *)screen fromFrame:(NSRect)frame;
 - (void)dismiss;

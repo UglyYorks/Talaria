@@ -1,3 +1,4 @@
+#import "TLBrowserContentColor.h"
 #import "TLChatControllerTestSupport.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLInputSuggestionListView.h"
@@ -6,7 +7,6 @@
 #import <QuartzCore/QuartzCore.h>
 #import <WebKit/WebKit.h>
 #import "TLBrowserTabController.h"
-#import "TLBrowserOverlayPolicy.h"
 #import "TLBrowserContentColor.h"
 #import "TLSettingsTabController.h"
 #import "TLBrowserSettingsController.h"
@@ -1598,6 +1598,18 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 }
 @end
 
+@interface TLLoadingWebView : WKWebView
+@property (nonatomic) double reportedProgress;
+@property (nonatomic) BOOL reportedLoading;
+@end
+@implementation TLLoadingWebView
+- (double)estimatedProgress { return self.reportedProgress; }
+- (BOOL)isLoading { return self.reportedLoading; }
+@end
+
+@interface TLWebKitBrowserController (LoadingTests)
+- (void)updateSession:(TLWebKitBrowserSession *)session;
+@end
 @interface TLFeatureBrowserMock : TLWebKitBrowserController
 @property NSURL *navigatedURL;
 @property (nonatomic) NSUInteger startCount;
@@ -1655,312 +1667,82 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 - (void)navigateSession:(TLWebKitBrowserSession *)session toURL:(NSURL *)URL { self.navigatedURL = URL; }
 @end
 
-@interface TLBrowserTabController (OverlayTests)
-- (void)sampleOverlay;
-- (void)toggleBrowserHeightMode:(id)sender;
-- (void)updateFooterContentColor:(NSColor *)color animated:(BOOL)animated;
-- (BOOL)canSampleOverlay;
-- (void)useFooterBanner:(NSDictionary *)banner;
+@interface TLBrowserTabController (PageAppearanceTests)
+- (void)samplePageAppearance;
 @end
-@interface TLOverlayTestWindow : NSWindow
-@property (nonatomic) BOOL testVisible, testMiniaturized;
-@end
-@implementation TLOverlayTestWindow
-- (BOOL)isVisible { return self.testVisible; }
-- (BOOL)isMiniaturized { return self.testMiniaturized; }
-@end
-static void AllowOverlayProbe(TLBrowserTabController *controller) {
-  [controller setValue:@0 forKey:@"overlayNextProbe"];
-  [controller setValue:@0 forKey:@"overlayNotBefore"];
-}
-static void ResolveOverlay(TLFeatureBrowserMock *service, id value, double cost) {
-  void (^completion)(NSDictionary *) = service.overlayCompletion;
-  service.overlayCompletion = nil;
-  Check(completion != nil, @"probe is pending");
-  completion(@{@"obstructed":value ?: NSNull.null, @"costMS":@(cost)});
-}
-static void TestBrowserContentColorTheme(void) {
-  TLBrowserTabController *controller=[[TLBrowserTabController alloc]
-    initWithURL:[NSURL URLWithString:@"https://example.com"] palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]
-    database:(TLDatabase *)[TLFeatureSettingsStoreMock new] orchestrator:(TLAgentOrchestrator *)[TLFeatureCatalogueMock new]
-    inputWidth:480 browserService:[TLFeatureBrowserMock new]];
-  NSWindow *window=HostController(controller);
-  NSView *surface=[controller valueForKey:@"footerContentView"];
-  NSColor *sample=[TLBrowserContentColor colorForRGB:@[@52,@100,@148]];
-  Check(sample!=nil && [TLBrowserContentColor colorForRGB:@[@999,@0,@0]]==nil,@"page colors accept only bounded RGB values");
-  for(NSNumber *preference in @[@(TLThemePreferenceLight),@(TLThemePreferenceDark)]) {
-    TLThemePalette *palette=[TLThemePalette paletteForPreference:preference.integerValue];
-    [controller updateFooterContentColor:nil animated:NO];[controller applyPalette:palette];
-    Check(CGColorEqualToColor(surface.layer.backgroundColor,palette.tabBackground.CGColor),@"footer fallback follows the current theme");
-    [controller updateFooterContentColor:sample animated:YES];
-    Check(CGColorEqualToColor(surface.layer.backgroundColor,sample.CGColor),@"only the content extension receives the sampled page color");
-    if(!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
-      Check([surface.layer animationForKey:@"talaria.contentColor"]!=nil,@"page color changes crossfade without changing viewport geometry");
-    [controller applyPalette:palette];
-    Check(CGColorEqualToColor(surface.layer.backgroundColor,sample.CGColor),@"theme changes preserve the actual page-derived color");
-  }
-  [controller close];[window close];
-}
 
-static void TestDocumentFooterExclusivity(void) {
-  TLFeatureBrowserMock *service=[TLFeatureBrowserMock new];
-  TLBrowserTabController *controller=[[TLBrowserTabController alloc]
-    initWithURL:[NSURL URLWithString:@"https://example.com"] palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]
-    database:(id)[TLFeatureSettingsStoreMock new] orchestrator:(id)[TLFeatureCatalogueMock new] inputWidth:480 browserService:service];
-  TLOverlayTestWindow *window=[[TLOverlayTestWindow alloc] initWithContentRect:NSMakeRect(0,0,800,700)
-    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-  window.releasedWhenClosed=NO;window.testVisible=NO;window.contentView=controller.view;
-  [controller startInWindow:window];[[controller valueForKey:@"overlayTimer"] invalidate];
-  [controller.view layoutSubtreeIfNeeded];
-  service.deferFooter=YES;
-  [controller toggleBrowserHeightMode:nil];
-  NSLayoutConstraint *bottom=[controller valueForKey:@"browserHostBottomConstraint"];
-  NSView *host=[controller valueForKey:@"browserHostView"];
-  Check(![service.footerConfiguration[@"enabled"] boolValue] && service.footerCompletion && bottom.constant==0 && !host.layer.mask,
-    @"native footer cannot open before renderer acknowledges spacer removal");
-  double height=[service.footerConfiguration[@"height"] doubleValue];
-  service.footerCompletion(YES);service.footerCompletion=nil;
-  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
-  Check(fabs(bottom.constant+height)<1 && ![service.footerConfiguration[@"enabled"] boolValue], @"native footer uses exactly the document spacer height");
-  [controller toggleBrowserHeightMode:nil];
-  service.footerCompletion(YES);service.footerCompletion=nil;
-  if(!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
-    Check(![service.footerConfiguration[@"enabled"] boolValue], @"spacer stays absent while native footer closes");
-  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
-  Check(bottom.constant==0 && [service.footerConfiguration[@"enabled"] boolValue], @"spacer returns after native closing completes");
-  [controller toggleBrowserHeightMode:nil];void (^stale)(BOOL)=service.footerCompletion;
-  [controller toggleBrowserHeightMode:nil];void (^latest)(BOOL)=service.footerCompletion;
-  stale(YES);Check(bottom.constant==0 && !host.layer.mask,@"superseded acknowledgements never open a native footer");
-  latest(YES);Check([service.footerConfiguration[@"enabled"] boolValue],@"latest mode owns document spacer configuration");
-  service.footerCompletion=nil;[controller close];[window close];
-}
+@interface TalariaWindowController (RestoredColorTests)
+- (NSColor *)workspaceTabsController:(TLWorkspaceTabsController *)controller backgroundColorForTab:(TLWorkspaceTab *)tab;
+@end
+static void TestBrowserExtendedLayout(void) {
+  for (NSNumber *preference in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLFeatureBrowserMock *service = [TLFeatureBrowserMock new];
+    TLBrowserTabController *controller = [[TLBrowserTabController alloc]
+      initWithURL:[NSURL URLWithString:@"https://example.com"]
+      palette:[TLThemePalette paletteForPreference:preference.integerValue]
+      database:(id)[TLFeatureSettingsStoreMock new] orchestrator:(id)[TLFeatureCatalogueMock new]
+      inputWidth:480 browserService:service];
+    NSColor *savedColor = [TLBrowserContentColor colorForRGB:@[@12,@34,@56]];
+    TLWorkspaceTab *savedTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:77 title:@"Restored" toolTip:nil URL:[NSURL URLWithString:@"https://example.com"] closeable:YES];
+    savedTab.browserHeaderRGB = @[@12,@34,@56];
+    TalariaWindowController *shell = [[TalariaWindowController alloc] initWithWindow:nil];
+    Check([[shell workspaceTabsController:nil backgroundColorForTab:savedTab] isEqual:savedColor], @"restored browser tab has color before a runtime exists");
+    [controller restoreHeaderContentColor:savedColor];
+    Check([controller.headerContentColor isEqual:savedColor], @"browser runtime starts with its restored page color");
+    NSWindow *window = HostController(controller);
+    [controller startInWindow:window];
+    Check([controller.headerContentColor isEqual:savedColor], @"starting page loading does not erase restored color");
+    NSTimer *timer = [controller valueForKey:@"pageAppearanceTimer"];
+    NSLayoutConstraint *bottom = [controller valueForKey:@"browserHostBottomConstraint"];
+    TLBrowserAddressInput *input = [controller valueForKey:@"browserAddressInput"];
+    Check(![input respondsToSelector:NSSelectorFromString(@"heightToggleButton")], @"Footer toggle is removed");
+    NSView *blur = [controller valueForKey:@"bottomBlur"];
+    NSView *page = [controller valueForKey:@"browserHostView"];
+    Check([blur hitTest:NSMakePoint(10,10)] == nil, @"native blur leaves page and input interactions intact");
+    Check([controller.view.subviews indexOfObject:page] < [controller.view.subviews indexOfObject:blur] &&
+      [controller.view.subviews indexOfObject:blur] < [controller.view.subviews indexOfObject:input], @"blur is over the page and under the input");
+    TLLoadingWebView *webView = [[TLLoadingWebView alloc] initWithFrame:NSZeroRect];
+    [service.overlaySession setValue:webView forKey:@"webView"];
+    [service.overlaySession setValue:service.navigationCallback forKey:@"navigationHandler"];
+    __block NSUInteger loadingUpdates = 0;
+    controller.loadingChangedHandler = ^{ loadingUpdates++; };
+    webView.reportedProgress = 0.2;
+    webView.reportedLoading = YES;
+    [service updateSession:service.overlaySession];
+    Check(controller.isLoading && controller.loadingProgress == 0.2, @"navigation exposes WebKit's real estimated progress");
+    webView.reportedProgress = 0.65;
+    webView.reportedLoading = YES;
+    [service updateSession:service.overlaySession];
+    Check(controller.loadingProgress == 0.65 && loadingUpdates == 2, @"progress changes propagate even while loading stays true");
+    webView.reportedLoading = NO;
+    [service updateSession:service.overlaySession];
+    Check(!controller.isLoading && controller.loadingProgress == 0, @"completed or stopped loads clear progress");
+    webView.reportedProgress = 0.1;
+    webView.reportedLoading = YES;
+    [service updateSession:service.overlaySession];
+    Check(controller.loadingProgress == 0.1, @"reload resets progress rather than preserving the previous load");
+    CAShapeLayer *ink = [input valueForKey:@"loadingLine"];
+    Check(!ink.hidden && fabs(ink.strokeEnd - 0.1) < 0.0001, @"browser progress is drawn in its own input");
+    webView.reportedProgress = 0.7;
+    [service updateSession:service.overlaySession];
+    Check(fabs(ink.strokeEnd - 0.7) < 0.0001, @"WebKit progress updates the input line");
 
-static void SetTestDevToolsVisible(TLFeatureBrowserMock *service, BOOL visible) {
-  [service.overlaySession setValue:@(visible) forKey:@"devToolsVisible"];
-  service.overlaySession.devToolsVisibilityChangedHandler();
-}
-static void TestDevToolsFooterPlacement(void) {
-  for (NSNumber *mode in @[@0, @1, @2]) {
-    TLFeatureBrowserMock *service=[TLFeatureBrowserMock new];
-    TLBrowserTabController *controller=[[TLBrowserTabController alloc]
-      initWithURL:[NSURL URLWithString:@"https://example.com"] palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]
-      database:(id)[TLFeatureSettingsStoreMock new] orchestrator:(id)[TLFeatureCatalogueMock new] inputWidth:480 browserService:service];
-    TLOverlayTestWindow *window=[[TLOverlayTestWindow alloc] initWithContentRect:NSMakeRect(0,0,800,700)
-      styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-    window.releasedWhenClosed=NO;window.contentView=controller.view;
-    [controller startInWindow:window];[[controller valueForKey:@"overlayTimer"] invalidate];
-    [controller.view layoutSubtreeIfNeeded];
-    // Exercise automatic, manual overlay, and manual raised modes.
-    if(mode.intValue>0)[controller toggleBrowserHeightMode:nil];
-    if(mode.intValue==1)[controller toggleBrowserHeightMode:nil];
-    TLBrowserOverlayPolicy *policy=[controller valueForKey:@"overlayPolicy"];
-    TLBrowserAddressInput *input=[controller valueForKey:@"browserAddressInput"];
-    NSLayoutConstraint *bottom=[controller valueForKey:@"browserHostBottomConstraint"];
-    BOOL previous=policy.reducedHeight, manual=policy.manuallyOverridden;
-    SetTestDevToolsVisible(service,YES);
-    [controller toggleBrowserHeightMode:nil];
-    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
-    Check(input.reducedHeight && !input.heightToggleButton.enabled && bottom.constant<0,
-      @"DevTools raises the footer and prevents manually lowering it");
-    Check(![service.footerConfiguration[@"enabled"] boolValue],@"DevTools never duplicates the native footer with a document spacer");
-    Check(policy.reducedHeight==previous && policy.manuallyOverridden==manual,@"DevTools preserves the previous placement preference");
-    window.testVisible=YES;AllowOverlayProbe(controller);[controller sampleOverlay];
-    Check(service.overlayCount==0,@"page probes cannot override placement while DevTools is open");
-    window.testVisible=NO;
-    SetTestDevToolsVisible(service,NO);
-    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
-    Check(input.reducedHeight==previous && input.heightToggleButton.enabled,
-      @"closing DevTools restores the prior automatic or manual mode");
-    SetTestDevToolsVisible(service,YES);
-    [service.overlaySession setValue:@1 forKey:@"documentGeneration"];
-    [controller sampleOverlay];
-    Check(input.reducedHeight && !policy.manuallyOverridden && !input.heightToggleButton.enabled,
-      @"navigation clears the manual preference while DevTools keeps the footer raised");
+    for (NSNumber *inspecting in @[@NO, @YES, @NO]) {
+      [service.overlaySession setValue:inspecting forKey:@"devToolsVisible"];
+      [service.overlaySession setValue:@(service.overlaySession.documentGeneration + 1) forKey:@"documentGeneration"];
+      [controller samplePageAppearance];
+      Check(bottom.constant == 0, @"navigation and DevTools keep the full-height extended layout");
+      Check([service.footerConfiguration[@"enabled"] boolValue], @"document extension remains enabled");
+      Check(service.footerConfiguration[@"blurRadius"] == nil, @"page scroll code no longer owns the native blur overlay");
+      Check(service.overlayCount == 0, @"page obstructions never trigger Footer placement probes");
+    }
+    [controller applyPalette:[TLThemePalette paletteForPreference:preference.integerValue]];
+    Check(bottom.constant == 0, @"theme changes preserve extended layout");
     [controller close];
-    Check(service.overlaySession.devToolsVisibilityChangedHandler==nil,@"closing the tab removes its DevTools callback");
+    Check(!timer.valid && service.closeCount == 1, @"closing stops appearance monitoring and closes the session");
+    Check(!controller.isLoading && controller.loadingChangedHandler == nil, @"closing clears loading and its callback");
     [window close];
   }
-}
-
-static void TestFooterColorReadyBeforeOpening(void) {
-  TLFeatureBrowserMock *service = [TLFeatureBrowserMock new];
-  service.deferColor = YES;
-  TLBrowserTabController *controller = [[TLBrowserTabController alloc]
-    initWithURL:[NSURL URLWithString:@"https://example.com"] palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]
-    database:(id)[TLFeatureSettingsStoreMock new] orchestrator:(id)[TLFeatureCatalogueMock new] inputWidth:480 browserService:service];
-  TLOverlayTestWindow *window = [[TLOverlayTestWindow alloc] initWithContentRect:NSMakeRect(0,0,800,700)
-    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-  window.releasedWhenClosed = NO; window.testVisible = YES;
-  window.contentView = controller.view;
-  [controller startInWindow:window];
-  [[controller valueForKey:@"overlayTimer"] invalidate];
-  [controller setValue:@(NSProcessInfo.processInfo.systemUptime + 10) forKey:@"overlayNotBefore"];
-  [controller sampleOverlay];
-  Check(service.colorCompletion != nil && service.colorCapture, @"closed footer prewarms colors even while overlay geometry is settling");
-  service.colorCompletion(@{@"rgb":@[@40,@50,@60], @"viewState":@[@800,@700,@0,@0]});
-  NSUInteger calls = service.colorCalls;
-  [controller setValue:@0 forKey:@"footerColorNext"];
-  [controller sampleOverlay];
-  Check(service.colorCalls == calls + 1, @"primed closed footer continues bounded refreshes");
-  service.colorCompletion(@{@"rgb":@[@40,@50,@60], @"viewState":@[@800,@700,@0,@0]});
-  [controller toggleBrowserHeightMode:nil];
-  NSView *host = [controller valueForKey:@"browserHostView"];
-  Check(host.layer.mask == nil, @"opening waits for the fresh color before exposing its first frame");
-  service.colorCompletion(@{@"rgb":@[@80,@90,@100], @"viewState":@[@800,@700,@0,@0]});
-  NSView *surface = [controller valueForKey:@"footerContentView"];
-  Check(CGColorEqualToColor(surface.layer.backgroundColor,[TLBrowserContentColor colorForRGB:@[@80,@90,@100]].CGColor),
-    @"fresh page color is applied when the opening starts");
-  Check(![surface.layer animationForKey:@"talaria.contentColor"], @"opening never crossfades the footer color");
-  NSUInteger openingCalls=service.colorCalls;
-  [controller setValue:@0 forKey:@"footerColorNext"];[controller sampleOverlay];
-  if(!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
-    Check(service.colorCalls==openingCalls, @"live viewport animation pauses color sampling and capture");
-  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
-  [controller setValue:@0 forKey:@"footerColorImmediateUntil"];
-  [controller setValue:@0 forKey:@"footerColorNext"];
-  [controller sampleOverlay];
-  service.colorCompletion(@{@"rgb":@[@100,@110,@120]});
-  if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
-    Check([surface.layer animationForKey:@"talaria.contentColor"] != nil, @"color changes fade once the footer is open");
-  [controller toggleBrowserHeightMode:nil];
-  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
-  [controller setValue:@0 forKey:@"footerColorNext"];
-  [controller sampleOverlay];
-  service.colorCompletion(@{@"rgb":@[@110,@120,@130]});
-  Check(![surface.layer animationForKey:@"talaria.contentColor"], @"closed-footer prewarming never leaves a color fade for the next opening");
-  [controller close]; [window close];
-}
-
-static void TestBannerColorOwnership(void) {
-  TLFeatureBrowserMock *service=[TLFeatureBrowserMock new];service.deferColor=YES;
-  TLBrowserTabController *controller=[[TLBrowserTabController alloc] initWithURL:[NSURL URLWithString:@"https://example.com"]
-    palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark] database:(id)[TLFeatureSettingsStoreMock new]
-    orchestrator:(id)[TLFeatureCatalogueMock new] inputWidth:480 browserService:service];
-  TLOverlayTestWindow *window=[[TLOverlayTestWindow alloc] initWithContentRect:NSMakeRect(0,0,800,700) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-  window.releasedWhenClosed=NO;window.testVisible=YES;window.contentView=controller.view;
-  [controller startInWindow:window];[[controller valueForKey:@"overlayTimer"] invalidate];[controller sampleOverlay];
-  void (^stale)(NSDictionary *)=service.colorCompletion;
-  [controller useFooterBanner:@{@"id":@"blue",@"bottom":@16,@"rgb":@[@20,@10,@180],@"capture":@NO}];
-  NSView *surface=[controller valueForKey:@"footerContentView"];
-  Check(stale!=nil,@"ordinary page sample started before banner detection");stale(@{@"rgb":@[@255,@255,@255]});
-  Check(CGColorEqualToColor(surface.layer.backgroundColor,[TLBrowserContentColor colorForRGB:@[@20,@10,@180]].CGColor),@"late ordinary page color cannot overwrite detected blue banner");
-  NSUInteger count=service.colorCalls;[controller toggleBrowserHeightMode:nil];
-  Check(service.colorCalls==count && ![surface.layer animationForKey:@"talaria.contentColor"],@"opening uses the prepared banner color without generic lookup or fade");
-  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.35]];
-  [controller useFooterBanner:@{@"id":@"blue",@"bottom":@16,@"rgb":@[@30,@80,@140],@"capture":@NO}];
-  if(!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)Check([surface.layer animationForKey:@"talaria.contentColor"]!=nil,@"later banner color changes crossfade after opening");
-  [controller useFooterBanner:nil];[controller sampleOverlay];
-  service.colorCompletion(@{@"rgb":@[@255,@255,@255]});
-  Check(CGColorEqualToColor(surface.layer.backgroundColor,[TLBrowserContentColor colorForRGB:@[@255,@255,@255]].CGColor),@"dismissed banner releases ownership to visible page color");
-  [controller close];[window close];
-}
-
-static void TestBrowserOverlayLifecycle(void) {
-  TLFeatureBrowserMock *service = [TLFeatureBrowserMock new];
-  TLBrowserTabController *controller = [[TLBrowserTabController alloc]
-    initWithURL:[NSURL URLWithString:@"https://example.com/start"] palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]
-    database:(TLDatabase *)[TLFeatureSettingsStoreMock new] orchestrator:(TLAgentOrchestrator *)[TLFeatureCatalogueMock new]
-    inputWidth:480 browserService:service];
-  TLOverlayTestWindow *window = [[TLOverlayTestWindow alloc] initWithContentRect:NSMakeRect(0,0,800,700)
-    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-  window.releasedWhenClosed = NO;
-  NSView *content = window.contentView;
-  [content addSubview:controller.view];
-  [NSLayoutConstraint activateConstraints:@[
-    [controller.view.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-    [controller.view.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-    [controller.view.topAnchor constraintEqualToAnchor:content.topAnchor],
-    [controller.view.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-  ]];
-  [window.contentView layoutSubtreeIfNeeded];
-  [controller startInWindow:window];
-  NSTimer *timer = [controller valueForKey:@"overlayTimer"];
-  [timer fire]; Check(service.overlayCount==0,@"hidden windows do no page inspections");
-  window.testVisible = YES; controller.view.hidden = YES;
-  [timer fire]; Check(service.overlayCount==0,@"hidden tabs do no page inspections");
-  controller.view.hidden = NO; window.testMiniaturized = YES;
-  [timer fire]; Check(service.overlayCount==0,@"minimized windows do no page inspections");
-  window.testMiniaturized = NO;
-  [timer invalidate]; // Subsequent samples have deterministic timing.
-  [controller sampleOverlay]; [controller sampleOverlay];
-  Check(service.overlayCount==1,@"only one evaluation can be in flight");
-  Check(NSEqualSizes(service.overlayViewport, NSMakeSize(800,700)),@"lifecycle fixture uses real nonzero browser geometry");
-  TLBrowserOverlayPolicy *policy = [controller valueForKey:@"overlayPolicy"];
-  [policy resetForNavigation]; [policy observe:@YES atTime:NSProcessInfo.processInfo.systemUptime-0.4];
-  ResolveOverlay(service,@YES,1);
-  TLBrowserAddressInput *input = [controller valueForKey:@"browserAddressInput"];
-  Check(input.reducedHeight,@"confirmed page obstruction changes native layout");
-  Check(NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ||
-    NSHeight([[controller valueForKey:@"browserHostView"] frame]) == NSHeight(controller.view.bounds),
-    @"animated shrink starts at the original viewport before its first frame");
-  [controller applyPalette:controller.palette]; // Finish height transition deterministically.
-  AllowOverlayProbe(controller); [controller sampleOverlay];
-  Check(service.overlayViewport.height < NSHeight(controller.view.bounds),@"probe receives actual reduced browser viewport");
-  Check(NSMinY(service.overlayRect)>0 && NSMinY(service.overlayRect)<100,@"bar probe remains bottom-relative while docked");
-  ResolveOverlay(service,nil,1); Check(input.reducedHeight,@"unknown observation preserves docked placement");
-  NSUInteger prior=service.overlayCount; [controller sampleOverlay];
-  Check(service.overlayCount==prior,@"failed inspection backs off");
-  AllowOverlayProbe(controller); [controller sampleOverlay];
-  Check(service.overlayQuick,@"retry uses the lightweight path");
-  void (^opaqueCompletion)(NSDictionary *) = service.overlayCompletion;
-  service.overlayCompletion = nil;
-  opaqueCompletion(@{@"obstructed":NSNull.null, @"costMS":@1, @"scanComplete":@YES});
-  Check(input.reducedHeight && ![[policy valueForKey:@"hasEvidence"] boolValue],@"failed opaque fallback never certifies clearance");
-  Check([[controller valueForKey:@"overlayNextProbe"] doubleValue]-NSProcessInfo.processInfo.systemUptime<=0.21,
-    @"completed DOM scan stays responsive while opaque fallback cools down");
-  [controller setValue:@(NSProcessInfo.processInfo.systemUptime+30) forKey:@"overlayNextFullProbe"];
-  [policy setValue:@YES forKey:@"hasEvidence"]; [policy setValue:@NO forKey:@"evidenceValue"];
-  [policy setValue:@(NSProcessInfo.processInfo.systemUptime-2) forKey:@"evidenceStart"];
-  AllowOverlayProbe(controller); [controller sampleOverlay];
-  Check(service.overlayQuick,@"lightweight checks continue during full-scan cooldown");
-  ResolveOverlay(service,@NO,1);
-  Check(input.reducedHeight && ![[policy valueForKey:@"hasEvidence"] boolValue],@"quick negative without full proof cannot restore overlay");
-  Check([[controller valueForKey:@"overlayDismissalProbePending"] boolValue],@"dismissal requests early full confirmation instead of waiting thirty seconds");
-  NSTimeInterval previousDeadline = [[controller valueForKey:@"overlayNextFullProbe"] doubleValue];
-  [controller sampleOverlay];
-  Check(!service.overlayQuick && service.overlayCompletion != nil,@"dismissal confirmation runs on the next timer tick");
-  ResolveOverlay(service,@NO,100);
-  Check([[controller valueForKey:@"overlayNextFullProbe"] doubleValue]>=previousDeadline+8,@"early confirmation repays its measured work in the full-scan cooldown");
-  Check([[controller valueForKey:@"overlayDismissalProbeAfter"] doubleValue]>=previousDeadline+8,@"another early scan is forbidden until its debt is repaid");
-  [policy setValue:@(NSProcessInfo.processInfo.systemUptime-0.5) forKey:@"evidenceStart"];
-  AllowOverlayProbe(controller); [controller sampleOverlay]; ResolveOverlay(service,@NO,1);
-  Check(!input.reducedHeight,@"recent full clearance plus stable quick checks restores overlay");
-  [controller applyPalette:controller.palette];
-  // Re-establish obstruction for the remaining manual-choice lifecycle checks.
-  [policy resetForNavigation]; [policy observe:@YES atTime:NSProcessInfo.processInfo.systemUptime-0.4];
-  AllowOverlayProbe(controller); [controller sampleOverlay]; ResolveOverlay(service,@YES,1);
-  Check(input.reducedHeight,@"quick positive can confirm a new obstruction");
-  [controller applyPalette:controller.palette];
-  AllowOverlayProbe(controller); [controller sampleOverlay]; ResolveOverlay(service,@NO,100);
-  Check(![[controller valueForKey:@"overlayDismissalProbePending"] boolValue],@"repeated apparent dismissals cannot cause a full-scan storm");
-  Check(MAX([[controller valueForKey:@"overlayNextProbe"] doubleValue],[[controller valueForKey:@"overlayNextFullProbe"] doubleValue])-NSProcessInfo.processInfo.systemUptime>7.8,@"expensive scans enforce idle budget");
-  AllowOverlayProbe(controller); [controller sampleOverlay];
-  [NSApp sendAction:input.heightToggleButton.action to:input.heightToggleButton.target from:input.heightToggleButton];
-  ResolveOverlay(service,@YES,1);
-  Check(!input.reducedHeight && policy.manuallyOverridden,@"manual choice defeats late detector results");
-  service.URLCallback([NSURL URLWithString:@"https://example.com/route#fragment"]);
-  service.navigationCallback(YES,NO,YES); service.navigationCallback(YES,NO,NO);
-  AllowOverlayProbe(controller); prior=service.overlayCount; [controller sampleOverlay];
-  Check(service.overlayCount==prior && policy.manuallyOverridden,@"SPA/loading callbacks preserve manual override and suspend probes");
-  [controller setValue:@30 forKey:@"overlayQuickDelay"];
-  [service.overlaySession setValue:@1 forKey:@"documentGeneration"];
-  [controller sampleOverlay];
-  Check(!policy.manuallyOverridden,@"committed main-document navigation restores automatic mode");
-  Check([[controller valueForKey:@"overlayQuickDelay"] doubleValue]==0,@"new document does not inherit a slow previous page's detection interval");
-  // Navigation may arrive while the manual closing animation is still running.
-  // Geometry probes resume only after that real viewport transition settles.
-  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
-  AllowOverlayProbe(controller); [controller sampleOverlay];
-  [controller setAddressInputWidth:350]; [controller.view layoutSubtreeIfNeeded];
-  ResolveOverlay(service,@YES,1);
-  Check(!input.reducedHeight,@"result from old bar footprint is discarded");
-  AllowOverlayProbe(controller); [controller sampleOverlay];
-  [service.overlaySession setValue:@2 forKey:@"documentGeneration"];
-  ResolveOverlay(service,@YES,1);Check(!input.reducedHeight,@"old-document results are discarded before polling notices navigation");
-  [controller sampleOverlay]; AllowOverlayProbe(controller); [controller sampleOverlay];
-  [controller close]; ResolveOverlay(service,@YES,1);
-  Check(!input.reducedHeight && !timer.valid && service.closeCount==1,@"close cancels monitoring and late callbacks");
-  [window close];
 }
 
 @interface TLSettingsCredentialMock : TLFeatureCatalogueMock
@@ -2008,6 +1790,59 @@ static void SettingsSnapshot(TLSettingsTabController *controller, NSWindow *wind
 - (BOOL)resetDefaults:(NSError **)error { [self.values removeAllObjects]; return YES; }
 - (void)importProfile:(NSDictionary *)profile fromBrowser:(NSDictionary *)browser completion:(void (^)(NSString *))completion { self.importedProfile = profile; self.importedBrowser = browser; self.importCompletion = completion; }
 @end
+@interface TLDefaultBrowserWorkspace : NSWorkspace
+@property NSMutableSet<NSString *> *schemes;
+@property NSMutableArray<NSString *> *requests;
+@property BOOL fail;
+@property (copy) void (^pending)(NSError *);
+@end
+@implementation TLDefaultBrowserWorkspace
+- (instancetype)init { if ((self = [super init])) { _schemes = [NSMutableSet set]; _requests = [NSMutableArray array]; } return self; }
+- (void)setDefaultApplicationAtURL:(NSURL *)URL toOpenURLsWithScheme:(NSString *)scheme completionHandler:(void (^)(NSError *))completion {
+  [self.requests addObject:scheme];
+  __weak typeof(self) weakSelf = self;
+  self.pending = ^(NSError *error) { if (!error) [weakSelf.schemes addObject:scheme]; completion(error); };
+}
+@end
+@interface TLDefaultBrowserSettingsFixture : TLBrowserSettingsController
+@property TLDefaultBrowserWorkspace *workspace;
+@end
+@implementation TLDefaultBrowserSettingsFixture
+- (NSWorkspace *)browserWorkspace { return self.workspace; }
+- (BOOL)isDefaultForScheme:(NSString *)scheme { return [self.workspace.schemes containsObject:scheme]; }
+@end
+static void TestDefaultBrowserSettings(void) {
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLDefaultBrowserSettingsFixture *controller = [[TLDefaultBrowserSettingsFixture alloc] initWithPalette:[TLThemePalette paletteForPreference:theme.integerValue] preferences:[TLBrowserPreferencesMock new]];
+    controller.workspace = [TLDefaultBrowserWorkspace new];
+    NSWindow *window = HostController(controller);
+    TLThemedButton *button = [controller valueForKey:@"defaultBrowserButton"];
+    NSTextField *status = [controller valueForKey:@"defaultBrowserStatus"];
+    Check(button.enabled && !button.isHiddenOrHasHiddenAncestor, @"default browser action is visible and independent of browser engine startup");
+    Check([button.title isEqual:@"Make Talaria my default browser"], @"default browser action has the requested label");
+    [button sizeToFit];
+    NSBitmapImageRep *render = RenderThemedButton(button);
+    CGFloat surface[3], alpha;
+    RGBComponents(button.palette.tabBackground, surface, &alpha);
+    CompositeColor(button.palette.secondaryActionSurface, 1, surface);
+    Check(PixelMatches(render, 10, NSHeight(button.bounds)/2, surface), @"default browser action renders its themed surface");
+    [NSApp sendAction:button.action to:button.target from:button];
+    Check(!button.enabled && [controller.workspace.requests isEqual:@[@"http"]], @"default request starts once and waits for macOS confirmation");
+    controller.workspace.pending(nil); SettingsTick(window);
+    Check([controller.workspace.requests isEqual:@[@"http", @"https"]], @"both web schemes are requested sequentially");
+    controller.workspace.pending(nil); SettingsTick(window);
+    Check(!button.enabled && [status.stringValue isEqual:@"Talaria is your default browser."], @"success reflects actual handler state");
+    [controller.workspace.schemes removeObject:@"https"];
+    [NSNotificationCenter.defaultCenter postNotificationName:NSApplicationDidBecomeActiveNotification object:NSApp];
+    Check(button.enabled, @"returning from system settings rechecks both URL schemes");
+    [NSApp sendAction:button.action to:button.target from:button];
+    Check(controller.workspace.requests.count == 3 && [controller.workspace.requests.lastObject isEqual:@"https"], @"already assigned scheme is not requested again");
+    controller.workspace.pending([NSError errorWithDomain:NSCocoaErrorDomain code:NSUserCancelledError userInfo:@{NSLocalizedDescriptionKey:@"Cancelled"}]); SettingsTick(window);
+    Check(button.enabled && [status.stringValue isEqual:@"Cancelled"], @"cancellation leaves a retryable action without claiming success");
+    [controller close]; [window close];
+  }
+}
+
 @interface TLImportSettingsFixture : TLBrowserSettingsController
 @end
 @implementation TLImportSettingsFixture
@@ -2605,11 +2440,11 @@ static void TestBrowserOwnsCallbacksAndSession(void) {
         NSView *hit = [controller.view hitTest:point];
         Check(hit == host || [hit isDescendantOf:host], @"both sides of the address bar pass clicks to the page in either theme");
       }
-      NSPoint buttonPoint = [input.heightToggleButton convertPoint:NSMakePoint(NSMidX(input.heightToggleButton.bounds),
-        NSMidY(input.heightToggleButton.bounds)) toView:controller.view.superview];
+      NSPoint buttonPoint = [input.reloadButton convertPoint:NSMakePoint(NSMidX(input.reloadButton.bounds),
+        NSMidY(input.reloadButton.bounds)) toView:controller.view.superview];
       NSView *buttonHit = [controller.view hitTest:buttonPoint];
-      Check(buttonHit == input.heightToggleButton || [buttonHit isDescendantOf:input.heightToggleButton],
-        @"footer button stays interactive above the click-through backdrop");
+      Check(buttonHit == input.reloadButton || [buttonHit isDescendantOf:input.reloadButton],
+        @"reload button stays interactive above the click-through backdrop");
       NSPoint textPoint = [input.textView convertPoint:NSMakePoint(NSMidX(input.textView.bounds), NSMidY(input.textView.bounds))
         toView:controller.view.superview];
       Check([[controller.view hitTest:textPoint] isDescendantOf:input], @"address field still receives clicks");
@@ -3977,8 +3812,22 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_TEST_DEFAULT_BROWSER_ONLY")) {
+      TestThemedButtonRenderedColors();
+      TestDefaultBrowserSettings();
+      NSLog(@"Default browser settings tests passed");
+      return 0;
+    }
+    if (getenv("TL_TEST_BROWSER_EXTENDED_ONLY")) {
+      TestBrowserOwnsCallbacksAndSession();
+      TestBrowserExtendedLayout();
+      TestUnifiedWorkspaceOutline();
+      NSLog(@"Browser extended layout tests passed");
+      return 0;
+    }
     TestLiveThinkingPresentation();
     if (getenv("TL_TEST_THINKING_ONLY")) { NSLog(@"Thinking presentation tests passed"); return 0; }
+    TestDefaultBrowserSettings();
     TestProviderSetupStages();
     TestLinkTabInsertion();
     if (getenv("TL_TEST_BROWSER_IMPORT_ONLY")) {
@@ -4025,12 +3874,7 @@ int main(void) {
     TestComposerModelButtonLayout();
     TestComposerModelDialog();
     TestBrowserOwnsCallbacksAndSession();
-    TestBrowserOverlayLifecycle();
-    TestBrowserContentColorTheme();
-    TestDocumentFooterExclusivity();
-    TestDevToolsFooterPlacement();
-    TestFooterColorReadyBeforeOpening();
-    TestBannerColorOwnership();
+    TestBrowserExtendedLayout();
     TestDragCommitRendersBeforeDeferredReload();
     TestStreamingChatTitlesPersist();
     TestConcurrentChatStreams();

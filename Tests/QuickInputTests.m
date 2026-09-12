@@ -320,9 +320,9 @@ static void TestNotchPresentationAndCapture(void) {
   [selection mouseDown:SelectionEvent(selection, NSEventTypeLeftMouseDown, NSMakePoint(10, 10))];
   [selection mouseUp:SelectionEvent(selection, NSEventTypeLeftMouseUp, NSMakePoint(11, 11))];
   Check(!quick.window.visible && !selection.window.visible && !capture.pendingCompletion, @"a click or tiny drag dismisses without capturing");
-  [quick presentOnScreen:NSScreen.mainScreen];
-  Check(quick.messageInput.showsBackground && !quick.messageInput.backgroundView.hidden && !selection.window.visible,
-        @"ordinary quick input restores its optional glass background and removes capture mode");
+  [quick presentInNotchOnScreen:NSScreen.mainScreen];
+  Check(!quick.messageInput.showsBackground && quick.messageInput.backgroundView.hidden && selection.window.visible,
+        @"reopening always uses the notch surface and retains region capture");
   [quick dismiss];
   Check(NSEqualRects(TLScreenCaptureRect(NSMakeRect(40, 30, 200, 150), NSMakeRect(0, 0, 1440, 900)), NSMakeRect(40, 720, 200, 150)),
         @"screen capture converts AppKit's bottom-up coordinates");
@@ -370,12 +370,13 @@ static void TestPanel(void) {
     TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
     [controller applyPalette:palette];
     NSScreen *screen = NSScreen.mainScreen;
-    NSRect notch = NSMakeRect(NSMidX(screen.visibleFrame) - 160, NSMaxY(screen.visibleFrame) - 40, 200, 40);
-    [controller presentBelowRect:notch onScreen:screen];
+    [controller presentInNotchOnScreen:screen];
     Drain();
-    Check(fabs(NSMaxY(controller.window.frame) - (NSMinY(notch) - palette.space5)) < 1 &&
-      fabs(NSMidX(controller.window.frame) - NSMidX(notch)) < 1,
-      @"popup is centered immediately below the clicked notch");
+    Check(fabs(NSMaxY(controller.window.frame) - NSMaxY(screen.frame)) < 1 &&
+      fabs(NSMidX(controller.window.frame) - NSMidX(screen.frame)) < 1,
+      @"composer remains attached to the top-center notch");
+    Check(![controller respondsToSelector:NSSelectorFromString(@"presentOnScreen:")] &&
+      ![controller respondsToSelector:NSSelectorFromString(@"presentBelowRect:onScreen:")], @"floating presentation entry points are removed");
     Check(controller.window.canBecomeKeyWindow && !controller.window.canBecomeMainWindow, @"popup accepts keyboard without becoming the main window");
     Check((controller.window.styleMask & NSWindowStyleMaskNonactivatingPanel) != 0, @"opening the popup cannot activate other app windows");
     Check(controller.window.firstResponder == controller.messageInput.textView, @"typing focuses the composer immediately");
@@ -392,10 +393,10 @@ static void TestPanel(void) {
     Check(bitmap.pixelsWide > 0 && bitmap.pixelsHigh > 0, @"real shared composer renders in each theme");
     NSString *path = theme.integerValue == TLThemePreferenceLight ? @"/tmp/talaria-quick-input-light.png" : @"/tmp/talaria-quick-input-dark.png";
     [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
-    Check(controller.messageInput.palette == palette && [controller.messageInput.textView.textColor isEqual:palette.controlText], @"theme reaches existing popup text and controls");
+    Check(controller.messageInput.palette.dark && [controller.messageInput.textView.textColor isEqual:controller.messageInput.palette.controlText], @"notch text stays readable on its dark surface in both app themes");
     Escape(controller);
     Check(!controller.window.visible && submissions == 0, @"Escape closes without submitting");
-    [controller presentOnScreen:NSScreen.mainScreen];
+    [controller presentInNotchOnScreen:NSScreen.mainScreen];
     Check([controller.messageInput.textView.string hasPrefix:@"A multi-line"], @"dismissed draft is available on reopening");
     SetText(controller, @"example.com");
     TLInputSuggestionListView *list = [controller valueForKey:@"suggestionList"];
@@ -409,11 +410,11 @@ static void TestPanel(void) {
     Escape(controller);
     Check(!controller.window.visible, @"Escape dismisses the whole popup even with suggestions visible");
   }
-  [controller presentOnScreen:NSScreen.mainScreen];
+  [controller presentInNotchOnScreen:NSScreen.mainScreen];
   SetText(controller, @"  Start a new request  ");
   Submit(controller); Submit(controller);
   Check(submissions == 1 && [submittedText isEqual:@"Start a new request"], @"Return submits once and trims whitespace");
-  [controller presentOnScreen:NSScreen.mainScreen];
+  [controller presentInNotchOnScreen:NSScreen.mainScreen];
   Check(controller.messageInput.textView.string.length == 0, @"submitted draft is cleared");
   SetText(controller, @"example.com");
   TLInputSuggestionListView *list = [controller valueForKey:@"suggestionList"];
@@ -421,14 +422,14 @@ static void TestPanel(void) {
   TLGlassButton *send = controller.messageInput.sendButton;
   [NSApp sendAction:send.action to:send.target from:send];
   Check(submissions == 2 && !automaticRouting, @"Send message suggestion bypasses URL routing");
-  [controller presentOnScreen:NSScreen.mainScreen];
+  [controller presentInNotchOnScreen:NSScreen.mainScreen];
   controller.commands = @[@{@"kind":@"hermes", @"command":@"/help", @"title":@"Help", @"icon":@"terminal", @"description":@"Help"}];
   SetText(controller, @"/he");
   [controller textView:controller.messageInput.textView doCommandBySelector:@selector(insertTab:)];
   Check([controller.messageInput.textView.string isEqual:@"/help "] && submissions == 2, @"Tab completes discovered commands without opening workspace");
   Submit(controller);
   Check(submissions == 3 && [submittedText isEqual:@"/help"], @"completed command submits normally");
-  [controller presentOnScreen:NSScreen.mainScreen];
+  [controller presentInNotchOnScreen:NSScreen.mainScreen];
   SetText(controller, @"line one");
   [controller.messageInput.textView setSelectedRange:NSMakeRange(8, 0)];
   NSEvent *shiftReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagShift
@@ -438,7 +439,7 @@ static void TestPanel(void) {
   [controller.window makeFirstResponder:controller.messageInput.settingsButton];
   [controller.window cancelOperation:nil];
   Check(!controller.window.visible, @"Escape also works when a composer button has focus");
-  [controller presentOnScreen:NSScreen.mainScreen];
+  [controller presentInNotchOnScreen:NSScreen.mainScreen];
   NSPanel *sheet = [[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,300,180)
     styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
   __block NSModalResponse response = NSModalResponseOK;
@@ -446,7 +447,7 @@ static void TestPanel(void) {
   [controller dismiss]; Drain();
   Check(!sheet.visible && !controller.window.attachedSheet && response == NSModalResponseCancel,
     @"dismissal cancels attached dialogs so they cannot strand the popup");
-  [controller presentOnScreen:NSScreen.mainScreen];
+  [controller presentInNotchOnScreen:NSScreen.mainScreen];
   Check(controller.window.visible, @"popup reopens after dismissing an attached dialog");
   [controller dismiss];
   controller.submissionHandler = nil;
@@ -531,8 +532,7 @@ static void TestWorkspaceHandoff(void) {
   Check([notch valueForKey:@"trackingTimer"] == nil, @"disabled notch cannot restart through another caller");
   [window orderOut:nil]; Drain();
   [owner openFromNotchOverlay:nil]; Drain();
-  Check(quick.window.visible, @"quick input still opens while the notch is disabled");
-  Escape(quick);
+  Check(window.visible && !quick.window.visible, @"shortcut opens only the main window when the notch is disabled");
   Check([notch valueForKey:@"trackingTimer"] == nil, @"dismissing quick input never re-enables a disabled notch");
   notch.enabled = YES; [notch startTracking];
   Check([notch valueForKey:@"trackingTimer"] != nil, @"re-enabling the notch restores tracking");
@@ -550,18 +550,18 @@ static void TestFocusAndDraftRestoration(void) {
   other.releasedWhenClosed = NO;
   NSArray<NSURL *> *files = @[[NSURL fileURLWithPath:@"/tmp/quick-draft-one.txt"],
                             [NSURL fileURLWithPath:@"/tmp/quick-draft-two.png"]];
-  [quick presentOnScreen:NSScreen.mainScreen];
+  [quick presentInNotchOnScreen:NSScreen.mainScreen];
   SetText(quick, @"Keep this draft\nand its attachments");
   [quick.messageInput addAttachmentURLs:files];
   [other makeKeyAndOrderFront:nil]; Drain();
   Check(!quick.window.visible && !reportedVisible, [NSString stringWithFormat:
     @"moving focus hides quick input and releases notch suppression (visible %d, reported %d, key %d, other key %d)",
     quick.window.visible, reportedVisible, quick.window.keyWindow, other.keyWindow]);
-  [quick presentOnScreen:NSScreen.mainScreen]; Drain();
+  [quick presentInNotchOnScreen:NSScreen.mainScreen]; Drain();
   Check([quick.messageInput.textView.string isEqual:@"Keep this draft\nand its attachments"] &&
     [quick.messageInput.attachmentURLs isEqualToArray:files], @"focus dismissal restores exact text and attachments on reopening");
   Escape(quick);
-  [quick presentOnScreen:NSScreen.mainScreen]; Drain();
+  [quick presentInNotchOnScreen:NSScreen.mainScreen]; Drain();
   Check([quick.messageInput.attachmentURLs isEqualToArray:files] &&
     [quick.messageInput.textView.string hasPrefix:@"Keep this draft"], @"Escape preserves the same draft and attachments");
 
@@ -598,7 +598,7 @@ static void TestFocusAndDraftRestoration(void) {
   quick.settingsHandler = nil;
   [other makeKeyAndOrderFront:nil]; Drain();
   Check(!quick.window.visible, @"outside focus still dismisses after a picker and menu have closed");
-  [quick presentOnScreen:NSScreen.mainScreen]; Drain();
+  [quick presentInNotchOnScreen:NSScreen.mainScreen]; Drain();
   Check([quick.messageInput.attachmentURLs isEqualToArray:files] &&
     [quick.messageInput.textView.string isEqual:@"Keep this draft\nand its attachments"], @"repeated focus changes preserve the complete draft");
   [quick dismiss];

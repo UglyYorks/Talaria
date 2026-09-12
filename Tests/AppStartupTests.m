@@ -79,6 +79,29 @@ static void (^openCompletion)(NSRunningApplication *, NSError *);
 }
 @end
 
+@interface TLExternalLinkWindow : NSObject
+@property NSMutableArray<NSURL *> *URLs;
+@end
+@implementation TLExternalLinkWindow
+- (void)openBrowserTabWithURL:(NSURL *)URL { if (!self.URLs) self.URLs = [NSMutableArray array]; [self.URLs addObject:URL]; }
+@end
+@interface TLExternalLinkDelegate : TLAppDelegate
+@property NSUInteger presentations;
+@end
+@implementation TLExternalLinkDelegate
+- (void)presentMainWindow:(id)sender { self.presentations++; }
+@end
+static void TestExternalWebLinks(void) {
+  TLExternalLinkDelegate *delegate = [TLExternalLinkDelegate new];
+  NSArray *URLs = @[[NSURL URLWithString:@"https://example.com/a"], [NSURL URLWithString:@"http://example.com/b"]];
+  [delegate application:NSApp openURLs:URLs];
+  Check([[delegate valueForKey:@"pendingWebURLs"] isEqual:URLs], @"cold-start web links are queued until the window exists");
+  TLExternalLinkWindow *window = [TLExternalLinkWindow new];
+  [delegate setValue:window forKey:@"windowController"];
+  [delegate application:NSApp openURLs:[URLs arrayByAddingObject:[NSURL URLWithString:@"file:///tmp/ignored"]]];
+  Check([window.URLs isEqual:URLs] && delegate.presentations == 1, @"running app opens web links in order and presents its window without accepting other schemes");
+}
+
 static TLStartupRunningApplication *App(pid_t PID, NSTimeInterval launched) {
   TLStartupRunningApplication *app = [TLStartupRunningApplication new];
   app.processIdentifier = PID;
@@ -149,6 +172,7 @@ static void Launch(TLStartupRunningApplication *current, NSArray *running, TLSta
 int main(void) {
   @autoreleasepool {
     [TLStartupApplication sharedApplication];
+    TestExternalWebLinks();
     Method current = class_getClassMethod(NSRunningApplication.class, @selector(currentApplication));
     Method testCurrent = class_getClassMethod(NSRunningApplication.class, @selector(startupTestCurrentApplication));
     Method running = class_getClassMethod(NSRunningApplication.class, @selector(runningApplicationsWithBundleIdentifier:));

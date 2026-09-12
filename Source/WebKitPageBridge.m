@@ -254,9 +254,8 @@ static NSError *TLPageError(NSString *message) {
   self.configuration = [configuration copy];
   NSMutableDictionary *documentConfiguration = [configuration mutableCopy];
   if (@available(macOS 26.0, *)) {
-    // Keep the full WKWebView rendering behind the floating input. WebKit owns
-    // the unobscured viewport, scroll limits, and fixed/sticky element placement.
-    // A DOM spacer here would add a second footer to the native inset.
+    // Preserve a separate extended band below the page's layout viewport.
+    // WebKit keeps fixed controls and scroll limits above the floating input.
     CGFloat height = [configuration[@"height"] doubleValue];
     CGFloat bottom = [configuration[@"enabled"] boolValue] && isfinite(height) ? MAX(0, height) : 0;
     self.webView.obscuredContentInsets = NSEdgeInsetsMake(0, 0, bottom, 0);
