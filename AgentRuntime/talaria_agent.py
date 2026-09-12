@@ -376,11 +376,15 @@ def stream_hermes_session(request, output=None, cancellation=None):
             return
         save_agent_soul(request)
         gateway = tui_gateway(token, model)
+        host_description = request.get("host_command_description")
+        if host_description:
+            gateway.call("talaria.host.configure", {"description": host_description})
         gateway.run(session_id, model, prompt, lambda kind, text: emit(
             {"type": "delta", "request_id": request_id, "kind": kind,
              ("payload" if isinstance(text, dict) else "text"): text}, output),
             cancellation=cancellation, approval_response=request.get("approval_response"),
-            wait_for_previous_turn=request.get("wait_for_previous_turn") is True)
+            wait_for_previous_turn=request.get("wait_for_previous_turn") is True,
+            host_commands=bool(host_description))
         cancellation.finish()
         if not cancellation.cancelled():
             emit({"type": "complete"}, output)
@@ -475,7 +479,7 @@ def handle_request(request, output=None, cancellation=None):
         elif operation == "incognito_attachments":
             rows = incognito_runtime.upload(tui_gateway(), request.get("files"))
             emit({"type": "delta", "request_id": request.get("request_id"), "kind": "content", "text": json.dumps(rows)}, output)
-        elif operation in {"hermes_session_chat", "hermes_select_model", "hermes_commands", "models", "hermes_generate_text", "hermes_history"}:
+        elif operation in {"hermes_session_chat", "hermes_select_model", "hermes_commands", "models", "hermes_generate_text", "hermes_history", "hermes_host_response"}:
             return _handle_request(request, output, cancellation)
         else:
             raise ValueError("This operation is unavailable in Incognito. Use a normal window to change agent settings.")
@@ -489,6 +493,14 @@ def handle_request(request, output=None, cancellation=None):
 
 def _handle_request(request, output=None, cancellation=None):
     operation = request.get("operation")
+    if operation == "hermes_host_response":
+        try:
+            result = tui_gateway().call("talaria.host.respond", request.get("params") or {})
+            emit({"type": "result", "result": result}, output)
+            emit({"type": "complete"}, output)
+        except (OSError, ValueError, RuntimeError) as exc:
+            error(str(exc), output)
+        return
     if operation == "shell_command":
         run_shell_command(request, output)
         return 0

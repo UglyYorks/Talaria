@@ -96,6 +96,9 @@ def skill_metadata():
 
 
 def register(server):
+    from hermes_host_commands import register as register_host_commands
+    register_host_commands(server)
+
     @server.method("talaria.skills.describe")
     def describe_skills(rid, params):
         try:

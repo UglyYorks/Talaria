@@ -30,6 +30,8 @@ typedef void (^TLAgentVMConnectionCompletionHandler)(VZVirtioSocketConnection *_
             completion:(TLAgentVMConnectionCompletionHandler)completion;
 - (BOOL)deleteVMForAgent:(TLAgentRecord *)agent error:(NSError **)error;
 - (BOOL)isAgentRunning:(TLAgentRecord *)agent;
+// nil when stopped; otherwise the folders actually exported by the running VM.
+- (nullable NSDictionary<NSString *, NSString *> *)folderMountPathsForAgent:(TLAgentRecord *)agent;
 
 @end
 

@@ -1,3 +1,4 @@
+#import "TLQuestionRequest.h"
 #import <Foundation/Foundation.h>
 #import "AssistantTurnRunner.h"
 
@@ -510,8 +511,39 @@ static void TestRegeneration(void) {
   }
 }
 
+static void TestNativeQuestions(void) {
+  for (NSNumber *cancelled in @[@NO, @YES]) {
+    TLTurnTestMessageStore *store = [TLTurnTestMessageStore new];
+    TLTurnTestStream *stream = [TLTurnTestStream new]; stream.deferred = YES;
+    TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+    NSMutableArray<TLChatMessage *> *messages = [NSMutableArray array];
+    __block NSUInteger updates = 0, responses = 0;
+    [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"Check my Mac"
+      updateHandler:^{ updates++; } completionHandler:nil error:nil];
+    TLTurnTestRequest *turn = stream.requests.lastObject;
+    TLQuestionRequest *question = [[TLQuestionRequest alloc] initWithPresentation:@{@"title":@"Allow?", @"options":@[@{@"id":@"once", @"title":@"Allow once"}]}
+      response:^(NSString *choice) { responses++; }];
+    turn.delta(@"other-turn", TLAgentStreamDeltaKindQuestion, @{@"question":question});
+    TLAssert(!messages.lastObject.questions.count, @"a different turn cannot inject a live question");
+    turn.delta(turn.requestID, TLAgentStreamDeltaKindQuestion, @{@"question":question});
+    TLAssert(runner.running && messages.lastObject.questions.firstObject == question, @"question stays on the original active assistant message");
+    TLAssert(!messages.lastObject.content.length && !messages.lastObject.requestDictionary[@"questions"], @"question callbacks are never serialized or sent to the model");
+    NSUInteger before = updates;
+    if (cancelled.boolValue) [runner cancel];
+    else {
+      TLAssert([question respondWithOption:@"once"], @"answering a native question does not start a second turn");
+      TLAssert(updates > before && runner.running && stream.requests.count == 1 && responses == 1, @"choice updates the inline row while generation continues");
+      turn.delta(turn.requestID, TLAgentStreamDeltaKindContent, @"Done");
+      turn.completion(nil);
+    }
+    TLAssert(!question.pending && ![question respondWithOption:@"once"], @"completed and cancelled turns disable stale questions");
+    TLAssert(messages.lastObject.questions.firstObject == question, @"resolved card survives replacement with the stored assistant message");
+  }
+}
+
 int main(void) {
   @autoreleasepool {
+    TestNativeQuestions();
     TestAttachmentPrompt();
     TestRegeneration();
     TestLiveToolActivity();

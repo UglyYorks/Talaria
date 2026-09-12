@@ -1,5 +1,6 @@
 #import "AgentVMService.h"
 #import "TLAgentVMLock.h"
+#import "TLFolderMounts.h"
 #import <Virtualization/Virtualization.h>
 
 static NSString * const TLAgentVMErrorDomain = @"Talaria.AgentVM";
@@ -241,6 +242,19 @@ static NSString *TLAgentTrim(NSString *value) {
   return virtualMachine.state == VZVirtualMachineStateRunning;
 }
 
+- (NSDictionary<NSString *, NSString *> *)folderMountPathsForAgent:(TLAgentRecord *)agent {
+  VZVirtualMachine *vm = self.runningVMs[@(agent.agentID)];
+  if (vm.state != VZVirtualMachineStateRunning) return nil;
+  NSMutableDictionary *paths = [NSMutableDictionary dictionary];
+  for (VZVirtioFileSystemDevice *device in vm.directorySharingDevices) {
+    if (![device isKindOfClass:VZVirtioFileSystemDevice.class] || ![device.tag isEqual:TLFolderMountTag] ||
+        ![device.share isKindOfClass:VZMultipleDirectoryShare.class]) continue;
+    NSDictionary<NSString *, VZSharedDirectory *> *directories = ((VZMultipleDirectoryShare *)device.share).directories;
+    for (NSString *name in directories) paths[directories[name].URL.path] = [TLFolderMountRoot stringByAppendingPathComponent:name];
+  }
+  return paths;
+}
+
 - (VZVirtualMachine *)virtualMachineForAgent:(TLAgentRecord *)agent error:(NSError **)error {
   if (!self.virtualizationSupported) {
     if (error) {
@@ -292,7 +306,9 @@ static NSString *TLAgentTrim(NSString *value) {
   if (!configuration.storageDevices) {
     return nil;
   }
-  configuration.directorySharingDevices = @[[self directorySharingDeviceForAgent:agent]];
+  VZVirtioFileSystemDeviceConfiguration *folders = [self folderSharingDeviceForAgent:agent error:error];
+  if (!folders) return nil;
+  configuration.directorySharingDevices = @[[self directorySharingDeviceForAgent:agent], folders];
 
   NSError *validationError = nil;
   if (![configuration validateWithError:&validationError]) {
@@ -428,6 +444,25 @@ static NSString *TLAgentTrim(NSString *value) {
   VZVirtioFileSystemDeviceConfiguration *fileSystem = [[VZVirtioFileSystemDeviceConfiguration alloc] initWithTag:@"talaria"];
   fileSystem.share = [[VZSingleDirectoryShare alloc] initWithDirectory:sharedDirectory];
   return fileSystem;
+}
+
+- (VZVirtioFileSystemDeviceConfiguration *)folderSharingDeviceForAgent:(TLAgentRecord *)agent error:(NSError **)error {
+  NSDictionary<NSString *, NSString *> *paths = TLFolderMountPaths(agent.folderPaths);
+  NSMutableDictionary *directories = [NSMutableDictionary dictionary];
+  for (NSString *path in paths) {
+    BOOL directory = NO;
+    if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&directory] || !directory ||
+        ![NSFileManager.defaultManager isReadableFileAtPath:path]) {
+      if (error) *error = TLAgentVMError([NSString stringWithFormat:@"Cannot share %@. Choose an accessible folder in Folder Access, then start the agent again.", path]);
+      return nil;
+    }
+    NSString *name = [paths[path] lastPathComponent];
+    if (![VZMultipleDirectoryShare validateName:name error:error]) return nil;
+    directories[name] = [[VZSharedDirectory alloc] initWithURL:[NSURL fileURLWithPath:path isDirectory:YES] readOnly:NO];
+  }
+  VZVirtioFileSystemDeviceConfiguration *device = [[VZVirtioFileSystemDeviceConfiguration alloc] initWithTag:TLFolderMountTag];
+  device.share = [[VZMultipleDirectoryShare alloc] initWithDirectories:directories];
+  return device;
 }
 
 - (NSUInteger)clampedCPUCount:(NSUInteger)requestedCPUCount {

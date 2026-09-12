@@ -3213,7 +3213,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)restorePendingApproval:(NSDictionary *)response inMessages:(NSArray<TLChatMessage *> *)messages {
   for (TLChatMessage *message in messages) {
-    if ([message.approvalRequest[@"request_id"] isEqual:response[@"request_id"]]) {
+    if ([message.approvalRequest[@"request_id"] isEqual:response[@"request_id"]] &&
+        (![response[@"kind"] isEqual:@"clarification"] ||
+         [(message.approvalRequest[@"question_id"] ?: @"") isEqual:response[@"question_id"] ?: @""])) {
       NSMutableDictionary *request = [message.approvalRequest mutableCopy];
       [request removeObjectForKey:@"submitted"];
       message.approvalRequest = request;
@@ -3227,7 +3229,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   for (TLChatMessage *message in self.messages) {
     if ([message.approvalRequest[@"request_id"] isEqual:requestID] && ![message.approvalRequest[@"submitted"] boolValue]) pending = message;
   }
-  if (!pending || ![TLApprovalChoices(pending.approvalRequest) containsObject:choice]) return NO;
+  BOOL clarification = [pending.approvalRequest[@"kind"] isEqual:@"clarification"];
+  if (!pending || (clarification ? !choice.length : ![TLApprovalChoices(pending.approvalRequest) containsObject:choice])) return NO;
   if (!self.settings.selectedModel.length) {
     [self presentErrorMessage:@"Choose a model before responding to Hermes."];
     return NO;
@@ -3235,9 +3238,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   NSMutableDictionary *request = [pending.approvalRequest mutableCopy];
   request[@"submitted"] = @YES;
   pending.approvalRequest = request;
-  NSDictionary *response = @{@"request_id":requestID, @"choice":choice};
+  NSDictionary *response = clarification ? @{@"kind":@"clarification", @"request_id":requestID,
+    @"question_id":request[@"question_id"] ?: @"", @"answer":choice} : @{@"request_id":requestID, @"choice":choice};
   [self beginPreparedTurnWithChat:self.activeChat messages:self.messages token:self.settings.openRouterToken
-    model:self.settings.selectedModel prompt:TLApprovalChoiceTitle(choice) attachments:@[] sourceURLs:@[] approvalResponse:response];
+    model:self.settings.selectedModel prompt:clarification ? choice : TLApprovalChoiceTitle(choice) attachments:@[] sourceURLs:@[] approvalResponse:response];
   return [pending.approvalRequest[@"submitted"] boolValue];
 }
 

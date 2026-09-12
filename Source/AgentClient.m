@@ -2,6 +2,8 @@
 #import "TLAgentProtocol.h"
 #import "AgentVMService.h"
 #import "AgentModel.h"
+#import "PromptBuilder.h"
+#import "TLHostCommandBridge.h"
 #import <Virtualization/Virtualization.h>
 
 static NSString * const TLAgentClientErrorDomain = @"Talaria.AgentClient";
@@ -31,6 +33,9 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 @property (nonatomic, copy) TLBundledAgentRequestReleaseHandler releaseHandler;
 @property (nonatomic) BOOL finished;
 @property (nonatomic) BOOL receivedTerminalEvent;
+@property (nonatomic, copy) void (^hostCommandHandler)(NSDictionary *, TLBundledAgentRequest *);
+@property (nonatomic, strong) NSMutableArray<TLHostCommandOperation *> *hostCommands;
+@property (nonatomic, strong) NSMutableSet<NSString *> *hostCommandIDs;
 
 - (BOOL)startWithConnection:(VZVirtioSocketConnection *)connection
                     payload:(NSDictionary *)payload
@@ -43,6 +48,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 @interface TLBundledAgentClient ()
 
 @property (nonatomic, strong) TLAgentVMService *vmService;
+@property (nonatomic, strong) TLHostCommandBridge *hostBridge;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLAgentRecord *> *incognitoAgents;
 @property (nonatomic, strong) NSTimer *incognitoLeaseTimer;
 @property (nonatomic) BOOL incognitoClosed;
@@ -57,6 +63,8 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   if (self) {
     _decoder = [TLAgentFrameDecoder new];
     _operation = @"";
+    _hostCommands = [NSMutableArray array];
+    _hostCommandIDs = [NSMutableSet set];
   }
   return self;
 }
@@ -139,6 +147,18 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     return;
   }
   if ([type isEqualToString:@"delta"]) {
+    if ([event[@"kind"] isEqual:@"host_command"]) {
+      if (!self.hostCommandHandler) {
+        [self finishWithError:TLAgentClientError(@"Host commands are unavailable for this request.") models:nil];
+        return;
+      }
+      dispatch_async(dispatch_get_main_queue(), ^{
+        @synchronized (self) {
+          if (!self.finished) self.hostCommandHandler(event[@"payload"], self);
+        }
+      });
+      return;
+    }
     if (self.JSONResult && [event[@"kind"] isEqual:@"content"]) [self.JSONResult appendLegacyText:event[@"text"]];
     else [self emitDelta:event];
     return;
@@ -173,6 +193,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   TLAgentStreamDeltaKind kind;
   if ([kindString isEqualToString:@"thinking"]) kind = TLAgentStreamDeltaKindThinking;
   else if ([kindString isEqualToString:@"status"]) kind = TLAgentStreamDeltaKindStatus;
+  else if ([kindString isEqualToString:@"clarification"]) kind = TLAgentStreamDeltaKindClarification;
   else if ([kindString isEqualToString:@"approval"]) kind = TLAgentStreamDeltaKindApproval;
   else if ([kindString isEqualToString:@"tool_activity"]) kind = TLAgentStreamDeltaKindToolActivity;
   else if ([kindString isEqualToString:@"content"]) kind = TLAgentStreamDeltaKindContent;
@@ -209,12 +230,16 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 
     self.finished = YES;
     self.receivedTerminalEvent = YES;
+    // Invalidate consent synchronously with disconnect/Stop, before a queued
+    // main-thread question response can start another command.
+    for (TLHostCommandOperation *command in self.hostCommands) [command cancel];
     [self closeConnection];
   }
 
   NSDictionary *result = nil;
   if (self.JSONResult && !error) result = [self.JSONResult finish:&error];
   dispatch_async(dispatch_get_main_queue(), ^{
+    [self.hostCommands removeAllObjects];
     if (self.resultCompletion) {
       self.resultCompletion(result, error);
     } else if (self.modelCompletion) {
@@ -242,6 +267,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 - (void)closeIncognito {
   if (self.incognitoClosed || !self.incognitoID.length) return;
   self.incognitoClosed = YES;
+  [self.hostBridge clearPrivateScope:self.incognitoID];
   [self.incognitoLeaseTimer invalidate];
   for (TLBundledAgentRequest *request in self.activeRequests.copy)
     [request finishWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil] models:nil];
@@ -266,6 +292,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   self = [super init];
   if (self) {
     _vmService = vmService;
+    _hostBridge = TLHostCommandBridge.sharedBridge;
     _activeRequests = [NSMutableSet set];
   }
   return self;
@@ -369,6 +396,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     @"model": model ?: @"",
     @"prompt": prompt ?: @"",
     @"soul": agent.soul ?: @"",
+    @"host_command_description": TLPromptBuilder.hostCommandToolDescription,
   } mutableCopy];
   if (approvalResponse) payload[@"approval_response"] = approvalResponse;
   [self startWorkerWithAgent:agent payload:payload operation:@"hermes_session_chat"
@@ -520,6 +548,36 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   request.streamCompletion = streamCompletion;
   request.modelCompletion = modelCompletion;
   request.resultCompletion = resultCompletion;
+  if ([operation isEqual:@"hermes_session_chat"]) {
+    TLHostCommandBridge *bridge = self.hostBridge;
+    NSString *chatID = payload[@"session_id"];
+    NSString *privateScope = self.incognitoID ?: @"";
+    __weak typeof(self) hostClient = self;
+    request.hostCommandHandler = ^(NSDictionary *hostRequest, TLBundledAgentRequest *owner) {
+      NSString *identifier = hostRequest[@"request_id"];
+      if (![identifier isKindOfClass:NSString.class] || !identifier.length || identifier.length > 128 ||
+          ![hostRequest[@"session_id"] isKindOfClass:NSString.class] || ![hostRequest[@"session_id"] length] ||
+          [owner.hostCommandIDs containsObject:identifier]) {
+        [owner finishWithError:TLAgentClientError(@"Invalid or repeated host command request.") models:nil]; return;
+      }
+      [owner.hostCommandIDs addObject:identifier];
+      TLHostCommandOperation *command = [bridge runRequest:hostRequest
+        agent:agent.vmDirectory name:agent.name chat:chatID privateScope:privateScope
+        presentQuestion:owner.deltaHandler ? ^(TLQuestionRequest *question) {
+          owner.deltaHandler(owner.requestID, TLAgentStreamDeltaKindQuestion, @{@"question":question});
+        } : nil
+        completion:^(NSDictionary *result) {
+          if (owner.finished) return;
+          [hostClient performJSONOperation:@"hermes_host_response" agent:agent
+            parameters:@{@"params":@{@"request_id":identifier, @"session_id":hostRequest[@"session_id"], @"result":result}}
+            completion:^(NSDictionary *response, NSError *replyError) {
+              if (!replyError && ![response[@"resolved"] boolValue]) replyError = TLAgentClientError(@"Hermes did not accept the host command result.");
+              if (replyError && !owner.finished) [owner finishWithError:replyError models:nil];
+            }];
+        }];
+      [owner.hostCommands addObject:command];
+    };
+  }
   if (resultCompletion) request.JSONResult = [TLAgentJSONResult new];
   __weak typeof(self) weakSelf = self;
   request.releaseHandler = ^(id finishedRequest) {

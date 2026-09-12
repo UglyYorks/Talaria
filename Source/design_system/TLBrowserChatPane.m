@@ -6,6 +6,9 @@
 
 @interface TLBrowserChatPane ()
 @property NSDictionary *approvalRequest;
+@property NSArray<TLQuestionRequest *> *questions;
+@property NSArray<TLQuestionCardView *> *questionCards;
+@property NSArray<NSDictionary *> *questionPresentations;
 @property TLApprovalCardView *approvalCard;
 @property NSStackView *contentStack;
 @property TLToolActivityView *activityView;
@@ -129,6 +132,27 @@
   NSDictionary *approval = self.approvalRequest;
   self.approvalRequest = nil;
   [self showApprovalRequest:approval];
+  self.questionPresentations = nil;
+  [self showQuestions:self.questions ?: @[]];
+}
+- (void)showQuestions:(NSArray<TLQuestionRequest *> *)questions {
+  NSArray *presentations = [questions valueForKey:@"presentation"];
+  if ([self.questions isEqual:questions] && [self.questionPresentations isEqual:presentations]) return;
+  self.questions = [questions copy];
+  self.questionPresentations = presentations;
+  for (NSView *card in self.questionCards) {
+    [self.contentStack removeArrangedSubview:card];
+    [card removeFromSuperview];
+  }
+  NSMutableArray *cards = [NSMutableArray array];
+  for (TLQuestionRequest *question in questions) {
+    TLQuestionCardView *card = [[TLQuestionCardView alloc] initWithRequest:question.presentation palette:self.palette];
+    card.choiceHandler = ^BOOL(NSString *choice) { return [question respondWithOption:choice]; };
+    [self.contentStack addArrangedSubview:card];
+    [card.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor].active = YES;
+    [cards addObject:card];
+  }
+  self.questionCards = cards;
 }
 - (void)showApprovalRequest:(NSDictionary *)request {
   if ([(self.approvalRequest ?: @{}) isEqual:request ?: @{}]) return;

@@ -32,10 +32,13 @@
     self.titleLabel = [NSTextField labelWithString:[NSString stringWithFormat:@"%@  %@ — Folder Access", agent.avatar, agent.name]];
     self.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.titleLabel.toolTip = agent.name;
-    self.detailLabel = [NSTextField wrappingLabelWithString:@"Choose folders for this agent. Saved for future VM mounts; folder access is not enabled yet."];
+    self.detailLabel = [NSTextField wrappingLabelWithString:@"Shared folders are writable from the VM. Changes also affect files on your Mac."];
     self.folderPicker = [[TLFolderAccessPicker alloc] init];
     self.folderPicker.palette = palette;
     self.folderPicker.folderPaths = agent.folderPaths;
+    self.folderPicker.activeMountPaths = [orchestrator folderMountPathsForAgent:agent];
+    __weak typeof(self) weakSelf = self;
+    self.folderPicker.changeHandler = ^{ [weakSelf updateMountStatus]; };
     self.statusLabel = [NSTextField wrappingLabelWithString:@""];
     self.statusLabel.maximumNumberOfLines = 2;
     self.separator = [[TLTokenView alloc] init];
@@ -75,8 +78,15 @@
       [self.statusLabel.centerYAnchor constraintEqualToAnchor:actions.centerYAnchor],
     ]];
     [self applyPalette:palette];
+    [self updateMountStatus];
   }
   return self;
+}
+
+- (void)updateMountStatus {
+  NSDictionary *active = self.folderPicker.activeMountPaths;
+  self.statusLabel.stringValue = !active ? @"Folders mount when the agent starts." :
+    [active isEqual:self.folderPicker.mountPaths] ? @"Folder mounts match the running VM." : @"Save, then restart the agent to apply changes.";
 }
 
 - (void)save:(id)sender {

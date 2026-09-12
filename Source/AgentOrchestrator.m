@@ -126,6 +126,10 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   return agent && [self.vmService isAgentRunning:agent];
 }
 
+- (NSDictionary<NSString *, NSString *> *)folderMountPathsForAgent:(TLAgentRecord *)agent {
+  return [self.vmService folderMountPathsForAgent:agent];
+}
+
 - (NSString *)displayStatusForAgent:(TLAgentRecord *)agent {
   if ([self isInitializingAgentWithID:agent.agentID]) return @"Installing Hermes…";
   if ([agent.status isEqualToString:TLAgentStatusStarting]) return @"Starting VM…";
@@ -392,17 +396,22 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
       return;
     }
     NSDictionary *approvalResponse = messages.lastObject.approvalResponse;
+    NSMutableArray<TLChatMessage *> *inputMessages = [messages mutableCopy];
+    if (!approvalResponse) {
+      NSString *context = [TLPromptBuilder sharedFolderContext:[self folderMountPathsForAgent:agent] ?: @{}];
+      if (context.length) [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:context thinking:nil] atIndex:0];
+    }
     if (approvalResponse) {
       if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:approvalResponse:delta:completion:)]) {
         finish(TLAgentOrchestratorError(@"Update the agent runtime to respond to this approval."));
         return;
       }
       [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID token:token model:model
-        prompt:TLHermesInputFromMessages(messages) approvalResponse:approvalResponse delta:delta completion:finish];
+        prompt:TLHermesInputFromMessages(inputMessages) approvalResponse:approvalResponse delta:delta completion:finish];
       return;
     }
     [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID
-                                             token:token model:model prompt:TLHermesInputFromMessages(messages)
+                                             token:token model:model prompt:TLHermesInputFromMessages(inputMessages)
                                              delta:delta completion:finish];
   }];
 }

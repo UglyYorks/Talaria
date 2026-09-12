@@ -498,6 +498,7 @@
     return [controller.browserConversation respondToApproval:requestID choice:choice token:settings.openRouterToken model:settings.selectedModel];
   };
   [self.browserChatPane showApprovalRequest:conversation.pendingApproval];
+  [self.browserChatPane showQuestions:conversation.questions];
   [self.browserChatPane showToolActivities:conversation.toolActivities];
   [self.browserChatPane showMarkdown:conversation.markdown loading:conversation.loading];
   self.browserAddressInput.chatVisible = conversation.minimized;

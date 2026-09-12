@@ -149,6 +149,18 @@ static void TestBrowserChatPane(void) {
   [window.contentView layoutSubtreeIfNeeded];
   Check([[pane valueForKey:@"approvalCard"] superview] == activityView.superview, @"approval and live tools share the visible transcript");
   [pane showApprovalRequest:nil];
+  __block NSUInteger answered = 0;
+  TLQuestionRequest *question = [[TLQuestionRequest alloc] initWithPresentation:@{@"title":@"Allow a command?", @"options":@[@{@"id":@"deny", @"title":@"Deny"}]}
+    response:^(NSString *option) { answered++; }];
+  [pane showQuestions:@[question]];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSArray *cards = [pane valueForKey:@"questionCards"];
+  Check(cards.count == 1 && [cards.firstObject superview] == activityView.superview, @"live native questions share the browser transcript");
+  [question respondWithOption:@"deny"];
+  [pane showQuestions:@[question]];
+  Check(answered == 1 && ![question respondWithOption:@"deny"], @"browser question responses remain one-shot after rerendering");
+  [pane showQuestions:@[]];
+
   [pane showMarkdown:@"# Working on your request\n\nI’m checking the results." loading:NO];
   [window.contentView layoutSubtreeIfNeeded];
   CGFloat collapsedHeight = NSHeight(activityView.frame);

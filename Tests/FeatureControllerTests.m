@@ -1,3 +1,4 @@
+#import "TLHostCommandBridge.h"
 #import "TLBrowserContentColor.h"
 #import "TLChatControllerTestSupport.h"
 #import "design_system/TLInputSuggestionPanelView.h"
@@ -592,6 +593,108 @@ static void TestApprovalCard(void) {
   [window close];
 }
 
+static void TestQuestionCard(void) {
+  NSDictionary *request = @{@"title":@"Which days work for you?", @"description":@"Choose any that apply, or type an answer.",
+    @"options":@[@{@"id":@"monday", @"title":@"Monday"}, @{@"id":@"friday", @"title":@"Friday"}],
+    @"allows_text":@YES, @"multi_select":@YES};
+  TLQuestionCardView *card = [[TLQuestionCardView alloc] initWithRequest:request palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 740, 520)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  [window.contentView addSubview:card];
+  NSLayoutConstraint *width = [card.widthAnchor constraintEqualToConstant:700];
+  [NSLayoutConstraint activateConstraints:@[width,
+    [card.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor constant:20],
+    [card.topAnchor constraintEqualToAnchor:window.contentView.topAnchor constant:20]]];
+  __block NSString *answer = nil;
+  __block NSUInteger submissions = 0;
+  card.choiceHandler = ^BOOL(NSString *value) { answer = value; submissions++; return YES; };
+  NSStackView *actions = [card valueForKey:@"actions"];
+  [(NSButton *)actions.arrangedSubviews[0] performClick:nil];
+  [(NSButton *)actions.arrangedSubviews[1] performClick:nil];
+  Check(submissions == 0, @"multiple options wait for explicit submission");
+  [(NSTextField *)[card valueForKey:@"answerField"] setStringValue:@"After 3 pm"];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    card.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    for (NSNumber *size in @[@700, @160]) {
+      width.constant = size.doubleValue;
+      [window.contentView layoutSubtreeIfNeeded]; [card setNeedsLayout:YES]; [window.contentView layoutSubtreeIfNeeded];
+      Check([(NSView *)[card valueForKey:@"codeScroll"] isHidden], @"ordinary questions do not reserve a command preview");
+      for (NSView *button in actions.arrangedSubviews)
+        Check(NSMaxX([button convertRect:button.bounds toView:card]) <= NSWidth(card.bounds) + 1, @"question options fit narrow chats");
+      NSBitmapImageRep *bitmap = [card bitmapImageRepForCachingDisplayInRect:card.bounds];
+      [card cacheDisplayInRect:card.bounds toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithFormat:@"build/question-card-%@-%@.png", theme, size] atomically:YES];
+    }
+  }
+  [(NSButton *)[card valueForKey:@"sendAnswer"] performClick:nil];
+  Check([answer isEqual:@"Monday, Friday, After 3 pm"] && submissions == 1, @"one response combines selected options and typed text");
+  [(NSButton *)[card valueForKey:@"sendAnswer"] performClick:nil];
+  Check(submissions == 1, @"a question cannot submit twice");
+  [window close];
+}
+
+static TLQuestionCardView *FindQuestionCard(NSView *view) {
+  if ([view isKindOfClass:TLQuestionCardView.class]) return (id)view;
+  for (NSView *child in view.subviews) { TLQuestionCardView *found = FindQuestionCard(child); if (found) return found; }
+  return nil;
+}
+static void TestInlineHostQuestion(void) {
+  NSString *suite = [@"InlineHostQuestion." stringByAppendingString:NSUUID.UUID.UUIDString];
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+  TLHostCommandBridge *bridge = [[TLHostCommandBridge alloc] initWithDefaults:defaults];
+  TLThemePalette *palette = [TLThemePalette paletteForPreference:TLThemePreferenceLight];
+  TLChatTabController *chat = [[TLChatTabController alloc] initWithPalette:palette];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 740, 660)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  NSView *workspace = [chat buildChatWorkspace]; chat.chatWorkspace = workspace; window.contentView = workspace;
+  chat.messageInputWidthConstraint.constant = 660;
+  chat.streamingProvider = ^BOOL{ return YES; };
+  TLChatMessage *message = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
+  chat.messages = [NSMutableArray arrayWithObjects:[TLChatMessage messageWithRole:TLRoleUser content:@"Show my files" thinking:nil], message, nil];
+  __block TLQuestionRequest *question;
+  __block NSDictionary *result;
+  TLHostCommandOperation *operation = [bridge runRequest:@{@"command":@"ls ~", @"cwd":NSHomeDirectory(), @"timeout_seconds":@3}
+    agent:@"agent" name:@"Angel" chat:@"chat" privateScope:@"" presentQuestion:^(TLQuestionRequest *value) {
+      question = value; message.questions = @[value];
+    } completion:^(NSDictionary *value) { result = value; }];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [chat applyPalette:palette];
+    [chat renderMessagesScrollingToBottom:YES]; [workspace layoutSubtreeIfNeeded];
+    TLQuestionCardView *card = FindQuestionCard(workspace);
+    Check(card && !window.attachedSheet && question.pending && !result, @"permission is inline in the originating chat without a modal or execution");
+    Check(![(NSView *)[chat valueForKey:@"thinkingRow"] superview], @"waiting for an answer hides passive thinking");
+    NSStackView *actions = [card valueForKey:@"actions"];
+    Check(actions.arrangedSubviews.count == 4 && [((NSButton *)actions.arrangedSubviews[1]).title isEqual:@"Allow in this chat"], @"inline permissions retain all four exact scopes");
+    NSBitmapImageRep *bitmap = [workspace bitmapImageRepForCachingDisplayInRect:workspace.bounds];
+    [workspace cacheDisplayInRect:workspace.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"build/inline-host-chat-%@.png", theme] atomically:YES];
+    [window setContentSize:NSMakeSize(200, 660)]; chat.messageInputWidthConstraint.constant = 160;
+    [chat renderMessagesScrollingToBottom:YES]; [workspace layoutSubtreeIfNeeded];
+    card = FindQuestionCard(workspace); [card setNeedsLayout:YES]; [workspace layoutSubtreeIfNeeded];
+    for (NSView *button in ((NSStackView *)[card valueForKey:@"actions"]).arrangedSubviews)
+      Check(NSMaxX([button convertRect:button.bounds toView:card]) <= NSWidth(card.bounds) + 1, @"all Mac permission choices fit the 200-point window");
+    bitmap = [card bitmapImageRepForCachingDisplayInRect:card.bounds];
+    [card cacheDisplayInRect:card.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"build/inline-host-narrow-%@.png", theme] atomically:YES];
+    [window setContentSize:NSMakeSize(740, 660)]; chat.messageInputWidthConstraint.constant = 660;
+
+  }
+  TLQuestionCardView *card = FindQuestionCard(workspace);
+  [(NSButton *)((NSStackView *)[card valueForKey:@"actions"]).arrangedSubviews.lastObject performClick:nil];
+  Check([result[@"denied"] boolValue] && !question.pending, @"inline Deny resolves the native operation without execution");
+  [chat renderMessagesScrollingToBottom:NO];
+  for (NSButton *button in ((NSStackView *)[FindQuestionCard(workspace) valueForKey:@"actions"]).arrangedSubviews)
+    Check(!button.enabled, @"rerendering cannot reactivate an answered question");
+  [operation cancel]; [chat close]; [window close];
+  [defaults removePersistentDomainForName:suite];
+}
+
 static void TestThemedButtonRenderedColors(void) {
   TLThemedButton *button = [TLThemedButton buttonWithTitle:@"Reset everything…" target:nil action:nil];
   button.frame = NSMakeRect(0, 0, 220, 44);
@@ -769,7 +872,7 @@ static void TestDebugResetLayout(void) {
                     attachments:(NSArray *)attachments sourceURLs:(NSArray *)URLs approvalResponse:(NSDictionary *)response {
   self.response = response;
   self.submissions++;
-  Check([prompt isEqual:@"Allow once"] && !attachments.count, @"approval response uses readable text and no composer attachments");
+  Check(([prompt isEqual:@"Allow once"] || [prompt isEqual:@"Friday afternoon"]) && !attachments.count, @"approval response uses readable text and no composer attachments");
 }
 @end
 
@@ -790,6 +893,9 @@ static void TestApprovalRouting(void) {
   Check([controller respondToApproval:@"exact" choice:@"once" chatID:17], @"valid approval starts continuation");
   Check([controller.response isEqual:@{@"request_id":@"exact", @"choice":@"once"}], @"controller sends exact structured response");
   Check(![controller respondToApproval:@"exact" choice:@"once" chatID:17] && controller.submissions == 1, @"submitted card cannot execute again");
+  message.approvalRequest = @{@"kind":@"clarification", @"request_id":@"ask", @"question_id":@"day", @"title":@"Which day?", @"options":@[]};
+  Check([controller respondToApproval:@"ask" choice:@"Friday afternoon" chatID:17], @"typed answer resumes a clarification");
+  Check([controller.response isEqual:@{@"kind":@"clarification", @"request_id":@"ask", @"question_id":@"day", @"answer":@"Friday afternoon"}], @"clarification preserves exact request and question identities");
 }
 
 @interface TLAttachmentPreparationRecorder : NSObject
@@ -2590,6 +2696,19 @@ static void TestFolderAccessTable(void) {
   [shortcuts[3] performClick:nil];
   [shortcuts[4] performClick:nil];
   Check(picker.folderPaths.count == 5 && picker.tableView.numberOfRows == 5, @"common location shortcuts populate native rows");
+  NSTableColumn *mountColumn = [picker.tableView tableColumnWithIdentifier:@"mount"];
+  NSTableCellView *(^mountCell)(void) = ^{ return (NSTableCellView *)[picker.tableView.delegate tableView:picker.tableView viewForTableColumn:mountColumn row:0]; };
+  NSString *(^mountStatus)(void) = ^{
+    for (NSTextField *label in mountCell().subviews) if ([label.identifier isEqual:@"mountStatus"]) return label.stringValue;
+    return @"";
+  };
+  Check([mountColumn.title isEqual:@"VM location"] && [mountCell().textField.stringValue isEqual:@"/mnt/mac/root"], @"folder table shows the exact VM destination");
+  Check([mountStatus() isEqual:@"On next start"], @"stopped agents show a future mount instead of claiming active access");
+  picker.activeMountPaths = @{};
+  Check([mountStatus() isEqual:@"After restart"], @"folders absent from a running VM need restart");
+  picker.activeMountPaths = picker.mountPaths;
+  Check([mountStatus() isEqual:@"Shared"], @"only the running VM's export is shown as shared");
+  picker.activeMountPaths = nil;
   [picker.tableView selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(1, 3)] byExtendingSelection:NO];
   [picker setPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
   Check(picker.tableView.selectedRowIndexes.count == 3, @"theme changes preserve folder selection");
@@ -2730,6 +2849,34 @@ static void TestAgentSettingsForm(void) {
   TLEmojiPicker *avatar = [controller valueForKey:@"avatarPicker"];
   NSTextView *soul = [controller valueForKey:@"soulView"];
   Check([name.stringValue isEqual:agent.name] && [avatar.emoji isEqual:agent.avatar] && [soul.string isEqual:agent.soul], @"settings preload the selected agent profile");
+  TLThemedButton *hostPolicy = [controller valueForKey:@"hostPolicyButton"];
+  Check([hostPolicy.title isEqual:@"Ask before running"], @"agent host access defaults to asking");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [controller applyPalette:palette];
+    [controller.window.contentView layoutSubtreeIfNeeded];
+    NSView *view = controller.window.contentView;
+    NSRect buttonFrame = [hostPolicy convertRect:hostPolicy.bounds toView:view];
+    NSButton *saveButton = [controller valueForKey:@"createButton"];
+    NSRect saveFrame = [saveButton convertRect:saveButton.bounds toView:view];
+    Check(NSContainsRect(view.bounds, buttonFrame) && NSMinY(buttonFrame) > NSMaxY(saveFrame), @"host access fits above settings actions");
+    NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+    [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"build/host-settings-%@.png", theme] atomically:YES];
+    NSBitmapImageRep *buttonBitmap = RenderThemedButton(hostPolicy);
+    CGFloat surface[3], foreground[3], alpha;
+    RGBComponents(palette.tabBackground, surface, &alpha);
+    CompositeColor(palette.secondaryActionSurface, 1, surface);
+    for (NSInteger i = 0; i < 3; i++) foreground[i] = surface[i];
+    CompositeColor(palette.secondaryActionText, 1, foreground);
+    Check(PixelMatches(buttonBitmap, 10, buttonBitmap.pixelsHigh / 2, surface), @"host setting renders theme surface");
+    NSUInteger ink = 0;
+    for (NSInteger y = 5; y < buttonBitmap.pixelsHigh - 5; y++)
+      for (NSInteger x = 15; x < buttonBitmap.pixelsWide - 15; x++)
+        if (PixelMatches(buttonBitmap, x, y, foreground)) ink++;
+    Check(ink > 10, @"host setting renders paired theme text");
+  }
   [controller.window.contentView layoutSubtreeIfNeeded];
   NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_SETTINGS_PREVIEW"];
   if (preview.length) {
@@ -2946,6 +3093,7 @@ static void TestSkillsInSettingsWorkspace(void) {
 @property (nonatomic) BOOL failSave;
 @end
 @implementation TLFolderAccessStoreMock
+- (NSDictionary *)folderMountPathsForAgent:(TLAgentRecord *)agent { return nil; }
 - (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)paths error:(NSError **)error {
   if (self.failSave) {
     if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Folder unavailable"}];
@@ -3812,6 +3960,22 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_FOLDER_LOCATIONS_TESTS_ONLY")) {
+      TestFolderAccessTable(); TestAgentFolderEditing();
+      NSLog(@"Folder location tests passed");
+      return 0;
+    }
+    if (getenv("TL_QUESTION_TESTS_ONLY")) {
+      TestApprovalCard(); TestQuestionCard(); TestInlineHostQuestion(); TestApprovalRouting(); TestThemedButtonRenderedColors();
+      NSLog(@"Inline question and option tests passed");
+      return 0;
+    }
+    if (getenv("TL_HOST_COMMAND_SETTINGS_TESTS_ONLY")) {
+      TestAgentSettingsForm();
+      TestThemedButtonRenderedColors();
+      NSLog(@"Host command settings and rendered button tests passed");
+      return 0;
+    }
     if (getenv("TL_TEST_DEFAULT_BROWSER_ONLY")) {
       TestThemedButtonRenderedColors();
       TestDefaultBrowserSettings();
@@ -3863,6 +4027,8 @@ int main(void) {
     TestWarmupAfterSettingsAndManualStart();
     TestThemedButtonRenderedColors();
     TestApprovalCard();
+    TestQuestionCard();
+    TestInlineHostQuestion();
     TestApprovalRouting();
     TestDebugResetLayout();
     TestTerminalRequiresRunningVM();

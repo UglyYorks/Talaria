@@ -4,6 +4,7 @@
 #import <sys/socket.h>
 #import <unistd.h>
 #import "AgentClient.h"
+#import "TLHostCommandBridge.h"
 #import "AgentOrchestrator.h"
 #import "AgentVMService.h"
 #import "AppStateManager.h"
@@ -141,7 +142,7 @@ static NSUInteger TLFailureCount = 0;
   delta(requestID, TLAgentStreamDeltaKindThinking, self.thinkingDelta);
   delta(requestID, TLAgentStreamDeltaKindContent, self.contentDelta);
   if (self.approvalDelta) {
-    delta(requestID, TLAgentStreamDeltaKindApproval, self.approvalDelta);
+    delta(requestID, [self.approvalDelta[@"kind"] isEqual:@"clarification"] ? TLAgentStreamDeltaKindClarification : TLAgentStreamDeltaKindApproval, self.approvalDelta);
   }
   if (self.toolActivityDelta) {
     delta(requestID, TLAgentStreamDeltaKindToolActivity, self.toolActivityDelta);
@@ -174,12 +175,14 @@ static NSUInteger TLFailureCount = 0;
 @end
 
 @interface TLFakeAgentVMService : TLAgentVMService
+@property NSDictionary *mountedFolders;
 @property (nonatomic) NSUInteger startCount;
 @property (nonatomic) NSInteger runningAgentID;
 @property (nonatomic, strong, nullable) NSError *startError;
 @end
 
 @implementation TLFakeAgentVMService
+- (NSDictionary *)folderMountPathsForAgent:(TLAgentRecord *)agent { return self.mountedFolders; }
 
 - (void)startAgent:(TLAgentRecord *)agent completion:(TLAgentVMCompletionHandler)completion {
   self.startCount += 1;
@@ -846,6 +849,63 @@ static void TestStatusTransport(void) {
   close(descriptors[1]);
 }
 
+static void TestHostCommandTransport(void) {
+  NSString *suite = [@"HostTransportTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+  TLHostCommandBridge *bridge = [[TLHostCommandBridge alloc] initWithDefaults:defaults];
+  for (NSString *policy in @[@"deny", @"always", @"ask"]) {
+    [bridge setPolicy:policy forAgent:@"host-agent"];
+    TLDeferredSocketService *vm = [TLDeferredSocketService new];
+    TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:vm];
+    [client setValue:bridge forKey:@"hostBridge"];
+    TLAgentRecord *agent = [TLAgentRecord new]; agent.vmDirectory = @"host-agent";
+    __block BOOL finished = NO;
+    [client streamHermesSessionWithAgent:agent requestID:@"turn" sessionID:@"native-chat" token:@"" model:@"m" prompt:@"host test"
+      delta:^(NSString *rid, TLAgentStreamDeltaKind kind, id value) {
+        TLAssertTrue([policy isEqual:@"ask"] && kind == TLAgentStreamDeltaKindQuestion && [rid isEqual:@"turn"], @"native question targets the original live turn");
+        TLQuestionRequest *question = value[@"question"];
+        TLAssertTrue(question.pending && !finished, @"question does not end the original chat turn");
+        [question respondWithOption:@"once"];
+      }
+      completion:^(NSError *error) { TLAssertTrue(!error, @"host transport completes"); finished = YES; }];
+    TLAgentVMConnectionCompletionHandler originalConnect = vm.connected;
+    int stream[2]; socketpair(AF_UNIX, SOCK_STREAM, 0, stream);
+    TLTestSocketConnection *connection = [TLTestSocketConnection new]; connection.fileDescriptor = stream[0];
+    originalConnect((id)connection, nil);
+    char bytes[8192]; ssize_t count = recv(stream[1], bytes, sizeof(bytes), MSG_DONTWAIT);
+    NSDictionary *initial = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:bytes length:MAX(0, count)] options:0 error:nil];
+    TLAssertTrue([initial[@"host_command_description"] containsString:@"user's Mac"], @"tool description is supplied by native prompt builder");
+    NSDictionary *event = @{@"type":@"delta", @"request_id":@"turn", @"kind":@"host_command", @"payload":@{
+      @"request_id":@"host-call", @"session_id":@"runtime-chat", @"command":@"printf native-bridge", @"cwd":@"/private/tmp", @"timeout_seconds":@3}};
+    NSMutableData *line = [[NSJSONSerialization dataWithJSONObject:event options:0 error:nil] mutableCopy];
+    [line appendBytes:"\n" length:1]; write(stream[1], line.bytes, line.length);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+    while (vm.connected == originalConnect && deadline.timeIntervalSinceNow > 0)
+      [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    TLAssertTrue(vm.connected != originalConnect, @"host result opens a separate RPC connection while the turn stays active");
+    int response[2]; socketpair(AF_UNIX, SOCK_STREAM, 0, response);
+    TLTestSocketConnection *reply = [TLTestSocketConnection new]; reply.fileDescriptor = response[0];
+    vm.connected((id)reply, nil);
+    count = recv(response[1], bytes, sizeof(bytes), MSG_DONTWAIT);
+    NSDictionary *wire = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:bytes length:MAX(0, count)] options:0 error:nil];
+    TLAssertEqualObjects(wire[@"operation"], @"hermes_host_response", @"result uses Hermes operation");
+    TLAssertEqualObjects(wire[@"params"][@"session_id"], @"runtime-chat", @"result targets the originating Hermes runtime");
+    TLAssertEqualObjects(wire[@"params"][@"request_id"], @"host-call", @"result preserves exact command identity");
+    NSDictionary *result = wire[@"params"][@"result"];
+    if ([policy isEqual:@"deny"]) TLAssertTrue([result[@"denied"] boolValue] && !result[@"stdout"], @"native deny never executes");
+    else TLAssertEqualObjects(result[@"stdout"], @"native-bridge", @"native execution returns output to Hermes");
+    NSString *replyFrames = @"{\"type\":\"result\",\"result\":{\"resolved\":true}}\n{\"type\":\"complete\"}\n";
+    write(response[1], replyFrames.UTF8String, strlen(replyFrames.UTF8String));
+    NSString *done = @"{\"type\":\"complete\"}\n";
+    write(stream[1], done.UTF8String, strlen(done.UTF8String));
+    while (!finished && deadline.timeIntervalSinceNow > 0)
+      [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    TLAssertTrue(finished, @"original chat turn finishes after the host result");
+    close(response[1]); close(stream[1]);
+  }
+  [defaults removePersistentDomainForName:suite];
+}
+
 static void TestCancellationDuringStartup(void) {
   TLFakeAgentClient *fake = [[TLFakeAgentClient alloc] init];
   TLDeferredReadyOrchestrator *orchestrator = [[TLDeferredReadyOrchestrator alloc]
@@ -1219,6 +1279,12 @@ static void TestBrowserConversation(void) {
   TLAssertEqualObjects(client.capturedSessionID, summary.hermesSessionID, @"approval resumes the same Hermes session");
   TLAssertTrue(!conversation.pendingApproval && [conversation.markdown containsString:@"Approved answer"], @"browser clears completed approval and displays continuation");
   client.contentDelta = @"";
+  client.approvalDelta = @{@"kind":@"clarification", @"request_id":@"question", @"question_id":@"q1", @"title":@"Which room?", @"options":@[]};
+  [conversation sendPrompt:@"Find a hotel" token:@"token" model:@"test/model" pageReader:^(void (^completion)(NSDictionary *, NSError *)) { completion(@{}, nil); }];
+  TLAssertEqualObjects(conversation.pendingApproval, client.approvalDelta, @"browser exposes the shared question card");
+  client.approvalDelta = nil;
+  TLAssertTrue([conversation respondToApproval:@"question" choice:@"Private room" token:@"token" model:@"test/model"], @"browser question accepts a typed answer");
+  TLAssertEqualObjects(client.capturedApprovalResponse, (@{@"kind":@"clarification", @"request_id":@"question", @"question_id":@"q1", @"answer":@"Private room"}), @"browser question sends exact identities and answer");
   client.toolActivityDelta = @{@"id":@"tool-1", @"name":@"terminal", @"state":@"running", @"detail":@"pwd"};
   __block BOOL sawLiveTool = NO;
   __weak TLBrowserConversation *weakConversation = conversation;
@@ -1298,12 +1364,22 @@ static void TestAssistantTurnRunner(void) {
   TLStoredChatMessage *copiedMessage = [loadedChat.messages[0] copy];
   TLAssertTrue(copiedMessage.messageID == loadedChat.messages[0].messageID, @"loaded message copies preserve identity");
 
+  vmService.mountedFolders = @{@"/Mac/work":@"/mnt/mac/work"};
   runner.referenceContext = @"Unrelated page context";
   [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
                 nextPrompt:@"/model provider/model with arguments" updateHandler:nil completionHandler:nil error:&error];
   TLAssertEqualObjects(client.capturedMessages[0].content, @"/model provider/model with arguments",
                        @"Hermes receives raw slash commands without injected reference context");
   runner.referenceContext = nil;
+  [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
+    nextPrompt:@"List shared files" updateHandler:nil completionHandler:nil error:&error];
+  TLAssertTrue([client.capturedMessages[0].content containsString:@"/mnt/mac/work"] && [client.capturedMessages[0].content containsString:@"List shared files"],
+    @"chat receives the actual running VM's shared paths alongside the user prompt");
+  TLAssertEqualObjects(messages[messages.count - 2].content, @"List shared files", @"mount context does not change the visible user message");
+  vmService.mountedFolders = @{};
+  [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
+    nextPrompt:@"No shares" updateHandler:nil completionHandler:nil error:&error];
+  TLAssertEqualObjects(client.capturedMessages[0].content, @"No shares", @"no stale mount context remains after shares are removed");
 
   NSMutableArray<TLChatMessage *> *validationMessages = [NSMutableArray array];
   NSError *validationError = nil;
@@ -1528,6 +1604,7 @@ int main(int argc, const char *argv[]) {
     TestChatIconGenerator();
     TestCancellationDuringStartup();
     TestStatusTransport();
+    TestHostCommandTransport();
     TestAgentOrchestrator();
     TestAgentProfilesAndSelection();
     TestAgentProfileMigration();

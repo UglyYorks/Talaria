@@ -35,7 +35,7 @@ TEST_MarkdownMathTests_LIBS := -framework AppKit -framework WebKit
 TEST_MarkdownMathTests_EXTRA := Tests/Fixtures/latex-formulas.md $(MARKDOWN_RESOURCES_STAMP)
 $(eval $(call native_test,MarkdownMathTests))
 
-TEST_GlassPaneTests_SOURCES := Source/design_system/TLButton.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLAttachmentChipView.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/design_system/TLToolActivityView.m Source/design_system/TLApprovalCardView.m Source/design_system/TLThemedButton.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m $(THEME_SOURCES) $(MARKDOWN_SOURCES)
+TEST_GlassPaneTests_SOURCES := Source/design_system/TLButton.m Source/design_system/UIComponents.m Source/design_system/TLMessageInput.m Source/design_system/TLAttachmentChipView.m Source/design_system/TLGlassButton.m Source/design_system/TLTransitionCoordinator.m Source/design_system/TLBrowserChatPane.m Source/design_system/TLToolActivityView.m Source/design_system/TLApprovalCardView.m Source/design_system/TLQuestionCardView.m Source/TLQuestionRequest.m Source/design_system/TLThemedButton.m Source/BrowserPageContext.m Source/PromptBuilder.m Source/InputSuggestions.m Source/TLBrowserHeightTransition.m Tests/GlassPaneTests.m $(THEME_SOURCES) $(MARKDOWN_SOURCES)
 TEST_GlassPaneTests_LIBS := -framework AppKit -framework QuartzCore -framework CoreText -framework WebKit -framework QuickLookThumbnailing -framework UniformTypeIdentifiers
 TEST_GlassPaneTests_EXTRA := $(MARKDOWN_RESOURCES_STAMP)
 $(eval $(call native_test,GlassPaneTests))
@@ -48,15 +48,16 @@ TEST_TabLayoutTests_SOURCES := Source/WorkspaceState.m Source/design_system/TLTa
 TEST_TabLayoutTests_LIBS := -framework AppKit -framework QuartzCore -framework CoreText
 $(eval $(call native_test,TabLayoutTests))
 
-TEST_PromptBuilderTests_SOURCES := Source/ChatAttachmentStore.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/TLAgentProtocol.m Source/AgentVMService.m Source/TLAgentVMLock.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Tests/PromptBuilderTests.m $(STORAGE_SOURCES) $(WORKSPACE_SOURCES)
+TEST_PromptBuilderTests_SOURCES := Source/TLQuestionRequest.m Source/TLHostCommandBridge.m Source/ChatAttachmentStore.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/TLAgentProtocol.m Source/AgentVMService.m Source/TLFolderMounts.m Source/TLAgentVMLock.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Tests/PromptBuilderTests.m $(STORAGE_SOURCES) $(WORKSPACE_SOURCES)
 TEST_PromptBuilderTests_LIBS := $(TEST_FRAMEWORKS)
+TEST_PromptBuilderTests_SOURCES += $(THEME_SOURCES)
 $(eval $(call native_test,PromptBuilderTests))
 
 TEST_CredentialStoreTests_SOURCES := Tests/CredentialStoreTests.m $(STORAGE_SOURCES)
 TEST_CredentialStoreTests_LIBS := -framework Foundation -framework Security -lsqlite3
 $(eval $(call native_test,CredentialStoreTests))
 
-TEST_AssistantTurnResultTests_SOURCES := Source/TalariaModels.m Source/PromptMessages.m Source/PromptBuilder.m Source/StreamingBlockBuffer.m Source/AssistantTurnRunner.m Tests/AssistantTurnResultTests.m
+TEST_AssistantTurnResultTests_SOURCES := Source/TLQuestionRequest.m Source/TalariaModels.m Source/PromptMessages.m Source/PromptBuilder.m Source/StreamingBlockBuffer.m Source/AssistantTurnRunner.m Tests/AssistantTurnResultTests.m
 TEST_AssistantTurnResultTests_LIBS := -framework Foundation
 $(eval $(call native_test,AssistantTurnResultTests))
 
@@ -81,9 +82,19 @@ TEST_AppResetTests_LIBS := -framework WebKit -framework Foundation -framework Se
 $(eval $(call native_test,AppResetTests))
 
 
-TEST_AgentVMLockTests_SOURCES := Source/TLAgentVMLock.m Source/AgentVMService.m Source/TalariaModels.m Tests/AgentVMLockTests.m
+TEST_AgentVMLockTests_SOURCES := Source/TLAgentVMLock.m Source/AgentVMService.m Source/TLFolderMounts.m Source/TalariaModels.m Tests/AgentVMLockTests.m
 TEST_AgentVMLockTests_LIBS := -framework Foundation -framework AppKit -framework Virtualization
 $(eval $(call native_test,AgentVMLockTests))
+
+TEST_AgentFolderMountTests_SOURCES := Source/TLFolderMounts.m Source/AgentVMService.m Source/TLAgentVMLock.m Source/TalariaModels.m Tests/AgentFolderMountTests.m
+TEST_AgentFolderMountTests_LIBS := -framework Foundation -framework AppKit -framework Virtualization
+$(eval $(call native_test,AgentFolderMountTests))
+
+.PHONY: test-folder-mounts
+test-folder-mounts: $(BUILD_DIR)/AgentFolderMountTests $(BUILD_DIR)/FeatureControllerTests
+	"$(BUILD_DIR)/AgentFolderMountTests"
+	TL_FOLDER_LOCATIONS_TESTS_ONLY=1 "$(BUILD_DIR)/FeatureControllerTests"
+	sh -n AgentRuntime/talaria-init
 
 TEST_AgentProtocolTests_SOURCES := Source/TLAgentProtocol.m Tests/AgentProtocolTests.m
 TEST_AgentProtocolTests_LIBS := -framework Foundation
@@ -104,7 +115,20 @@ TEST_RepositoryTests_LIBS := -framework Foundation -framework Security -lsqlite3
 $(eval $(call native_test,RepositoryTests))
 
 CORE_TESTS := RepositoryTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests AppResetTests AgentVMLockTests AgentProtocolTests
+TEST_HostCommandTests_SOURCES := Source/TLQuestionRequest.m Source/TLHostCommandBridge.m Tests/HostCommandTests.m $(THEME_SOURCES)
+TEST_HostCommandTests_LIBS := -framework Foundation -framework AppKit
+$(eval $(call native_test,HostCommandTests))
 NATIVE_TESTS := WheelScrollAnimationTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
+NATIVE_TESTS += HostCommandTests AgentFolderMountTests
+.PHONY: test-host-commands
+test-host-commands: $(addprefix $(BUILD_DIR)/,HostCommandTests PromptBuilderTests AssistantTurnResultTests FeatureControllerTests)
+	"$(BUILD_DIR)/HostCommandTests"
+	"$(BUILD_DIR)/PromptBuilderTests"
+	"$(BUILD_DIR)/AssistantTurnResultTests"
+	TL_HOST_COMMAND_SETTINGS_TESTS_ONLY=1 "$(BUILD_DIR)/FeatureControllerTests"
+	TL_QUESTION_TESTS_ONLY=1 "$(BUILD_DIR)/FeatureControllerTests"
+	python3 -B -m unittest discover -s Tests -p "test_host_commands.py"
+
 .PHONY: test test-core test-integration
 # GUI suites run sequentially: AppKit focus and the pasteboard are shared resources.
 test: $(addprefix $(BUILD_DIR)/,$(NATIVE_TESTS)) $(BUILD_DIR)/TerminalClientProbe test-hermes-gateway test-browser-overlay audit-theme-colors
