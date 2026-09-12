@@ -352,7 +352,23 @@ static void TestBrowserComposer(void) {
       Check([line animationForKey:@"loadingProgress"] != nil, @"duplicate updates preserve the running animation");
     }
     [input setLoading:NO progress:1];
-    Check(line.hidden && [line animationForKey:@"loadingProgress"] == nil, @"completion hides the line and clears animation");
+    Check(!line.hidden && line.strokeEnd == 1, @"completion finishes the entire input outline");
+    CAKeyframeAnimation *completion = (CAKeyframeAnimation *)[line animationForKey:@"loadingCompletion"];
+    double holdEnd = [completion.keyTimes[1] doubleValue] * completion.duration;
+    double finishDuration = [line animationForKey:@"loadingProgress"].duration;
+    Check(fabs(holdEnd - finishDuration - 0.2) < 0.001 && fabs(completion.duration - holdEnd - 0.2) < 0.001, @"full progress holds for 200ms then fades for 200ms");
+    [CATransaction flush];
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:holdEnd + 0.1]];
+    CGFloat fadingOpacity = ((CALayer *)line.presentationLayer).opacity;
+    Check(fadingOpacity > 0 && fadingOpacity < 1, @"completion visibly fades instead of disappearing");
+    [input setLoading:YES progress:0.1];
+    Check(!line.hidden && line.opacity == 1 && ![line animationForKey:@"loadingCompletion"], @"a new load cancels the previous fade");
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
+    Check(!line.hidden, @"old completion cannot hide a newer navigation");
+    [input setLoading:NO progress:1];
+    completion = (CAKeyframeAnimation *)[line animationForKey:@"loadingCompletion"];
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:completion.duration + 0.05]];
+    Check(line.hidden && ![line animationForKey:@"loadingCompletion"], @"completion removes the faded indicator");
   }
   [window makeFirstResponder:nil];
   CGFloat compactHeight = NSHeight(input.frame);

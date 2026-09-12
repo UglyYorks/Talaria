@@ -10,6 +10,16 @@
 
 @implementation TLMainWindow
 
+- (void)restorePlacementWithName:(NSString *)name {
+  [self setFrameUsingName:name];
+  // AppKit's frame restoration tracks the original screen and adjusts when
+  // displays change. Constrain once more so the title bar remains reachable.
+  NSScreen *screen = self.screen ?: NSScreen.mainScreen;
+  if (screen) [self setFrame:[self constrainFrameRect:self.frame toScreen:screen] display:NO];
+  [self setFrameAutosaveName:name];
+}
+
+
 - (void)setFrame:(NSRect)frameRect display:(BOOL)displayFlag {
   BOOL shouldKeepAccessibilityWidth = self.guardedAccessibilityPasses > 0 &&
     self.guardedAccessibilityWidth > 0.0 &&

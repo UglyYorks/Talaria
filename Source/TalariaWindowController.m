@@ -505,7 +505,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                 agentOrchestrator:(TLAgentOrchestrator *)agentOrchestrator
                   appStateManager:(TLAppStateManager *)appStateManager {
   TLThemePalette *initialPalette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
-  NSRect frame = NSMakeRect(0, 0, initialPalette.windowInitialWidth, initialPalette.windowInitialHeight);
+  NSRect screen = (NSScreen.mainScreen ?: NSScreen.screens.firstObject).visibleFrame;
+  CGFloat width = screen.size.width > 0 ? MIN(initialPalette.windowInitialWidth, screen.size.width) : initialPalette.windowInitialWidth;
+  CGFloat height = screen.size.height > 0 ? MIN(initialPalette.windowInitialHeight, screen.size.height) : initialPalette.windowInitialHeight;
+  NSRect frame = NSMakeRect(0, 0, width, height);
   NSWindowStyleMask styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
     NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView;
   NSWindow *window = [[TLMainWindow alloc] initWithContentRect:frame

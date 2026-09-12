@@ -57,6 +57,8 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic, strong) NSColor *browserLoadingProgress;
 @property (nonatomic) CGFloat browserLoadingLineWidth;
 @property (nonatomic) NSTimeInterval browserLoadingProgressDuration;
+@property (nonatomic) NSTimeInterval browserLoadingCompletionHoldDuration;
+@property (nonatomic) NSTimeInterval browserLoadingFadeDuration;
 @property (nonatomic, strong) NSColor *brandMark;
 @property (nonatomic, strong) NSColor *statusItemIcon;
 @property (nonatomic, strong) NSColor *textMuted;

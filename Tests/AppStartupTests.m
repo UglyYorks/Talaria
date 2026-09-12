@@ -1,3 +1,5 @@
+#import <Carbon/Carbon.h>
+#import "TLMainWindow.h"
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 #import "AppDelegate.h"
@@ -40,6 +42,7 @@ static NSArray *runningApplications;
 }
 @end
 
+static NSArray *launchWebURLs, *forwardedWebURLs;
 static NSURL *openedURL;
 static NSWorkspaceOpenConfiguration *openConfiguration;
 static void (^openCompletion)(NSRunningApplication *, NSError *);
@@ -48,6 +51,11 @@ static void (^openCompletion)(NSRunningApplication *, NSError *);
   completionHandler:(void (^)(NSRunningApplication *, NSError *))completion;
 @end
 @implementation NSWorkspace (StartupTests)
+- (void)startupTestOpenURLs:(NSArray<NSURL *> *)URLs withApplicationAtURL:(NSURL *)URL configuration:(NSWorkspaceOpenConfiguration *)configuration completionHandler:(void (^)(NSRunningApplication *, NSError *))completion {
+  forwardedWebURLs = URLs.copy;
+  openedURL = URL; openConfiguration = configuration; openCompletion = completion;
+}
+
 - (void)startupTestOpenApplicationAtURL:(NSURL *)URL configuration:(NSWorkspaceOpenConfiguration *)configuration
   completionHandler:(void (^)(NSRunningApplication *, NSError *))completion {
   Check(openedURL == nil, @"one reopen request per duplicate launch");
@@ -85,6 +93,9 @@ static void (^openCompletion)(NSRunningApplication *, NSError *);
 @implementation TLExternalLinkWindow
 - (void)openBrowserTabWithURL:(NSURL *)URL { if (!self.URLs) self.URLs = [NSMutableArray array]; [self.URLs addObject:URL]; }
 @end
+@interface TLAppDelegate (URLTests)
+- (void)handleOpenWebURLEvent:(NSAppleEventDescriptor *)event replyEvent:(NSAppleEventDescriptor *)reply;
+@end
 @interface TLExternalLinkDelegate : TLAppDelegate
 @property NSUInteger presentations;
 @end
@@ -94,7 +105,11 @@ static void (^openCompletion)(NSRunningApplication *, NSError *);
 static void TestExternalWebLinks(void) {
   TLExternalLinkDelegate *delegate = [TLExternalLinkDelegate new];
   NSArray *URLs = @[[NSURL URLWithString:@"https://example.com/a"], [NSURL URLWithString:@"http://example.com/b"]];
-  [delegate application:NSApp openURLs:URLs];
+  for (NSURL *URL in URLs) {
+    NSAppleEventDescriptor *event = [NSAppleEventDescriptor appleEventWithEventClass:kInternetEventClass eventID:kAEGetURL targetDescriptor:nil returnID:kAutoGenerateReturnID transactionID:kAnyTransactionID];
+    [event setParamDescriptor:[NSAppleEventDescriptor descriptorWithString:URL.absoluteString] forKeyword:keyDirectObject];
+    [delegate handleOpenWebURLEvent:event replyEvent:nil];
+  }
   Check([[delegate valueForKey:@"pendingWebURLs"] isEqual:URLs], @"cold-start web links are queued until the window exists");
   TLExternalLinkWindow *window = [TLExternalLinkWindow new];
   [delegate setValue:window forKey:@"windowController"];
@@ -116,6 +131,8 @@ static void LaunchWithResult(TLStartupRunningApplication *current, NSArray *runn
   runningApplications = running;
   openedURL = nil; openConfiguration = nil; openCompletion = nil;
   TLStartupDelegate *delegate = [TLStartupDelegate new];
+  forwardedWebURLs = nil;
+  if (launchWebURLs) [delegate application:NSApp openURLs:launchWebURLs];
   TLStartupApplication *application = (id)NSApp;
   application.terminations = 0;
   NSUInteger activations = expected.activations, unhides = expected.unhides;
@@ -173,10 +190,27 @@ int main(void) {
   @autoreleasepool {
     [TLStartupApplication sharedApplication];
     TestExternalWebLinks();
+    NSString *frameName = [@"TalariaPlacementTest-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSRect expected = NSMakeRect(120,180,900,560);
+    TLMainWindow *first = [[TLMainWindow alloc] initWithContentRect:expected styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+    first.releasedWhenClosed = NO;
+    [first restorePlacementWithName:frameName];
+    [first setFrame:expected display:NO];
+    [first saveFrameUsingName:frameName];
+    [first setFrameAutosaveName:@""]; [first close];
+    TLMainWindow *second = [[TLMainWindow alloc] initWithContentRect:NSMakeRect(0,0,400,300) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+    second.releasedWhenClosed = NO;
+    [second restorePlacementWithName:frameName];
+    Check(NSEqualRects(second.frame,expected), @"main window restores both saved size and position");
+    [second setFrameAutosaveName:@""]; [second close];
+    [NSWindow removeFrameUsingName:frameName];
     Method current = class_getClassMethod(NSRunningApplication.class, @selector(currentApplication));
     Method testCurrent = class_getClassMethod(NSRunningApplication.class, @selector(startupTestCurrentApplication));
     Method running = class_getClassMethod(NSRunningApplication.class, @selector(runningApplicationsWithBundleIdentifier:));
     Method testRunning = class_getClassMethod(NSRunningApplication.class, @selector(startupTestRunningApplicationsWithBundleIdentifier:));
+    Method openURLs = class_getInstanceMethod(NSWorkspace.class, @selector(openURLs:withApplicationAtURL:configuration:completionHandler:));
+    Method testOpenURLs = class_getInstanceMethod(NSWorkspace.class, @selector(startupTestOpenURLs:withApplicationAtURL:configuration:completionHandler:));
+    method_exchangeImplementations(openURLs, testOpenURLs);
     Method open = class_getInstanceMethod(NSWorkspace.class, @selector(openApplicationAtURL:configuration:completionHandler:));
     Method testOpen = class_getInstanceMethod(NSWorkspace.class, @selector(startupTestOpenApplicationAtURL:configuration:completionHandler:));
     method_exchangeImplementations(current, testCurrent);
@@ -212,9 +246,14 @@ int main(void) {
     LaunchWithResult(newInstalled, @[newInstalled, worktree], worktree, nil, YES);
     NSError *launchError = [NSError errorWithDomain:@"StartupTests" code:1 userInfo:nil];
     LaunchWithResult(newInstalled, @[newInstalled, worktree], worktree, launchError, YES);
+    launchWebURLs = @[[NSURL URLWithString:@"https://example.com/from-another-app?q=one#section"], [NSURL URLWithString:@"http://example.com/second"]];
+    Launch(newInstalled, @[newInstalled, worktree], worktree);
+    Check([forwardedWebURLs isEqual:launchWebURLs], @"duplicate launch forwards original web links, including query and fragment, before exiting");
+    launchWebURLs = nil;
     worktree.bundleURL = nil;
     Launch(newInstalled, @[newInstalled, worktree], worktree);
 
+    method_exchangeImplementations(openURLs, testOpenURLs);
     method_exchangeImplementations(open, testOpen);
     method_exchangeImplementations(running, testRunning);
     method_exchangeImplementations(current, testCurrent);

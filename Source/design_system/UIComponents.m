@@ -2346,6 +2346,8 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 @interface TLBrowserAddressInput ()
 @property (nonatomic, strong) CAShapeLayer *loadingLine;
+@property (nonatomic) BOOL pageLoading;
+@property (nonatomic) NSUInteger loadingAnimationGeneration;
 @property (nonatomic, strong) NSTextField *domainLabel;
 @property (nonatomic) BOOL addressFocused;
 @property (nonatomic, readwrite) BOOL hasUserDraft;
@@ -2486,25 +2488,50 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 
 - (void)setLoading:(BOOL)loading progress:(double)progress {
-  CGFloat next = loading ? MIN(1, MAX(0, isfinite(progress) ? progress : 0)) : 0;
-  BOOL wasLoading = !self.loadingLine.hidden;
+  CGFloat next = loading ? MIN(1, MAX(0, isfinite(progress) ? progress : 0)) : 1;
+  BOOL wasLoading = self.pageLoading;
   CGFloat target = self.loadingLine.strokeEnd;
-  if (wasLoading == loading && target == next) return;
-  // Retarget from the currently displayed stroke, including an interrupted animation.
+  if (wasLoading == loading && (!loading || target == next)) return;
   CGFloat previous = wasLoading && next >= target
     ? ((CAShapeLayer *)self.loadingLine.presentationLayer ?: self.loadingLine).strokeEnd : 0;
+  self.pageLoading = loading;
+  NSUInteger generation = ++self.loadingAnimationGeneration;
+  BOOL animateProgress = next > previous && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  NSTimeInterval progressDuration = animateProgress ? self.palette.browserLoadingProgressDuration : 0;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  [self.loadingLine removeAnimationForKey:@"loadingProgress"];
-  self.loadingLine.hidden = !loading;
+  [self.loadingLine removeAllAnimations];
+  self.loadingLine.hidden = NO;
+  self.loadingLine.opacity = 1;
   self.loadingLine.strokeEnd = next;
-  if (loading && next > previous && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+  if (animateProgress) {
     CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:@"strokeEnd"];
     animation.fromValue = @(previous);
     animation.toValue = @(next);
-    animation.duration = self.palette.browserLoadingProgressDuration;
+    animation.duration = progressDuration;
     animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
     [self.loadingLine addAnimation:animation forKey:@"loadingProgress"];
+  }
+  if (!loading) {
+    // Finish the stroke, hold the complete line, then fade. A new navigation
+    // invalidates this completion so its line cannot be hidden by an old load.
+    NSTimeInterval holdEnd = progressDuration + self.palette.browserLoadingCompletionHoldDuration;
+    NSTimeInterval duration = holdEnd + self.palette.browserLoadingFadeDuration;
+    CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+    fade.values = @[@1, @1, @0];
+    fade.keyTimes = @[@0, @(holdEnd / duration), @1];
+    fade.duration = duration;
+    self.loadingLine.opacity = 0;
+    [self.loadingLine addAnimation:fade forKey:@"loadingCompletion"];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      TLBrowserAddressInput *input = weakSelf;
+      if (!input || input.loadingAnimationGeneration != generation || input.pageLoading) return;
+      [CATransaction begin]; [CATransaction setDisableActions:YES];
+      input.loadingLine.hidden = YES;
+      [input.loadingLine removeAllAnimations];
+      [CATransaction commit];
+    });
   }
   [CATransaction commit];
 }

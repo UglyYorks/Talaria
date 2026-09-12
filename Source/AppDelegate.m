@@ -1,3 +1,5 @@
+#import "TLMainWindow.h"
+#import <Carbon/Carbon.h>
 #import "AppDelegate.h"
 #import "AgentClient.h"
 #import "AgentOrchestrator.h"
@@ -27,6 +29,20 @@
 
 @implementation TLAppDelegate
 
+- (void)applicationWillFinishLaunching:(NSNotification *)notification {
+  // Install before AppKit dispatches the launch URL event. This also supports
+  // the programmatic NSApplication entry point used by our desktop executable.
+  [NSAppleEventManager.sharedAppleEventManager setEventHandler:self
+    andSelector:@selector(handleOpenWebURLEvent:replyEvent:)
+    forEventClass:kInternetEventClass andEventID:kAEGetURL];
+}
+- (void)handleOpenWebURLEvent:(NSAppleEventDescriptor *)event replyEvent:(NSAppleEventDescriptor *)reply {
+  NSString *value = [event paramDescriptorForKeyword:keyDirectObject].stringValue;
+  NSURL *URL = value.length ? [NSURL URLWithString:value] : nil;
+  if (URL) [self application:NSApp openURLs:@[URL]];
+}
+
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   // Installed and worktree builds share their database and WebKit profile.
   // Hand off before restoring tabs can initialize a second browser runtime.
@@ -44,8 +60,7 @@
     configuration.allowsRunningApplicationSubstitution = NO;
     configuration.activates = YES;
     configuration.promptsUserIfNeeded = NO;
-    [NSWorkspace.sharedWorkspace openApplicationAtURL:existing.bundleURL configuration:configuration
-      completionHandler:^(NSRunningApplication *application, NSError *error) {
+    void (^completeHandoff)(NSRunningApplication *, NSError *) = ^(NSRunningApplication *application, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
           if (error || !application) {
             [existing unhide];
@@ -57,7 +72,14 @@
             }];
           } else [NSApp terminate:nil];
         });
-      }];
+      };
+    if (self.pendingWebURLs.count) {
+      NSArray *URLs = self.pendingWebURLs.copy;
+      [self.pendingWebURLs removeAllObjects];
+      [NSWorkspace.sharedWorkspace openURLs:URLs withApplicationAtURL:existing.bundleURL configuration:configuration completionHandler:completeHandoff];
+    } else {
+      [NSWorkspace.sharedWorkspace openApplicationAtURL:existing.bundleURL configuration:configuration completionHandler:completeHandoff];
+    }
     return;
   }
 
@@ -102,6 +124,8 @@
   self.windowController = [[TalariaWindowController alloc] initWithDatabase:self.database
                                                             agentOrchestrator:self.agentOrchestrator
                                                               appStateManager:self.appStateManager];
+  self.windowController.shouldCascadeWindows = NO;
+  if (!TLWidgetbookModeEnabled()) [(TLMainWindow *)self.windowController.window restorePlacementWithName:@"TalariaMainWindow"];
   [self.workspaceSessionStore observeStateManager:self.appStateManager];
   [self installStatusItem];
   [self presentMainWindow:self];
