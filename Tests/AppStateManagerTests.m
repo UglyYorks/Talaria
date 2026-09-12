@@ -220,6 +220,27 @@ static void TestAdjacentTabInsertion(void) {
     @"insertion also works in an empty workspace");
 }
 
+static void TestBrowserColorUpdates(void) {
+  TLAppStateManager *manager=[TLAppStateManager new];
+  TLWorkspaceTab *tab=[TLWorkspaceTab tabWithKind:TLWorkspaceTabKindBrowser tabID:17 title:@"Video" toolTip:@"Video" URL:[NSURL URLWithString:@"https://example.org/video"] closeable:YES];
+  [manager upsertWorkspaceTab:tab activate:YES];
+  TLAppStateSnapshot *before=manager.snapshot;
+  tab.browserHeaderRGB=@[@18,@46,@87];
+  [manager upsertWorkspaceTab:tab activate:NO];
+  TLAssert([manager.snapshot.lastSignal.payload[@"colorOnly"] boolValue],@"page color changes do not require rebuilding tab layout");
+  TLAssert([manager.snapshot.workspaceTabs.firstObject.browserHeaderRGB isEqual:tab.browserHeaderRGB] && before.workspaceTabs.firstObject.browserHeaderRGB==nil,@"color updates persist in a new immutable snapshot");
+  NSUInteger revision=manager.snapshot.revision;
+  [manager upsertWorkspaceTab:tab activate:NO];
+  TLAssert(manager.snapshot.revision==revision,@"identical samples publish no redundant state change");
+  tab.title=@"Renamed video";
+  [manager upsertWorkspaceTab:tab activate:NO];
+  TLAssert(![manager.snapshot.lastSignal.payload[@"colorOnly"] boolValue],@"title changes still refresh the tab layout");
+  [manager activateWorkspaceTabKind:TLWorkspaceTabKindChat tabID:99];
+  tab.browserHeaderRGB=@[@244,@229,@202];
+  [manager upsertWorkspaceTab:tab activate:YES];
+  TLAssert(![manager.snapshot.lastSignal.payload[@"colorOnly"] boolValue] && manager.snapshot.activeTabID==17,@"color and activation changes still refresh the selected tab");
+}
+
 int main(void) {
   @autoreleasepool {
     TLAppStateManager *manager = [[TLAppStateManager alloc] init];
@@ -239,6 +260,7 @@ int main(void) {
     TestInactiveAndFinalTabClosure();
     TestReentrantNotificationOrdering();
     TestAdjacentTabInsertion();
+    TestBrowserColorUpdates();
     NSLog(@"AppStateManagerTests passed");
   }
   return 0;

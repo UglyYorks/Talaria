@@ -60,6 +60,7 @@ typedef void (^TLWebKitBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoForwa
 - (void)probeOverlayInSession:(nullable TLWebKitBrowserSession *)session overlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick completion:(void (^)(NSDictionary *result))completion;
 - (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(nullable TLWebKitBrowserSession *)session completion:(nullable void (^)(BOOL applied))completion;
 - (void)sampleFooterColorInSession:(nullable TLWebKitBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion;
+- (void)sampleHeaderColorInSession:(nullable TLWebKitBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion;
 - (void)closeSession:(nullable TLWebKitBrowserSession *)session;
 - (void)closeBrowserInView:(NSView *)view;
 - (BOOL)prepareForApplicationTermination;

@@ -2,6 +2,11 @@
 #import <QuartzCore/QuartzCore.h>
 #import <CoreImage/CoreImage.h>
 
+@interface TLProgressiveBlurView ()
+@property (nonatomic) NSRect appliedBlurBounds;
+@property (nonatomic) BOOL hasAppliedBlur;
+@end
+
 @implementation TLProgressiveBlurView
 - (instancetype)initWithFrame:(NSRect)frame {
   if ((self = [super initWithFrame:frame])) {
@@ -11,10 +16,13 @@
   return self;
 }
 - (NSView *)hitTest:(NSPoint)point { return nil; }
-- (void)setPalette:(TLThemePalette *)palette { _palette = palette; [self updateBlur]; }
+- (void)setPalette:(TLThemePalette *)palette { _palette = palette; self.hasAppliedBlur = NO; [self updateBlur]; }
 - (void)layout { [super layout]; [self updateBlur]; }
 - (void)updateBlur {
   if (!self.palette || NSIsEmptyRect(self.bounds)) return;
+  // AppKit can lay out this view several times for one geometry change. Keep
+  // the filter graph when its mask and palette have not changed.
+  if (self.hasAppliedBlur && NSEqualRects(self.appliedBlurBounds,self.bounds) && self.backgroundFilters.count) return;
   CIFilter *gradient = [CIFilter filterWithName:@"CILinearGradient"];
   [gradient setValue:[CIVector vectorWithX:0 Y:NSHeight(self.bounds)] forKey:@"inputPoint0"];
   [gradient setValue:[CIVector vectorWithX:0 Y:0] forKey:@"inputPoint1"];
@@ -35,5 +43,7 @@
   self.backgroundFilters = @[blur];
   self.layer.backgroundColor = TLCGColor(self.palette.chatInputBackdrop);
   [CATransaction commit];
+  self.appliedBlurBounds = self.bounds;
+  self.hasAppliedBlur = YES;
 }
 @end

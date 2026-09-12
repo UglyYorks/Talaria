@@ -1744,7 +1744,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
   self.footerConfiguration=configuration;
   if(completion){if(self.deferFooter)self.footerCompletion=completion;else completion(YES);}
 }
-- (void)sampleFooterColorInSession:(TLWebKitBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
+- (void)sampleHeaderColorInSession:(TLWebKitBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
   self.colorCalls++; self.colorCapture = capture;
   if (self.deferColor) self.colorCompletion = completion; else completion(@{});
 }

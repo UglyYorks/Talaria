@@ -785,6 +785,13 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   [self updateTabWidthsForAvailableWidth:availableWidth];
 }
 
+- (void)prepareTabWidthsForAvailableWidth:(CGFloat)availableWidth contentWidth:(CGFloat)contentWidth {
+  self.contentWidth=isfinite(contentWidth) ? MAX(0,contentWidth) : 0;
+  if (![self applyTabWidthsForAvailableWidth:availableWidth]) return;
+  [self.tabStack invalidateIntrinsicContentSize];
+  [self.tabStack setNeedsLayout:YES];
+}
+
 - (BOOL)applyTabWidthsForAvailableWidth:(CGFloat)availableWidth {
   if (self.restoringTabWidths) {
     if (availableWidth == self.latestAvailableWidth && self.contentWidth == self.appliedContentWidth) return NO;
@@ -828,6 +835,10 @@ static NSRect TLInterpolateTabFrame(NSRect start, NSRect end, CGFloat progress) 
   if (![self applyTabWidthsForAvailableWidth:availableWidth]) return;
   [self.tabStack invalidateIntrinsicContentSize];
   [self.tabStack setNeedsLayout:YES];
+  [self finishUpdatingTabWidths];
+}
+
+- (void)finishUpdatingTabWidths {
   [self.tabStack layoutSubtreeIfNeeded];
   if (!self.hasPendingSelectionAnimation) {
     [self updateSelectionIndicatorAnimated:NO];

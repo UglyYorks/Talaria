@@ -35,7 +35,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == '/frame':
             body = f'<iframe src="http://localhost:{self.server.server_port}/closed" style="position:fixed;inset:0;width:100%;height:100%;border:0"></iframe>'
         if self.path == '/clear': body = '<p>Normal page</p>' * 20000
-        if self.path == '/gradient': body = '<style>body{min-height:0;height:100vh;background:linear-gradient(rgb(180,30,20) 20%,rgb(20,30,150) 80%)}</style>'
+        if self.path in ('/gradient','/header-gradient'): body = '<style>body{min-height:0;height:100vh;background:linear-gradient(rgb(180,30,20) 20%,rgb(20,30,150) 80%)}</style>'
+        if self.path == '/header-canvas': body = '<canvas id="edge" width="1000" height="700" style="position:fixed;inset:0;width:100%;height:100%"></canvas><script>const c=edge.getContext("2d");c.fillStyle="rgb(180,30,20)";c.fillRect(0,0,1000,700)</script>'
         if self.path == '/read': body = '<title>Readable story</title><article><h1>Story</h1><p>This is a readable article with enough text. The page bridge preserves page context for the assistant. ' * 10 + '</p></article>'
         if self.path == '/find': body = f'<p>Needle and <strong>needle</strong> and need<span>le</span>.</p><div hidden>needle</div><iframe src="http://localhost:{self.server.server_port}/find-child"></iframe>'
         if self.path == '/find-child': body = '<p>needle inside another origin</p>'
@@ -60,6 +61,11 @@ for path in ['/fixed','/closed','/pointer','/frame']:
 assert by_path['/clear']['obstructed'] is False
 assert by_path['/gradient']['rgb'] == [20,30,150], by_path['/gradient']
 assert by_path['/gradient']['top']['rgb'] == [180,30,20], by_path['/gradient']
+for path in ('/header-gradient','/header-canvas'):
+    result=by_path[path]
+    assert result['sample']['top']['rgb'] == [180,30,20], result
+    assert result['captureRect'] == [0,0,1000,8], result
+    assert 'rgb' not in result['sample'], 'header matching should not sample the unused bottom edge'
 assert 'page bridge preserves' in by_path['/read']['text']
 assert by_path['/find']['matches'] == [[4,1],[4,2],[4,1]], by_path['/find']
 assert by_path['/find']['finding'] is False

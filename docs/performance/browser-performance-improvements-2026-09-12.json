@@ -1,0 +1,2260 @@
+{
+  "baseline": "49b2a25",
+  "date": "2026-09-12",
+  "definition": "Page requestAnimationFrame scheduling gaps above 25 ms, not verified compositor drops",
+  "windowPoints": [
+    2600,
+    1400
+  ],
+  "scale": 2,
+  "targetHz": 60,
+  "appOptimization": "-O2 -g",
+  "runs": {
+    "final-ready": [
+      {
+        "mode": "workspace",
+        "workload": "resize",
+        "repeat": 0,
+        "frames": 295,
+        "p95_ms": 25,
+        "max_ms": 41,
+        "gaps_over_25ms": 14,
+        "estimated_missed_intervals": 18,
+        "native_max_ms": 37.93,
+        "native_cpu_seconds": 3.056,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "color-pulse",
+        "repeat": 0,
+        "frames": 301,
+        "p95_ms": 18,
+        "max_ms": 22,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 0,
+        "native_max_ms": 17.65,
+        "native_cpu_seconds": 0.413,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "canvas-edge",
+        "repeat": 0,
+        "frames": 299,
+        "p95_ms": 18,
+        "max_ms": 35,
+        "gaps_over_25ms": 1,
+        "estimated_missed_intervals": 1,
+        "native_max_ms": 17.81,
+        "native_cpu_seconds": 0.438,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(178,146,52)",
+          "rgb(52,178,83)",
+          "rgb(52,83,178)",
+          "rgb(178,52,146)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "resize",
+        "repeat": 1,
+        "frames": 293,
+        "p95_ms": 31,
+        "max_ms": 40,
+        "gaps_over_25ms": 27,
+        "estimated_missed_intervals": 28,
+        "native_max_ms": 30.74,
+        "native_cpu_seconds": 3.144,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "color-pulse",
+        "repeat": 1,
+        "frames": 300,
+        "p95_ms": 18,
+        "max_ms": 21,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 0,
+        "native_max_ms": 17.64,
+        "native_cpu_seconds": 0.349,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "canvas-edge",
+        "repeat": 1,
+        "frames": 299,
+        "p95_ms": 18,
+        "max_ms": 27,
+        "gaps_over_25ms": 1,
+        "estimated_missed_intervals": 1,
+        "native_max_ms": 18.16,
+        "native_cpu_seconds": 0.378,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(115,178,52)",
+          "rgb(52,178,178)",
+          "rgb(115,52,178)",
+          "rgb(178,52,146)"
+        ]
+      }
+    ],
+    "final-dark": [
+      {
+        "mode": "workspace",
+        "workload": "resize",
+        "repeat": 0,
+        "frames": 268,
+        "p95_ms": 33,
+        "max_ms": 59,
+        "gaps_over_25ms": 53,
+        "estimated_missed_intervals": 67,
+        "native_max_ms": 45.68,
+        "native_cpu_seconds": 2.746,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": true,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "color-pulse",
+        "repeat": 0,
+        "frames": 301,
+        "p95_ms": 18,
+        "max_ms": 20,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 0,
+        "native_max_ms": 20.08,
+        "native_cpu_seconds": 0.403,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": true,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "canvas-edge",
+        "repeat": 0,
+        "frames": 299,
+        "p95_ms": 18,
+        "max_ms": 20,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 0,
+        "native_max_ms": 17.7,
+        "native_cpu_seconds": 0.385,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": true,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(115,178,52)",
+          "rgb(52,178,83)",
+          "rgb(52,83,178)",
+          "rgb(178,52,146)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "resize",
+        "repeat": 1,
+        "frames": 264,
+        "p95_ms": 32,
+        "max_ms": 46,
+        "gaps_over_25ms": 58,
+        "estimated_missed_intervals": 67,
+        "native_max_ms": 37.02,
+        "native_cpu_seconds": 2.749,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": true,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "color-pulse",
+        "repeat": 1,
+        "frames": 301,
+        "p95_ms": 18,
+        "max_ms": 23,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 0,
+        "native_max_ms": 19.0,
+        "native_cpu_seconds": 0.422,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": true,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "canvas-edge",
+        "repeat": 1,
+        "frames": 299,
+        "p95_ms": 18,
+        "max_ms": 26,
+        "gaps_over_25ms": 1,
+        "estimated_missed_intervals": 1,
+        "native_max_ms": 17.57,
+        "native_cpu_seconds": 0.382,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": true,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(178,146,52)",
+          "rgb(52,178,83)",
+          "rgb(52,83,178)",
+          "rgb(178,52,146)"
+        ]
+      }
+    ],
+    "final-all-workloads": [
+      {
+        "mode": "workspace",
+        "workload": "simple",
+        "repeat": 0,
+        "frames": 301,
+        "p95_ms": 18,
+        "max_ms": 19,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 0,
+        "native_max_ms": 17.75,
+        "native_cpu_seconds": 0.51,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "dense",
+        "repeat": 0,
+        "frames": 299,
+        "p95_ms": 18,
+        "max_ms": 26,
+        "gaps_over_25ms": 1,
+        "estimated_missed_intervals": 1,
+        "native_max_ms": 17.69,
+        "native_cpu_seconds": 0.459,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "churn",
+        "repeat": 0,
+        "frames": 302,
+        "p95_ms": 18,
+        "max_ms": 25,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 1,
+        "native_max_ms": 17.72,
+        "native_cpu_seconds": 0.348,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "canvas",
+        "repeat": 0,
+        "frames": 300,
+        "p95_ms": 18,
+        "max_ms": 25,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 1,
+        "native_max_ms": 17.67,
+        "native_cpu_seconds": 0.514,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "resize",
+        "repeat": 0,
+        "frames": 275,
+        "p95_ms": 32,
+        "max_ms": 51,
+        "gaps_over_25ms": 53,
+        "estimated_missed_intervals": 66,
+        "native_max_ms": 41.37,
+        "native_cpu_seconds": 2.848,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "color-sections",
+        "repeat": 0,
+        "frames": 302,
+        "p95_ms": 17,
+        "max_ms": 19,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 0,
+        "native_max_ms": 19.64,
+        "native_cpu_seconds": 0.699,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,229,202)",
+          "rgb(18,46,87)",
+          "rgb(244,229,202)",
+          "rgb(18,46,87)",
+          "rgb(244,229,202)",
+          "rgb(18,46,87)",
+          "rgb(244,229,202)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "gradient",
+        "repeat": 0,
+        "frames": 300,
+        "p95_ms": 18,
+        "max_ms": 19,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 0,
+        "native_max_ms": 19.78,
+        "native_cpu_seconds": 0.302,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(43,84,136)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "color-pulse",
+        "repeat": 0,
+        "frames": 299,
+        "p95_ms": 18,
+        "max_ms": 22,
+        "gaps_over_25ms": 0,
+        "estimated_missed_intervals": 0,
+        "native_max_ms": 20.63,
+        "native_cpu_seconds": 0.439,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)",
+          "rgb(16,36,76)",
+          "rgb(245,245,245)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "canvas-edge",
+        "repeat": 0,
+        "frames": 298,
+        "p95_ms": 17,
+        "max_ms": 26,
+        "gaps_over_25ms": 1,
+        "estimated_missed_intervals": 1,
+        "native_max_ms": 18.21,
+        "native_cpu_seconds": 0.438,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)",
+          "rgb(178,146,52)",
+          "rgb(52,178,83)",
+          "rgb(52,83,178)",
+          "rgb(178,52,146)"
+        ]
+      }
+    ],
+    "final-original-layout": [
+      {
+        "mode": "workspace",
+        "workload": "resize",
+        "repeat": 0,
+        "frames": 279,
+        "p95_ms": 31,
+        "max_ms": 50,
+        "gaps_over_25ms": 48,
+        "estimated_missed_intervals": 54,
+        "native_max_ms": 40.18,
+        "native_cpu_seconds": 2.599,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "resize",
+        "repeat": 1,
+        "frames": 269,
+        "p95_ms": 33,
+        "max_ms": 46,
+        "gaps_over_25ms": 53,
+        "estimated_missed_intervals": 62,
+        "native_max_ms": 32.82,
+        "native_cpu_seconds": 2.855,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      },
+      {
+        "mode": "workspace",
+        "workload": "resize",
+        "repeat": 2,
+        "frames": 276,
+        "p95_ms": 31,
+        "max_ms": 36,
+        "gaps_over_25ms": 55,
+        "estimated_missed_intervals": 58,
+        "native_max_ms": 34.56,
+        "native_cpu_seconds": 2.92,
+        "active": true,
+        "visible": true,
+        "blurEnabled": 1,
+        "headerBindingEnabled": 1,
+        "sidebarVisible": true,
+        "windowDelegateEnabled": 1,
+        "dark": false,
+        "headerColors": [
+          "rgb(244,244,244)"
+        ]
+      }
+    ]
+  },
+  "youtube": {
+    "youtube-workspace-stage1": [
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 584.5657500030939,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 1207.885333307786,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 186,
+          "frames": 21
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": true,
+        "elapsedMS": 591.6817499964964,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": false,
+        "elapsedMS": 1034.9984583153855,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 262,
+          "frames": 41
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Click YouTube exit fullscreen control",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": true,
+        "elapsedMS": 629.0328333270736,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": false,
+        "elapsedMS": 1013.8606250111479,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 254,
+          "frames": 35
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Closing fullscreen tab restores native presentation",
+        "passed": true
+      }
+    ],
+    "youtube-final-ready": [
+      {
+        "name": "Live YouTube uses production sidebar, blur and tab color matching",
+        "passed": true
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 610.1327916549053,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 1156.054208346177,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 229,
+          "frames": 35
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": true,
+        "elapsedMS": 620.6492916389834,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": false,
+        "elapsedMS": 1151.0438333207276,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 489,
+          "frames": 15
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Click YouTube exit fullscreen control",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": true,
+        "elapsedMS": 895.6610833411105,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": true,
+        "elapsedMS": 1024.0090416627936,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 211,
+          "frames": 39
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Closing fullscreen tab restores native presentation",
+        "passed": true
+      }
+    ],
+    "youtube-no-sampling": [
+      {
+        "name": "Live YouTube uses production sidebar, blur and tab color matching",
+        "passed": true
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 597.2897083556745,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 1016.5512083331123,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 214,
+          "frames": 38
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": true,
+        "elapsedMS": 602.0712083263788,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": true,
+        "elapsedMS": 1017.6381666678935,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 207,
+          "frames": 39
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Click YouTube exit fullscreen control",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": true,
+        "elapsedMS": 858.2622083486058,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": true,
+        "elapsedMS": 1142.3034166509751,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 211,
+          "frames": 39
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Closing fullscreen tab restores native presentation",
+        "passed": true
+      }
+    ],
+    "youtube-recovery": [
+      {
+        "name": "Live YouTube uses production sidebar, blur and tab color matching",
+        "passed": true
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 626.0194166679867,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 1181.4344583253842,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 213,
+          "frames": 40
+        }
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 1819.8316250054631,
+        "name": "Fullscreen presentation recovery latency"
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "name": "Recovered fullscreen frame cadence",
+        "cadence": {
+          "visible": true,
+          "maxGap": 18,
+          "focused": true,
+          "frames": 61
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": true,
+        "elapsedMS": 609.2752083204687,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": false,
+        "elapsedMS": 1282.4578750005458,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 253,
+          "frames": 43
+        }
+      },
+      {
+        "cycle": 1,
+        "passed": true,
+        "elapsedMS": 2095.125249994453,
+        "name": "Fullscreen presentation recovery latency"
+      },
+      {
+        "cycle": 1,
+        "passed": true,
+        "name": "Recovered fullscreen frame cadence",
+        "cadence": {
+          "visible": true,
+          "maxGap": 28,
+          "focused": true,
+          "frames": 61
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Click YouTube exit fullscreen control",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": true,
+        "elapsedMS": 894.8700833134353,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": false,
+        "elapsedMS": 1014.6111666690558,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 276,
+          "frames": 24
+        }
+      },
+      {
+        "cycle": 2,
+        "passed": true,
+        "elapsedMS": 2034.8832499876153,
+        "name": "Fullscreen presentation recovery latency"
+      },
+      {
+        "cycle": 2,
+        "passed": true,
+        "name": "Recovered fullscreen frame cadence",
+        "cadence": {
+          "visible": true,
+          "maxGap": 27,
+          "focused": true,
+          "frames": 62
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Closing fullscreen tab restores native presentation",
+        "passed": true
+      }
+    ],
+    "youtube-attribution": [
+      {
+        "name": "Live YouTube uses production sidebar, blur and tab color matching",
+        "passed": true
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": true,
+        "elapsedMS": 594.8152916680556,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 0,
+        "passed": false,
+        "elapsedMS": 1214.865958347218,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 321,
+          "frames": 27
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": true,
+        "elapsedMS": 607.8167083323933,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit restores the native footer inset",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 1,
+        "passed": false,
+        "elapsedMS": 1016.501166683156,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 494,
+          "frames": 19
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Click YouTube exit fullscreen control",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": true,
+        "elapsedMS": 872.7415416506119,
+        "name": "Fullscreen exit latency"
+      },
+      {
+        "name": "Exit restores the browser to its original host",
+        "passed": true
+      },
+      {
+        "name": "Exit restores exact browser and window geometry",
+        "passed": true
+      },
+      {
+        "name": "Exit also clears renderer fullscreen",
+        "passed": true
+      },
+      {
+        "cycle": 2,
+        "passed": false,
+        "elapsedMS": 1200.5887499835808,
+        "name": "Post-fullscreen frame cadence",
+        "cadence": {
+          "maxGap": 347,
+          "frames": 20
+        }
+      },
+      {
+        "name": "Renderer accepts user-initiated fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser content enters native fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Browser fills the selected display",
+        "passed": true
+      },
+      {
+        "name": "Original split layout and window stay unchanged",
+        "passed": true
+      },
+      {
+        "name": "Footer probes pause in fullscreen",
+        "passed": true
+      },
+      {
+        "name": "Fullscreen has no document extension",
+        "passed": true
+      },
+      {
+        "name": "Renderer viewport matches native fullscreen content size",
+        "passed": true
+      },
+      {
+        "name": "Closing fullscreen tab restores native presentation",
+        "passed": true
+      }
+    ]
+  },
+  "profiler": {
+    "tool": "macOS sample",
+    "requestedSeconds": 20,
+    "intervalMS": 5,
+    "nativeMainSamples": 2608,
+    "nativeMainIdleMachSamples": 2270,
+    "rendererMainSamples": 2555,
+    "rendererMainIdleMachSamples": 1443,
+    "rendererUpdateRenderingInclusiveSamples": 594,
+    "rendererRAfCallbackInclusiveSamples": 254,
+    "limitations": "Includes playback, fullscreen entry/exit, and test probes; sample weights overlap and are not isolated to individual stalls. GPU process not sampled."
+  },
+  "correctness": [
+    {
+      "name": "build",
+      "status": 0,
+      "seconds": 2.54
+    },
+    {
+      "name": "WheelScrollAnimationTests",
+      "status": 0,
+      "seconds": 0.49
+    },
+    {
+      "name": "BrowserSettingsTests",
+      "status": 0,
+      "seconds": 0.43
+    },
+    {
+      "name": "WebKitDownloadLifecycleTests",
+      "status": 0,
+      "seconds": 0.47
+    },
+    {
+      "name": "IncognitoTests",
+      "status": 0,
+      "seconds": 0.7
+    },
+    {
+      "name": "NotificationDataTests",
+      "status": 0,
+      "seconds": 0.49
+    },
+    {
+      "name": "NotificationSidebarTests",
+      "status": 0,
+      "seconds": 0.6
+    },
+    {
+      "name": "NotificationNavigationTests",
+      "status": 0,
+      "seconds": 3.06
+    },
+    {
+      "name": "HistoryQueryTests",
+      "status": 0,
+      "seconds": 1.06
+    },
+    {
+      "name": "RepositoryTests",
+      "status": 0,
+      "seconds": 0.43
+    },
+    {
+      "name": "AutomationsTests",
+      "status": 0,
+      "seconds": 1.49
+    },
+    {
+      "name": "QuickInputTests",
+      "status": 0,
+      "seconds": 7.65
+    },
+    {
+      "name": "MarkdownCodeTests",
+      "status": 0,
+      "seconds": 6.26
+    },
+    {
+      "name": "MarkdownTableTests",
+      "status": 0,
+      "seconds": 6.0
+    },
+    {
+      "name": "MarkdownMathTests",
+      "status": 0,
+      "seconds": 10.06
+    },
+    {
+      "name": "GlassPaneTests",
+      "status": 0,
+      "seconds": 10.45
+    },
+    {
+      "name": "NotchOverlayViewTests",
+      "status": 0,
+      "seconds": 0.43
+    },
+    {
+      "name": "TabLayoutTests",
+      "status": 0,
+      "seconds": 2.98
+    },
+    {
+      "name": "PromptBuilderTests",
+      "status": 0,
+      "seconds": 0.54
+    },
+    {
+      "name": "CredentialStoreTests",
+      "status": 0,
+      "seconds": 0.38
+    },
+    {
+      "name": "AssistantTurnResultTests",
+      "status": 0,
+      "seconds": 0.26
+    },
+    {
+      "name": "AppStateManagerTests",
+      "status": 0,
+      "seconds": 0.26
+    },
+    {
+      "name": "WorkspaceSessionTests",
+      "status": 0,
+      "seconds": 0.32
+    },
+    {
+      "name": "WorkspaceRestoreTests",
+      "status": 0,
+      "seconds": 0.56
+    },
+    {
+      "name": "AppStartupTests",
+      "status": 0,
+      "seconds": 0.48
+    },
+    {
+      "name": "TransitionCoordinatorTests",
+      "status": 0,
+      "seconds": 0.26
+    },
+    {
+      "name": "FeatureControllerTests",
+      "status": 1,
+      "seconds": 12.14
+    },
+    {
+      "name": "ChatAttachmentTests",
+      "status": 0,
+      "seconds": 1.09
+    },
+    {
+      "name": "TabShortcutTests",
+      "status": 0,
+      "seconds": 0.49
+    },
+    {
+      "name": "AppResetTests",
+      "status": 0,
+      "seconds": 0.38
+    },
+    {
+      "name": "SplitWorkspaceTests",
+      "status": 0,
+      "seconds": 7.31
+    },
+    {
+      "name": "AttachmentViewerTests",
+      "status": 0,
+      "seconds": 8.07
+    },
+    {
+      "name": "BrowserDownloadTests",
+      "status": 0,
+      "seconds": 2.19
+    },
+    {
+      "name": "MarkdownLinkContextTests",
+      "status": 0,
+      "seconds": 4.5
+    },
+    {
+      "name": "BrowserFindTests",
+      "status": 0,
+      "seconds": 0.66
+    },
+    {
+      "name": "AgentVMLockTests",
+      "status": 0,
+      "seconds": 0.83
+    },
+    {
+      "name": "ChatFindTests",
+      "status": 0,
+      "seconds": 4.58
+    },
+    {
+      "name": "BookmarkTests",
+      "status": 0,
+      "seconds": 1.79
+    },
+    {
+      "name": "BrowserHistoryTests",
+      "status": 0,
+      "seconds": 0.54
+    },
+    {
+      "name": "StarryEmptyStateTests",
+      "status": 0,
+      "seconds": 1.49
+    },
+    {
+      "name": "AgentProtocolTests",
+      "status": 0,
+      "seconds": 0.26
+    },
+    {
+      "name": "browser-extended",
+      "status": 0,
+      "seconds": 0.32
+    },
+    {
+      "name": "python-js-theme",
+      "status": 0,
+      "seconds": 18.69
+    },
+    {
+      "name": "terminal",
+      "status": 0,
+      "seconds": 1.98
+    },
+    {
+      "name": "agent-runtime",
+      "status": 0,
+      "seconds": 0.15
+    },
+    {
+      "name": "tab-color",
+      "status": 0,
+      "seconds": 15.36
+    },
+    {
+      "name": "backdrop",
+      "status": 0,
+      "seconds": 13.96
+    },
+    {
+      "name": "fullscreen-local",
+      "status": 0,
+      "seconds": 20.73
+    }
+  ],
+  "localFullscreen": [
+    {
+      "name": "Renderer accepts user-initiated fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Browser content enters native fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Browser fills the selected display",
+      "passed": true
+    },
+    {
+      "name": "Original split layout and window stay unchanged",
+      "passed": true
+    },
+    {
+      "name": "Footer probes pause in fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Fullscreen has no document extension",
+      "passed": true
+    },
+    {
+      "name": "Renderer viewport matches native fullscreen content size",
+      "passed": true
+    },
+    {
+      "cycle": 0,
+      "passed": true,
+      "elapsedMS": 601.6393333266024,
+      "name": "Fullscreen exit latency"
+    },
+    {
+      "name": "Exit restores the browser to its original host",
+      "passed": true
+    },
+    {
+      "name": "Exit restores exact browser and window geometry",
+      "passed": true
+    },
+    {
+      "name": "Exit restores the native footer inset",
+      "passed": true
+    },
+    {
+      "name": "Exit also clears renderer fullscreen",
+      "passed": true
+    },
+    {
+      "cycle": 0,
+      "passed": true,
+      "elapsedMS": 1019.1084999823943,
+      "name": "Post-fullscreen frame cadence",
+      "cadence": {
+        "maxGap": 21,
+        "frames": 61
+      }
+    },
+    {
+      "cycle": 0,
+      "passed": true,
+      "elapsedMS": 1621.664416656131,
+      "name": "Fullscreen recovery observation time"
+    },
+    {
+      "cycle": 0,
+      "passed": true,
+      "name": "Recovered fullscreen frame cadence",
+      "cadence": {
+        "visible": true,
+        "maxGap": 19,
+        "focused": true,
+        "frames": 61
+      }
+    },
+    {
+      "name": "Renderer accepts user-initiated fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Browser content enters native fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Browser fills the selected display",
+      "passed": true
+    },
+    {
+      "name": "Original split layout and window stay unchanged",
+      "passed": true
+    },
+    {
+      "name": "Footer probes pause in fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Fullscreen has no document extension",
+      "passed": true
+    },
+    {
+      "name": "Renderer viewport matches native fullscreen content size",
+      "passed": true
+    },
+    {
+      "cycle": 1,
+      "passed": true,
+      "elapsedMS": 569.9351250077598,
+      "name": "Fullscreen exit latency"
+    },
+    {
+      "name": "Exit restores the browser to its original host",
+      "passed": true
+    },
+    {
+      "name": "Exit restores exact browser and window geometry",
+      "passed": true
+    },
+    {
+      "name": "Exit restores the native footer inset",
+      "passed": true
+    },
+    {
+      "name": "Exit also clears renderer fullscreen",
+      "passed": true
+    },
+    {
+      "cycle": 1,
+      "passed": true,
+      "elapsedMS": 1014.6040833205916,
+      "name": "Post-fullscreen frame cadence",
+      "cadence": {
+        "maxGap": 19,
+        "frames": 61
+      }
+    },
+    {
+      "cycle": 1,
+      "passed": true,
+      "elapsedMS": 1586.1512916744687,
+      "name": "Fullscreen recovery observation time"
+    },
+    {
+      "cycle": 1,
+      "passed": true,
+      "name": "Recovered fullscreen frame cadence",
+      "cadence": {
+        "visible": true,
+        "maxGap": 25,
+        "focused": true,
+        "frames": 61
+      }
+    },
+    {
+      "name": "Renderer accepts user-initiated fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Browser content enters native fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Browser fills the selected display",
+      "passed": true
+    },
+    {
+      "name": "Original split layout and window stay unchanged",
+      "passed": true
+    },
+    {
+      "name": "Footer probes pause in fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Fullscreen has no document extension",
+      "passed": true
+    },
+    {
+      "name": "Renderer viewport matches native fullscreen content size",
+      "passed": true
+    },
+    {
+      "cycle": 2,
+      "passed": true,
+      "elapsedMS": 652.8033333306666,
+      "name": "Fullscreen exit latency"
+    },
+    {
+      "name": "Exit restores the browser to its original host",
+      "passed": true
+    },
+    {
+      "name": "Exit restores exact browser and window geometry",
+      "passed": true
+    },
+    {
+      "name": "Exit also clears renderer fullscreen",
+      "passed": true
+    },
+    {
+      "cycle": 2,
+      "passed": true,
+      "elapsedMS": 1017.03283333336,
+      "name": "Post-fullscreen frame cadence",
+      "cadence": {
+        "maxGap": 20,
+        "frames": 62
+      }
+    },
+    {
+      "cycle": 2,
+      "passed": true,
+      "elapsedMS": 1670.6474583479576,
+      "name": "Fullscreen recovery observation time"
+    },
+    {
+      "cycle": 2,
+      "passed": true,
+      "name": "Recovered fullscreen frame cadence",
+      "cadence": {
+        "visible": true,
+        "maxGap": 19,
+        "focused": true,
+        "frames": 61
+      }
+    },
+    {
+      "name": "Renderer accepts user-initiated fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Browser content enters native fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Browser fills the selected display",
+      "passed": true
+    },
+    {
+      "name": "Original split layout and window stay unchanged",
+      "passed": true
+    },
+    {
+      "name": "Footer probes pause in fullscreen",
+      "passed": true
+    },
+    {
+      "name": "Fullscreen has no document extension",
+      "passed": true
+    },
+    {
+      "name": "Renderer viewport matches native fullscreen content size",
+      "passed": true
+    },
+    {
+      "name": "Closing fullscreen tab restores native presentation",
+      "passed": true
+    }
+  ]
+}

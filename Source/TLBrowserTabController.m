@@ -355,7 +355,7 @@
     self.browserSession.topScrollEnded=^{
       TLBrowserTabController *owner=weakSelf;if(!owner || owner.isClosed)return;
       owner.footerColorNext=0;owner.footerCaptureNext=0;
-      [owner sampleFooterContentColor];
+      [owner sampleHeaderContentColor];
     };
     [self configureDocumentFooter];
     self.pageAppearanceTimer = [NSTimer timerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *timer) {
@@ -428,7 +428,7 @@
   self.headerContentColor=color;
   if(self.headerColorChangedHandler)self.headerColorChangedHandler();
 }
-- (void)sampleFooterContentColor {
+- (void)sampleHeaderContentColor {
   NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
   if (![self canSamplePageAppearance] || self.footerColorInFlight || now < self.footerColorNext) return;
   BOOL capture = now >= self.footerCaptureNext;
@@ -437,7 +437,7 @@
   NSSize viewport = self.browserHostView.bounds.size;
   NSRect sampleRect = self.tabColorSampleRect;
   __weak typeof(self) weakSelf = self;
-  [self.browserService sampleFooterColorInSession:self.browserSession allowCapture:capture completion:^(NSDictionary *result) {
+  [self.browserService sampleHeaderColorInSession:self.browserSession allowCapture:capture completion:^(NSDictionary *result) {
     TLBrowserTabController *owner = weakSelf; if (!owner) return;
     owner.footerColorInFlight = NO;
     NSTimeInterval completed = NSProcessInfo.processInfo.systemUptime;
@@ -456,7 +456,7 @@
     [self configureDocumentFooter];
   }
   if (!NSEqualSizes(self.documentFooterContentSize, self.view.bounds.size)) [self configureDocumentFooter];
-  [self sampleFooterContentColor];
+  [self sampleHeaderContentColor];
 }
 
 - (void)browserPreferencesChanged:(NSNotification *)notification { [self updateAddressBarLabels]; }

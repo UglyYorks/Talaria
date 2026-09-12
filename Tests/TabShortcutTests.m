@@ -16,6 +16,7 @@ static void Check(BOOL value, NSString *message) {
 - (void)showHistoryScreen:(id)sender;
 - (void)closeHistoryTab:(id)sender;
 - (void)setRuntime:(TLWorkspaceTabRuntime *)runtime forTab:(TLWorkspaceTab *)tab;
+- (TLChatTabController *)newChatTabController;
 @end
 
 // Supply focus deterministically: command-line test processes may not activate
@@ -43,6 +44,11 @@ static void Check(BOOL value, NSString *message) {
 @property (nonatomic, strong) NSURL *reopenedURL;
 @end
 @implementation TLShortcutTestController
+- (TLChatTabController *)newChatTabController {
+  TLChatTabController *chat = [super newChatTabController];
+  chat.promptTextView = [NSTextView new];
+  return chat;
+}
 - (void)renderWorkspaceTabs {}
 - (void)reloadWorkspaceTabs {}
 - (void)updateWorkspaceMode {}
@@ -127,7 +133,6 @@ static TLShortcutTestController *Controller(void) {
   [controller setValue:[TLAppSettings new] forKey:@"settings"];
   [controller setValue:@1 forKey:@"nextBrowserTabID"];
   [controller setValue:@(-1) forKey:@"nextDraftChatID"];
-  [controller setValue:[NSTextView new] forKey:@"promptTextView"];
   return controller;
 }
 
@@ -174,7 +179,8 @@ static void TestNavigationAndRestore(void) {
   [controller performTabCommand:TLTabCommandClose];
   Check(![state hasWorkspaceTabWithKind:TLWorkspaceTabKindChat tabID:draftID], @"close removes draft tab");
   [controller performTabCommand:TLTabCommandReopen];
-  Check(state.snapshot.activeTabID == draftID && state.snapshot.activeTabKind == TLWorkspaceTabKindChat && [prompt.string isEqual:@"unsent draft"],
+  NSTextView *restoredPrompt = [controller valueForKey:@"promptTextView"];
+  Check(state.snapshot.activeTabID == draftID && state.snapshot.activeTabKind == TLWorkspaceTabKindChat && [restoredPrompt.string isEqual:@"unsent draft"],
     @"restore preserves draft identity and unsent input");
   Check([[controller valueForKeyPath:@"activeChat.model"] isEqual:@"test-model"], @"restore preserves draft model");
   [controller performTabCommand:TLTabCommandCloseWindow];

@@ -62,6 +62,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setNewTabButtonHovered:(BOOL)hovered;
 - (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth;
 - (void)updateTabWidthsForAvailableWidth:(CGFloat)availableWidth contentWidth:(CGFloat)contentWidth;
+// Batch constraint changes with the enclosing workspace's layout pass.
+- (void)prepareTabWidthsForAvailableWidth:(CGFloat)availableWidth contentWidth:(CGFloat)contentWidth;
+- (void)finishUpdatingTabWidths;
 - (void)updateEdgeAttachmentState;
 - (void)setControlsEnabled:(BOOL)enabled disabledOpacity:(CGFloat)disabledOpacity;
 

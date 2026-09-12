@@ -329,9 +329,10 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
     storedTab.presentationIdentity = existing.presentationIdentity;
     storedTab.pinned = existing.pinned;
   }
-  BOOL sameMetadata = existing && [existing.title isEqual:tab.title] &&
+  BOOL sameLayoutMetadata = existing && [existing.title isEqual:tab.title] &&
     [existing.toolTip isEqual:tab.toolTip] && existing.closeable == tab.closeable &&
-    (existing.URL == tab.URL || [existing.URL isEqual:tab.URL]) &&
+    (existing.URL == tab.URL || [existing.URL isEqual:tab.URL]);
+  BOOL sameMetadata = sameLayoutMetadata &&
     (existing.browserHeaderRGB == tab.browserHeaderRGB || [existing.browserHeaderRGB isEqual:tab.browserHeaderRGB]);
   BOOL alreadyActive = self.snapshot.activeTabKind == tab.kind && self.snapshot.activeTabID == tab.tabID;
   if (sameMetadata && (!activate || alreadyActive)) return;
@@ -347,7 +348,8 @@ static NSArray<TLWorkspaceTab *> *TLCopyWorkspaceTabs(NSArray<TLWorkspaceTab *> 
       draft.activeTabKind = storedTab.kind;
       draft.activeTabID = storedTab.tabID;
     }
-  } signal:TLAppSignalWorkspaceTabsChanged payload:[self payloadForTab:storedTab extra:nil]];
+  } signal:TLAppSignalWorkspaceTabsChanged payload:[self payloadForTab:storedTab
+    extra:sameLayoutMetadata && (!activate || alreadyActive) ? @{@"colorOnly":@YES} : nil]];
 }
 
 - (void)replaceWorkspaceTabWithKind:(TLWorkspaceTabKind)kind

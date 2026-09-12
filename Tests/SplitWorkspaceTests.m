@@ -445,6 +445,11 @@ static void TestChatInputNavigation(TLSplitTestController *owner, TLAppStateMana
   Check(![owner valueForKey:@"modelDraftChats"][@(empty.tabID)], @"opening another chat does not resurrect the converted draft");
   empty = state.snapshot.workspaceTabs.lastObject;
   TLChatTabController *presentation = [owner valueForKey:@"chatPresentation"];
+  [owner.window.contentView layoutSubtreeIfNeeded];
+  Check(!presentation.closed && presentation.emptyStateView && !presentation.emptyStateView.hidden &&
+    !presentation.emptyStateView.isHiddenOrHasHiddenAncestor && NSWidth(presentation.emptyStateView.bounds)>0 &&
+    NSHeight(presentation.emptyStateView.bounds)>0,
+    @"new tab after converting a chat to a browser displays its empty-state UI");
   presentation.promptTextView.string = URL.absoluteString;
   [owner updateSlashCommandList]; [owner flushSlashCommandUpdate];
   count = state.snapshot.workspaceTabs.count;
@@ -483,6 +488,17 @@ static void TestChatInputNavigation(TLSplitTestController *owner, TLAppStateMana
   [owner openBrowserTabWithURL:URL]; Drain();
   Check(state.snapshot.workspaceTabs.count == count + 1 && [state workspaceTabWithKind:empty.kind tabID:empty.tabID],
     @"explicit new-tab actions still retain an empty chat");
+  TLChatTabController *closedPresentation = [owner valueForKey:@"chatPresentation"];
+  [closedPresentation.messages addObject:[TLChatMessage messageWithRole:TLRoleUser content:@"Previous conversation" thinking:nil]];
+  [closedPresentation renderMessagesScrollingToBottom:NO];
+  Check(closedPresentation.emptyStateView.hidden, @"the previous conversation has no empty-state UI");
+  [owner closeChatTabWithID:empty.tabID]; Drain();
+  [owner startNewChatWithModel:@"test-model" focus:NO]; Drain();
+  presentation = [owner valueForKey:@"chatPresentation"];
+  [owner.window.contentView layoutSubtreeIfNeeded];
+  Check(presentation != closedPresentation && !presentation.closed && presentation.emptyStateView && !presentation.emptyStateView.isHiddenOrHasHiddenAncestor &&
+    NSWidth(presentation.emptyStateView.bounds)>0 && NSHeight(presentation.emptyStateView.bounds)>0,
+    @"new tab from a browser after closing the previous chat displays its empty-state UI");
 }
 
 static void TestDraftPromotionAcrossEvents(void) {

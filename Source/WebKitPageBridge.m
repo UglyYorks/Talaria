@@ -279,8 +279,7 @@ static NSError *TLPageError(NSString *message) {
 }
 // Encode only the sampled edge, not an entire high-resolution page. A complex
 // viewport can exceed the analyzer's byte limit even though its edge is tiny.
-static NSData *TLColorEdgeData(NSBitmapImageRep *bitmap, double bottomFraction, double leftFraction, double widthFraction) {
-  CGImageRef image=bitmap.CGImage;
+static NSData *TLColorEdgeData(CGImageRef image, double bottomFraction, double leftFraction, double widthFraction) {
   if(!image || !isfinite(bottomFraction) || bottomFraction<=0 || bottomFraction>1 ||
      !isfinite(leftFraction) || !isfinite(widthFraction) || leftFraction<0 || widthFraction<=0 || leftFraction+widthFraction>1.000001)return nil;
   double width=CGImageGetWidth(image),height=CGImageGetHeight(image);
@@ -311,17 +310,24 @@ static void TLRestoreColorPixels(NSMutableDictionary *sample, NSDictionary *cach
   self.pixelSample = cache;
 }
 - (void)sampleFooterColorAllowingCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
+  [self sampleColorsAllowingCapture:capture headerOnly:NO completion:completion];
+}
+- (void)sampleHeaderColorAllowingCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
+  [self sampleColorsAllowingCapture:capture headerOnly:YES completion:completion];
+}
+- (void)sampleColorsAllowingCapture:(BOOL)capture headerOnly:(BOOL)headerOnly completion:(void (^)(NSDictionary *))completion {
   if (!self.ready || !self.colorSource.length) { completion(@{}); return; }
-  NSString *body = [NSString stringWithFormat:@"const read=(%@); const top=read(null,true,topRange); const bottom=read(banner); return {...bottom,top,extensionRGB:globalThis.__talariaDocumentFooter?.preparedColor?.(),cpuMS:(top.cpuMS||0)+(bottom.cpuMS||0),maxSliceMS:(top.cpuMS||0)+(bottom.cpuMS||0)};",self.colorSource];
+  NSString *body = [NSString stringWithFormat:@"const read=(%@); const top=read(null,true,topRange); const bottom=headerOnly ? {} : read(banner); return {...bottom,top,extensionRGB:globalThis.__talariaDocumentFooter?.preparedColor?.(),cpuMS:(top.cpuMS||0)+(bottom.cpuMS||0),maxSliceMS:(top.cpuMS||0)+(bottom.cpuMS||0)};",self.colorSource];
   NSUInteger generation = self.generation;
-  [self evaluateBody:body arguments:@{@"banner":self.configuration[@"banner"] ?: NSNull.null,@"topRange":self.configuration[@"topRange"] ?: NSNull.null} frame:nil completion:^(id value, NSError *error) {
+  [self evaluateBody:body arguments:@{@"headerOnly":@(headerOnly),@"banner":self.configuration[@"banner"] ?: NSNull.null,@"topRange":self.configuration[@"topRange"] ?: NSNull.null} frame:nil completion:^(id value, NSError *error) {
     if (error || ![value isKindOfClass:NSDictionary.class]) { completion(@{}); return; }
     NSMutableDictionary *sample = [value mutableCopy];
     NSMutableDictionary *top = [sample[@"top"] isKindOfClass:NSDictionary.class] ? [sample[@"top"] mutableCopy] : nil;
     TLRestoreColorPixels(sample,self.pixelSample); TLRestoreColorPixels(top,self.pixelSample[@"top"]);
     if (top) sample[@"top"] = top;
-    BOOL captureFooter = TLColorNeedsPixels(sample), captureTop = TLColorNeedsPixels(top);
+    BOOL captureFooter = !headerOnly && TLColorNeedsPixels(sample), captureTop = TLColorNeedsPixels(top);
     if (!capture || (!captureFooter && !captureTop)) { completion(sample); return; }
+    if (self.webView.fullscreenState != WKFullscreenStateNotInFullscreen || self.generation != generation || self.stopped) { completion(@{}); return; }
     NSDictionary *captureSample = captureFooter ? sample : top;
     NSArray *view = captureSample[@"viewState"];
     if (![view isKindOfClass:NSArray.class] || view.count != 4) { completion(sample); return; }
@@ -339,6 +345,15 @@ static void TLRestoreColorPixels(NSMutableDictionary *sample, NSDictionary *cach
       CGFloat bottomInset = self.webView.obscuredContentInsets.bottom;
       if (bottomInset > 0) configuration.rect = CGRectMake(0, 0, NSWidth(self.webView.bounds), MAX(1, NSHeight(self.webView.bounds) - bottomInset));
     }
+    // The native tab needs only the page's top edge. Capturing the video and
+    // the entire Retina viewport creates avoidable GPU readback on busy pages,
+    // especially just after WebKit restores a fullscreen presentation.
+    BOOL topStripOnly = captureTop && !captureFooter;
+    if (topStripOnly) {
+      CGRect viewport = CGRectIsNull(configuration.rect) ? self.webView.bounds : configuration.rect;
+      configuration.rect = CGRectMake(CGRectGetMinX(viewport),CGRectGetMinY(viewport),CGRectGetWidth(viewport),
+        MAX(1,CGRectGetHeight(viewport)*[top[@"sampleBottom"] doubleValue]/height));
+    }
     __block BOOL finished = NO;
     void (^finish)(NSDictionary *) = ^(NSDictionary *result) {
       if (finished) return; finished = YES;
@@ -348,11 +363,13 @@ static void TLRestoreColorPixels(NSMutableDictionary *sample, NSDictionary *cach
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,4*NSEC_PER_SEC),dispatch_get_main_queue(),^{ finish(sample); });
     [self.webView takeSnapshotWithConfiguration:configuration completionHandler:^(NSImage *image, NSError *snapshotError) {
       if (finished) return;
-      if (snapshotError || !image || self.generation != generation) { finish(sample); return; }
+      if (snapshotError || !image || self.generation != generation || self.webView.fullscreenState != WKFullscreenStateNotInFullscreen) { finish(@{}); return; }
       dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
-        NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithData:image.TIFFRepresentation];
+        // WKSnapshot already supplies a bitmap. Avoid encoding and decoding the
+        // entire Retina viewport just to analyze a twelve-pixel edge strip.
+        CGImageRef bitmap = [image CGImageForProposedRect:NULL context:nil hints:nil];
         double bottom = [sample[@"sampleBottom"] doubleValue];
-        NSData *topData = captureTop ? TLColorEdgeData(bitmap,[top[@"sampleBottom"] doubleValue]/height,[top[@"sampleLeft"] doubleValue],top[@"sampleWidth"] ? [top[@"sampleWidth"] doubleValue] : 1) : nil;
+        NSData *topData = captureTop ? TLColorEdgeData(bitmap,topStripOnly ? 1 : [top[@"sampleBottom"] doubleValue]/height,[top[@"sampleLeft"] doubleValue],top[@"sampleWidth"] ? [top[@"sampleWidth"] doubleValue] : 1) : nil;
         NSData *footerData = captureFooter ? TLColorEdgeData(bitmap,bottom>0 ? bottom/height : 1,0,extension ? [sample[@"contentWidth"] doubleValue]/width : 1) : nil;
         NSArray *topRGB = topData ? [TLBrowserContentColor dominantRGBForImageData:topData] : nil;
         NSArray *rgb = footerData && !extension ? [TLBrowserContentColor dominantRGBForImageData:footerData] : nil;
