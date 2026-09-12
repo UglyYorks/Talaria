@@ -447,7 +447,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
   if (chat) {
     TLChatTabController *next = self.chatPresentations[@(chat.chatID)];
-    if (!next) next = previous ? [self newChatTabController] : [self currentChatPresentation];
+    // Closing the last selected chat clears its record but leaves the retired
+    // presentation here. A closed controller cannot render a new tab.
+    if (!next) next = previous || self.chatPresentation.closed ? [self newChatTabController] : [self currentChatPresentation];
     self.chatPresentation = next;
     if (!next.chatWorkspace && self.contentHost) {
       self.chatWorkspace = [self buildChatWorkspace];
@@ -650,6 +652,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (!strongSelf) {
       return;
     }
+    // The browser's color callback updates the existing tab artwork after
+    // persisting its sample. Rebuilding the strip here forces layout and can
+    // interrupt that wave before the callback applies the intended animation.
+    if ([signal.payload[@"colorOnly"] boolValue]) return;
 
     if ([signal.name isEqual:TLAppSignalWorkspaceTabRemoved]) {
       TLWorkspaceSplitGroup *closingGroup = [strongSelf.splitState groupForTab:strongSelf.displayedWorkspaceTab];
@@ -4841,7 +4847,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     self.messageInputWidthConstraint.constant = targetInputWidth;
     [self applyBrowserAddressInputWidth:targetInputWidth];
   }
-  [self.workspaceTabsController updateTabWidthsForAvailableWidth:targetTabAvailableWidth
+  [self.workspaceTabsController prepareTabWidthsForAvailableWidth:targetTabAvailableWidth
     contentWidth:MAX(0,windowWidth-targetContentLeadingOffset-self.palette.space4)];
 }
 
@@ -4892,6 +4898,25 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
                                              contentLeadingPadding:targetContentLeading];
   if (!self.sidebarTransitions) self.sidebarTransitions = [[TLTransitionCoordinator alloc] init];
   [self.sidebarTransitions cancelTransitionForKey:@"sidebar"];
+  if (!animated || NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    // Resizing has no starting animation frame to resolve. Set the complete
+    // target geometry before laying out, rather than running a zero-length
+    // sidebar transition (which flushes the whole tree three times).
+    BOOL visibilityChanged = self.sidebarView.hidden != hideAfterLayout;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    self.sidebarView.hidden = hideAfterLayout;
+    self.sidebarResizeHandle.hidden = hideAfterLayout;
+    self.sidebarView.alphaValue = 1;
+    [self prepareResponsiveLayoutForWindowWidth:windowWidth];
+    [layoutView layoutSubtreeIfNeeded];
+    [self.workspaceTabsController finishUpdatingTabWidths];
+    [self.workspaceTabsController updateEdgeAttachmentState];
+    [self.workspaceOutline updateOutline];
+    [CATransaction commit];
+    if (visibilityChanged) [self invalidateSidebarResizeCursorRects];
+    return;
+  }
   [layoutView layoutSubtreeIfNeeded];
   CGFloat startWidth = self.sidebarWidthConstraint.constant;
   CGFloat startTabLeading = self.tabStackLeadingConstraint.constant;

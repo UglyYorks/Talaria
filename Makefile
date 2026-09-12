@@ -50,6 +50,9 @@ APP_ICON := assets/Talaria.icns
 INBOX_ICON_FILES := $(wildcard assets/inbox-icons/*.svg)
 BOOKMARK_ICON_FILES := $(wildcard assets/browser-bookmarks/*.png)
 OBJCFLAGS := -fobjc-arc -fmodules -fmodules-cache-path=$(abspath $(BUILD_DIR)/module-cache) -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=13.0
+# Desktop builds should exercise optimized application code. Keep symbols for
+# useful Instruments stacks; override with '-O0 -g' for source-level debugging.
+APP_OPTIMIZATION_FLAGS ?= -O2 -g
 APP_OBJCXXFLAGS := $(OBJCFLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics -fobjc-call-cxx-cdtors -fvisibility-inlines-hidden -std=c++20 -Wno-sign-compare -Wno-nullability-completeness -Wno-missing-field-initializers
 APP_FRAMEWORKS := -framework Vision -framework CoreImage -framework Quartz -framework ServiceManagement -framework Carbon -framework QuickLookThumbnailing -framework UniformTypeIdentifiers -framework AppKit -framework Foundation -framework QuartzCore -framework ScreenCaptureKit -framework SceneKit -framework CoreText -framework Cocoa -framework IOSurface -framework WebKit -framework Virtualization -framework Security -lsqlite3 -lpthread
 TEST_FRAMEWORKS := -framework Foundation -framework AppKit -framework Virtualization -framework Security -lsqlite3
@@ -133,15 +136,15 @@ $(APP_BUILD_STAMP): $(APP_LINK_EXECUTABLE) $(WEBKIT_BRIDGE) $(OVERLAY_PROBE) $(D
 
 $(APP_OBJECT_DIR)/%.m.o: Source/%.m $(COMPILE_CONFIG)
 	mkdir -p "$(dir $@)"
-	xcrun clang $(OBJCFLAGS) -ISource -MMD -MP -MF "$@.d" -c "$<" -o "$@"
+	xcrun clang $(OBJCFLAGS) $(APP_OPTIMIZATION_FLAGS) -ISource -MMD -MP -MF "$@.d" -c "$<" -o "$@"
 
 $(APP_OBJECT_DIR)/%.mm.o: Source/%.mm $(COMPILE_CONFIG)
 	mkdir -p "$(dir $@)"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource -MMD -MP -MF "$@.d" -c "$<" -o "$@"
+	xcrun clang++ $(APP_OBJCXXFLAGS) $(APP_OPTIMIZATION_FLAGS) -ISource -MMD -MP -MF "$@.d" -c "$<" -o "$@"
 
 $(APP_OBJECT_DIR)/%.cc.o: Source/%.cc $(COMPILE_CONFIG)
 	mkdir -p "$(dir $@)"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource -MMD -MP -MF "$@.d" -c "$<" -o "$@"
+	xcrun clang++ $(APP_OBJCXXFLAGS) $(APP_OPTIMIZATION_FLAGS) -ISource -MMD -MP -MF "$@.d" -c "$<" -o "$@"
 
 # Immutable downloads and the generated guest image have separate dependencies.
 define alpine_download
@@ -172,6 +175,19 @@ $(AGENT_LINUX_RUNTIME_STAMP): Scripts/build-agent-initrd.py $(AGENT_RUNTIME_FILE
 	touch "$(AGENT_LINUX_RUNTIME_STAMP)"
 
 include Scripts/tests.mk
+
+# Repeatable foreground frame-cadence probe; opt in separately from correctness tests.
+.PHONY: build-browser-frame-profile profile-browser-frames
+build-browser-frame-profile: build
+	mkdir -p "$(BUILD_DIR)/TalariaPerformance.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/TalariaPerformance.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/TalariaPerformance.app"
+	cp -cR "$(APP_BUNDLE)/Contents/Resources/." "$(BUILD_DIR)/TalariaPerformance.app/Contents/Resources/"
+	python3 -c 'import pathlib,plistlib; p=pathlib.Path("$(BUILD_DIR)/TalariaPerformance.app/Contents/Info.plist"); d=plistlib.loads(p.read_bytes()); d.update(CFBundleIdentifier="com.talaria.frame-profile",CFBundleDisplayName="Talaria Performance"); p.write_bytes(plistlib.dumps(d))'
+	xcrun clang $(OBJCFLAGS) -ISource -ITests Tests/BrowserFrameProfile.m $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -lc++ -o "$(BUILD_DIR)/TalariaPerformance.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/TalariaPerformance.app"
+profile-browser-frames: build-browser-frame-profile
+	python3 Scripts/profile-browser-frames.py
 
 
 test-automations: $(BUILD_DIR)/AutomationsTests
@@ -323,7 +339,7 @@ include Scripts/browser-import.mk
 # Compare effective flags so command-line overrides invalidate the right artifacts.
 $(COMPILE_CONFIG): FORCE
 	@mkdir -p "$(@D)"
-	@printf '%s\n' '$(OBJCFLAGS)' '$(APP_OBJCXXFLAGS)' '$(APP_FRAMEWORKS)' '$(TEST_FRAMEWORKS)' > "$@.tmp"
+	@printf '%s\n' '$(OBJCFLAGS)' '$(APP_OBJCXXFLAGS)' '$(APP_OPTIMIZATION_FLAGS)' '$(APP_FRAMEWORKS)' '$(TEST_FRAMEWORKS)' > "$@.tmp"
 	@if cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; else mv "$@.tmp" "$@"; fi
 
 -include $(APP_OBJECTS:=.d)

@@ -839,6 +839,10 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 - (void)sampleFooterColorInSession:(TLWebKitBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
   if(!session || session.closed){completion(@{});return;}[session.pageBridge sampleFooterColorAllowingCapture:capture completion:completion];
 }
+- (void)sampleHeaderColorInSession:(TLWebKitBrowserSession *)session allowCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion {
+  if(!session || session.closed || session.fullscreen){completion(@{});return;}
+  [session.pageBridge sampleHeaderColorAllowingCapture:capture completion:completion];
+}
 - (void)prepareBrowserSettingsInWindow:(NSWindow *)window completion:(void (^)(NSError *))completion {
   if(![self initializeRuntimeFromWindow:window]){completion(TLWebKitError(@"The built-in browser could not start."));return;}
   if(self.preparing)[self.preparationCallbacks addObject:[completion copy]];else completion(self.preparationError);

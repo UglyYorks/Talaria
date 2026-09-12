@@ -254,6 +254,22 @@ static void TestPinnedLayout(TLThemePalette *palette) {
     CGFloat occupied = NSWidth(views[0].frame) + NSWidth(views[1].frame) + stack.spacing;
     if (occupied > width.doubleValue + 0.5) { NSLog(@"FAIL pinned tabs exceed available strip width"); exit(1); }
   }
+  for (NSNumber *width in @[@200,@50,@3000,@150]) {
+    [controller prepareTabWidthsForAvailableWidth:width.doubleValue contentWidth:width.doubleValue];
+    [window.contentView layoutSubtreeIfNeeded];
+    [controller finishUpdatingTabWidths];
+    CGFloat occupied=NSWidth(views[0].frame)+NSWidth(views[1].frame)+stack.spacing;
+    if(occupied>width.doubleValue+.5 || !NSEqualRects(controller.selectionView.selectionFrame,views[0].frame)) {
+      NSLog(@"FAIL batched resize keeps tabs within the strip and selection on the active tab");exit(1);
+    }
+  }
+  __block NSUInteger geometryChanges=0;
+  controller.selectionView.geometryChanged=^{geometryChanges++;};
+  NSRect selectionFrame=controller.selectionView.selectionFrame;
+  controller.selectionView.hidden=controller.selectionView.hidden;
+  controller.selectionView.leadingFlareOutset=controller.selectionView.leadingFlareOutset;
+  [controller.selectionView setSelectionFrame:selectionFrame leadingFlareOutset:controller.selectionView.leadingFlareOutset animated:NO fromFrame:selectionFrame duration:0];
+  if(geometryChanges){NSLog(@"FAIL unchanged selection geometry must not rebuild the outline or color sample range");exit(1);}
   [window close];
 }
 
