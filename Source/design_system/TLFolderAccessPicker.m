@@ -1,8 +1,10 @@
 #import "TLThemedButton.h"
 #import "TLFolderAccessPicker.h"
+#import "TLFolderMounts.h"
 
 @interface TLFolderAccessPicker () <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong, readwrite) NSTableView *tableView;
+@property (nonatomic, copy, readwrite) NSDictionary<NSString *, NSString *> *mountPaths;
 @property (nonatomic, strong) NSScrollView *tableScroll;
 @property (nonatomic, strong) NSTextField *emptyLabel;
 @property (nonatomic, strong) NSTextField *countLabel;
@@ -21,6 +23,7 @@
     self.translatesAutoresizingMaskIntoConstraints = NO;
     _enabled = YES;
     _folderPaths = @[];
+    _mountPaths = @{};
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     [self buildInterface];
     [self applyPalette];
@@ -68,19 +71,24 @@
   self.tableView.allowsMultipleSelection = YES;
   self.tableView.allowsEmptySelection = YES;
   self.tableView.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
-  self.tableView.rowHeight = p.fieldHeight;
+  self.tableView.rowHeight = p.fieldHeight + p.space5;
   self.tableView.intercellSpacing = NSMakeSize(p.space5, p.space2);
-  self.tableView.accessibilityLabel = @"Folders available for future VM mounts";
+  self.tableView.accessibilityLabel = @"Folders and their locations on your Mac and in the VM";
   NSTableColumn *name = [[NSTableColumn alloc] initWithIdentifier:@"name"];
   name.title = @"Folder";
-  name.width = p.controlMinWidth * 1.7;
+  name.width = p.controlMinWidth * 1.9;
   name.minWidth = p.controlMinWidth;
   NSTableColumn *path = [[NSTableColumn alloc] initWithIdentifier:@"path"];
-  path.title = @"Location";
-  path.width = p.controlMinWidth * 3;
+  path.title = @"Mac location";
+  path.width = p.controlMinWidth * 2.1;
   path.minWidth = p.controlMinWidth;
   [self.tableView addTableColumn:name];
   [self.tableView addTableColumn:path];
+  NSTableColumn *mount = [[NSTableColumn alloc] initWithIdentifier:@"mount"];
+  mount.title = @"VM location";
+  mount.width = p.controlMinWidth * 1.5;
+  mount.minWidth = p.controlMinWidth;
+  [self.tableView addTableColumn:mount];
   self.tableScroll = [[NSScrollView alloc] init];
   self.tableScroll.translatesAutoresizingMaskIntoConstraints = NO;
   self.tableScroll.documentView = self.tableView;
@@ -131,8 +139,16 @@
     if (path.isAbsolutePath) [paths addObject:path.stringByStandardizingPath];
   }
   _folderPaths = paths.array;
+  _mountPaths = TLFolderMountPaths(_folderPaths);
   [self.tableView reloadData];
   [self updateControlStates];
+  if (self.changeHandler) self.changeHandler();
+}
+
+- (void)setActiveMountPaths:(NSDictionary<NSString *, NSString *> *)mountPaths {
+  _activeMountPaths = [mountPaths copy];
+  [self.tableView reloadData];
+  if (self.changeHandler) self.changeHandler();
 }
 
 - (void)addPaths:(NSArray<NSString *> *)paths {
@@ -184,6 +200,7 @@
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
   if (row < 0 || row >= (NSInteger)self.folderPaths.count) return nil;
   BOOL nameColumn = [column.identifier isEqualToString:@"name"];
+  BOOL mountColumn = [column.identifier isEqualToString:@"mount"];
   NSTableCellView *cell = [tableView makeViewWithIdentifier:column.identifier owner:self];
   if (!cell) {
     cell = [[NSTableCellView alloc] init];
@@ -191,6 +208,7 @@
     NSTextField *label = [NSTextField labelWithString:@""];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    label.selectable = !nameColumn;
     cell.textField = label;
     [cell addSubview:label];
     NSLayoutXAxisAnchor *leading = cell.leadingAnchor;
@@ -210,16 +228,35 @@
     [NSLayoutConstraint activateConstraints:@[
       [label.leadingAnchor constraintEqualToAnchor:leading constant:self.palette.space5],
       [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-self.palette.space4],
-      [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
     ]];
+    if (mountColumn) {
+      NSTextField *status = [NSTextField labelWithString:@""];
+      status.identifier = @"mountStatus";
+      status.translatesAutoresizingMaskIntoConstraints = NO;
+      [cell addSubview:status];
+      [NSLayoutConstraint activateConstraints:@[
+        [label.topAnchor constraintEqualToAnchor:cell.topAnchor constant:self.palette.space2],
+        [status.leadingAnchor constraintEqualToAnchor:label.leadingAnchor],
+        [status.trailingAnchor constraintEqualToAnchor:label.trailingAnchor],
+        [status.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:self.palette.space2]]];
+    } else [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor].active = YES;
   }
   NSString *path = self.folderPaths[(NSUInteger)row];
   BOOL root = [path isEqualToString:@"/"];
   BOOL home = [path isEqualToString:NSFileManager.defaultManager.homeDirectoryForCurrentUser.path];
-  cell.textField.stringValue = nameColumn ? (root ? @"Full hard drive" : home ? @"Home" : path.lastPathComponent) : path;
+  NSString *mount = self.mountPaths[path];
+  cell.textField.stringValue = nameColumn ? (root ? @"Full hard drive" : home ? @"Home" : path.lastPathComponent)
+    : mountColumn ? (mount.length ? mount : @"Not mounted") : path;
   cell.textField.font = self.palette.smallFont;
   cell.textField.textColor = nameColumn ? self.palette.controlText : self.palette.textMuted;
-  cell.toolTip = path;
+  NSString *status = !self.activeMountPaths ? @"On next start" : [self.activeMountPaths[path] isEqual:mount] ? @"Shared" : @"After restart";
+  cell.toolTip = mountColumn ? [NSString stringWithFormat:@"%@ — %@", mount, status] : path;
+  if (mountColumn) for (NSTextField *label in cell.subviews) {
+    if (![label.identifier isEqual:@"mountStatus"]) continue;
+    label.stringValue = status;
+    label.font = self.palette.smallFont;
+    label.textColor = self.palette.textMuted;
+  }
   cell.imageView.image = [NSImage imageWithSystemSymbolName:root ? @"internaldrive" : home ? @"house" : @"folder" accessibilityDescription:nil];
   cell.imageView.contentTintColor = self.palette.textMuted;
   return cell;

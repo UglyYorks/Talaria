@@ -48,7 +48,7 @@ TEST_TabLayoutTests_SOURCES := Source/WorkspaceState.m Source/design_system/TLTa
 TEST_TabLayoutTests_LIBS := -framework AppKit -framework QuartzCore -framework CoreText
 $(eval $(call native_test,TabLayoutTests))
 
-TEST_PromptBuilderTests_SOURCES := Source/TLQuestionRequest.m Source/TLHostCommandBridge.m Source/ChatAttachmentStore.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/TLAgentProtocol.m Source/AgentVMService.m Source/TLAgentVMLock.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Tests/PromptBuilderTests.m $(STORAGE_SOURCES) $(WORKSPACE_SOURCES)
+TEST_PromptBuilderTests_SOURCES := Source/TLQuestionRequest.m Source/TLHostCommandBridge.m Source/ChatAttachmentStore.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/TLAgentProtocol.m Source/AgentVMService.m Source/TLFolderMounts.m Source/TLAgentVMLock.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Tests/PromptBuilderTests.m $(STORAGE_SOURCES) $(WORKSPACE_SOURCES)
 TEST_PromptBuilderTests_LIBS := $(TEST_FRAMEWORKS)
 TEST_PromptBuilderTests_SOURCES += $(THEME_SOURCES)
 $(eval $(call native_test,PromptBuilderTests))
@@ -82,9 +82,19 @@ TEST_AppResetTests_LIBS := -framework WebKit -framework Foundation -framework Se
 $(eval $(call native_test,AppResetTests))
 
 
-TEST_AgentVMLockTests_SOURCES := Source/TLAgentVMLock.m Source/AgentVMService.m Source/TalariaModels.m Tests/AgentVMLockTests.m
+TEST_AgentVMLockTests_SOURCES := Source/TLAgentVMLock.m Source/AgentVMService.m Source/TLFolderMounts.m Source/TalariaModels.m Tests/AgentVMLockTests.m
 TEST_AgentVMLockTests_LIBS := -framework Foundation -framework AppKit -framework Virtualization
 $(eval $(call native_test,AgentVMLockTests))
+
+TEST_AgentFolderMountTests_SOURCES := Source/TLFolderMounts.m Source/AgentVMService.m Source/TLAgentVMLock.m Source/TalariaModels.m Tests/AgentFolderMountTests.m
+TEST_AgentFolderMountTests_LIBS := -framework Foundation -framework AppKit -framework Virtualization
+$(eval $(call native_test,AgentFolderMountTests))
+
+.PHONY: test-folder-mounts
+test-folder-mounts: $(BUILD_DIR)/AgentFolderMountTests $(BUILD_DIR)/FeatureControllerTests
+	"$(BUILD_DIR)/AgentFolderMountTests"
+	TL_FOLDER_LOCATIONS_TESTS_ONLY=1 "$(BUILD_DIR)/FeatureControllerTests"
+	sh -n AgentRuntime/talaria-init
 
 TEST_AgentProtocolTests_SOURCES := Source/TLAgentProtocol.m Tests/AgentProtocolTests.m
 TEST_AgentProtocolTests_LIBS := -framework Foundation
@@ -109,7 +119,7 @@ TEST_HostCommandTests_SOURCES := Source/TLQuestionRequest.m Source/TLHostCommand
 TEST_HostCommandTests_LIBS := -framework Foundation -framework AppKit
 $(eval $(call native_test,HostCommandTests))
 NATIVE_TESTS := WheelScrollAnimationTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
-NATIVE_TESTS += HostCommandTests
+NATIVE_TESTS += HostCommandTests AgentFolderMountTests
 .PHONY: test-host-commands
 test-host-commands: $(addprefix $(BUILD_DIR)/,HostCommandTests PromptBuilderTests AssistantTurnResultTests FeatureControllerTests)
 	"$(BUILD_DIR)/HostCommandTests"

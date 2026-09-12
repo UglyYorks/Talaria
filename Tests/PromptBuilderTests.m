@@ -175,12 +175,14 @@ static NSUInteger TLFailureCount = 0;
 @end
 
 @interface TLFakeAgentVMService : TLAgentVMService
+@property NSDictionary *mountedFolders;
 @property (nonatomic) NSUInteger startCount;
 @property (nonatomic) NSInteger runningAgentID;
 @property (nonatomic, strong, nullable) NSError *startError;
 @end
 
 @implementation TLFakeAgentVMService
+- (NSDictionary *)folderMountPathsForAgent:(TLAgentRecord *)agent { return self.mountedFolders; }
 
 - (void)startAgent:(TLAgentRecord *)agent completion:(TLAgentVMCompletionHandler)completion {
   self.startCount += 1;
@@ -1362,12 +1364,22 @@ static void TestAssistantTurnRunner(void) {
   TLStoredChatMessage *copiedMessage = [loadedChat.messages[0] copy];
   TLAssertTrue(copiedMessage.messageID == loadedChat.messages[0].messageID, @"loaded message copies preserve identity");
 
+  vmService.mountedFolders = @{@"/Mac/work":@"/mnt/mac/work"};
   runner.referenceContext = @"Unrelated page context";
   [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
                 nextPrompt:@"/model provider/model with arguments" updateHandler:nil completionHandler:nil error:&error];
   TLAssertEqualObjects(client.capturedMessages[0].content, @"/model provider/model with arguments",
                        @"Hermes receives raw slash commands without injected reference context");
   runner.referenceContext = nil;
+  [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
+    nextPrompt:@"List shared files" updateHandler:nil completionHandler:nil error:&error];
+  TLAssertTrue([client.capturedMessages[0].content containsString:@"/mnt/mac/work"] && [client.capturedMessages[0].content containsString:@"List shared files"],
+    @"chat receives the actual running VM's shared paths alongside the user prompt");
+  TLAssertEqualObjects(messages[messages.count - 2].content, @"List shared files", @"mount context does not change the visible user message");
+  vmService.mountedFolders = @{};
+  [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
+    nextPrompt:@"No shares" updateHandler:nil completionHandler:nil error:&error];
+  TLAssertEqualObjects(client.capturedMessages[0].content, @"No shares", @"no stale mount context remains after shares are removed");
 
   NSMutableArray<TLChatMessage *> *validationMessages = [NSMutableArray array];
   NSError *validationError = nil;

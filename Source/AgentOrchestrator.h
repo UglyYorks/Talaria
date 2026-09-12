@@ -22,6 +22,7 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 - (void)closeIncognito;
 - (BOOL)hasHermesInstallationForAgent:(TLAgentRecord *)agent;
 - (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent;
+- (nullable NSDictionary<NSString *, NSString *> *)folderMountPathsForAgent:(TLAgentRecord *)agent;
 - (NSString *)displayStatusForAgent:(TLAgentRecord *)agent;
 
 - (nullable NSArray<TLAgentRecord *> *)listAgents:(NSError **)error;

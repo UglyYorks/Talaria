@@ -184,7 +184,7 @@
   if (!self.editingAgentID) {
     NSStackView *folders = [self verticalStack];
     [folders addArrangedSubview:[self label:@"Folder Access" secondary:NO]];
-    [folders addArrangedSubview:[self label:@"Saved for future VM mounts. Folder access is not enabled yet." secondary:YES]];
+    [folders addArrangedSubview:[self label:@"Shared at the VM locations below when the agent starts. Changes also affect files on your Mac." secondary:YES]];
     self.folderPicker = [[TLFolderAccessPicker alloc] init];
     self.folderPicker.palette = p;
     [folders addArrangedSubview:self.folderPicker];

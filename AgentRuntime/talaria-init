@@ -79,6 +79,12 @@ configure_network() {
 
 mount_workspace() {
   $BB mount -t virtiofs talaria /workspace 2>/dev/null || true
+  $BB mkdir -p /mnt/mac
+  if $BB mount -t virtiofs talaria-folders /mnt/mac; then
+    log "mounted shared Mac folders at /mnt/mac"
+  else
+    log "could not mount shared Mac folders at /mnt/mac"
+  fi
 }
 
 mount_core_filesystems

@@ -2696,6 +2696,19 @@ static void TestFolderAccessTable(void) {
   [shortcuts[3] performClick:nil];
   [shortcuts[4] performClick:nil];
   Check(picker.folderPaths.count == 5 && picker.tableView.numberOfRows == 5, @"common location shortcuts populate native rows");
+  NSTableColumn *mountColumn = [picker.tableView tableColumnWithIdentifier:@"mount"];
+  NSTableCellView *(^mountCell)(void) = ^{ return (NSTableCellView *)[picker.tableView.delegate tableView:picker.tableView viewForTableColumn:mountColumn row:0]; };
+  NSString *(^mountStatus)(void) = ^{
+    for (NSTextField *label in mountCell().subviews) if ([label.identifier isEqual:@"mountStatus"]) return label.stringValue;
+    return @"";
+  };
+  Check([mountColumn.title isEqual:@"VM location"] && [mountCell().textField.stringValue isEqual:@"/mnt/mac/root"], @"folder table shows the exact VM destination");
+  Check([mountStatus() isEqual:@"On next start"], @"stopped agents show a future mount instead of claiming active access");
+  picker.activeMountPaths = @{};
+  Check([mountStatus() isEqual:@"After restart"], @"folders absent from a running VM need restart");
+  picker.activeMountPaths = picker.mountPaths;
+  Check([mountStatus() isEqual:@"Shared"], @"only the running VM's export is shown as shared");
+  picker.activeMountPaths = nil;
   [picker.tableView selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(1, 3)] byExtendingSelection:NO];
   [picker setPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
   Check(picker.tableView.selectedRowIndexes.count == 3, @"theme changes preserve folder selection");
@@ -3080,6 +3093,7 @@ static void TestSkillsInSettingsWorkspace(void) {
 @property (nonatomic) BOOL failSave;
 @end
 @implementation TLFolderAccessStoreMock
+- (NSDictionary *)folderMountPathsForAgent:(TLAgentRecord *)agent { return nil; }
 - (TLAgentRecord *)updateAgentWithID:(NSInteger)agentID folderPaths:(NSArray<NSString *> *)paths error:(NSError **)error {
   if (self.failSave) {
     if (error) *error = [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Folder unavailable"}];
@@ -3946,6 +3960,11 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_FOLDER_LOCATIONS_TESTS_ONLY")) {
+      TestFolderAccessTable(); TestAgentFolderEditing();
+      NSLog(@"Folder location tests passed");
+      return 0;
+    }
     if (getenv("TL_QUESTION_TESTS_ONLY")) {
       TestApprovalCard(); TestQuestionCard(); TestInlineHostQuestion(); TestApprovalRouting(); TestThemedButtonRenderedColors();
       NSLog(@"Inline question and option tests passed");
