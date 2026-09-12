@@ -57,6 +57,24 @@ def model_identity(selection):
     return provider, model
 
 
+def clarification_text(payload):
+    """Present one question at a time without exposing gateway metadata."""
+    questions = payload.get("questions")
+    index = payload.get("_talaria_question_index", 0)
+    question = questions[index] if isinstance(questions, list) and questions else payload
+    text = question.get("question") or "What would you like to clarify?"
+    if isinstance(questions, list) and len(questions) > 1:
+        text = f"Question {index + 1} of {len(questions)}\n\n{text}"
+    choices = question.get("choices")
+    if isinstance(choices, list) and choices:
+        labels = [item if isinstance(item, str) else item.get("label", item.get("text", ""))
+                  for item in choices if isinstance(item, (str, dict))]
+        text += "\n\n" + "\n".join(f"- {label}" for label in labels if label)
+        if question.get("multi_select"):
+            text += "\n\nYou can choose more than one option."
+    return text + "\n\nReply with your answer."
+
+
 class HermesGateway:
     def __init__(self, python, environment, home, entry_module="talaria_gateway_entry"):
         self.home = home
@@ -663,7 +681,20 @@ class HermesGateway:
                         raise RuntimeError("Reply /approve or /deny to the pending Hermes command.")
                     result = self.call("approval.respond", {"session_id": sid, "request_id": payload.get("request_id"), "choice": choice})
                 else:
-                    result = self.call("clarify.respond", {"session_id": sid, "request_id": payload.get("request_id"), "answer": text})
+                    params = {"session_id": sid, "request_id": payload.get("request_id"), "answer": text}
+                    questions = payload.get("questions")
+                    index = payload.get("_talaria_question_index", 0)
+                    if isinstance(questions, list) and questions:
+                        params["question_id"] = questions[index]["qid"]
+                    result = self.call("clarify.respond", params)
+                    if result.get("status") == "expired" or result.get("expired"):
+                        self.waiting.pop(chat_id, None)
+                        raise RuntimeError("This question has expired. Send your request again.")
+                    if isinstance(questions, list) and index + 1 < len(questions):
+                        payload = dict(payload, _talaria_question_index=index + 1)
+                        self.waiting[chat_id] = (sid, events, kind, payload)
+                        delta("content", clarification_text(payload))
+                        return
                 self.waiting.pop(chat_id, None)
                 if result.get("expired") or (kind == "approval.request" and result.get("resolved") is False):
                     with self.lock:
@@ -739,9 +770,7 @@ class HermesGateway:
                         if kind == "approval.request":
                             delta("approval", payload)
                             return
-                        question = payload.get("question") or payload.get("command") or json.dumps(payload.get("questions", []), ensure_ascii=False)
-                        suffix = "\nReply /approve or /deny." if kind == "approval.request" else "\nReply with your answer."
-                        delta("content", "\n" + question + suffix)
+                        delta("content", "\n" + clarification_text(payload))
                         return
                     elif kind in {"sudo.request", "secret.request"}:
                         self.call("session.interrupt", {"session_id": sid})

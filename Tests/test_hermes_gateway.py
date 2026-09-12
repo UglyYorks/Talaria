@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import Mock, patch, call
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'AgentRuntime'))
-from hermes_gateway import HermesGateway, RPCError
+from hermes_gateway import HermesGateway, RPCError, clarification_text
 import talaria_agent as worker
 
 
@@ -334,6 +334,44 @@ class GatewayTests(unittest.TestCase):
         self.gateway.run('chat', 'model', 'hello', lambda kind, text: chunks.append((kind, text)))
         self.assertEqual(chunks, [('thinking', 'thinking'), ('content', 'Hello'), ('content', ' world')])
         self.assertEqual(self.gateway.listeners, {})
+
+    def test_clarification_batch_is_readable_and_answers_each_question_id(self):
+        self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
+        payload = {'request_id': 'ask', 'questions': [
+            {'qid': 'q0', 'question': 'What dates and how many guests?', 'choices': None, 'multi_select': False},
+            {'qid': 'q1', 'question': 'Which room?', 'choices': ['Dorm', 'Private'], 'multi_select': False}]}
+        def rpc(method, params):
+            events = self.gateway.listeners['runtime']
+            if method == 'prompt.submit':
+                events.put({'type': 'clarify.request', 'payload': payload})
+            elif params.get('question_id') == 'q1':
+                events.put({'type': 'message.complete', 'payload': {'text': 'Here are hotels.'}})
+            return {'status': 'ok'}
+        self.gateway.call.side_effect = rpc
+        chunks = []
+        emit = lambda kind, text: chunks.append((kind, text))
+        self.gateway.run('chat', 'model', 'Find a hotel', emit)
+        self.assertIn('What dates and how many guests?', chunks[-1][1])
+        self.assertNotIn('qid', chunks[-1][1])
+        self.assertNotIn('null', chunks[-1][1])
+        self.gateway.run('chat', 'model', 'October 1–3, two guests', emit)
+        self.gateway.call.assert_called_with('clarify.respond', {'session_id': 'runtime',
+            'request_id': 'ask', 'question_id': 'q0', 'answer': 'October 1–3, two guests'})
+        self.assertIn('Question 2 of 2', chunks[-1][1])
+        self.assertIn('- Private', chunks[-1][1])
+        self.assertIn('chat', self.gateway.waiting)
+        self.gateway.run('chat', 'model', 'Private', emit)
+        self.gateway.call.assert_called_with('clarify.respond', {'session_id': 'runtime',
+            'request_id': 'ask', 'question_id': 'q1', 'answer': 'Private'})
+        self.assertEqual(chunks[-1], ('content', 'Here are hotels.'))
+        self.assertNotIn('chat', self.gateway.waiting)
+
+    def test_legacy_clarification_and_multiple_choices(self):
+        text = clarification_text({'question': 'Which days?', 'choices': ['Monday', 'Friday'], 'multi_select': True})
+        self.assertIn('Which days?', text)
+        self.assertIn('- Monday', text)
+        self.assertIn('more than one', text)
+        self.assertNotIn('multi_select', text)
 
     def test_spinner_updates_are_status_snapshots_and_empty_updates_clear(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}

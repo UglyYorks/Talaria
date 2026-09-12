@@ -290,8 +290,10 @@ static void TestThinkingStatusReplacesWithoutAccumulating(void) {
     TLAssert([messages.lastObject.thinking isEqual:@"waiting — 60s"], @"unrelated status is ignored");
     request.delta(request.requestID, TLAgentStreamDeltaKindStatus, @"");
     TLAssert(messages.lastObject.thinking == nil, @"empty status clears the notice");
+    TLAssert(!messages.lastObject.thinkingActive, @"empty status clears active thinking state");
     request.delta(request.requestID, TLAgentStreamDeltaKindThinking, @"First");
     TLAssert([messages.lastObject.thinking isEqual:@"First"], @"reasoning tokens appear immediately");
+    TLAssert(messages.lastObject.thinkingActive, @"reasoning activates the thinking indicator");
     request.delta(request.requestID, TLAgentStreamDeltaKindStatus, @"waiting again");
     TLAssert([messages.lastObject.thinking isEqual:@"First\n\nwaiting again"], @"status is a separate paragraph from reasoning");
     request.delta(request.requestID, TLAgentStreamDeltaKindThinking, @" thought");
@@ -299,9 +301,11 @@ static void TestThinkingStatusReplacesWithoutAccumulating(void) {
     request.delta(request.requestID, TLAgentStreamDeltaKindStatus, @"waiting again");
     request.delta(request.requestID, TLAgentStreamDeltaKindContent, @"Answer");
     TLAssert([messages.lastObject.thinking isEqual:@"First thought"], @"answer output clears the waiting notice");
+    TLAssert(!messages.lastObject.thinkingActive, @"answer output clears active thinking state");
     request.delta(request.requestID, TLAgentStreamDeltaKindStatus, @"last notice");
     if (outcome.integerValue == 2) [runner cancel];
     else request.completion(outcome.integerValue == 1 ? TLTestError(@"Disconnected") : nil);
+    TLAssert(!runner.streamingMessage.thinkingActive, @"success, failure and cancellation clear active thinking state");
     TLAssert([store.savedMessages.lastObject.thinking isEqual:@"First thought"],
       @"success, failure and cancellation preserve reasoning without storing runtime notices");
   }

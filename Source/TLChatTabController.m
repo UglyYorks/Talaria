@@ -6,12 +6,17 @@
 #import "design_system/TLAttachmentChipView.h"
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLThemedButton.h"
+#import "design_system/TLThinkingBubbleView.h"
+#import "design_system/TLToolStatusPill.h"
 #import <math.h>
 static NSString *const TLAWSOutageChatTitle = @"AWS Oregon Outage";
 static NSString *const TLAWSOutageAgentMessage = @"⚠️ AWS is reporting an outage in the Oregon region. Talaria traffic routed through US West is seeing elevated errors and intermittent request failures. Failover capacity is available in US Central.";
 static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-central region";
 
 @interface TLChatTabController ()
+@property (nonatomic, strong) TLToolStatusPill *toolStatusPill;
+@property (nonatomic, strong) NSView *thinkingRow;
+@property (nonatomic, strong) TLThinkingBubbleView *thinkingBubble;
 @property (nonatomic, strong, readwrite) TLFindBar *findBar;
 @property (nonatomic, strong) NSMapTable<NSView *, NSLayoutConstraint *> *rowWidths;
 @property (nonatomic, strong) NSMapTable<TLChatMessage *, NSNumber *> *messageIndices;
@@ -272,6 +277,9 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 }
 
 - (CGFloat)messageStackSpacingAfterMessageAtIndex:(NSUInteger)index {
+  TLChatMessage *message = self.messages[index];
+  if ([message.role isEqual:TLRoleAssistant] && !message.content.length && !message.attachments.count &&
+      !message.notification && !message.approvalRequest) return self.palette.space0;
   if ([self isUserMessageAtIndex:index] && [self isUserMessageAtIndex:index + 1]) {
     return self.palette.space3;
   }
@@ -301,6 +309,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 - (void)markMessageDirty:(TLChatMessage *)message { if (message) [self.dirtyMessages addObject:message]; }
 
 - (void)renderDirtyMessages {
+  [self updateLiveActivity];
   if (!self.dirtyMessages.count || self.renderedMessages.count != self.messages.count) { [self renderMessagesScrollingToBottom:YES]; return; }
   for (TLChatMessage *message in self.dirtyMessages) {
     NSNumber *index = [self.messageIndices objectForKey:message];
@@ -342,6 +351,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
   if (!self.messageStack || self.closed) { self.streamingRenderScheduled = NO; return; }
+  [self updateLiveActivity];
   [self.dirtyMessages removeAllObjects];
   [self.messageIndices removeAllObjects];
   [self.messageRowIndices removeAllObjects];
@@ -447,6 +457,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     }
   }
 
+  [self updateLiveActivity];
   [self refreshFindResults];
   dispatch_async(dispatch_get_main_queue(), ^{
       [self updateMessageScrollInsets];
@@ -537,16 +548,49 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   return row;
 }
 
+- (void)updateLiveActivity {
+  TLChatMessage *message = self.messages.lastObject;
+  BOOL running = self.streamingProvider && self.streamingProvider() && !self.isLoading && !self.errorMessage.length &&
+    [message.role isEqualToString:TLRoleAssistant] && !message.approvalRequest;
+  NSDictionary *active = nil;
+  if (running) {
+    for (NSDictionary *activity in message.toolActivities.reverseObjectEnumerator) {
+      if ([@[@"preparing", @"running"] containsObject:activity[@"state"]]) { active = activity; break; }
+    }
+  }
+  self.toolStatusPill.hidden = active == nil;
+  if (active) [self.toolStatusPill setAvatar:self.agentAvatar activity:active];
+  BOOL thinking = running && (active || message.thinkingActive || !message.content.length);
+  if (thinking && self.messageStack) {
+    if (!self.thinkingRow) {
+      self.thinkingRow = [NSView new];
+      self.thinkingRow.translatesAutoresizingMaskIntoConstraints = NO;
+      self.thinkingBubble = [TLThinkingBubbleView new];
+      [self.thinkingRow addSubview:self.thinkingBubble];
+      [NSLayoutConstraint activateConstraints:@[
+        [self.thinkingBubble.leadingAnchor constraintEqualToAnchor:self.thinkingRow.leadingAnchor],
+        [self.thinkingBubble.topAnchor constraintEqualToAnchor:self.thinkingRow.topAnchor],
+        [self.thinkingBubble.bottomAnchor constraintEqualToAnchor:self.thinkingRow.bottomAnchor],
+        [self.thinkingBubble.trailingAnchor constraintLessThanOrEqualToAnchor:self.thinkingRow.trailingAnchor],
+      ]];
+    }
+    self.thinkingBubble.palette = self.palette;
+    if (![self.messageStack.arrangedSubviews containsObject:self.thinkingRow]) [self addMessageRowToStack:self.thinkingRow];
+    [self pinMessageRowToStackWidth:self.thinkingRow];
+  } else if (self.thinkingRow) [self detachMessageRowFromStack:self.thinkingRow];
+  [self updateMessageScrollInsets];
+}
+
 - (void)updateMessageScrollInsets {
   CGFloat slashCommandListHeight = (!self.slashCommandListView.hidden && self.slashCommandListHeightConstraint.constant > self.palette.space0)
     ? self.slashCommandListHeightConstraint.constant + self.palette.space5
     : self.palette.space0;
-  // Suggestions remain nearest the input; move the queue above their panel.
-  self.promptQueueBottomConstraint.constant = -self.palette.space3 - slashCommandListHeight;
+  CGFloat activityHeight = self.toolStatusPill && !self.toolStatusPill.hidden ? self.palette.space9 * 2 + self.palette.space3 * 2 : 0;
+  self.promptQueueBottomConstraint.constant = -self.palette.space3 - slashCommandListHeight - activityHeight;
   [self.messageInput.superview layoutSubtreeIfNeeded];
   CGFloat inputHeight = NSHeight(self.messageInput.frame) > 0.0 ? NSHeight(self.messageInput.frame) : self.palette.composerButtonHeight;
   CGFloat queueHeight = self.promptQueueView.preferredHeight;
-  CGFloat bottomClearance = inputHeight + (queueHeight > 0 ? queueHeight + self.palette.space3 : 0) + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
+  CGFloat bottomClearance = inputHeight + activityHeight + (queueHeight > 0 ? queueHeight + self.palette.space3 : 0) + slashCommandListHeight + self.palette.space10 + self.palette.space8 + self.palette.messageBottomSpacing;
   self.messageScrollView.contentInsets = NSEdgeInsetsMake(self.palette.space0,
                                                           self.palette.space0,
                                                           self.palette.space0,
@@ -587,12 +631,29 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 }
 
 - (NSString *)displayTextForMessage:(TLChatMessage *)message {
-  BOOL user = [message.role isEqualToString:TLRoleUser];
-  BOOL hasResponseContent = message.content.length > 0;
-  BOOL showThinking = !user && !hasResponseContent && message.thinking.length > 0;
-  NSString *displayText = showThinking
-    ? (message.thinking ?: @"")
-    : (hasResponseContent ? message.content : ([message.role isEqualToString:TLRoleAssistant] ? @"..." : @""));
+  NSString *displayText = message.content ?: @"";
+  // Older builds persisted the gateway's question array as visible JSON.
+  // Repair only that exact envelope for display; keep stored content intact.
+  NSString *suffix = @"Reply with your answer.";
+  if ([message.role isEqual:TLRoleAssistant] && [displayText hasSuffix:suffix]) {
+    NSString *json = [[displayText substringToIndex:displayText.length - suffix.length]
+      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    id questions = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    if ([questions isKindOfClass:NSArray.class] && [questions count]) {
+      NSMutableArray *parts = [NSMutableArray array];
+      BOOL valid = YES;
+      for (id question in questions) {
+        if (![question isKindOfClass:NSDictionary.class] || ![question[@"qid"] isKindOfClass:NSString.class] ||
+            ![question[@"question"] isKindOfClass:NSString.class]) { valid = NO; break; }
+        [parts addObject:question[@"question"]];
+        if ([question[@"choices"] isKindOfClass:NSArray.class]) {
+          for (id choice in question[@"choices"]) if ([choice isKindOfClass:NSString.class])
+            [parts addObject:[@"- " stringByAppendingString:choice]];
+        }
+      }
+      if (valid) displayText = [[parts componentsJoinedByString:@"\n\n"] stringByAppendingFormat:@"\n\n%@", suffix];
+    }
+  }
   if ([self messageShowsAWSOutageIntent:message]) {
     displayText = TLAWSOutageAgentMessage;
   }
@@ -601,8 +662,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 
 - (NSString *)rowSignatureForMessage:(TLChatMessage *)message showsOutgoingTail:(BOOL)showsOutgoingTail {
   BOOL user = [message.role isEqualToString:TLRoleUser];
-  BOOL showThinking = !user && !message.content.length && message.thinking.length > 0;
-  NSString *mode = message.approvalRequest ? [@"approval:" stringByAppendingString:message.approvalRequest.description] : (showThinking ? @"thinking" : @"content");
+  NSString *mode = message.approvalRequest ? [@"approval:" stringByAppendingString:message.approvalRequest.description] : @"content";
   if (message.notification) mode = [mode stringByAppendingFormat:@" notification:%@", message.notification];
   CGFloat layoutWidth = self.messageInputWidthConstraint.constant > 0.0
     ? self.messageInputWidthConstraint.constant
@@ -706,15 +766,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     : self.palette.messageInputMaxWidth;
 
   BOOL hasResponseContent = message.content.length > 0;
-  BOOL showThinking = !user && !hasResponseContent && message.thinking.length > 0;
-  if (showThinking && !message.approvalRequest) {
-    [stack addArrangedSubview:[self labelWithString:@"Thinking"
-                                               font:self.palette.roleFont
-                                              color:self.palette.thinkingText]];
-    NSView *markdown = [self markdownViewWithString:message.thinking textColor:self.palette.thinkingText baseFont:self.palette.smallFont];
-    [stack addArrangedSubview:markdown];
-    [self.messageMarkdownViews setObject:markdown forKey:message];
-  } else if (user) {
+  if (user) {
     NSString *content = hasResponseContent ? message.content : @"";
     userLeadingInset = self.palette.userMessageHorizontalPadding;
     userTrailingInset = self.palette.userMessageHorizontalPadding;
@@ -743,8 +795,8 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
       [stack addArrangedSubview:contentLabel];
       [self.messageMarkdownViews setObject:contentLabel forKey:message];
     } else contentLabel = nil;
-  } else if (hasResponseContent || (!message.notification && !message.approvalRequest && !message.attachments.count && !message.toolActivities.count)) {
-    NSString *content = hasResponseContent ? message.content : @"...";
+  } else if (hasResponseContent) {
+    NSString *content = [self displayTextForMessage:message];
     if ([self messageShowsAWSOutageIntent:message]) {
       content = TLAWSOutageAgentMessage;
       NSView *leadingSpacer = [[NSView alloc] init];
@@ -779,14 +831,6 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     [row addSubview:attachmentRow];
   }
 
-  if (!user && message.toolActivities.count) {
-    TLToolActivityView *activity = [[TLToolActivityView alloc] init];
-    activity.palette = self.palette;
-    activity.activities = message.toolActivities;
-    [stack insertArrangedSubview:activity atIndex:0];
-    [activity.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    [self.messageActivityViews setObject:activity forKey:message];
-  }
   if (!user && message.notification) {
     TLNotificationMessageCardView *card = [[TLNotificationMessageCardView alloc] initWithNotification:message.notification palette:self.palette];
     [stack addArrangedSubview:card];
@@ -800,7 +844,11 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     [stack addArrangedSubview:card];
     [card.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
   }
-  BOOL hasBubble = stack.arrangedSubviews.count > 0 || !attachmentRow;
+  if (!stack.arrangedSubviews.count && !attachmentRow) {
+    [row.heightAnchor constraintEqualToConstant:0].active = YES;
+    return row;
+  }
+  BOOL hasBubble = stack.arrangedSubviews.count > 0;
   NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray array];
   if (attachmentRow) {
     [constraints addObjectsFromArray:@[
@@ -872,6 +920,8 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   self.messagesBackground.fillColor = palette.tabBackground;
   self.messageStack.spacing = palette.messageVerticalSpacing;
   self.messageInput.palette = palette;
+  self.toolStatusPill.palette = palette;
+  self.thinkingBubble.palette = palette;
 
   self.slashCommandScrollView.palette = palette;
   self.slashCommandListView.palette = palette;
@@ -942,6 +992,14 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     [emptyState.trailingAnchor constraintEqualToAnchor:messagesView.trailingAnchor],
     [emptyState.topAnchor constraintEqualToAnchor:messagesView.topAnchor],
     [emptyState.bottomAnchor constraintEqualToAnchor:self.messageInput.topAnchor constant:-self.palette.space12],
+  ]];
+  self.toolStatusPill = [TLToolStatusPill new];
+  self.toolStatusPill.palette = self.palette;
+  [chatWorkspace addSubview:self.toolStatusPill];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.toolStatusPill.centerXAnchor constraintEqualToAnchor:self.messageInput.centerXAnchor],
+    [self.toolStatusPill.bottomAnchor constraintEqualToAnchor:self.slashCommandListView.topAnchor constant:-self.palette.space3],
+    [self.toolStatusPill.widthAnchor constraintLessThanOrEqualToAnchor:self.messageInput.widthAnchor],
   ]];
   TLChatTabController *presentation = self;
   presentation.promptQueueView = [TLPromptQueueView new];

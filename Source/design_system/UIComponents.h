@@ -42,6 +42,9 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 NSBezierPath *TLCreateOutgoingMessageBubblePath(NSRect bounds, TLThemePalette *palette,
                                                CGFloat requestedRadius, BOOL rendersAsPill);
 
+// Shared incoming outline used by the empty-state agent and thinking indicator.
+NSBezierPath *TLCreateIncomingMessageBubblePath(NSRect bounds, TLThemePalette *palette);
+
 @interface TLMessageBubbleView : TLTokenView
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic) BOOL drawsOutgoingTail;

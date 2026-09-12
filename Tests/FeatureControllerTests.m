@@ -40,6 +40,8 @@
 #import "design_system/TLWorkspaceOutlineView.h"
 #import "design_system/TLChromeTabView.h"
 #import "design_system/TLToolActivityView.h"
+#import "design_system/TLThinkingBubbleView.h"
+#import "design_system/TLToolStatusPill.h"
 
 static void Check(BOOL condition, NSString *message) {
   if (!condition) { NSLog(@"FAIL: %@", message); exit(1); }
@@ -342,20 +344,13 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   [controller setValue:messages forKey:@"messages"];
   [controller renderMessages];
   NSMapTable *activityViews = [[controller valueForKey:@"chatPresentation"] valueForKey:@"messageActivityViews"];
-  TLToolActivityView *initialActivity = [activityViews objectForKey:assistant];
-  Check(!initialActivity.expanded && ((NSStackView *)initialActivity.superview).arrangedSubviews.firstObject == initialActivity,
-    @"main chat places collapsed tool activity above the answer");
-  [(NSButton *)initialActivity.arrangedSubviews.firstObject performClick:nil];
+  Check(![activityViews objectForKey:assistant], @"tools are presented outside the transcript");
   assistant.content = @"First paragraph.\n\n";
   [controller renderMessages];
   stack.removalCount = 0;
   NSArray *rows = stack.arrangedSubviews.copy;
   NSMapTable *markdownViews = [controller valueForKey:@"messageMarkdownViews"];
   NSView *markdown = [markdownViews objectForKey:assistant];
-  TLToolActivityView *activityView = [activityViews objectForKey:assistant];
-  Check(activityView && !activityView.hidden && activityView.superview, @"main chat displays tools alongside streamed answer text");
-  Check(activityView.expanded && ((NSStackView *)activityView.superview).arrangedSubviews.firstObject == activityView,
-    @"the first answer token preserves expansion and keeps activity above the answer");
   WKWebView *web = [markdown valueForKey:@"webView"];
   NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
   while (![[markdown valueForKey:@"documentReady"] boolValue] && deadline.timeIntervalSinceNow > 0) {
@@ -382,9 +377,7 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   Check([EvaluateChatScript(web, @"document.body.innerText") containsString:@"Done."], @"final streamed text is rendered");
   [assistant applyToolActivity:@{@"id":@"tool-1", @"name":@"terminal", @"state":@"completed", @"summary":@"Tests passed"}];
   [controller renderMessages];
-  Check([activityViews objectForKey:assistant] == activityView && [markdownViews objectForKey:assistant] == markdown &&
-    activityView.expanded && [activityView.activities.firstObject[@"state"] isEqual:@"completed"],
-    @"tool completions preserve expansion and update in place without reloading the answer");
+  Check([markdownViews objectForKey:assistant] == markdown, @"tool completion preserves the streamed answer renderer");
   EvaluateChatScript(web, @"window.domRenderCount = 0; const render = window.talariaRender; window.talariaRender = source => { window.domRenderCount++; render(source); }; true;");
   [controller renderMessages];
   [controller renderMessages];
@@ -418,7 +411,7 @@ static void TestStreamingKeepsMessageViewsAttached(void) {
   [controller renderMessages];
   Check([stack.arrangedSubviews isEqual:rows] && [markdownViews objectForKey:saved] == markdown && stack.removalCount == 0,
         @"saving the completed answer preserves its visible row and renderer");
-  Check([activityViews objectForKey:saved] == activityView, @"saving retains the visible tool activity view");
+  Check(![activityViews objectForKey:saved], @"saving does not restore inline tool activity");
   [messages removeObjectAtIndex:1];
   [controller renderMessages];
   Check(stack.arrangedSubviews.count == 1 && stack.arrangedSubviews.firstObject == rows.firstObject &&
@@ -3883,9 +3876,109 @@ static void TestLinkTabInsertion(void) {
   }
 }
 
+static void CaptureThinkingPreview(NSView *view, NSString *name) {
+  if (!getenv("TL_THINKING_PREVIEW")) return;
+  [view layoutSubtreeIfNeeded];
+  NSBitmapImageRep *image = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+  [view cacheDisplayInRect:view.bounds toBitmapImageRep:image];
+  [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+    writeToFile:[@"/tmp/" stringByAppendingString:name] atomically:YES];
+}
+
+static void TestLiveThinkingPresentation(void) {
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    TLChatTabController *chat = [[TLChatTabController alloc] initWithPalette:palette];
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 600)
+      styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed = NO;
+    NSView *workspace = [chat buildChatWorkspace];
+    chat.chatWorkspace = workspace;
+    window.contentView = workspace;
+    chat.messageInputWidthConstraint.constant = 520;
+    [chat applyPalette:palette];
+    [window orderFront:nil];
+    chat.agentAvatar = @"🦊";
+    __block BOOL running = YES;
+    chat.streamingProvider = ^BOOL{ return running; };
+    TLChatMessage *message = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:@"(face) musing..."];
+    chat.messages = [NSMutableArray arrayWithObjects:[TLChatMessage messageWithRole:TLRoleUser content:@"Find the latest news" thinking:nil], message, nil];
+    [chat renderMessagesScrollingToBottom:NO];
+    [workspace layoutSubtreeIfNeeded];
+    NSView *thinking = [chat valueForKey:@"thinkingRow"];
+    TLThinkingBubbleView *bubble = [chat valueForKey:@"thinkingBubble"];
+    TLToolStatusPill *pill = [chat valueForKey:@"toolStatusPill"];
+    Check(thinking.superview && pill.hidden, @"waiting shows only the thinking bubble");
+    Check(![chat.messageMarkdownViews objectForKey:message], @"Hermes status and reasoning text never become visible Markdown");
+    NSArray<CALayer *> *dots = [bubble valueForKey:@"dots"];
+    Check(dots.count == 3 && NSWidth(bubble.frame) > 0, @"thinking bubble contains three visible dots");
+    Check(CGColorEqualToColor(dots.firstObject.backgroundColor, palette.thinkingText.CGColor), @"dots use current theme text color");
+    Check(CGRectGetWidth(dots.firstObject.frame) == palette.space3, @"thinking dots use the compact size");
+    Check(bubble.cornerRadius > 0 && [bubble.fillColor isEqual:palette.secondaryActionSurface], @"thinking has a visible rounded bubble surface");
+    Check([bubble isKindOfClass:TLMessageBubbleView.class] && !bubble.drawsOutgoingTail, @"thinking uses the shared incoming agent message bubble");
+    if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
+      Check([dots.firstObject animationForKey:@"thinking"] != nil, @"dots animate in a window");
+    CaptureThinkingPreview(workspace, [NSString stringWithFormat:@"thinking-%@.png", theme]);
+    [message applyToolActivity:@{@"id":@"web", @"name":@"web_search", @"state":@"running"}];
+    [chat markMessageDirty:message];
+    [chat scheduleStreamingMessageRender];
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+    [workspace layoutSubtreeIfNeeded];
+    Check(thinking.superview && !pill.hidden, @"thinking stays visible alongside the tool pill");
+    NSTimer *shimmer = [pill valueForKey:@"shimmerTimer"];
+    if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
+      Check(shimmer.valid, @"active tool text shimmers");
+    CAGradientLayer *mask = [pill valueForKey:@"shimmerMask"];
+    NSArray *locations = mask.locations;
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+    if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
+      Check(![mask.locations isEqual:locations], @"shimmer highlight moves across the text");
+    Check([pill.accessibilityLabel isEqual:@"Browsing web"], @"web tool gets readable activity text");
+    Check([[[pill valueForKey:@"avatarLabel"] stringValue] isEqual:@"🦊"], @"pill uses this chat's agent avatar");
+    NSRect pillFrame = [pill convertRect:pill.bounds toView:workspace];
+    NSRect inputFrame = [chat.messageInput convertRect:chat.messageInput.bounds toView:workspace];
+    Check(fabs(NSMidX(pillFrame) - NSMidX(inputFrame)) < 1 && NSMinY(pillFrame) >= NSMaxY(inputFrame), @"pill is centered above the composer");
+    Check(CGColorEqualToColor(pill.layer.backgroundColor, palette.secondaryActionSurface.CGColor), @"pill uses theme surface color");
+    CaptureThinkingPreview(workspace, [NSString stringWithFormat:@"tool-pill-%@.png", theme]);
+    [window setContentSize:NSMakeSize(200, 600)];
+    chat.messageInputWidthConstraint.constant = 160;
+    [workspace layoutSubtreeIfNeeded];
+    Check(NSWidth(pill.frame) <= NSWidth(chat.messageInput.frame) + 1, @"pill fits the composer at minimum window width");
+    [window setContentSize:NSMakeSize(600, 600)];
+    chat.messageInputWidthConstraint.constant = 520;
+    [message applyToolActivity:@{@"id":@"web", @"name":@"web_search", @"state":@"completed"}];
+    [chat renderMessagesScrollingToBottom:NO];
+    Check(thinking.superview && pill.hidden, @"thinking resumes after tool completion");
+    Check(!shimmer.valid, @"hidden tool pills stop shimmering");
+    message.content = @"Here are the results.";
+    message.thinkingActive = NO;
+    [chat renderMessagesScrollingToBottom:NO];
+    Check(!thinking.superview && pill.hidden, @"answer streaming clears the activity indicators");
+    message.thinkingActive = YES;
+    [chat renderMessagesScrollingToBottom:NO];
+    Check(thinking.superview != nil, @"later reasoning can show dots after response text");
+    message.approvalRequest = @{@"request_id":@"approval", @"command":@"test"};
+    [chat renderMessagesScrollingToBottom:NO];
+    Check(!thinking.superview && pill.hidden, @"approval hides passive progress indicators");
+    message.approvalRequest = nil;
+    running = NO;
+    [chat renderMessagesScrollingToBottom:NO];
+    Check(!thinking.superview && pill.hidden, @"completion or cancellation clears progress even with stale thinking state");
+    message.content = @"[{\"qid\":\"q0\",\"question\":\"Which dates?\",\"choices\":null,\"multi_select\":false}] Reply with your answer.";
+    [chat renderMessagesScrollingToBottom:NO];
+    NSView *questionView = [chat.messageMarkdownViews objectForKey:message];
+    Check([[questionView valueForKey:@"text"] isEqual:@"Which dates?\n\nReply with your answer."], @"old question envelopes render readable text without protocol fields");
+    [chat close];
+    [window close];
+  }
+  Check([[TLToolStatusPill labelForToolName:@"custom_data_tool"] isEqual:@"Using custom data tool"], @"unknown tools retain a readable name");
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestLiveThinkingPresentation();
+    if (getenv("TL_TEST_THINKING_ONLY")) { NSLog(@"Thinking presentation tests passed"); return 0; }
     TestProviderSetupStages();
     TestLinkTabInsertion();
     if (getenv("TL_TEST_BROWSER_IMPORT_ONLY")) {
