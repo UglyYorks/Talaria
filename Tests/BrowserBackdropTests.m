@@ -38,6 +38,12 @@ static void Check(BOOL value, NSString *message) {
       self.blur.palette=[TLThemePalette paletteForPreference:theme.integerValue];
       [self.blur layoutSubtreeIfNeeded];
       Check(self.blur.backgroundFilters.count==1 && CGColorEqualToColor(self.blur.layer.backgroundColor,TLCGColor(self.blur.palette.chatInputBackdrop)),@"footer combines native blur with the themed translucent chat backdrop");
+      id filter=self.blur.backgroundFilters.firstObject;
+      self.blur.needsLayout=YES;[self.blur layoutSubtreeIfNeeded];
+      Check(self.blur.backgroundFilters.firstObject==filter,@"unchanged layout preserves the blur filter graph");
+      self.blur.frame=NSMakeRect(0,0,800,120);[self.blur layoutSubtreeIfNeeded];
+      Check(self.blur.backgroundFilters.firstObject!=filter,@"changing mask geometry refreshes the blur graph");
+      self.blur.frame=NSMakeRect(0,0,800,140);[self.blur layoutSubtreeIfNeeded];
     }
     [self checkScroll:0];
   }];

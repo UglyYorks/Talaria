@@ -265,6 +265,7 @@ static CGImageRef TLChromeWaveImage(CALayer *layer, CGRect rect, CGFloat scale) 
   if(self.textWaveChanged)self.textWaveChanged(self.waveStartText,self.waveEndText,self.waveMask.frame,self.waveMask.locations,YES);
 }
 - (void)setLeadingFlareOutset:(CGFloat)leadingFlareOutset {
+  if (_leadingFlareOutset == leadingFlareOutset) return;
   _leadingFlareOutset = leadingFlareOutset;
   [self updateBackgroundPath];
 }
@@ -318,6 +319,7 @@ static CGImageRef TLChromeWaveImage(CALayer *layer, CGRect rect, CGFloat scale) 
 }
 
 - (void)setHidden:(BOOL)hidden {
+  if (self.hidden == hidden) return;
   [super setHidden:hidden];
   if (self.geometryChanged) self.geometryChanged();
 }
@@ -331,6 +333,8 @@ static CGImageRef TLChromeWaveImage(CALayer *layer, CGRect rect, CGFloat scale) 
       [self.backgroundLayer animationForKey:@"tab-selection-slide"] != nil) {
     return;
   }
+  if (!animated && NSEqualRects(self.selectionFrame,selectionFrame) &&
+      self.leadingFlareOutset == leadingFlareOutset && self.backgroundLayer.path) return;
 
   CAShapeLayer *visibleLayer = (CAShapeLayer *)(self.backgroundLayer.presentationLayer ?: self.backgroundLayer);
   CGPathRef visiblePath = visibleLayer.path;

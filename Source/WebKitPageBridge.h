@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)probeOverlayRect:(NSRect)rect viewportSize:(NSSize)viewport quick:(BOOL)quick completion:(void (^)(NSDictionary *))completion;
 - (void)configureDocumentFooter:(NSDictionary *)configuration completion:(void (^ _Nullable)(BOOL applied))completion;
 - (void)sampleFooterColorAllowingCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion;
+- (void)sampleHeaderColorAllowingCapture:(BOOL)capture completion:(void (^)(NSDictionary *))completion;
 - (void)findText:(NSString *)text forward:(BOOL)forward findNext:(BOOL)findNext completion:(void (^)(NSInteger count, NSInteger active, BOOL finalUpdate))completion;
 - (void)stopFinding;
 @end

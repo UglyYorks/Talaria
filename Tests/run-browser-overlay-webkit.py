@@ -158,7 +158,9 @@ try:
     background = ["--env", "TL_BROWSER_TEST_BACKGROUND=1"] if os.environ.get("TL_BROWSER_TEST_BACKGROUND") == "1" else []
     runner = subprocess.Popen(["open", "-n", "-W", "--stdout", str(app_log), "--stderr", str(app_log), *background, str(app), "--args",
                                f"http://127.0.0.1:{server.server_port}", str(profile), str(result),
-                               *([os.environ["TALARIA_OVERLAY_LIVE_URL"]] if os.environ.get("TALARIA_OVERLAY_LIVE_URL") else [])])
+                               *([os.environ["TALARIA_FULLSCREEN_LIVE_URL"]] if FULLSCREEN and os.environ.get("TALARIA_FULLSCREEN_LIVE_URL") else
+                                 [os.environ["TALARIA_OVERLAY_LIVE_URL"]] if os.environ.get("TALARIA_OVERLAY_LIVE_URL") else []),
+                               *([os.environ["TALARIA_FULLSCREEN_DIAGNOSTIC"]] if FULLSCREEN and os.environ.get("TALARIA_FULLSCREEN_LIVE_URL") and os.environ.get("TALARIA_FULLSCREEN_DIAGNOSTIC") else [])])
     try:
         runner.wait(timeout=120)
     except subprocess.TimeoutExpired:

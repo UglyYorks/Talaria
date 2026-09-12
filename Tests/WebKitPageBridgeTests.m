@@ -2,6 +2,15 @@
 #import <WebKit/WebKit.h>
 #import "WebKitPageBridge.h"
 
+@interface TLRecordingSnapshotWebView : WKWebView
+@property(nonatomic) CGRect lastSnapshotRect;
+@end
+@implementation TLRecordingSnapshotWebView
+- (void)takeSnapshotWithConfiguration:(WKSnapshotConfiguration *)configuration completionHandler:(void (^)(NSImage *,NSError *))completion {
+  self.lastSnapshotRect=configuration.rect;
+  [super takeSnapshotWithConfiguration:configuration completionHandler:completion];
+}
+@end
 @interface TLPageBridgeTestDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
@@ -16,7 +25,7 @@
   self.window.releasedWhenClosed = NO;
   WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
   configuration.websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore;
-  self.webView = [[WKWebView alloc] initWithFrame:NSMakeRect(0,0,1000,700) configuration:configuration];
+  self.webView = [[TLRecordingSnapshotWebView alloc] initWithFrame:NSMakeRect(0,0,1000,700) configuration:configuration];
   self.window.contentView = self.webView;
   self.webView.navigationDelegate = self;
   self.bridge = [[TLWebKitPageBridge alloc] initWithWebView:self.webView];
@@ -24,7 +33,7 @@
   [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
   [self next];
 }
-- (NSArray *)paths { return @[@"/fixed",@"/closed",@"/pointer",@"/frame",@"/clear",@"/gradient",@"/read",@"/find",@"/footer-color",@"/footer"]; }
+- (NSArray *)paths { return @[@"/fixed",@"/closed",@"/pointer",@"/frame",@"/clear",@"/gradient",@"/header-gradient",@"/header-canvas",@"/read",@"/find",@"/footer-color",@"/footer"]; }
 - (void)next {
   if (self.index == self.paths.count) {
     [self.bridge stop];
@@ -59,6 +68,11 @@
           [self record:@{@"matches":values,@"finding":@(self.bridge.finding)}];
         }];
       }];
+    }];
+  } else if ([path hasPrefix:@"/header-"]) {
+    [self.bridge sampleHeaderColorAllowingCapture:YES completion:^(NSDictionary *sample) {
+      CGRect rect=((TLRecordingSnapshotWebView *)self.webView).lastSnapshotRect;
+      [self record:@{@"sample":sample,@"captureRect":@[@(rect.origin.x),@(rect.origin.y),@(rect.size.width),@(rect.size.height)]}];
     }];
   } else if ([path isEqual:@"/gradient"]) {
     [self.bridge sampleFooterColorAllowingCapture:YES completion:^(NSDictionary *sample) { [self record:sample]; }];
