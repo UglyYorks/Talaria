@@ -167,6 +167,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     BOOL cancelled = [streamError.domain isEqualToString:NSURLErrorDomain] && streamError.code == NSURLErrorCancelled;
     // Flush even on stream failure: unfinished markdown and thinking are still
     // the user's generated content and must remain available for recovery.
+    assistantMessage.thinkingActive = NO;
     assistantMessage.content = [assistantContent copy];
     NSString *displayThinking = [assistantThinking copy];
     assistantMessage.thinking = displayThinking.length > 0 ? displayThinking : nil;
@@ -219,10 +220,13 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
       return;
     }
 
-    BOOL displayChanged = NO;
+    BOOL wasThinking = assistantMessage.thinkingActive;
+    assistantMessage.thinkingActive = (kind == TLAgentStreamDeltaKindThinking ||
+      (kind == TLAgentStreamDeltaKindStatus && text.length > 0));
+    BOOL displayChanged = wasThinking != assistantMessage.thinkingActive;
     if (kind == TLAgentStreamDeltaKindToolActivity) {
       id activity = value;
-      displayChanged = [assistantMessage applyToolActivity:activity];
+      displayChanged = [assistantMessage applyToolActivity:activity] || displayChanged;
       if (!displayChanged) return;
       assistantStatus = @"";
     } else if (kind == TLAgentStreamDeltaKindApproval) {

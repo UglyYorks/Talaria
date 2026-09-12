@@ -652,6 +652,15 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
 
 @end
 
+NSBezierPath *TLCreateIncomingMessageBubblePath(NSRect bounds, TLThemePalette *palette) {
+  NSBezierPath *path = TLCreateOutgoingMessageBubblePath(
+    NSMakeRect(0, 0, NSWidth(bounds), NSHeight(bounds)), palette, palette.userMessageCornerRadius, NO);
+  NSAffineTransform *mirror = [NSAffineTransform transform];
+  mirror.transformStruct = (NSAffineTransformStruct){-1, 0, 0, 1, NSMaxX(bounds), NSMinY(bounds)};
+  [path transformUsingAffineTransform:mirror];
+  return path;
+}
+
 @implementation TLMessageBubbleView
 
 - (instancetype)init {

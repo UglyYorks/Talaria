@@ -111,6 +111,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.role = self.role;
   copy.content = self.content;
   copy.thinking = self.thinking;
+  copy.thinkingActive = self.thinkingActive;
   copy.approvalRequest = self.approvalRequest;
   copy.approvalResponse = self.approvalResponse;
   copy.toolActivities = self.toolActivities;

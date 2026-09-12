@@ -181,15 +181,12 @@ static NSUInteger TLStarHash(NSUInteger column, NSUInteger row) {
     }
   }
   [NSGraphicsContext restoreGraphicsState];
-  NSBezierPath *bubble = TLCreateOutgoingMessageBubblePath(
-    NSMakeRect(0, 0, NSWidth(self.bubbleRect), NSHeight(self.bubbleRect)),
-    p, p.userMessageCornerRadius, NO);
-  // Mirror the user's exact outline horizontally. The Y inversion only converts
-  // its AppKit coordinates into this flipped view; the tail stays at the bottom.
-  NSAffineTransform *mirror = [NSAffineTransform transform];
-  mirror.transformStruct = (NSAffineTransformStruct){-1, 0, 0, -1,
-    NSMaxX(self.bubbleRect), NSMaxY(self.bubbleRect)};
-  [bubble transformUsingAffineTransform:mirror];
+  NSBezierPath *bubble = TLCreateIncomingMessageBubblePath(self.bubbleRect, p);
+  // Convert the shared AppKit outline into this flipped view.
+  NSAffineTransform *flip = [NSAffineTransform transform];
+  flip.transformStruct = (NSAffineTransformStruct){1, 0, 0, -1, 0,
+    NSMinY(self.bubbleRect) + NSMaxY(self.bubbleRect)};
+  [bubble transformUsingAffineTransform:flip];
   [p.secondaryActionSurface setFill];
   [bubble fill];
 }
