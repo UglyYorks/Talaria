@@ -447,7 +447,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
   if (chat) {
     TLChatTabController *next = self.chatPresentations[@(chat.chatID)];
-    if (!next) next = previous ? [self newChatTabController] : [self currentChatPresentation];
+    // Closing the last selected chat clears its record but leaves the retired
+    // presentation here. A closed controller cannot render a new tab.
+    if (!next) next = previous || self.chatPresentation.closed ? [self newChatTabController] : [self currentChatPresentation];
     self.chatPresentation = next;
     if (!next.chatWorkspace && self.contentHost) {
       self.chatWorkspace = [self buildChatWorkspace];
