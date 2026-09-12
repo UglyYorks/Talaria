@@ -2730,6 +2730,34 @@ static void TestAgentSettingsForm(void) {
   TLEmojiPicker *avatar = [controller valueForKey:@"avatarPicker"];
   NSTextView *soul = [controller valueForKey:@"soulView"];
   Check([name.stringValue isEqual:agent.name] && [avatar.emoji isEqual:agent.avatar] && [soul.string isEqual:agent.soul], @"settings preload the selected agent profile");
+  TLThemedButton *hostPolicy = [controller valueForKey:@"hostPolicyButton"];
+  Check([hostPolicy.title isEqual:@"Ask before running"], @"agent host access defaults to asking");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [controller applyPalette:palette];
+    [controller.window.contentView layoutSubtreeIfNeeded];
+    NSView *view = controller.window.contentView;
+    NSRect buttonFrame = [hostPolicy convertRect:hostPolicy.bounds toView:view];
+    NSButton *saveButton = [controller valueForKey:@"createButton"];
+    NSRect saveFrame = [saveButton convertRect:saveButton.bounds toView:view];
+    Check(NSContainsRect(view.bounds, buttonFrame) && NSMinY(buttonFrame) > NSMaxY(saveFrame), @"host access fits above settings actions");
+    NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+    [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"build/host-settings-%@.png", theme] atomically:YES];
+    NSBitmapImageRep *buttonBitmap = RenderThemedButton(hostPolicy);
+    CGFloat surface[3], foreground[3], alpha;
+    RGBComponents(palette.tabBackground, surface, &alpha);
+    CompositeColor(palette.secondaryActionSurface, 1, surface);
+    for (NSInteger i = 0; i < 3; i++) foreground[i] = surface[i];
+    CompositeColor(palette.secondaryActionText, 1, foreground);
+    Check(PixelMatches(buttonBitmap, 10, buttonBitmap.pixelsHigh / 2, surface), @"host setting renders theme surface");
+    NSUInteger ink = 0;
+    for (NSInteger y = 5; y < buttonBitmap.pixelsHigh - 5; y++)
+      for (NSInteger x = 15; x < buttonBitmap.pixelsWide - 15; x++)
+        if (PixelMatches(buttonBitmap, x, y, foreground)) ink++;
+    Check(ink > 10, @"host setting renders paired theme text");
+  }
   [controller.window.contentView layoutSubtreeIfNeeded];
   NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_SETTINGS_PREVIEW"];
   if (preview.length) {
@@ -3812,6 +3840,12 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_HOST_COMMAND_SETTINGS_TESTS_ONLY")) {
+      TestAgentSettingsForm();
+      TestThemedButtonRenderedColors();
+      NSLog(@"Host command settings and rendered button tests passed");
+      return 0;
+    }
     if (getenv("TL_TEST_DEFAULT_BROWSER_ONLY")) {
       TestThemedButtonRenderedColors();
       TestDefaultBrowserSettings();

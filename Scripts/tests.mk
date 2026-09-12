@@ -48,8 +48,9 @@ TEST_TabLayoutTests_SOURCES := Source/WorkspaceState.m Source/design_system/TLTa
 TEST_TabLayoutTests_LIBS := -framework AppKit -framework QuartzCore -framework CoreText
 $(eval $(call native_test,TabLayoutTests))
 
-TEST_PromptBuilderTests_SOURCES := Source/ChatAttachmentStore.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/TLAgentProtocol.m Source/AgentVMService.m Source/TLAgentVMLock.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Tests/PromptBuilderTests.m $(STORAGE_SOURCES) $(WORKSPACE_SOURCES)
+TEST_PromptBuilderTests_SOURCES := Source/TLHostCommandBridge.m Source/ChatAttachmentStore.m Source/PromptBuilder.m Source/PromptMessages.m Source/BrowserPageContext.m Source/BrowserConversation.m Source/StreamingBlockBuffer.m Source/AgentModel.m Source/ChatIconGenerator.m Source/AgentClient.m Source/TLAgentProtocol.m Source/AgentVMService.m Source/TLAgentVMLock.m Source/AgentOrchestrator.m Source/AssistantTurnRunner.m Source/NotchOverlayState.m Tests/PromptBuilderTests.m $(STORAGE_SOURCES) $(WORKSPACE_SOURCES)
 TEST_PromptBuilderTests_LIBS := $(TEST_FRAMEWORKS)
+TEST_PromptBuilderTests_SOURCES += $(THEME_SOURCES)
 $(eval $(call native_test,PromptBuilderTests))
 
 TEST_CredentialStoreTests_SOURCES := Tests/CredentialStoreTests.m $(STORAGE_SOURCES)
@@ -104,7 +105,18 @@ TEST_RepositoryTests_LIBS := -framework Foundation -framework Security -lsqlite3
 $(eval $(call native_test,RepositoryTests))
 
 CORE_TESTS := RepositoryTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests AppResetTests AgentVMLockTests AgentProtocolTests
+TEST_HostCommandTests_SOURCES := Source/TLHostCommandBridge.m Tests/HostCommandTests.m $(THEME_SOURCES)
+TEST_HostCommandTests_LIBS := -framework Foundation -framework AppKit
+$(eval $(call native_test,HostCommandTests))
 NATIVE_TESTS := WheelScrollAnimationTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
+NATIVE_TESTS += HostCommandTests
+.PHONY: test-host-commands
+test-host-commands: $(addprefix $(BUILD_DIR)/,HostCommandTests PromptBuilderTests FeatureControllerTests)
+	"$(BUILD_DIR)/HostCommandTests"
+	"$(BUILD_DIR)/PromptBuilderTests"
+	TL_HOST_COMMAND_SETTINGS_TESTS_ONLY=1 "$(BUILD_DIR)/FeatureControllerTests"
+	python3 -B -m unittest discover -s Tests -p "test_host_commands.py"
+
 .PHONY: test test-core test-integration
 # GUI suites run sequentially: AppKit focus and the pasteboard are shared resources.
 test: $(addprefix $(BUILD_DIR)/,$(NATIVE_TESTS)) $(BUILD_DIR)/TerminalClientProbe test-hermes-gateway test-browser-overlay audit-theme-colors

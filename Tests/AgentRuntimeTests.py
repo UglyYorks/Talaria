@@ -83,7 +83,7 @@ class HermesStreamingTests(unittest.TestCase):
         output = FlushedOutput()
         chunks = ["Hello", " 🦊", "\n```swift\n", 'print("hi")']
         gateway = Mock()
-        def run(session, model, prompt, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False):
+        def run(session, model, prompt, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False):
             self.assertTrue(wait_for_previous_turn)
             for index, chunk in enumerate(chunks):
                 delta("content", chunk)

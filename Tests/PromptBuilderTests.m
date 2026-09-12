@@ -4,6 +4,7 @@
 #import <sys/socket.h>
 #import <unistd.h>
 #import "AgentClient.h"
+#import "TLHostCommandBridge.h"
 #import "AgentOrchestrator.h"
 #import "AgentVMService.h"
 #import "AppStateManager.h"
@@ -846,6 +847,58 @@ static void TestStatusTransport(void) {
   close(descriptors[1]);
 }
 
+static void TestHostCommandTransport(void) {
+  NSString *suite = [@"HostTransportTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+  NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+  TLHostCommandBridge *bridge = [[TLHostCommandBridge alloc] initWithDefaults:defaults];
+  for (NSString *policy in @[@"deny", @"always"]) {
+    [bridge setPolicy:policy forAgent:@"host-agent"];
+    TLDeferredSocketService *vm = [TLDeferredSocketService new];
+    TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:vm];
+    [client setValue:bridge forKey:@"hostBridge"];
+    TLAgentRecord *agent = [TLAgentRecord new]; agent.vmDirectory = @"host-agent";
+    __block BOOL finished = NO;
+    [client streamHermesSessionWithAgent:agent requestID:@"turn" sessionID:@"native-chat" token:@"" model:@"m" prompt:@"host test"
+      delta:^(NSString *rid, TLAgentStreamDeltaKind kind, id value) { TLAssertTrue(NO, @"host requests are not exposed as model content"); }
+      completion:^(NSError *error) { TLAssertTrue(!error, @"host transport completes"); finished = YES; }];
+    TLAgentVMConnectionCompletionHandler originalConnect = vm.connected;
+    int stream[2]; socketpair(AF_UNIX, SOCK_STREAM, 0, stream);
+    TLTestSocketConnection *connection = [TLTestSocketConnection new]; connection.fileDescriptor = stream[0];
+    originalConnect((id)connection, nil);
+    char bytes[8192]; ssize_t count = recv(stream[1], bytes, sizeof(bytes), MSG_DONTWAIT);
+    NSDictionary *initial = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:bytes length:MAX(0, count)] options:0 error:nil];
+    TLAssertTrue([initial[@"host_command_description"] containsString:@"user's Mac"], @"tool description is supplied by native prompt builder");
+    NSDictionary *event = @{@"type":@"delta", @"request_id":@"turn", @"kind":@"host_command", @"payload":@{
+      @"request_id":@"host-call", @"session_id":@"runtime-chat", @"command":@"printf native-bridge", @"cwd":@"/private/tmp", @"timeout_seconds":@3}};
+    NSMutableData *line = [[NSJSONSerialization dataWithJSONObject:event options:0 error:nil] mutableCopy];
+    [line appendBytes:"\n" length:1]; write(stream[1], line.bytes, line.length);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+    while (vm.connected == originalConnect && deadline.timeIntervalSinceNow > 0)
+      [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    TLAssertTrue(vm.connected != originalConnect, @"host result opens a separate RPC connection while the turn stays active");
+    int response[2]; socketpair(AF_UNIX, SOCK_STREAM, 0, response);
+    TLTestSocketConnection *reply = [TLTestSocketConnection new]; reply.fileDescriptor = response[0];
+    vm.connected((id)reply, nil);
+    count = recv(response[1], bytes, sizeof(bytes), MSG_DONTWAIT);
+    NSDictionary *wire = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:bytes length:MAX(0, count)] options:0 error:nil];
+    TLAssertEqualObjects(wire[@"operation"], @"hermes_host_response", @"result uses Hermes operation");
+    TLAssertEqualObjects(wire[@"params"][@"session_id"], @"runtime-chat", @"result targets the originating Hermes runtime");
+    TLAssertEqualObjects(wire[@"params"][@"request_id"], @"host-call", @"result preserves exact command identity");
+    NSDictionary *result = wire[@"params"][@"result"];
+    if ([policy isEqual:@"deny"]) TLAssertTrue([result[@"denied"] boolValue] && !result[@"stdout"], @"native deny never executes");
+    else TLAssertEqualObjects(result[@"stdout"], @"native-bridge", @"native execution returns output to Hermes");
+    NSString *replyFrames = @"{\"type\":\"result\",\"result\":{\"resolved\":true}}\n{\"type\":\"complete\"}\n";
+    write(response[1], replyFrames.UTF8String, strlen(replyFrames.UTF8String));
+    NSString *done = @"{\"type\":\"complete\"}\n";
+    write(stream[1], done.UTF8String, strlen(done.UTF8String));
+    while (!finished && deadline.timeIntervalSinceNow > 0)
+      [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    TLAssertTrue(finished, @"original chat turn finishes after the host result");
+    close(response[1]); close(stream[1]);
+  }
+  [defaults removePersistentDomainForName:suite];
+}
+
 static void TestCancellationDuringStartup(void) {
   TLFakeAgentClient *fake = [[TLFakeAgentClient alloc] init];
   TLDeferredReadyOrchestrator *orchestrator = [[TLDeferredReadyOrchestrator alloc]
@@ -1528,6 +1581,7 @@ int main(int argc, const char *argv[]) {
     TestChatIconGenerator();
     TestCancellationDuringStartup();
     TestStatusTransport();
+    TestHostCommandTransport();
     TestAgentOrchestrator();
     TestAgentProfilesAndSelection();
     TestAgentProfileMigration();

@@ -4,6 +4,7 @@
 #import "design_system/TLEmojiPicker.h"
 #import "design_system/TLFolderAccessPicker.h"
 #import "design_system/TLSkillsPicker.h"
+#import "TLHostCommandBridge.h"
 
 @interface TLAgentCreationWindowController () <NSWindowDelegate>
 @property (nonatomic, strong) TLThemePalette *palette;
@@ -26,6 +27,10 @@
 @property (nonatomic) BOOL skillsLoaded;
 @property (nonatomic) BOOL saving;
 @property (nonatomic) BOOL closed;
+@property (nonatomic, copy) NSString *hostAgentKey;
+@property (nonatomic, copy) NSString *hostPolicy;
+@property (nonatomic) BOOL hostPolicyChanged;
+@property (nonatomic, strong) TLThemedButton *hostPolicyButton;
 @end
 
 @implementation TLAgentCreationWindowController
@@ -41,6 +46,8 @@
   self = [super initWithWindow:window];
   if (self) {
     _editingAgentID = agent.agentID;
+    _hostAgentKey = agent.vmDirectory;
+    _hostPolicy = agent ? [[TLHostCommandBridge sharedBridge] policyForAgent:agent.vmDirectory] : @"ask";
     _palette = palette;
     _orchestrator = orchestrator;
     window.title = agent ? @"Agent Settings" : @"Create Agent";
@@ -148,7 +155,7 @@
   soulScroll.hasVerticalScroller = YES;
   soulScroll.autohidesScrollers = YES;
   soulScroll.borderType = NSBezelBorder;
-  CGFloat soulHeight = p.fieldHeight * (self.editingAgentID ? 5.0 : 2.5);
+  CGFloat soulHeight = p.fieldHeight * 2.5;
   self.soulView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, p.settingsSheetWidth - p.space16 * 2 - p.space12 * 2, soulHeight)];
   self.soulView.richText = NO;
   self.soulView.font = p.bodyFont;
@@ -164,6 +171,15 @@
   [soulScroll.widthAnchor constraintEqualToAnchor:soul.widthAnchor].active = YES;
   [soulScroll.heightAnchor constraintEqualToConstant:soulHeight].active = YES;
   [self.generalSection addArrangedSubview:soul];
+
+  if (self.editingAgentID) {
+    NSStackView *access = [self verticalStack];
+    [access addArrangedSubview:[self label:@"Commands on your Mac" secondary:NO]];
+    [access addArrangedSubview:[self label:@"Choose whether this agent can run commands with your macOS account. Saving a change also clears permissions granted to individual chats." secondary:YES]];
+    self.hostPolicyButton = (TLThemedButton *)[self button:[self hostPolicyTitle] action:@selector(chooseHostPolicy:)];
+    [access addArrangedSubview:self.hostPolicyButton];
+    [self.generalSection addArrangedSubview:access];
+  }
 
   if (!self.editingAgentID) {
     NSStackView *folders = [self verticalStack];
@@ -238,6 +254,26 @@
 
 - (NSArray<NSString *> *)folderPaths { return self.folderPicker.folderPaths; }
 
+- (NSString *)hostPolicyTitle {
+  return @{@"ask":@"Ask before running", @"always":@"Always allow", @"deny":@"Block commands"}[self.hostPolicy] ?: @"Ask before running";
+}
+- (void)chooseHostPolicy:(id)sender {
+  NSMenu *menu = [NSMenu new];
+  for (NSString *policy in @[@"ask", @"always", @"deny"]) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@{@"ask":@"Ask before running", @"always":@"Always allow", @"deny":@"Block commands"}[policy]
+      action:@selector(setHostPolicyFromMenu:) keyEquivalent:@""];
+    item.target = self; item.representedObject = policy;
+    item.state = [policy isEqual:self.hostPolicy] ? NSControlStateValueOn : NSControlStateValueOff;
+    [menu addItem:item];
+  }
+  [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(self.hostPolicyButton.bounds)) inView:self.hostPolicyButton];
+}
+- (void)setHostPolicyFromMenu:(NSMenuItem *)item {
+  self.hostPolicy = item.representedObject;
+  self.hostPolicyChanged = YES;
+  self.hostPolicyButton.title = self.hostPolicyTitle;
+}
+
 - (void)showGeneral:(id)sender {
   self.skillsSection.hidden = YES;
   self.generalSection.hidden = NO;
@@ -273,6 +309,7 @@
   self.nameField.enabled = !saving;
   self.soulView.editable = !saving;
   self.skillsPicker.enabled = !saving;
+  self.hostPolicyButton.enabled = !saving;
 }
 
 - (void)saveProfile:(id)sender {
@@ -280,6 +317,7 @@
   TLAgentRecord *agent = [self.orchestrator updateAgentWithID:self.editingAgentID name:self.nameField.stringValue
     avatar:self.avatarPicker.emoji soul:self.soulView.string error:&error];
   if (!agent) { self.statusLabel.stringValue = error.localizedDescription ?: @"Could not save agent settings."; return; }
+  if (self.hostPolicyChanged) [[TLHostCommandBridge sharedBridge] setPolicy:self.hostPolicy forAgent:self.hostAgentKey];
   self.createdAgentID = agent.agentID;
   [self closeSheet:sender];
   if (self.agentUpdatedHandler) self.agentUpdatedHandler(agent);

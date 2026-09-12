@@ -626,7 +626,7 @@ class HermesGateway:
             return self.command(chat_id, sid, target + (" " + arg if arg else ""), model, depth + 1)
         return result
 
-    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False):
+    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False):
         if cancellation and cancellation.cancelled():
             return
         with self.lock:
@@ -722,6 +722,8 @@ class HermesGateway:
             try:
                 if cancellation and cancellation.cancelled():
                     return
+                if host_commands:
+                    self.call("talaria.host.attach", {"session_id": sid})
                 if not waiting:
                     self.call("prompt.submit", {"session_id": sid, "text": text})
                 if cancellation:
@@ -752,6 +754,10 @@ class HermesGateway:
                         activity = tool_activity(kind, payload)
                         if activity:
                             delta("tool_activity", activity)
+                    elif kind == "host.command.request":
+                        if not host_commands:
+                            raise RuntimeError("Host commands are unavailable for this request.")
+                        delta("host_command", payload)
                     elif kind == "message.complete":
                         if payload.get("status") == "error":
                             raise RuntimeError(payload.get("text") or "Hermes turn failed.")
@@ -779,6 +785,11 @@ class HermesGateway:
                 self.call("session.interrupt", {"session_id": sid})
                 raise RuntimeError("Hermes turn timed out.")
             finally:
+                if host_commands:
+                    try:
+                        self.call("talaria.host.detach", {"session_id": sid})
+                    except (OSError, RuntimeError):
+                        pass
                 with self.lock:
                     if chat_id not in self.waiting:
                         self.listeners.pop(sid, None)
