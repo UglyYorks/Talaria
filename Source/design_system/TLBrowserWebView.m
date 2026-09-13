@@ -11,6 +11,12 @@
 - (void)setSmoothMouseWheelScrolling:(BOOL)enabled { _wheelSmoother.enabled=enabled; }
 - (BOOL)mouseWheelAnimationActive { return _wheelSmoother.animating; }
 - (void)cancelMouseWheelScrolling { [_wheelSmoother cancel]; }
+- (void)autofillPassword:(id)sender { if (self.passwordAutofillHandler) self.passwordAutofillHandler(); }
+- (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
+  if (item.action == @selector(autofillPassword:)) return self.passwordAutofillAvailable && self.passwordAutofillAvailable();
+  // WKWebView validates its editing commands through NSUserInterfaceValidations.
+  return [super validateUserInterfaceItem:item];
+}
 - (void)viewWillMoveToWindow:(NSWindow *)window { [_wheelSmoother attachToWindow:nil];[super viewWillMoveToWindow:window]; }
 - (void)viewDidMoveToWindow { [super viewDidMoveToWindow];[_wheelSmoother attachToWindow:self.window]; }
 - (void)viewDidHide { [_wheelSmoother cancel];[super viewDidHide]; }

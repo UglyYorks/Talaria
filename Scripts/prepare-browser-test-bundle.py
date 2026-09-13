@@ -17,7 +17,7 @@ elif frameworks.exists():
 # Exercise the same browser document hooks as the desktop application.
 resources = target / 'Resources'
 resources.mkdir(exist_ok=True)
-for name in ('BrowserDocumentFooter.js', 'BrowserFooterColor.js', 'BrowserOverlayProbe.js', 'Readability.js', 'BrowserWebKitBridge.js'):
+for name in ('BrowserDocumentFooter.js', 'BrowserFooterColor.js', 'BrowserOverlayProbe.js', 'Readability.js', 'BrowserWebKitBridge.js', 'BrowserPasswordAutofill.js'):
     shutil.copy2(source / 'Resources' / name, resources / name)
 
 info = Path(sys.argv[2]).resolve() / 'Contents/Info.plist'

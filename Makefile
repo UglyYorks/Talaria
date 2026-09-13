@@ -40,6 +40,7 @@ GLASS_PANE_TEST_EXECUTABLE := $(BUILD_DIR)/GlassPaneTests
 MARKDOWN_IT := Vendor/markdown-it/markdown-it.min.js
 OVERLAY_PROBE := Source/BrowserOverlayProbe.js
 WEBKIT_BRIDGE := Source/BrowserWebKitBridge.js
+PASSWORD_AUTOFILL := Source/BrowserPasswordAutofill.js
 DOCUMENT_FOOTER := Source/BrowserDocumentFooter.js Source/BrowserFooterColor.js
 CODE_RESOURCES := Source/MarkdownFind.js Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js Vendor/highlight.js/LICENSE
 MATH_RESOURCES := Source/MarkdownMath.js $(shell find Vendor/katex -type f)
@@ -107,12 +108,13 @@ $(APP_LINK_EXECUTABLE): $(APP_OBJECTS) $(COMPILE_CONFIG)
 	mkdir -p "$(dir $@)"
 	xcrun clang++ $(APP_OBJECTS) $(APP_FRAMEWORKS) -o "$@"
 
-$(APP_BUILD_STAMP): $(APP_LINK_EXECUTABLE) $(WEBKIT_BRIDGE) $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES)
+$(APP_BUILD_STAMP): $(APP_LINK_EXECUTABLE) $(WEBKIT_BRIDGE) $(PASSWORD_AUTOFILL) $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"
 	cp "$(APP_LINK_EXECUTABLE)" "$(APP_EXECUTABLE)"
 	cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
 	cp "$(WEBKIT_BRIDGE)" "$(APP_BUNDLE)/Contents/Resources/BrowserWebKitBridge.js"
+	cp "$(PASSWORD_AUTOFILL)" "$(APP_BUNDLE)/Contents/Resources/BrowserPasswordAutofill.js"
 	cp "$(OVERLAY_PROBE)" "$(APP_BUNDLE)/Contents/Resources/BrowserOverlayProbe.js"
 	cp $(DOCUMENT_FOOTER) "$(APP_BUNDLE)/Contents/Resources/"
 	cp "$(SIDEBAR_PLANET)" "$(APP_BUNDLE)/Contents/Resources/sidebar-planet.png"
@@ -244,6 +246,15 @@ test-browser-overlay:
 	node Tests/BrowserOverlayTests.mjs
 
 # Explicit integration test: signed desktop bundle, local HTTP fixtures, disposable profile.
+.PHONY: test-browser-password-autofill
+test-browser-password-autofill: build
+	mkdir -p "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app/Contents/MacOS"
+	cp Info.plist "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app/Contents/Info.plist"
+	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app"
+	xcrun clang $(OBJCFLAGS) -ISource Tests/BrowserPasswordAutofillIntegration.m Source/TLBrowserPasswordAutofill.m Source/design_system/TLBrowserWebView.m Source/TLBrowserWheelSmoother.m Source/TLWheelScrollAnimation.m $(THEME_SOURCES) -framework AppKit -framework WebKit -o "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app/Contents/MacOS/Talaria"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app"
+	python3 Scripts/test-browser-password-autofill.py
+
 .PHONY: test-browser-preferences
 test-browser-preferences: build
 	mkdir -p "$(BUILD_DIR)/BrowserPreferencesProbe.app/Contents/MacOS"
