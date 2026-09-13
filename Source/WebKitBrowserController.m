@@ -8,6 +8,7 @@
 #import "TLBrowserPreferences.h"
 #import "TLBrowserProfileImporter.h"
 #import "TLBrowserDownloadManager.h"
+#import "TLBrowserPasswordAutofill.h"
 #import "Theme.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/message.h>
@@ -69,6 +70,7 @@ static void TLStyleBrowserPrompt(NSAlert *alert, TLThemePalette *palette) {
 @property (nonatomic, readwrite) BOOL devToolsVisible;
 @property (nonatomic) BOOL inspectorNeedsDetach;
 @property (nonatomic) TLWebKitPageBridge *pageBridge;
+@property (nonatomic) TLBrowserPasswordAutofill *passwordAutofill;
 @property (nonatomic, copy) TLWebKitBrowserTitleHandler titleHandler;
 @property (nonatomic, copy) TLWebKitBrowserLinkHandler linkHandler;
 @property (nonatomic, copy) TLWebKitBrowserURLHandler URLHandler;
@@ -392,6 +394,9 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   __weak typeof(self) weakSelf=self;__weak TLWebKitBrowserSession *weakSession=session;
   webView.contextMenuHandler=^(NSMenu *menu,NSEvent *event){[weakSelf configureMenu:menu event:event session:weakSession];};
   webView.contextMenuClosedHandler=^{TLWebKitBrowserSession *s=weakSession;if(s.menuCleanup)s.menuCleanup();s.menuCleanup=nil;s.context=nil;s.contextFrame=nil;};
+  session.passwordAutofill=[[TLBrowserPasswordAutofill alloc] initWithWebView:webView];
+  webView.passwordAutofillHandler=^{[weakSession.passwordAutofill present];};
+  webView.passwordAutofillAvailable=^{return weakSession.passwordAutofill.available;};
   session.pageBridge=[[TLWebKitPageBridge alloc] initWithWebView:webView];
   __weak TLWebKitBrowserSession *scrollSession=session;
   session.pageBridge.topColorChanged=^(NSArray *rgb){
@@ -525,6 +530,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
   [(TLBrowserWebView *)webView cancelMouseWheelScrolling];
   TLWebKitBrowserSession *session=[self sessionForWebView:webView];if(!session)return;
+  [session.passwordAutofill reset];
   for(NSAlert *alert in self.alerts.copy)if(alert.window.sheetParent==session.originWindow)[session.originWindow endSheet:alert.window returnCode:NSAlertFirstButtonReturn];
   session.awaitingNavigationCommit=YES;
   session.navigationFailed=NO;session.context=nil;session.contextFrame=nil;
@@ -707,7 +713,14 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   session.context=nil;session.contextFrame=nil;
   NSURL *link=[context[@"url"] isKindOfClass:NSString.class] && [context[@"url"] length] ? [NSURL URLWithString:context[@"url"]] : nil;
   NSURL *imageURL=[context[@"image"] isKindOfClass:NSString.class] && [context[@"image"] length] ? [NSURL URLWithString:context[@"image"]] : nil;
-  if([context[@"editable"] boolValue])return;
+  if([context[@"editable"] boolValue]) {
+    if(session.passwordAutofill.available) {
+      [menu addItem:NSMenuItem.separatorItem];
+      NSMenuItem *autofill=[[NSMenuItem alloc] initWithTitle:@"AutoFill Password…" action:@selector(autofillPassword:) keyEquivalent:@"\\"];
+      autofill.target=session.webView;[menu addItem:autofill];
+    }
+    return;
+  }
   NSMenu *replacement;
   NSMenu *images=imageURL ? [self imageMenuForURL:imageURL inSession:session frame:contextFrame hasImage:[context[@"hasImage"] boolValue]] : nil;
   if(TLBrowserLinkURLIsNavigable(link)) {
@@ -857,6 +870,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   self.darkAppearance=dark;[TLSourceWindowController applyPaletteToOpenWindows:[TLThemePalette paletteForPreference:dark ? TLThemePreferenceDark : TLThemePreferenceLight]];for(TLWebKitBrowserSession *session in self.sessions.allValues)session.webView.appearance=[NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   TLThemePalette *palette=[TLThemePalette paletteForPreference:dark ? TLThemePreferenceDark : TLThemePreferenceLight];
   for(NSAlert *alert in self.alerts)TLStyleBrowserPrompt(alert,palette);
+  for(TLWebKitBrowserSession *session in self.sessions.allValues)[session.passwordAutofill applyPalette:palette];
 }
 - (void)importCookies:(NSArray<NSDictionary *> *)cookies completion:(void (^)(NSUInteger,NSUInteger))completion {
   if(!self.persistentStore || self.shuttingDown){completion(0,cookies.count);return;}
@@ -1017,6 +1031,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   NSView *fields=[[NSView alloc] initWithFrame:NSMakeRect(0,0,width,height*2+gap)];
   NSTextField *username=[[NSTextField alloc] initWithFrame:NSMakeRect(0,height+gap,width,height)];username.placeholderString=@"Username";
   NSSecureTextField *password=[[NSSecureTextField alloc] initWithFrame:NSMakeRect(0,0,width,height)];password.placeholderString=@"Password";
+  username.contentType=NSTextContentTypeUsername;password.contentType=NSTextContentTypePassword;
   [fields addSubview:username];[fields addSubview:password];alert.accessoryView=fields;
   [self presentPrompt:alert session:[self sessionForWebView:webView] completion:^(NSModalResponse result){
     if(result==NSAlertSecondButtonReturn)completionHandler(NSURLSessionAuthChallengeUseCredential,[NSURLCredential credentialWithUser:username.stringValue password:password.stringValue persistence:NSURLCredentialPersistenceForSession]);
@@ -1028,6 +1043,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   // Invalidate first: stopping the bridge drains callbacks synchronously, and
   // none of those callbacks may revive this page or enter close a second time.
   session.closed=YES;session.fullscreen=NO;
+  [session.passwordAutofill stop];session.passwordAutofill=nil;
   WKWebView *webView=session.webView;
   NSNumber *renderer=TLWebKitOptionalValue(webView,@"_webProcessIdentifier");
   __block BOOL mediaSuspended=NO;
@@ -1045,6 +1061,8 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   [webView.configuration.userContentController removeAllScriptMessageHandlers];
   ((TLBrowserWebView *)webView).contextMenuHandler=nil;
   ((TLBrowserWebView *)webView).contextMenuClosedHandler=nil;
+  ((TLBrowserWebView *)webView).passwordAutofillHandler=nil;
+  ((TLBrowserWebView *)webView).passwordAutofillAvailable=nil;
   [webView stopLoading];[webView removeFromSuperview];session.containerView=nil;
   session.pageBridge=nil;
   // Removing a WKWebView does not close its page. Pending WebKit callbacks and

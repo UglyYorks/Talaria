@@ -11,6 +11,11 @@
 - (void)setSmoothMouseWheelScrolling:(BOOL)enabled { _wheelSmoother.enabled=enabled; }
 - (BOOL)mouseWheelAnimationActive { return _wheelSmoother.animating; }
 - (void)cancelMouseWheelScrolling { [_wheelSmoother cancel]; }
+- (void)autofillPassword:(id)sender { if (self.passwordAutofillHandler) self.passwordAutofillHandler(); }
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+  if (item.action == @selector(autofillPassword:)) return self.passwordAutofillAvailable && self.passwordAutofillAvailable();
+  return [super validateMenuItem:item];
+}
 - (void)viewWillMoveToWindow:(NSWindow *)window { [_wheelSmoother attachToWindow:nil];[super viewWillMoveToWindow:window]; }
 - (void)viewDidMoveToWindow { [super viewDidMoveToWindow];[_wheelSmoother attachToWindow:self.window]; }
 - (void)viewDidHide { [_wheelSmoother cancel];[super viewDidHide]; }

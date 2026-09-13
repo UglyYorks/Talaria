@@ -388,6 +388,8 @@
   [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
   [editMenu addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
   [editMenu addItem:NSMenuItem.separatorItem];
+  [editMenu addItemWithTitle:@"AutoFill Password…" action:NSSelectorFromString(@"autofillPassword:") keyEquivalent:@"\\"];
+  [editMenu addItem:NSMenuItem.separatorItem];
   NSArray *findItems = @[@[@"Find…", @"f", @(NSTextFinderActionShowFindInterface)],
                          @[@"Find Next", @"g", @(NSTextFinderActionNextMatch)],
                          @[@"Find Previous", @"g", @(NSTextFinderActionPreviousMatch)]];
