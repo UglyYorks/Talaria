@@ -1,7 +1,7 @@
 #import <WebKit/WebKit.h>
 NS_ASSUME_NONNULL_BEGIN
 /// Native browser surface; the controller supplies page-specific menu actions.
-@interface TLBrowserWebView : WKWebView <NSMenuItemValidation>
+@interface TLBrowserWebView : WKWebView <NSUserInterfaceValidations>
 @property (nonatomic, copy, nullable) void (^contextMenuHandler)(NSMenu *, NSEvent *);
 @property (nonatomic, copy, nullable) dispatch_block_t contextMenuClosedHandler;
 @property (nonatomic, copy, nullable) dispatch_block_t passwordAutofillHandler;

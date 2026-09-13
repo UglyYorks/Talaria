@@ -68,6 +68,64 @@ static void Later(dispatch_block_t action) {
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation { [self.autofill reset]; }
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
   [self.window makeFirstResponder:webView];
+  if (self.index == 0) {
+    [self checkPasteIntoField:@"u" completion:^{
+      [self checkPasteIntoField:@"p" completion:^{ [self focusPasswordAndCheckCase]; }];
+    }];
+    return;
+  }
+  [self focusPasswordAndCheckCase];
+}
+- (void)checkPasteIntoField:(NSString *)field completion:(dispatch_block_t)completion {
+  TLTestEvaluate(self.webView, [NSString stringWithFormat:@"document.getElementById('%@').focus();true", field], ^(id value) {
+    Later(^{
+      NSMenu *edit = [[NSMenu alloc] initWithTitle:@"Edit"];
+      for (NSString *action in @[@"cut:", @"copy:", @"paste:"]) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:action action:NSSelectorFromString(action) keyEquivalent:[action isEqual:@"paste:"] ? @"v" : @""];
+        item.target = self.webView;
+        [edit addItem:item];
+      }
+      // Exercise AppKit's validation path, including commands inherited from WebKit.
+      [edit update];
+      Check(YES, @"native Cut, Copy and Paste menu validation does not crash");
+      NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
+      NSMutableArray<NSPasteboardItem *> *saved = [NSMutableArray new];
+      for (NSPasteboardItem *item in pasteboard.pasteboardItems) {
+        NSPasteboardItem *copy = [NSPasteboardItem new];
+        for (NSPasteboardType type in item.types) {
+          NSData *data = [item dataForType:type];
+          if (data) [copy setData:data forType:type];
+        }
+        [saved addObject:copy];
+      }
+      [pasteboard clearContents];
+      [pasteboard setString:@"fixture-paste" forType:NSPasteboardTypeString];
+      NSInteger changeCount = pasteboard.changeCount;
+      NSEvent *paste = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:self.window.windowNumber context:nil characters:@"v" charactersIgnoringModifiers:@"v" isARepeat:NO keyCode:9];
+      BOOL handled = [edit performKeyEquivalent:paste];
+      [self waitForPasteIntoField:field attempt:0 completion:^(BOOL pasted) {
+        // Preserve the user's clipboard, including non-text types, unless it changed meanwhile.
+        if (pasteboard.changeCount == changeCount) {
+          [pasteboard clearContents];
+          if (saved.count) [pasteboard writeObjects:saved];
+        }
+        Check(handled, @"Cmd+V invokes the native Paste action");
+        Check(pasted, [NSString stringWithFormat:@"%@ Cmd+V pastes into %@ input", self.privateMode ? @"private" : @"regular", [field isEqual:@"p"] ? @"password" : @"text"]);
+        TLTestEvaluate(self.webView, [NSString stringWithFormat:@"document.getElementById('%@').value='';events=[];true", field], ^(id result) {
+          completion();
+        });
+      }];
+    });
+  });
+}
+- (void)waitForPasteIntoField:(NSString *)field attempt:(NSUInteger)attempt completion:(void (^)(BOOL))completion {
+  TLTestEvaluate(self.webView, [NSString stringWithFormat:@"document.getElementById('%@').value==='fixture-paste'", field], ^(id value) {
+    if ([value boolValue] || attempt >= 20) { completion([value boolValue]); return; }
+    Later(^{ [self waitForPasteIntoField:field attempt:attempt + 1 completion:completion]; });
+  });
+}
+- (void)focusPasswordAndCheckCase {
+  WKWebView *webView = self.webView;
   TLTestEvaluate(webView, @"document.getElementById('p').focus();true", ^(id value) {
     Later(^{ [self checkCase]; });
   });
@@ -77,15 +135,21 @@ static void Later(dispatch_block_t action) {
   NSString *name = [NSString stringWithFormat:@"%@ %@", self.privateMode ? @"private" : @"regular", test[@"name"]];
   Check(self.autofill.available == [test[@"expected"] boolValue], [name stringByAppendingString:@" availability"]);
   NSMenuItem *menu = [[NSMenuItem alloc] initWithTitle:@"AutoFill Password…" action:@selector(autofillPassword:) keyEquivalent:@"\\"];
-  Check([self.webView validateMenuItem:menu] == self.autofill.available, @"native command validation");
+  menu.target = self.webView;
+  NSMenu *commands = [NSMenu new]; [commands addItem:menu]; [commands update];
+  Check(menu.enabled == self.autofill.available, @"native command validation");
   if (!self.autofill.available) { [self nextCase]; return; }
   // Check responder routing on the initially activated window. Subsequent cases
   // address the native action directly so using another app during the suite
   // does not turn loss of foreground activation into a false routing failure.
   BOOL initial = self.index == 0 && !self.privateMode;
-  Check([NSApp sendAction:@selector(autofillPassword:) to:initial ? nil : self.webView from:nil],
-    initial ? @"AutoFill command reaches the focused browser through the responder chain" : @"native AutoFill action is handled");
-  [self waitForSheet:0];
+  dispatch_block_t invoke = ^{
+    Check([NSApp sendAction:@selector(autofillPassword:) to:initial ? nil : self.webView from:nil],
+      initial ? @"AutoFill command reaches the focused browser through the responder chain" : @"native AutoFill action is handled");
+    [self waitForSheet:0];
+  };
+  if (initial) TLTestActivateWindow(self.window, ^{ [self.window makeFirstResponder:self.webView]; invoke(); });
+  else invoke();
 }
 - (void)waitForSheet:(NSUInteger)attempt {
   if (![self.autofill valueForKey:@"alert"] || !self.window.attachedSheet) {
