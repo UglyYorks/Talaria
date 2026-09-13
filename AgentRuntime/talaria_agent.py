@@ -268,6 +268,22 @@ def hermes_automations(request, output=None):
         error(f"Could not manage Hermes automations: {exc}", output)
 
 
+def hermes_activity(request, output=None):
+    try:
+        identity = incognito_runtime.scope.get()
+        gateway = incognito_runtime.existing_gateway(identity) if identity else _tui_gateway
+        if gateway is None:
+            result = {"activities": [], "available": False}
+        elif gateway.process.poll() is not None:
+            raise RuntimeError("Hermes disconnected. Send a message to reconnect.")
+        else:
+            result = gateway.activity_snapshot(trim(request.get("session_id")))
+        emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not refresh Hermes activity: {exc}", output)
+
+
 def hermes_notifications(request, output=None):
     try:
         params = request.get("params")
@@ -479,7 +495,7 @@ def handle_request(request, output=None, cancellation=None):
         elif operation == "incognito_attachments":
             rows = incognito_runtime.upload(tui_gateway(), request.get("files"))
             emit({"type": "delta", "request_id": request.get("request_id"), "kind": "content", "text": json.dumps(rows)}, output)
-        elif operation in {"hermes_session_chat", "hermes_select_model", "hermes_commands", "models", "hermes_generate_text", "hermes_history", "hermes_host_response"}:
+        elif operation in {"hermes_session_chat", "hermes_select_model", "hermes_commands", "models", "hermes_generate_text", "hermes_history", "hermes_host_response", "hermes_activity"}:
             return _handle_request(request, output, cancellation)
         else:
             raise ValueError("This operation is unavailable in Incognito. Use a normal window to change agent settings.")
@@ -493,6 +509,9 @@ def handle_request(request, output=None, cancellation=None):
 
 def _handle_request(request, output=None, cancellation=None):
     operation = request.get("operation")
+    if operation == "hermes_activity":
+        hermes_activity(request, output)
+        return
     if operation == "hermes_host_response":
         try:
             result = tui_gateway().call("talaria.host.respond", request.get("params") or {})

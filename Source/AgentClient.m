@@ -312,6 +312,11 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   [self performJSONOperation:@"hermes_providers" agent:agent parameters:@{@"params":parameters} completion:completion];
 }
 
+- (void)hermesActivityWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
+                    completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_activity" agent:agent parameters:@{@"session_id":sessionID} completion:completion];
+}
+
 - (void)hermesPluginsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
                         token:(NSString *)token model:(NSString *)model
                    completion:(void (^)(NSDictionary *, NSError *))completion {

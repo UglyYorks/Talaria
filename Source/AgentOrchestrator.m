@@ -660,6 +660,21 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   return agent && [self.vmService isAgentRunning:agent];
 }
 
+- (void)hermesActivityForSessionID:(NSString *)sessionID agentID:(NSInteger)agentID
+                      completion:(void (^)(NSDictionary *, NSError *))completion {
+  // A background refresh must not boot a VM or switch the selected agent.
+  NSError *error = nil;
+  TLAgentRecord *agent = [self.database agentWithID:agentID > 0 ? agentID : self.database.currentAgentID error:&error];
+  if (error) { completion(nil, error); return; }
+  if (!agent || ![self.vmService isAgentRunning:agent]) {
+    completion(@{@"available":@NO, @"activities":@[]}, nil); return;
+  }
+  if (![self.agentClient respondsToSelector:@selector(hermesActivityWithAgent:sessionID:completion:)]) {
+    completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to view background activity.")); return;
+  }
+  [self.agentClient hermesActivityWithAgent:agent sessionID:sessionID completion:completion];
+}
+
 - (void)connectToDefaultAgentTerminal:(TLAgentVMConnectionCompletionHandler)completion {
   dispatch_async(dispatch_get_main_queue(), ^{
     NSError *error = nil;

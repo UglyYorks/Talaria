@@ -82,6 +82,13 @@ def _reap():
         reap_expired()
 
 
+def existing_gateway(identity):
+    """Read-only activity polling must never create a private runtime."""
+    validate_id(identity)
+    with _lock:
+        return _runtimes.get(identity, {}).get("gateway")
+
+
 def get_gateway(identity, python, environment, source_home, gateway_class):
     global _reaper_started
     validate_id(identity)

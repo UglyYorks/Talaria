@@ -12,6 +12,7 @@ import threading
 import time
 from hermes_rpc_transport import HermesRPCTransport, RPCError
 from hermes_sessions import SessionRegistry
+from hermes_activity import HermesActivity
 
 
 # Talaria manages these bundled skills through Hermes's own profile settings.
@@ -76,7 +77,8 @@ def clarification_request(payload):
 class HermesGateway:
     def __init__(self, python, environment, home, entry_module="talaria_gateway_entry"):
         self.home = home
-        self.transport = HermesRPCTransport(python, environment, home, entry_module)
+        self.activity = HermesActivity()
+        self.transport = HermesRPCTransport(python, environment, home, entry_module, self.activity.event)
         self.lock = self.transport.lock
         self.listeners = self.transport.listeners
         self.pending = self.transport.pending
@@ -87,6 +89,20 @@ class HermesGateway:
 
     def call(self, method, params=None, timeout=120):
         return self.transport.call(method, params, timeout)
+
+    def activity_snapshot(self, chat_id):
+        # Reading activity never creates/resumes a session or changes its model.
+        with self.lock:
+            state = self.sessions.get(self._session_registry().runtime_owner(chat_id))
+            sid = state["id"] if state else None
+        if not sid:
+            return {"activities": [], "available": False}
+        revision = self.activity.snapshot(sid)["revision"]
+        result = self.call("process.list", {"session_id": sid}, timeout=10)
+        if not isinstance(result, dict) or not isinstance(result.get("processes"), list):
+            raise RuntimeError("Hermes returned an invalid process list.")
+        self.activity.reconcile_processes(sid, result["processes"], revision)
+        return {**self.activity.snapshot(sid), "available": True}
 
     def _session_registry(self):
         # Also supports isolated facade tests that inject fake RPC and state.
