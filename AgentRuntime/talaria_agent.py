@@ -255,6 +255,19 @@ def tui_gateway(token="", model=""):
         return _tui_gateway
 
 
+def hermes_notes(request, output=None):
+    try:
+        params = request.get("params")
+        if not isinstance(params, dict):
+            raise ValueError("Note parameters must be an object.")
+        result = tui_gateway(trim(request.get("token")), trim(request.get("model"))).call(
+            "talaria.notes", params)
+        emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not manage notes: {exc}", output)
+
+
 def hermes_automations(request, output=None):
     try:
         params = request.get("params")
@@ -534,6 +547,9 @@ def _handle_request(request, output=None, cancellation=None):
         return 0
     if operation == "hermes_history":
         hermes_history(request, output)
+        return
+    if operation == "hermes_notes":
+        hermes_notes(request, output)
         return
     if operation == "hermes_automations":
         hermes_automations(request, output)

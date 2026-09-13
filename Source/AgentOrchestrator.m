@@ -398,6 +398,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     NSDictionary *approvalResponse = messages.lastObject.approvalResponse;
     NSMutableArray<TLChatMessage *> *inputMessages = [messages mutableCopy];
     if (!approvalResponse) {
+      if (!self.database.incognito) [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:TLPromptBuilder.notesContext thinking:nil] atIndex:0];
       NSString *context = [TLPromptBuilder sharedFolderContext:[self folderMountPathsForAgent:agent] ?: @{}];
       if (context.length) [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:context thinking:nil] atIndex:0];
     }
@@ -746,6 +747,22 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
       return;
     }
     [self.agentClient hermesPluginsWithAgent:agent parameters:parameters token:token model:model completion:completion];
+  }];
+}
+
+- (void)hermesNotesWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
+                                  token:(NSString *)token model:(NSString *)model
+                             completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {
+  if (agentID <= 0) { completion(nil, TLAgentOrchestratorError(@"Select an agent to use Notes.")); return; }
+  // Pin every operation to the agent displayed by the tab, even if the current
+  // agent changes while its VM is starting or a request is in flight.
+  [self startAgentWithID:agentID completion:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent || error) { completion(nil, error); return; }
+    if (![self.agentClient respondsToSelector:@selector(hermesNotesWithAgent:parameters:token:model:completion:)]) {
+      completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to manage notes."));
+      return;
+    }
+    [self.agentClient hermesNotesWithAgent:agent parameters:parameters token:token model:model completion:completion];
   }];
 }
 

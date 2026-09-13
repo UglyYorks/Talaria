@@ -28,7 +28,7 @@ int main(void) {
     [store observeStateManager:state];
     NSArray *tabs = @[Tab(TLWorkspaceTabKindChat, 42), Tab(TLWorkspaceTabKindBrowser, 42),
       Tab(TLWorkspaceTabKindChat, -8), Tab(TLWorkspaceTabKindSettings, 0), Tab(TLWorkspaceTabKindHistory, 0),
-      Tab(TLWorkspaceTabKindAgents, 0), Tab(TLWorkspaceTabKindAutomations, 0), Tab(TLWorkspaceTabKindDebug, 0), Tab(TLWorkspaceTabKindDownloads, 0)];
+      Tab(TLWorkspaceTabKindAgents, 0), Tab(TLWorkspaceTabKindNotes, 0), Tab(TLWorkspaceTabKindAutomations, 0), Tab(TLWorkspaceTabKindDebug, 0), Tab(TLWorkspaceTabKindDownloads, 0)];
     ((TLWorkspaceTab *)tabs[1]).browserHeaderRGB = @[@12, @34.5, @210];
     for (TLWorkspaceTab *tab in tabs) [state addWorkspaceTab:tab activate:YES];
     Check([[Restore(URL) workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:42].browserHeaderRGB isEqual:@[@12, @34.5, @210]], @"sampled browser color survives state copies and a fresh session restore");

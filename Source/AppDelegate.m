@@ -159,6 +159,7 @@
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+  if (self.windowController && ![self.windowController prepareNotesForClosing]) return NSTerminateCancel;
   return [TLWebKitBrowserController.sharedController prepareForApplicationTermination]
     ? NSTerminateNow
     : NSTerminateLater;

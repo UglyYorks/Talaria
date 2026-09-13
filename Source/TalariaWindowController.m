@@ -7,6 +7,7 @@
 #import "TLBrowserLinkActions.h"
 #import "design_system/TLActionMenuItem.h"
 #import "TLAutomationsTabController.h"
+#import "TLNotesTabController.h"
 #import "TLNotificationsController.h"
 #import "design_system/TLNotificationMessageCardView.h"
 #import "design_system/TLInputSuggestionPanelView.h"
@@ -111,6 +112,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *settingsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *agentsTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *debugTab;
+@property (nonatomic, strong, nullable) TLWorkspaceTab *notesTab;
+@property (nonatomic, strong, nullable) TLNotesTabController *notesController;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *automationsTab;
 @property (nonatomic, strong, nullable) TLAutomationsTabController *automationsController;
 @property (nonatomic, strong) TLNotificationsController *notificationsController;
@@ -178,6 +181,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackLeadingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarActionStackHeightConstraint;
+@property (nonatomic, strong) TLSidebarNavigationButton *sidebarNotesButton;
 @property (nonatomic, strong) TLSidebarNavigationButton *sidebarAutomationsButton;
 @property (nonatomic, strong) TLSidebarUserButton *sidebarUserButton;
 @property (nonatomic, strong) TLSidebarResizeHandle *sidebarResizeHandle;
@@ -690,7 +694,10 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
 }
 
+- (BOOL)prepareNotesForClosing { return !self.notesController || [self.notesController prepareToClose]; }
+
 - (BOOL)windowShouldClose:(NSWindow *)sender {
+  if (![self prepareNotesForClosing]) return NO;
   if (self.incognito) {
     for (TLAssistantTurnRunner *runner in self.turnRunners.allValues) [runner cancel];
     [self.agentOrchestrator closeIncognito];
@@ -813,6 +820,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     case TLWorkspaceTabKindAgents: [self showAgents:self]; break;
     case TLWorkspaceTabKindDebug: [self showDebug:self]; break;
     case TLWorkspaceTabKindDownloads: [self showDownloads:self]; break;
+    case TLWorkspaceTabKindNotes: [self showNotes:self]; break;
     case TLWorkspaceTabKindAutomations: [self showAutomations:self]; break;
   }
   if (tab && [self.appStateManager hasWorkspaceTabWithKind:tab.kind tabID:tab.tabID]) {
@@ -1347,6 +1355,19 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [actionStack setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                        forOrientation:NSLayoutConstraintOrientationVertical];
 
+  self.sidebarNotesButton = [[TLSidebarNavigationButton alloc] init];
+  self.sidebarNotesButton.palette = self.palette;
+  self.sidebarNotesButton.title = @"Notes";
+  self.sidebarNotesButton.systemIconName = @"note.text";
+  self.sidebarNotesButton.accessorySystemIconName = @"arrow.up.right.square";
+  self.sidebarNotesButton.target = self;
+  self.sidebarNotesButton.action = @selector(showNotes:);
+  self.sidebarNotesButton.toolTip = @"Open Notes";
+  [self.sidebarNotesButton setAccessibilityLabel:@"Notes"];
+  [self.sidebarNotesButton setAccessibilityRole:NSAccessibilityButtonRole];
+  [actionStack addArrangedSubview:self.sidebarNotesButton];
+  [self.sidebarNotesButton.trailingAnchor constraintEqualToAnchor:actionStack.trailingAnchor].active = YES;
+
   self.sidebarAutomationsButton = [[TLSidebarNavigationButton alloc] init];
   self.sidebarAutomationsButton.palette = self.palette;
   self.sidebarAutomationsButton.title = @"Automations";
@@ -1854,6 +1875,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
         }
         if (runtime.contentView) [self addWorkspaceContentView:runtime.contentView];
         break;
+      case TLWorkspaceTabKindNotes:
+        self.notesTab = tab;
+        if (!runtime) {
+          runtime = [TLWorkspaceTabRuntime runtimeWithContentView:[self buildNotesContent]
+            openAction:@selector(showNotes:) closeAction:@selector(closeNotesTab:)];
+          [self setRuntime:runtime forTab:tab];
+        }
+        if (runtime.contentView) [self addWorkspaceContentView:runtime.contentView];
+        break;
       case TLWorkspaceTabKindAutomations:
         self.automationsTab = tab;
         if (!runtime) {
@@ -1903,6 +1933,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self showAgents:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindDownloads) {
     [self showDownloads:self];
+  } else if (snapshot.activeTabKind == TLWorkspaceTabKindNotes) {
+    [self showNotes:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindAutomations) {
     [self showAutomations:self];
   } else if (snapshot.activeTabKind == TLWorkspaceTabKindDebug) {
@@ -3820,6 +3852,49 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self updateControlStates];
 }
 
+- (NSView *)buildNotesContent {
+  __weak typeof(self) weakSelf = self;
+  NSArray *agents = [self.agentOrchestrator listAgents:nil] ?: @[];
+  NSInteger agentID = self.database.currentAgentID;
+  if (!agentID) agentID = [(TLAgentRecord *)agents.lastObject agentID];
+  self.notesController = [[TLNotesTabController alloc] initWithPalette:self.palette
+    agents:agents agentID:agentID request:^(NSInteger selectedAgentID, NSDictionary *parameters, TLNotesReply reply) {
+      typeof(self) controller = weakSelf;
+      if (!controller) return;
+      [controller.agentOrchestrator hermesNotesWithParameters:parameters agentID:selectedAgentID
+        token:controller.settings.openRouterToken model:controller.settings.selectedModel completion:reply];
+    }];
+  return self.notesController.view;
+}
+
+- (void)showNotes:(id)sender {
+  if (self.widgetbookMode || self.incognito) return;
+  if (!self.notesTab) {
+    NSView *content = [self buildNotesContent];
+    self.notesTab = [TLWorkspaceTab tabWithKind:TLWorkspaceTabKindNotes tabID:0
+      title:@"Notes" toolTip:@"Markdown notes in the agent VM" URL:nil closeable:YES];
+    [self setRuntime:[TLWorkspaceTabRuntime runtimeWithContentView:content
+      openAction:@selector(showNotes:) closeAction:@selector(closeNotesTab:)] forTab:self.notesTab];
+    [self addWorkspaceContentView:content];
+    [self.appStateManager addWorkspaceTab:self.notesTab activate:NO];
+  }
+  [self activateTabKind:TLWorkspaceTabKindNotes tabID:self.notesTab.tabID];
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
+  [self.notesController updateAgents:[self.agentOrchestrator listAgents:nil] ?: @[] preferredAgentID:self.database.currentAgentID];
+  [self.notesController refresh:nil];
+}
+
+- (void)closeNotesTab:(id)sender {
+  if (!self.notesTab || ![self.notesController prepareToClose] || [self closeWindowIfOnlyWorkspaceTab:self.notesTab]) return;
+  [self rememberClosedWorkspaceTab:self.notesTab];
+  [self.notesController close];
+  [self.appStateManager removeWorkspaceTabWithKind:self.notesTab.kind tabID:self.notesTab.tabID];
+  [[self contentViewForTab:self.notesTab] removeFromSuperview];
+  [self removeRuntimeForKind:self.notesTab.kind tabID:self.notesTab.tabID];
+  self.notesTab = nil; self.notesController = nil;
+  [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
+}
+
 - (NSView *)buildAutomationsContent {
   __weak typeof(self) weakSelf = self;
   NSArray *agents = [self.agentOrchestrator listAgents:nil] ?: @[];
@@ -4795,8 +4870,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (CGFloat)sidebarActionStackHeight {
-  return self.sidebarAutomationsButton.intrinsicContentSize.height +
-    self.sidebarActionStack.spacing + self.sidebarUserButton.intrinsicContentSize.height;
+  return self.sidebarNotesButton.intrinsicContentSize.height + self.sidebarAutomationsButton.intrinsicContentSize.height +
+    self.sidebarActionStack.spacing * 2 + self.sidebarUserButton.intrinsicContentSize.height;
 }
 
 - (CGFloat)currentSidebarContentWidth {
@@ -5054,6 +5129,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (tab.kind == TLWorkspaceTabKindChat) runtime.featureController = self.chatPresentations[@(tab.tabID)] ?: self.chatPresentation;
   if (tab.kind == TLWorkspaceTabKindSettings) runtime.featureController = self.settingsTabController;
   if (tab.kind == TLWorkspaceTabKindDownloads) runtime.featureController = self.downloadsController;
+  if (tab.kind == TLWorkspaceTabKindNotes) runtime.featureController = self.notesController;
   if (tab.kind == TLWorkspaceTabKindAutomations) runtime.featureController = self.automationsController;
   TLWorkspaceTabRuntime *previous = self.workspaceTabRuntimes[TLWorkspaceTabRuntimeKey(tab.kind, tab.tabID)];
   if (previous != runtime && previous.featureController == runtime.featureController) previous.featureController = nil;
@@ -5218,6 +5294,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
       return @"cpu";
     case TLWorkspaceTabKindDownloads:
       return @"arrow.down.circle";
+    case TLWorkspaceTabKindNotes:
+      return @"note.text";
     case TLWorkspaceTabKindAutomations:
       return @"clock.arrow.circlepath";
     case TLWorkspaceTabKindDebug:
@@ -5370,6 +5448,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     case TLWorkspaceTabKindDownloads:
       return self.downloadsTab && self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindDownloads &&
         self.appStateManager.snapshot.activeTabID == self.downloadsTab.tabID;
+    case TLWorkspaceTabKindNotes:
+      return self.notesTab && self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindNotes &&
+        self.appStateManager.snapshot.activeTabID == self.notesTab.tabID;
     case TLWorkspaceTabKindAutomations:
       return self.appStateManager.snapshot.activeTabKind == TLWorkspaceTabKindAutomations &&
         self.automationsTab && self.appStateManager.snapshot.activeTabID == self.automationsTab.tabID;
@@ -5784,6 +5865,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.sidebarActionStack.spacing = self.palette.space0;
   [self updateSidebarContentInsets];
 
+  self.sidebarNotesButton.palette = self.palette;
+  self.sidebarNotesButton.selected = NO;
   self.sidebarAutomationsButton.palette = self.palette;
   // This row opens a tab; the tab strip owns the persistent selection state.
   self.sidebarAutomationsButton.selected = NO;
@@ -6076,6 +6159,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (self.widgetbookMode) {
     self.createChatButton.enabled = NO;
     self.sidebarToggleButton.enabled = NO;
+    self.sidebarNotesButton.enabled = NO;
     self.sidebarAutomationsButton.enabled = NO;
     self.sidebarUserButton.enabled = NO;
     chatContext.sendButton.enabled = NO;
@@ -6099,6 +6183,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
   self.createChatButton.enabled = YES;
   self.sidebarToggleButton.enabled = YES;
+  self.sidebarNotesButton.enabled = !self.incognito;
   self.sidebarAutomationsButton.enabled = YES;
   self.sidebarUserButton.enabled = YES;
   chatContext.messageInput.placeholderText = chatContext.editingQueuedPrompt ? @"Edit queued prompt" :

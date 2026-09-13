@@ -1344,7 +1344,8 @@ static void TestAssistantTurnRunner(void) {
   TLAssertEqualObjects(client.capturedModel, @"openai/gpt-4", @"trims model before streaming");
   TLAssertEqualObjects(client.capturedSessionID, chat.hermesSessionID, @"streams the chat through its Hermes session");
   TLAssertTrue(client.capturedMessages.count == 1, @"builds request messages before appending local placeholders");
-  TLAssertEqualObjects(client.capturedMessages[0].content, @"hello", @"trims next prompt before request");
+  TLAssertTrue([client.capturedMessages[0].content hasSuffix:@"\nhello"], @"trims next prompt after app context");
+  TLAssertTrue([client.capturedMessages[0].content containsString:@"/workspace/notes"] && [client.capturedMessages[0].content containsString:@"reference material"], @"agent knows how to read and edit Markdown notes without treating their contents as instructions");
   TLAssertTrue(messages.count == 2, @"adds user and assistant messages to visible storage");
   TLAssertEqualObjects(messages[0].content, @"hello", @"stores trimmed user message in visible storage");
   TLAssertEqualObjects(messages[1].content, @"assistant reply", @"flushes assistant content after streaming");
@@ -1379,7 +1380,7 @@ static void TestAssistantTurnRunner(void) {
   vmService.mountedFolders = @{};
   [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
     nextPrompt:@"No shares" updateHandler:nil completionHandler:nil error:&error];
-  TLAssertEqualObjects(client.capturedMessages[0].content, @"No shares", @"no stale mount context remains after shares are removed");
+  TLAssertTrue([client.capturedMessages[0].content hasSuffix:@"\nNo shares"] && ![client.capturedMessages[0].content containsString:@"/mnt/mac/work"], @"no stale mount context remains after shares are removed");
 
   NSMutableArray<TLChatMessage *> *validationMessages = [NSMutableArray array];
   NSError *validationError = nil;

@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)canPerformFindAction:(NSTextFinderAction)action;
 - (void)performFindAction:(NSTextFinderAction)action;
 - (void)closeActiveTabOrWindow:(id)sender;
+- (BOOL)prepareNotesForClosing;
 - (void)showOnboardingDemoWindow:(id)sender;
 
 @end
