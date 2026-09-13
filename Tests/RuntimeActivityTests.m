@@ -1,0 +1,134 @@
+#import <AppKit/AppKit.h>
+#import "TLChatTabController.h"
+#import "design_system/TLRuntimeActivityView.h"
+#import "design_system/TLThemedButton.h"
+
+static void Check(BOOL value, NSString *message) { if (!value) { NSLog(@"FAIL: %@", message); exit(1); } }
+static void Pump(void) { [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]]; }
+static NSArray *Activities(void) {
+  return @[
+    @{@"id":@"process:1", @"kind":@"process", @"name":@"codex exec — repair the failing tests", @"state":@"running",
+      @"detail":@"/workspace/talaria", @"output":@"Inspecting the test failures…\nUpdated the session event handler.\nRunning regression tests…\n12 tests passed.\n"},
+    @{@"id":@"agent:review", @"kind":@"agent", @"name":@"Review the event lifecycle", @"state":@"running",
+      @"detail":@"Checking background updates after the parent reply ends", @"model":@"Review agent"},
+    @{@"id":@"notice:1", @"kind":@"notice", @"name":@"Process update", @"state":@"completed", @"detail":@"Build completed successfully"}
+  ];
+}
+static NSScrollView *Output(TLRuntimeActivityView *view) { return [[view valueForKey:@"outputViews"] objectForKey:@"process:1"]; }
+static NSUInteger PixelsNear(NSBitmapImageRep *rep, NSColor *target) {
+  target = [target colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  NSUInteger count = 0;
+  for (NSInteger y = 0; y < rep.pixelsHigh; y++) for (NSInteger x = 0; x < rep.pixelsWide; x++) {
+    NSColor *pixel = [[rep colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (pixel.alphaComponent > 0.9 && fabs(pixel.redComponent-target.redComponent) < 0.04 &&
+        fabs(pixel.greenComponent-target.greenComponent) < 0.04 && fabs(pixel.blueComponent-target.blueComponent) < 0.04) count++;
+  }
+  return count;
+}
+int main(void) {
+  @autoreleasepool {
+    [NSApplication sharedApplication];
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,640,680)
+      styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window.releasedWhenClosed = NO;
+    TLTokenView *background = [[TLTokenView alloc] initWithFrame:window.contentView.bounds];
+    window.contentView = background;
+    TLRuntimeActivityView *view = [TLRuntimeActivityView new];
+    [window.contentView addSubview:view];
+    [NSLayoutConstraint activateConstraints:@[
+      [view.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor constant:12],
+      [view.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor constant:-12],
+      [view.topAnchor constraintEqualToAnchor:window.contentView.topAnchor constant:12],
+    ]];
+    view.activities = Activities();
+    TLThemedButton *button = [view valueForKey:@"disclosure"];
+    Check([button.title containsString:@"2 running"] && !view.expanded, @"collapsed activity reports live work");
+    Check([[(NSTextField *)[view valueForKey:@"preview"] stringValue] containsString:@"Checking"], @"latest agent update is visible without expanding");
+    [button performClick:nil];
+    Check(view.expanded, @"disclosure opens activity details");
+    for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+      view.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+      window.appearance = [NSAppearance appearanceNamed:view.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+      window.backgroundColor = view.palette.tabBackground;
+      background.fillColor = view.palette.tabBackground;
+      for (NSNumber *width in @[@200, @640]) {
+        [window setContentSize:NSMakeSize(width.doubleValue, 680)];
+        [window.contentView layoutSubtreeIfNeeded]; Pump();
+        Check(NSWidth(view.frame) <= width.doubleValue && NSHeight(view.frame) > 100, @"activity fits narrow and wide windows");
+        NSScrollView *scroll = Output(view);
+        Check(NSWidth(scroll.frame) <= NSWidth(view.frame) + 1, @"terminal output remains inside the panel");
+        NSTextView *output = (id)scroll.documentView;
+        Check(!output.editable && output.selectable && !output.automaticLinkDetectionEnabled, @"terminal output is selectable plain text");
+        Check([output.textColor isEqual:view.palette.markdownCodeText] && [output.backgroundColor isEqual:view.palette.markdownCodeSurface], @"terminal uses semantic theme colors");
+        NSBitmapImageRep *rep = [window.contentView bitmapImageRepForCachingDisplayInRect:window.contentView.bounds];
+        [window.contentView cacheDisplayInRect:window.contentView.bounds toBitmapImageRep:rep];
+        [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+          writeToFile:[NSString stringWithFormat:@"build/activity-%@-%@.png", view.palette.dark ? @"dark" : @"light", width] atomically:YES];
+      }
+      for (NSNumber *highlighted in @[@NO, @YES]) {
+        button.cell.highlighted = highlighted.boolValue;
+        NSSize size = NSMakeSize(NSWidth(button.bounds) + 8, NSHeight(button.bounds));
+        NSImage *rendered = [NSImage imageWithSize:size flipped:NO drawingHandler:^BOOL(NSRect bounds) {
+          [view.palette.tabBackground setFill]; NSRectFill(bounds);
+          [button.cell drawWithFrame:button.bounds inView:button];
+          // Reference swatches go through the same macOS color conversion as the cell.
+          [view.palette.secondaryActionText setFill]; NSRectFillUsingOperation(NSMakeRect(size.width-8,0,4,size.height), NSCompositingOperationSourceOver);
+          [view.palette.secondaryActionSurface setFill]; NSRectFillUsingOperation(NSMakeRect(size.width-4,0,4,size.height), NSCompositingOperationSourceOver);
+          return YES;
+        }];
+        NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:rendered.TIFFRepresentation];
+        NSColor *foreground = [rep colorAtX:rep.pixelsWide-6 y:rep.pixelsHigh/2];
+        NSColor *surface = [rep colorAtX:rep.pixelsWide-2 y:rep.pixelsHigh/2];
+        Check(PixelsNear(rep, foreground) > (NSUInteger)rep.pixelsHigh * 4 + 5,
+          @"rendered disclosure text keeps its foreground in normal and pressed states");
+        if (!highlighted.boolValue) Check(PixelsNear(rep, surface) > (NSUInteger)rep.pixelsHigh * 4 + 40,
+          @"rendered disclosure uses its paired surface in both themes");
+      }
+      button.cell.highlighted = NO;
+    }
+    NSScrollView *scroll = Output(view);
+    NSTextView *output = (id)scroll.documentView;
+    output.selectedRange = NSMakeRange(0, 10);
+    NSMutableArray *updated = [Activities() mutableCopy];
+    NSMutableDictionary *process = [updated[0] mutableCopy];
+    process[@"output"] = [process[@"output"] stringByAppendingString:@"All checks passed.\n"];
+    process[@"state"] = @"completed"; updated[0] = process;
+    view.activities = updated;
+    Check(Output(view) == scroll && NSEqualRanges(output.selectedRange, NSMakeRange(0,10)), @"new output keeps the existing selectable log view");
+    Check([button.title containsString:@"1 running"], @"process completion updates the running count");
+    view.statusText = @"Activity disconnected. Send a message to reconnect.";
+    Check([[(NSTextField *)[view valueForKey:@"preview"] stringValue] containsString:@"disconnected"], @"transport errors remain visible");
+
+    TLChatTabController *chat = [TLChatTabController new];
+    TLChatRecord *record = [TLChatRecord new]; record.chatID = 1; record.hermesSessionID = @"one";
+    chat.chat = record;
+    chat.messages = [@[[TLChatMessage messageWithRole:TLRoleAssistant content:@"Started a background task." thinking:nil]] mutableCopy];
+    chat.messageStack = [NSStackView new];
+    __block void (^pending)(NSDictionary *, NSError *);
+    __block NSUInteger calls = 0;
+    chat.activityProvider = ^(void (^completion)(NSDictionary *, NSError *)) { calls++; pending = [completion copy]; };
+    [chat refreshRuntimeActivity]; [chat refreshRuntimeActivity];
+    Check(calls == 1, @"only one activity request may be in flight");
+    pending(@{@"available":@YES, @"activities":Activities()}, nil); Pump();
+    Check(chat.runtimeActivities.count == 3, @"activity arrives after the parent reply with no active turn runner");
+    Check([[chat valueForKey:@"runtimeActivityView"] superview] != nil, @"session activity is attached to the transcript");
+    [chat setValue:@0 forKey:@"nextActivityPoll"]; [chat refreshRuntimeActivity];
+    pending(@{@"available":@NO, @"activities":@[]}, nil); Pump();
+    Check([chat.runtimeActivities[0][@"state"] isEqual:@"interrupted"], @"a disconnected runtime cannot look like it is still running");
+    [chat setValue:@0 forKey:@"nextActivityPoll"]; [chat refreshRuntimeActivity];
+    pending(@{@"available":@YES, @"activities":@[]}, nil); Pump();
+    Check(chat.runtimeActivities.count == 0 && [[chat valueForKey:@"runtimeActivityView"] isHidden], @"an empty fresh snapshot clears stale activity");
+    [chat setValue:@0 forKey:@"nextActivityPoll"]; [chat refreshRuntimeActivity];
+    void (^stale)(NSDictionary *, NSError *) = [pending copy];
+    TLChatRecord *other = [TLChatRecord new]; other.chatID = 2; other.hermesSessionID = @"two";
+    chat.chat = other;
+    stale(@{@"available":@YES, @"activities":Activities()}, nil); Pump();
+    Check(chat.runtimeActivities.count == 0, @"late results cannot cross into another session");
+    [chat refreshRuntimeActivity]; [chat close];
+    pending(@{@"available":@YES, @"activities":Activities()}, nil); Pump();
+    Check(chat.runtimeActivities.count == 0 && ![chat valueForKey:@"activityTimer"], @"closing stops polling and ignores in-flight results");
+    [window close];
+    NSLog(@"Runtime activity tests passed");
+  }
+  return 0;
+}

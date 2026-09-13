@@ -104,7 +104,7 @@ TEST_WheelScrollAnimationTests_SOURCES := Source/TLWheelScrollAnimation.m Source
 TEST_WheelScrollAnimationTests_LIBS := -framework AppKit -framework WebKit -framework QuartzCore
 $(eval $(call native_test,WheelScrollAnimationTests))
 
-INTEGRATION_TESTS := BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests AutomationsTests QuickInputTests WorkspaceRestoreTests AppStartupTests FeatureControllerTests TabShortcutTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests
+INTEGRATION_TESTS := RuntimeActivityTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests AutomationsTests QuickInputTests WorkspaceRestoreTests AppStartupTests FeatureControllerTests TabShortcutTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests
 $(addprefix $(BUILD_DIR)/,$(INTEGRATION_TESTS)): $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Scripts/tests.mk $(COMPILE_CONFIG)
 	xcrun clang++ $(filter %.o,$^) $(APP_FRAMEWORKS) -o "$@"
 $(foreach test,$(INTEGRATION_TESTS),$(eval $(BUILD_DIR)/$(test): $(call test_objects,Tests/$(test).m)))
@@ -119,7 +119,12 @@ TEST_HostCommandTests_SOURCES := Source/TLQuestionRequest.m Source/TLHostCommand
 TEST_HostCommandTests_LIBS := -framework Foundation -framework AppKit
 $(eval $(call native_test,HostCommandTests))
 NATIVE_TESTS := WheelScrollAnimationTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
-NATIVE_TESTS += HostCommandTests AgentFolderMountTests
+NATIVE_TESTS += HostCommandTests AgentFolderMountTests RuntimeActivityTests
+.PHONY: test-runtime-activity
+test-runtime-activity: $(BUILD_DIR)/RuntimeActivityTests $(BUILD_DIR)/FeatureControllerTests
+	"$(BUILD_DIR)/RuntimeActivityTests"
+	TL_ACTIVITY_TESTS_ONLY=1 "$(BUILD_DIR)/FeatureControllerTests"
+	python3 -B -m unittest discover -s Tests -p "test_hermes_activity.py"
 .PHONY: test-host-commands
 test-host-commands: $(addprefix $(BUILD_DIR)/,HostCommandTests PromptBuilderTests AssistantTurnResultTests FeatureControllerTests)
 	"$(BUILD_DIR)/HostCommandTests"

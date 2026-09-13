@@ -15,12 +15,13 @@ class RPCError(RuntimeError):
 
 
 class HermesRPCTransport:
-    def __init__(self, python, environment, home, entry_module="talaria_gateway_entry"):
+    def __init__(self, python, environment, home, entry_module="talaria_gateway_entry", event_handler=None):
         self.home = home
         self.lock = threading.RLock()
         self.disconnected = False
         self.pending = {}
         self.listeners = {}
+        self.event_handler = event_handler
         environment = dict(environment)
         environment["PYTHONPATH"] = os.pathsep.join(filter(None, [str(Path(__file__).parent), environment.get("PYTHONPATH")]))
         with (home / "talaria-tui-gateway.log").open("ab") as log:
@@ -47,6 +48,8 @@ class HermesRPCTransport:
                     elif frame.get("method") == "event":
                         event = frame.get("params", {})
                         if not isinstance(event, dict): continue
+                        if getattr(self, "event_handler", None):
+                            self.event_handler(event)
                         listener = self.listeners.get(event.get("session_id"))
                         if listener is not None:
                             listener.put(event)

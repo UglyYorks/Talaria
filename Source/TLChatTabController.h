@@ -40,6 +40,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^linkHandler)(NSURL *URL, NSEventModifierFlags flags);
 @property (nonatomic, copy, nullable) dispatch_block_t _Nullable (^linkContextMenuHandler)(NSURL *URL, NSMenu *menu, NSView *view, NSPoint point);
 @property (nonatomic, copy, nullable) BOOL (^streamingProvider)(void);
+@property (nonatomic, copy, nullable) void (^activityProvider)(void (^completion)(NSDictionary *_Nullable, NSError *_Nullable));
+@property (nonatomic, copy) NSArray<NSDictionary *> *runtimeActivities;
+- (void)refreshRuntimeActivity;
 @property (nonatomic, copy, nullable) dispatch_block_t intentHandler;
 @property (nonatomic, copy, nullable) BOOL (^notificationRevealHandler)(void);
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom;

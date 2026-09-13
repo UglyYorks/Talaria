@@ -905,6 +905,10 @@ static void TestApprovalRouting(void) {
 @property (nonatomic) NSInteger receivedAgentID;
 @end
 @implementation TLAttachmentPreparationRecorder
+- (void)hermesActivityForSessionID:(NSString *)sessionID agentID:(NSInteger)agentID
+                      completion:(void (^)(NSDictionary *, NSError *))completion {
+  completion(@{@"available":@NO, @"activities":@[]}, nil);
+}
 - (void)prepareAttachmentURLs:(NSArray<NSURL *> *)URLs sessionID:(NSString *)sessionID agentID:(NSInteger)agentID
                   completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *, NSError *))completion {
   self.receivedURLs = URLs;
@@ -3960,6 +3964,13 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_ACTIVITY_TESTS_ONLY")) {
+      TestLiveThinkingPresentation(); TestConcurrentChatStreams(); TestNavigationWhileSendingPreservesTurn();
+      TestStreamingKeepsMessageViewsAttached(); TestStreamingComposerStopButton(); TestApprovalRouting();
+      TestThemedButtonRenderedColors();
+      NSLog(@"Activity and chat routing tests passed");
+      return 0;
+    }
     if (getenv("TL_FOLDER_LOCATIONS_TESTS_ONLY")) {
       TestFolderAccessTable(); TestAgentFolderEditing();
       NSLog(@"Folder location tests passed");

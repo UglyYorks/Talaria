@@ -4,6 +4,7 @@
 #import "design_system/TLNotificationMessageCardView.h"
 #import "TLEmptyStateTips.h"
 #import "design_system/TLToolActivityView.h"
+#import "design_system/TLRuntimeActivityView.h"
 #import "design_system/TLAttachmentChipView.h"
 #import "design_system/TLApprovalCardView.h"
 #import "design_system/TLThemedButton.h"
@@ -15,6 +16,11 @@ static NSString *const TLAWSOutageAgentMessage = @"⚠️ AWS is reporting an ou
 static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-central region";
 
 @interface TLChatTabController ()
+@property (nonatomic, strong) TLRuntimeActivityView *runtimeActivityView;
+@property (nonatomic, strong) NSTimer *activityTimer;
+@property (nonatomic) BOOL activityLoading;
+@property (nonatomic) NSUInteger activityGeneration;
+@property (nonatomic) NSTimeInterval nextActivityPoll;
 @property (nonatomic, strong) TLToolStatusPill *toolStatusPill;
 @property (nonatomic, strong) NSView *thinkingRow;
 @property (nonatomic, strong) TLThinkingBubbleView *thinkingBubble;
@@ -48,6 +54,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     _messageMarkdownViews = [NSMapTable strongToStrongObjectsMapTable];
     _messageActivityViews = [NSMapTable strongToStrongObjectsMapTable];
     _errorMessage = @"";
+    _runtimeActivities = @[];
   }
   return self;
 }
@@ -244,7 +251,98 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     }
   }
 }
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_slashCommandUpdateTimer invalidate]; }
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [_slashCommandUpdateTimer invalidate]; [_activityTimer invalidate]; }
+
+- (void)setChat:(TLChatRecord *)chat {
+  NSString *oldSession = _chat.continuationSessionID.length ? _chat.continuationSessionID : _chat.hermesSessionID;
+  NSString *newSession = chat.continuationSessionID.length ? chat.continuationSessionID : chat.hermesSessionID;
+  BOOL changed = _chat.chatID != chat.chatID || _chat.sourceAgentID != chat.sourceAgentID ||
+    ![(oldSession ?: @"") isEqual:(newSession ?: @"")];
+  _chat = chat;
+  if (changed) {
+    self.activityGeneration++;
+    self.activityLoading = NO;
+    self.nextActivityPoll = 0;
+    self.runtimeActivities = @[];
+    self.runtimeActivityView.activities = @[];
+    self.runtimeActivityView.statusText = @"";
+  }
+}
+
+- (void)refreshRuntimeActivity {
+  if (self.closed || !self.activityProvider || !self.chat || !self.messages.count) return;
+  if (!self.activityTimer) {
+    __weak typeof(self) weakSelf = self;
+    self.activityTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
+      TLChatTabController *owner = weakSelf;
+      if (!owner || owner.closed) { [timer invalidate]; return; }
+      [owner refreshRuntimeActivity];
+    }];
+  }
+  if (self.activityLoading || NSDate.timeIntervalSinceReferenceDate < self.nextActivityPoll) return;
+  self.nextActivityPoll = NSDate.timeIntervalSinceReferenceDate + 1;
+  self.activityLoading = YES;
+  NSUInteger generation = self.activityGeneration;
+  NSString *session = self.chat.continuationSessionID.length ? self.chat.continuationSessionID : self.chat.hermesSessionID;
+  NSInteger agentID = self.chat.sourceAgentID;
+  __weak typeof(self) weakSelf = self;
+  self.activityProvider(^(NSDictionary *result, NSError *error) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      TLChatTabController *owner = weakSelf;
+      if (!owner || owner.closed || owner.activityGeneration != generation) return;
+      owner.activityLoading = NO;
+      NSString *currentSession = owner.chat.continuationSessionID.length ? owner.chat.continuationSessionID : owner.chat.hermesSessionID;
+      if (owner.chat.sourceAgentID != agentID || ![(currentSession ?: @"") isEqual:(session ?: @"")]) return;
+      if (error) owner.nextActivityPoll = NSDate.timeIntervalSinceReferenceDate + 5;
+      NSString *status = error.localizedDescription ?: @"";
+      NSArray *rows = result[@"activities"];
+      BOOL available = [result[@"available"] boolValue];
+      if (!error && ![rows isKindOfClass:NSArray.class]) status = @"Hermes returned invalid activity data.";
+      if (available && [rows isKindOfClass:NSArray.class]) {
+        NSMutableArray *validated = [NSMutableArray array];
+        for (id value in rows) {
+          if (![value isKindOfClass:NSDictionary.class]) continue;
+          NSMutableDictionary *row = [NSMutableDictionary dictionary];
+          for (NSString *key in @[@"id", @"name", @"state", @"kind", @"detail", @"summary", @"output", @"model", @"parent_id", @"updated"]) {
+            NSString *text = value[key];
+            if ([text isKindOfClass:NSString.class]) row[key] = [text substringToIndex:MIN(text.length, [key isEqual:@"output"] ? 8000u : 2000u)];
+          }
+          if ([row[@"id"] length] && [row[@"name"] length] && [row[@"state"] length]) [validated addObject:row];
+          if (validated.count == 80) break;
+        }
+        owner.runtimeActivities = validated;
+      } else if (owner.runtimeActivities.count) {
+        status = status.length ? status : @"Activity disconnected. Send a message to reconnect.";
+        NSMutableArray *interrupted = [NSMutableArray array];
+        for (NSDictionary *activity in owner.runtimeActivities) {
+          NSMutableDictionary *row = [activity mutableCopy];
+          if ([@[@"preparing", @"running"] containsObject:row[@"state"]]) row[@"state"] = @"interrupted";
+          [interrupted addObject:row];
+        }
+        owner.runtimeActivities = interrupted;
+      }
+      BOOL changed = ![owner.runtimeActivityView.activities isEqual:owner.runtimeActivities] ||
+        ![owner.runtimeActivityView.statusText isEqual:status];
+      if (!owner.runtimeActivityView && !owner.runtimeActivities.count && !status.length) return;
+      if (!owner.runtimeActivityView) owner.runtimeActivityView = [TLRuntimeActivityView new];
+      owner.runtimeActivityView.palette = owner.palette;
+      owner.runtimeActivityView.activities = owner.runtimeActivities;
+      owner.runtimeActivityView.statusText = status;
+      if (changed && ![owner.chatWorkspace isHiddenOrHasHiddenAncestor]) {
+        // Preserve the user's reading position; activity never forces a scroll.
+        [owner updateRuntimeActivityView];
+        [owner.messageDocumentView layoutSubtreeIfNeeded];
+      }
+    });
+  });
+}
+
+- (void)updateRuntimeActivityView {
+  if (!self.runtimeActivityView || !self.messageStack || self.isLoading || self.errorMessage.length) return;
+  self.runtimeActivityView.palette = self.palette;
+  if (![self.messageStack.arrangedSubviews containsObject:self.runtimeActivityView]) [self addMessageRowToStack:self.runtimeActivityView];
+  [self pinMessageRowToStackWidth:self.runtimeActivityView];
+}
 - (void)pinMessageRowToStackWidth:(NSView *)row {
   if ([self.rowWidths objectForKey:row]) return;
   NSLayoutConstraint *constraint = [row.widthAnchor constraintEqualToAnchor:self.messageStack.widthAnchor];
@@ -352,6 +450,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom {
   if (!self.messageStack || self.closed) { self.streamingRenderScheduled = NO; return; }
+  [self refreshRuntimeActivity];
   [self updateLiveActivity];
   [self.dirtyMessages removeAllObjects];
   [self.messageIndices removeAllObjects];
@@ -460,6 +559,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   }
 
   [self updateLiveActivity];
+  [self updateRuntimeActivityView];
   [self refreshFindResults];
   dispatch_async(dispatch_get_main_queue(), ^{
       [self updateMessageScrollInsets];
@@ -914,6 +1014,10 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 - (void)setChatWorkspace:(NSView *)chatWorkspace { _chatWorkspace = chatWorkspace; if (chatWorkspace) self.view = chatWorkspace; }
 - (void)sendIntent:(id)sender { if (self.intentHandler) self.intentHandler(); }
 - (void)close {
+  [self.activityTimer invalidate];
+  self.activityTimer = nil;
+  self.activityGeneration++;
+  self.activityLoading = NO;
   self.streamingRenderGeneration++;
   self.streamingRenderScheduled = NO;
   [self.slashCommandUpdateTimer invalidate];
@@ -927,6 +1031,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 }
 - (void)applyPalette:(TLThemePalette *)palette {
   [super applyPalette:palette];
+  self.runtimeActivityView.palette = palette;
   self.messagesBackground.fillColor = palette.tabBackground;
   self.messageStack.spacing = palette.messageVerticalSpacing;
   self.messageInput.palette = palette;

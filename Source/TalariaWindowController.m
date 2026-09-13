@@ -338,6 +338,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     }];
   };
   chat.streamingProvider = ^BOOL{ return weakSelf.turnRunners[@(origin.chat.chatID)] != nil; };
+  chat.activityProvider = ^(void (^completion)(NSDictionary *, NSError *)) {
+    TalariaWindowController *owner = weakSelf;
+    TLChatRecord *record = origin.chat;
+    if (!owner || owner.widgetbookMode || !record) { completion(@{@"available":@NO, @"activities":@[]}, nil); return; }
+    NSString *sid = record.continuationSessionID.length ? record.continuationSessionID : record.hermesSessionID;
+    if (!sid.length) { completion(@{@"available":@NO, @"activities":@[]}, nil); return; }
+    [owner.agentOrchestrator hermesActivityForSessionID:sid agentID:record.sourceAgentID completion:completion];
+  };
   chat.intentHandler = ^{ [weakSelf activateCachedChatWithID:origin.chat.chatID]; [weakSelf sendAWSOutageIntent:nil]; };
   chat.composerTarget = self;
   chat.composerDelegate = self;
