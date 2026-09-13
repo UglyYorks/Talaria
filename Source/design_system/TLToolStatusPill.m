@@ -8,6 +8,7 @@
 @property CAGradientLayer *shimmerMask;
 @property NSTimer *shimmerTimer;
 @property CFTimeInterval shimmerStart;
+@property BOOL busy;
 @end
 @implementation TLToolStatusPill
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -25,6 +26,7 @@
     _shimmerLabel = [NSTextField labelWithString:@""];
     _shimmerLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _shimmerLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [_shimmerLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     _shimmerLabel.accessibilityElement = NO;
     _shimmerLabel.wantsLayer = YES;
     [self addSubview:_shimmerLabel];
@@ -80,7 +82,7 @@
 - (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; [self updateShimmer]; }
 - (void)setHidden:(BOOL)hidden { [super setHidden:hidden]; [self updateShimmer]; }
 - (void)updateShimmer {
-  BOOL animate = self.window && !self.hidden && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  BOOL animate = self.busy && self.window && !self.hidden && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
   self.shimmerLabel.hidden = !animate;
   self.activityLabel.textColor = animate ? self.palette.textMuted : self.palette.secondaryActionText;
   if (!animate) {
@@ -119,11 +121,22 @@
 }
 - (void)setAvatar:(NSString *)avatar activity:(NSDictionary *)activity {
   self.avatarLabel.stringValue = avatar.length ? avatar : @"🤖";
-  self.activityLabel.stringValue = [self.class labelForToolName:activity[@"name"] ?: @""];
+  NSString *label = [activity[@"label"] length] ? activity[@"label"] : [self.class labelForToolName:activity[@"name"] ?: @""];
+  NSString *detail = [activity[@"detail"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  detail = [[detail componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] componentsJoinedByString:@" "];
+  self.activityLabel.stringValue = detail.length ? [label stringByAppendingFormat:@" · %@", detail] : label;
   self.shimmerLabel.stringValue = self.activityLabel.stringValue;
+  self.busy = [@[@"preparing", @"running"] containsObject:activity[@"state"]];
   self.accessibilityElement = YES;
   self.accessibilityLabel = self.activityLabel.stringValue;
-  self.toolTip = self.activityLabel.stringValue;
+  self.accessibilityRole = self.actionHandler ? NSAccessibilityButtonRole : NSAccessibilityStaticTextRole;
+  self.toolTip = self.actionHandler ? [self.activityLabel.stringValue stringByAppendingString:@"\nClick to view activity details"] : self.activityLabel.stringValue;
   [self updateShimmer];
 }
+- (void)mouseDown:(NSEvent *)event { if (self.actionHandler) self.actionHandler(); }
+- (NSView *)hitTest:(NSPoint)point {
+  NSView *hit = [super hitTest:point];
+  return hit && self.actionHandler ? self : hit;
+}
+- (BOOL)accessibilityPerformPress { if (!self.actionHandler) return NO; self.actionHandler(); return YES; }
 @end

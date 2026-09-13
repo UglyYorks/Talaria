@@ -439,6 +439,19 @@ class GatewayTests(unittest.TestCase):
         activity = tool_activity('tool.complete', {'name': 'x', 'tool_id': 'a', 'result': {'success': False}})
         self.assertEqual(activity['state'], 'failed')
 
+    def test_codex_wrapped_tool_uses_the_target_name_without_exposing_arguments(self):
+        from hermes_gateway import tool_activity
+        self.assertIsNone(tool_activity('tool.generating', {'name': 'tool_call'}))
+        payload = {'name': 'tool_call', 'tool_id': 'mac', 'context': 'Building the app',
+                   'args': {'name': 'run_host_command', 'arguments': {'command': 'private command'}}}
+        started = tool_activity('tool.start', payload)
+        finished = tool_activity('tool.complete', {**payload, 'result': {'exit_code': 0}})
+        self.assertEqual(started['name'], 'run_host_command')
+        self.assertEqual((started['id'], finished['id']), ('mac', 'mac'))
+        self.assertEqual((started['state'], finished['state']), ('running', 'completed'))
+        self.assertEqual(started['detail'], 'Building the app')
+        self.assertNotIn('private command', json.dumps(started))
+
     def test_skill_result_is_submitted_through_live_session(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
         self.gateway.command = Mock(return_value={'type': 'skill', 'message': 'Hermes skill expansion'})

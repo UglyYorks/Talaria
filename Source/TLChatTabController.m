@@ -17,6 +17,8 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 
 @interface TLChatTabController ()
 @property (nonatomic, strong) TLRuntimeActivityView *runtimeActivityView;
+@property (nonatomic, strong) NSPopover *activityPopover;
+@property (nonatomic, copy) NSString *runtimeActivityStatus;
 @property (nonatomic, strong) NSTimer *activityTimer;
 @property (nonatomic) BOOL activityLoading;
 @property (nonatomic) NSUInteger activityGeneration;
@@ -264,6 +266,8 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     self.activityLoading = NO;
     self.nextActivityPoll = 0;
     self.runtimeActivities = @[];
+    self.runtimeActivityStatus = @"";
+    [self.activityPopover close];
     self.runtimeActivityView.activities = @[];
     self.runtimeActivityView.statusText = @"";
   }
@@ -321,27 +325,43 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
         }
         owner.runtimeActivities = interrupted;
       }
-      BOOL changed = ![owner.runtimeActivityView.activities isEqual:owner.runtimeActivities] ||
-        ![owner.runtimeActivityView.statusText isEqual:status];
-      if (!owner.runtimeActivityView && !owner.runtimeActivities.count && !status.length) return;
-      if (!owner.runtimeActivityView) owner.runtimeActivityView = [TLRuntimeActivityView new];
-      owner.runtimeActivityView.palette = owner.palette;
-      owner.runtimeActivityView.activities = owner.runtimeActivities;
-      owner.runtimeActivityView.statusText = status;
-      if (changed && ![owner.chatWorkspace isHiddenOrHasHiddenAncestor]) {
-        // Preserve the user's reading position; activity never forces a scroll.
-        [owner updateRuntimeActivityView];
-        [owner.messageDocumentView layoutSubtreeIfNeeded];
-      }
+      owner.runtimeActivityStatus = status;
+      // The composer owns live activity, independently of transcript scrolling.
+      [owner updateLiveActivity];
     });
   });
 }
 
-- (void)updateRuntimeActivityView {
-  if (!self.runtimeActivityView || !self.messageStack || self.isLoading || self.errorMessage.length) return;
-  self.runtimeActivityView.palette = self.palette;
-  if (![self.messageStack.arrangedSubviews containsObject:self.runtimeActivityView]) [self addMessageRowToStack:self.runtimeActivityView];
-  [self pinMessageRowToStackWidth:self.runtimeActivityView];
+- (void)showActivityDetails {
+  if (self.activityPopover.shown) { [self.activityPopover close]; return; }
+  if (!self.toolStatusPill.window || !self.runtimeActivityView) return;
+  NSViewController *content = [NSViewController new];
+  CGFloat width = MAX(160, MIN(480, NSWidth(self.messageInput.bounds)));
+  NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, width, 360)];
+  scroll.hasVerticalScroller = YES;
+  scroll.drawsBackground = YES;
+  scroll.backgroundColor = self.palette.tabBackground;
+  [scroll.widthAnchor constraintEqualToConstant:width].active = YES;
+  [scroll.heightAnchor constraintEqualToConstant:360].active = YES;
+  NSView *document = [TLFlippedView new];
+  document.translatesAutoresizingMaskIntoConstraints = NO;
+  scroll.documentView = document;
+  [document addSubview:self.runtimeActivityView];
+  CGFloat inset = self.palette.space5;
+  [NSLayoutConstraint activateConstraints:@[
+    [document.widthAnchor constraintEqualToAnchor:scroll.contentView.widthAnchor],
+    [self.runtimeActivityView.leadingAnchor constraintEqualToAnchor:document.leadingAnchor constant:inset],
+    [self.runtimeActivityView.trailingAnchor constraintEqualToAnchor:document.trailingAnchor constant:-inset],
+    [self.runtimeActivityView.topAnchor constraintEqualToAnchor:document.topAnchor constant:inset],
+    [self.runtimeActivityView.bottomAnchor constraintEqualToAnchor:document.bottomAnchor constant:-inset],
+  ]];
+  self.runtimeActivityView.expanded = YES;
+  content.view = scroll;
+  self.activityPopover = [NSPopover new];
+  self.activityPopover.behavior = NSPopoverBehaviorTransient;
+  self.activityPopover.contentViewController = content;
+  self.activityPopover.contentSize = NSMakeSize(width, 360);
+  [self.activityPopover showRelativeToRect:self.toolStatusPill.bounds ofView:self.toolStatusPill preferredEdge:NSRectEdgeMaxY];
 }
 - (void)pinMessageRowToStackWidth:(NSView *)row {
   if ([self.rowWidths objectForKey:row]) return;
@@ -559,7 +579,6 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   }
 
   [self updateLiveActivity];
-  [self updateRuntimeActivityView];
   [self refreshFindResults];
   dispatch_async(dispatch_get_main_queue(), ^{
       [self updateMessageScrollInsets];
@@ -652,18 +671,72 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 
 - (void)updateLiveActivity {
   TLChatMessage *message = self.messages.lastObject;
-  BOOL running = self.streamingProvider && self.streamingProvider() && !self.isLoading && !self.errorMessage.length &&
-    [message.role isEqualToString:TLRoleAssistant] && !message.approvalRequest;
-  for (TLQuestionRequest *question in message.questions) if (question.pending) running = NO;
+  BOOL available = !self.isLoading && !self.errorMessage.length && self.messages.count && !self.closed;
+  BOOL awaitingInput = message.approvalRequest != nil;
+  for (TLQuestionRequest *question in message.questions) if (question.pending) awaitingInput = YES;
+  BOOL running = available && !awaitingInput && self.streamingProvider && self.streamingProvider() &&
+    [message.role isEqualToString:TLRoleAssistant];
   NSDictionary *active = nil;
+  NSMutableArray *details = [self.runtimeActivities mutableCopy] ?: [NSMutableArray array];
+  for (NSDictionary *tool in message.toolActivities) {
+    NSMutableDictionary *row = [tool mutableCopy];
+    row[@"id"] = [@"tool:" stringByAppendingString:tool[@"id"]];
+    row[@"kind"] = @"tool";
+    [details addObject:row];
+  }
   if (running) {
     for (NSDictionary *activity in message.toolActivities.reverseObjectEnumerator) {
       if ([@[@"preparing", @"running"] containsObject:activity[@"state"]]) { active = activity; break; }
     }
   }
+  BOOL toolRunning = active != nil;
+  NSDictionary *background = nil;
+  NSUInteger backgroundCount = 0;
+  for (NSDictionary *activity in self.runtimeActivities) {
+    if (![@[@"preparing", @"running"] containsObject:activity[@"state"]]) continue;
+    backgroundCount++;
+    if (!background || [activity[@"updated"] integerValue] >= [background[@"updated"] integerValue]) background = activity;
+  }
+  if (!active && available && !awaitingInput && background) {
+    NSMutableDictionary *presentation = [background mutableCopy];
+    NSString *label = [background[@"kind"] isEqual:@"agent"] ? @"Agent working" : @"Running command";
+    presentation[@"label"] = backgroundCount > 1 ? [label stringByAppendingFormat:@" · %lu running", backgroundCount] : label;
+    presentation[@"detail"] = [background[@"detail"] length] ? background[@"detail"] : background[@"name"];
+    for (NSString *line in [background[@"output"] componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet].reverseObjectEnumerator) {
+      if (line.length) { presentation[@"detail"] = line; break; }
+    }
+    active = presentation;
+  }
+  if (!active && running) {
+    // Tool calls can finish in milliseconds while the next model request takes
+    // minutes. Keep a truthful status and the last completed step visible.
+    NSDictionary *previous = message.toolActivities.lastObject;
+    NSString *detail = previous ? [NSString stringWithFormat:@"%@ · %@",
+      [previous[@"state"] isEqual:@"failed"] ? @"Failed" : @"Last step",
+      [previous[@"detail"] length] ? previous[@"detail"] : [TLToolStatusPill labelForToolName:previous[@"name"]]] : @"";
+    active = @{@"label": message.thinkingActive || !message.content.length ? @"Thinking" : @"Writing response",
+               @"detail":detail, @"state":@"running"};
+  }
+  if (!active && available && !awaitingInput && self.runtimeActivityStatus.length) {
+    active = @{@"label":@"Activity unavailable", @"detail":self.runtimeActivityStatus, @"state":@"interrupted"};
+  }
+  if (!active && available && !awaitingInput && self.runtimeActivities.count) {
+    NSDictionary *latest = self.runtimeActivities.lastObject;
+    for (NSDictionary *row in self.runtimeActivities) if ([row[@"updated"] integerValue] > [latest[@"updated"] integerValue]) latest = row;
+    active = @{@"label": [latest[@"state"] isEqual:@"failed"] ? @"Activity failed" : @"Activity",
+               @"detail": [latest[@"summary"] length] ? latest[@"summary"] : [latest[@"detail"] length] ? latest[@"detail"] : latest[@"name"],
+               @"state": latest[@"state"]};
+  }
+  if (!self.runtimeActivityView && (details.count || self.runtimeActivityStatus.length)) self.runtimeActivityView = [TLRuntimeActivityView new];
+  self.runtimeActivityView.palette = self.palette;
+  self.runtimeActivityView.activities = details;
+  self.runtimeActivityView.statusText = self.runtimeActivityStatus ?: @"";
+  __weak typeof(self) weakSelf = self;
+  self.toolStatusPill.actionHandler = details.count || self.runtimeActivityStatus.length ? ^{ [weakSelf showActivityDetails]; } : nil;
   self.toolStatusPill.hidden = active == nil;
   if (active) [self.toolStatusPill setAvatar:self.agentAvatar activity:active];
-  BOOL thinking = running && (active || message.thinkingActive || !message.content.length);
+  else [self.activityPopover close];
+  BOOL thinking = running && (toolRunning || message.thinkingActive || !message.content.length);
   if (thinking && self.messageStack) {
     if (!self.thinkingRow) {
       self.thinkingRow = [NSView new];
@@ -1014,6 +1087,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 - (void)setChatWorkspace:(NSView *)chatWorkspace { _chatWorkspace = chatWorkspace; if (chatWorkspace) self.view = chatWorkspace; }
 - (void)sendIntent:(id)sender { if (self.intentHandler) self.intentHandler(); }
 - (void)close {
+  [self.activityPopover close];
   [self.activityTimer invalidate];
   self.activityTimer = nil;
   self.activityGeneration++;
@@ -1032,6 +1106,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 - (void)applyPalette:(TLThemePalette *)palette {
   [super applyPalette:palette];
   self.runtimeActivityView.palette = palette;
+  ((NSScrollView *)self.activityPopover.contentViewController.view).backgroundColor = palette.tabBackground;
   self.messagesBackground.fillColor = palette.tabBackground;
   self.messageStack.spacing = palette.messageVerticalSpacing;
   self.messageInput.palette = palette;

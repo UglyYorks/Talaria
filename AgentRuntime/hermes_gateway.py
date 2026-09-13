@@ -36,6 +36,13 @@ def tool_activity(kind, payload):
     name, tool_id = text("name", 200), text("tool_id", 200)
     if not name or (kind != "tool.generating" and not tool_id):
         return None
+    if name == "tool_call" and kind == "tool.generating":
+        return None  # Its target is not known yet; the chat remains Thinking.
+    # Codex can dispatch a tool through Hermes's tool_call wrapper. Show the
+    # selected tool's name, while keeping arguments out of presentation data.
+    args = payload.get("args")
+    if name == "tool_call" and isinstance(args, dict) and isinstance(args.get("name"), str) and args["name"]:
+        name = args["name"][:200]
     state = {"tool.generating": "preparing", "tool.start": "running", "tool.complete": "completed"}[kind]
     result = payload.get("result")
     if kind == "tool.complete" and isinstance(result, dict):

@@ -2,6 +2,7 @@
 #import "TLChatTabController.h"
 #import "design_system/TLRuntimeActivityView.h"
 #import "design_system/TLThemedButton.h"
+#import "design_system/TLToolStatusPill.h"
 
 static void Check(BOOL value, NSString *message) { if (!value) { NSLog(@"FAIL: %@", message); exit(1); } }
 static void Pump(void) { [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]]; }
@@ -103,7 +104,13 @@ int main(void) {
     TLChatRecord *record = [TLChatRecord new]; record.chatID = 1; record.hermesSessionID = @"one";
     chat.chat = record;
     chat.messages = [@[[TLChatMessage messageWithRole:TLRoleAssistant content:@"Started a background task." thinking:nil]] mutableCopy];
-    chat.messageStack = [NSStackView new];
+    NSWindow *chatWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,640,600)
+      styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    chatWindow.releasedWhenClosed = NO;
+    chatWindow.contentView = [chat buildChatWorkspace];
+    chat.messageInputWidthConstraint.constant = 560;
+    [chatWindow orderFront:nil];
+    TLToolStatusPill *pill = [chat valueForKey:@"toolStatusPill"];
     __block void (^pending)(NSDictionary *, NSError *);
     __block NSUInteger calls = 0;
     chat.activityProvider = ^(void (^completion)(NSDictionary *, NSError *)) { calls++; pending = [completion copy]; };
@@ -111,13 +118,49 @@ int main(void) {
     Check(calls == 1, @"only one activity request may be in flight");
     pending(@{@"available":@YES, @"activities":Activities()}, nil); Pump();
     Check(chat.runtimeActivities.count == 3, @"activity arrives after the parent reply with no active turn runner");
-    Check([[chat valueForKey:@"runtimeActivityView"] superview] != nil, @"session activity is attached to the transcript");
+    [chat renderMessagesScrollingToBottom:NO]; [chatWindow.contentView layoutSubtreeIfNeeded];
+    Check(!pill.hidden && [pill.accessibilityLabel containsString:@"2 running"], @"background work stays in the composer pill after the parent reply");
+    Check([[chat valueForKey:@"runtimeActivityView"] superview] == nil, @"background activity does not add a transcript panel");
+    Check([pill accessibilityPerformPress], @"activity details are accessible from the pill"); Pump();
+    NSPopover *popover = [chat valueForKey:@"activityPopover"];
+    Check(popover.shown && Output([chat valueForKey:@"runtimeActivityView"]), @"pill opens selectable terminal output in a popover");
+    popover.animates = NO;
+    [popover close];
+    for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+      [chat applyPalette:[TLThemePalette paletteForPreference:theme.integerValue]];
+      chatWindow.appearance = [NSAppearance appearanceNamed:chat.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+      for (NSNumber *width in @[@200, @640]) {
+        [chatWindow setContentSize:NSMakeSize(width.doubleValue,600)];
+        chat.messageInputWidthConstraint.constant = width.doubleValue - 40;
+        [chat renderMessagesScrollingToBottom:NO]; [chatWindow.contentView layoutSubtreeIfNeeded]; Pump();
+        NSRect frame = [pill convertRect:pill.bounds toView:chatWindow.contentView];
+        Check(!NSIsEmptyRect(frame) && NSContainsRect(chatWindow.contentView.bounds, frame), [NSString stringWithFormat:@"activity is visible inside narrow and wide chat windows: pill %@, workspace %@", NSStringFromRect(frame), NSStringFromRect(chatWindow.contentView.bounds)]);
+        NSBitmapImageRep *rep = [chatWindow.contentView bitmapImageRepForCachingDisplayInRect:chatWindow.contentView.bounds];
+        [chatWindow.contentView cacheDisplayInRect:chatWindow.contentView.bounds toBitmapImageRep:rep];
+        [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+          writeToFile:[NSString stringWithFormat:@"build/activity-pill-%@-%@.png", chat.palette.dark ? @"dark" : @"light", width] atomically:YES];
+        [pill accessibilityPerformPress]; Pump();
+        NSView *popoverView = [(NSPopover *)[chat valueForKey:@"activityPopover"] contentViewController].view;
+        [popoverView layoutSubtreeIfNeeded];
+        Check(NSWidth(popoverView.bounds) <= MAX(160, width.doubleValue - 40), [NSString stringWithFormat:@"activity popover respects the requested width: %@ for %@", NSStringFromRect(popoverView.bounds), width]);
+        NSScrollView *terminal = Output([chat valueForKey:@"runtimeActivityView"]);
+        Check(NSWidth(terminal.frame) > 0 && NSWidth(terminal.frame) <= NSWidth(popoverView.bounds), @"terminal details fit the activity popover");
+        rep = [popoverView bitmapImageRepForCachingDisplayInRect:popoverView.bounds];
+        [popoverView cacheDisplayInRect:popoverView.bounds toBitmapImageRep:rep];
+        [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+          writeToFile:[NSString stringWithFormat:@"build/activity-details-%@-%@.png", chat.palette.dark ? @"dark" : @"light", width] atomically:YES];
+        ((NSPopover *)[chat valueForKey:@"activityPopover"]).animates = NO;
+        [[chat valueForKey:@"activityPopover"] close];
+      }
+    }
     [chat setValue:@0 forKey:@"nextActivityPoll"]; [chat refreshRuntimeActivity];
     pending(@{@"available":@NO, @"activities":@[]}, nil); Pump();
     Check([chat.runtimeActivities[0][@"state"] isEqual:@"interrupted"], @"a disconnected runtime cannot look like it is still running");
+    Check(![pill valueForKey:@"shimmerTimer"] && [pill.accessibilityLabel hasPrefix:@"Activity unavailable"], @"disconnection replaces running text and stops animation");
     [chat setValue:@0 forKey:@"nextActivityPoll"]; [chat refreshRuntimeActivity];
     pending(@{@"available":@YES, @"activities":@[]}, nil); Pump();
     Check(chat.runtimeActivities.count == 0 && [[chat valueForKey:@"runtimeActivityView"] isHidden], @"an empty fresh snapshot clears stale activity");
+    Check(pill.hidden, @"empty background state hides the idle pill");
     [chat setValue:@0 forKey:@"nextActivityPoll"]; [chat refreshRuntimeActivity];
     void (^stale)(NSDictionary *, NSError *) = [pending copy];
     TLChatRecord *other = [TLChatRecord new]; other.chatID = 2; other.hermesSessionID = @"two";
@@ -127,6 +170,7 @@ int main(void) {
     [chat refreshRuntimeActivity]; [chat close];
     pending(@{@"available":@YES, @"activities":Activities()}, nil); Pump();
     Check(chat.runtimeActivities.count == 0 && ![chat valueForKey:@"activityTimer"], @"closing stops polling and ignores in-flight results");
+    [chatWindow close];
     [window close];
     NSLog(@"Runtime activity tests passed");
   }
