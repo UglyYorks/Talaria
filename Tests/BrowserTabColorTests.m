@@ -60,8 +60,26 @@ static void Later(double seconds, dispatch_block_t block) {
   [window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
   [self.owner startNewChatWithModel:@"test" focus:NO];
   [self.owner openBrowserTabWithURL:[NSURL URLWithString:args[1]]];
+  self.browser = [self.owner activeBrowserController];
+  [self watchNavigationColors];
   Later(3, ^{ [self checkPage]; });
   Later(40, ^{ Check(NO, @"Desktop tab color test deadline"); });
+}
+- (void)watchNavigationColors {
+  dispatch_block_t original = self.browser.headerColorChangedHandler;
+  __weak TLBrowserTabController *browser = self.browser;
+  self.browser.headerColorChangedHandler = ^{
+    TLWebKitBrowserSession *session = [browser valueForKey:@"browserSession"];
+    NSColor *color = [browser.headerContentColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    // Both initial and large-canvas fixtures have colored top edges. Sampling
+    // the temporary white WebKit backing surface must never recolor the tab.
+    if (color && session.documentGeneration == 1 && ![session.webView.URL.path hasPrefix:@"/white-page"] &&
+        ![NSProcessInfo.processInfo.arguments containsObject:@"--white"] && session.webView.loading) {
+      Check(!(color.redComponent > .99 && color.greenComponent > .99 && color.blueComponent > .99),
+        @"Navigation does not publish the blank white backing surface as tab color");
+    }
+    if (original) original();
+  };
 }
 - (void)checkPage {
   self.browser=[self.owner activeBrowserController];
@@ -176,6 +194,18 @@ static void Later(double seconds, dispatch_block_t block) {
     TLChromeTabSelectionView *selection=[[self.owner valueForKey:@"workspaceTabsController"] selectionView];
     Check([selection.displayedBackgroundColor isEqual:self.browser.headerContentColor],@"Both themes preserve the inferred solid tab background");
   }
+  TLWebKitBrowserSession *session=[self.browser valueForKey:@"browserSession"];
+  NSColor *previous=self.browser.headerContentColor;
+  NSURL *URL=[NSURL URLWithString:@"/white-page" relativeToURL:session.webView.URL];
+  [TLWebKitBrowserController.sharedController navigateSession:session toURL:URL.absoluteURL];
+  Check([self.browser.headerContentColor isEqual:previous], @"Starting a navigation retains the previous tab color");
+  Later(.2,^{[self checkWhitePage:0];});
+}
+- (void)checkWhitePage:(NSUInteger)attempt {
+  NSColor *color=[self.browser.headerContentColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  BOOL white=color && color.redComponent>.99 && color.greenComponent>.99 && color.blueComponent>.99;
+  if(!white && attempt<30){Later(.2,^{[self checkWhitePage:attempt+1];});return;}
+  Check(white,@"A genuinely white page still updates the tab to white after painting");
   [self.owner.window setContentSize:NSMakeSize(2600,1300)];
   TLWebKitBrowserSession *session=[self.browser valueForKey:@"browserSession"];
   NSURL *URL=[NSURL URLWithString:@"/large-canvas" relativeToURL:session.webView.URL];

@@ -1,3 +1,4 @@
+#import "design_system/TLBrowserContentEdgeView.h"
 #import <AppKit/AppKit.h>
 #import "design_system/UIComponents.h"
 #import "design_system/TLGlassButton.h"
@@ -308,34 +309,41 @@ static void TestBrowserComposer(void) {
   input.responseCount = 2;
   [window.contentView layoutSubtreeIfNeeded];
   [window orderFront:nil];
+  TLBrowserContentEdgeView *edge = [[TLBrowserContentEdgeView alloc] initWithFrame:NSMakeRect(0, 150, 760, 70)];
+  [window.contentView addSubview:edge];
   for (NSNumber *preference in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
-    input.palette = [TLThemePalette paletteForPreference:preference.integerValue];
-    [input layoutSubtreeIfNeeded];
-    [input setLoading:YES progress:0.25];
-    CAShapeLayer *line = [input valueForKey:@"loadingLine"];
-    Check(!line.hidden && CGColorEqualToColor(line.strokeColor, TLCGColor(input.palette.browserLoadingProgress)), @"input loading line uses the active blue theme token");
-    CGFloat inset = line.lineWidth / 2;
-    CGPathRef stroke = CGPathCreateCopyByStrokingPath(line.path, NULL, line.lineWidth, kCGLineCapRound, kCGLineJoinRound, 0);
-    Check(CGPathContainsPoint(stroke, NULL, CGPointMake(inset, NSMidY(input.bounds)), NO), @"progress begins at the inner left midpoint");
-    Check(CGPathContainsPoint(stroke, NULL, CGPointMake(NSMidX(input.bounds), inset), NO), @"progress follows the lower inner edge");
-    Check(CGPathContainsPoint(stroke, NULL, CGPointMake(NSWidth(input.bounds)-inset, NSMidY(input.bounds)), NO), @"progress ends at the inner right midpoint");
-    Check(!CGPathContainsPoint(stroke, NULL, CGPointMake(NSMidX(input.bounds), NSHeight(input.bounds)-inset), NO), @"input top edge stays clear");
-    CGPathRelease(stroke);
+    edge.palette = [TLThemePalette paletteForPreference:preference.integerValue];
+    [edge layoutSubtreeIfNeeded];
+    [edge setLoading:YES progress:0.25];
+    CAShapeLayer *line = [edge valueForKey:@"loadingLine"];
+    CAGradientLayer *gradient = [edge valueForKey:@"loadingGradient"];
+    CAShapeLayer *border = [edge valueForKey:@"borderLine"];
+    Check(!line.hidden && gradient.mask == line, @"content edge displays progress through a gradient mask");
+    Check(CGColorEqualToColor((__bridge CGColorRef)gradient.colors.firstObject, TLCGColor(edge.palette.browserLoadingProgress)) &&
+      CGColorEqualToColor((__bridge CGColorRef)gradient.colors.lastObject, TLCGColor(edge.palette.browserLoadingProgressEnd)), @"gradient uses the blue and lighter-blue tokens in both themes");
+    Check(CGColorEqualToColor(border.strokeColor, TLCGColor(edge.palette.controlBorder)) &&
+      fabs(border.opacity - edge.palette.workspaceOutlineOpacity) < 0.001 && border.lineWidth == edge.palette.borderWidth,
+      @"page border matches the tab outline color, opacity and width");
+    CGRect borderBounds = CGPathGetBoundingBox(border.path), progressBounds = CGPathGetBoundingBox(line.path);
+    Check(fabs(CGRectGetMinY(borderBounds) - edge.palette.borderWidth / 2 -
+      CGRectGetMinY(progressBounds) - line.lineWidth / 2) < 0.001, @"progress sits immediately below the new border");
+    Check(CGRectGetWidth(borderBounds) == NSWidth(edge.bounds), @"border spans the visible page width");
+    Check([edge hitTest:NSMakePoint(20, 20)] == nil, @"page edge does not intercept input");
     if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
       CABasicAnimation *first = (CABasicAnimation *)[line animationForKey:@"loadingProgress"];
       Check(first && [first.fromValue doubleValue] == 0, @"first progress update animates from the start");
       [CATransaction flush];
-      [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:input.palette.browserLoadingProgressDuration * 0.5]];
+      [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:edge.palette.browserLoadingProgressDuration * 0.5]];
       CGFloat visible = ((CAShapeLayer *)line.presentationLayer).strokeEnd;
       Check(visible > 0 && visible < 0.25, @"displayed progress advances between reported values");
-      [input setLoading:YES progress:0.8];
+      [edge setLoading:YES progress:0.8];
       CABasicAnimation *next = (CABasicAnimation *)[line animationForKey:@"loadingProgress"];
       Check(fabs([next.fromValue doubleValue] - visible) < 0.03, @"new progress continues from the visible animation position");
-      [input setLoading:YES progress:0.8];
+      [edge setLoading:YES progress:0.8];
       Check([line animationForKey:@"loadingProgress"] != nil, @"duplicate updates preserve the running animation");
     }
-    [input setLoading:NO progress:1];
-    Check(!line.hidden && line.strokeEnd == 1, @"completion finishes the entire input outline");
+    [edge setLoading:NO progress:1];
+    Check(!line.hidden && line.strokeEnd == 1, @"completion finishes the entire content edge");
     CAKeyframeAnimation *completion = (CAKeyframeAnimation *)[line animationForKey:@"loadingCompletion"];
     double holdEnd = [completion.keyTimes[1] doubleValue] * completion.duration;
     double finishDuration = [line animationForKey:@"loadingProgress"].duration;
@@ -344,11 +352,11 @@ static void TestBrowserComposer(void) {
     [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:holdEnd + 0.1]];
     CGFloat fadingOpacity = ((CALayer *)line.presentationLayer).opacity;
     Check(fadingOpacity > 0 && fadingOpacity < 1, @"completion visibly fades instead of disappearing");
-    [input setLoading:YES progress:0.1];
+    [edge setLoading:YES progress:0.1];
     Check(!line.hidden && line.opacity == 1 && ![line animationForKey:@"loadingCompletion"], @"a new load cancels the previous fade");
     [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
     Check(!line.hidden, @"old completion cannot hide a newer navigation");
-    [input setLoading:NO progress:1];
+    [edge setLoading:NO progress:1];
     completion = (CAKeyframeAnimation *)[line animationForKey:@"loadingCompletion"];
     [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:completion.duration + 0.05]];
     Check(line.hidden && ![line animationForKey:@"loadingCompletion"], @"completion removes the faded indicator");

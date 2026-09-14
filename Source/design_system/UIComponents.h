@@ -63,7 +63,6 @@ NSBezierPath *TLCreateIncomingMessageBubblePath(NSRect bounds, TLThemePalette *p
 
 @interface TLBrowserAddressInput : TLGlassMessageInput <NSTextViewDelegate>
 @property (nonatomic, copy, nullable) BOOL (^suggestionCommandHandler)(SEL command);
-- (void)setLoading:(BOOL)loading progress:(double)progress;
 @property (nonatomic, readonly) BOOL hasUserDraft;
 // Install beside the address input at the leading edge of the footer.
 @property (nonatomic, strong, readonly) NSView *navigationControls;

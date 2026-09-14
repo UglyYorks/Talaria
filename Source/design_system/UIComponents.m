@@ -2443,9 +2443,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 @end
 
 @interface TLBrowserAddressInput ()
-@property (nonatomic, strong) CAShapeLayer *loadingLine;
-@property (nonatomic) BOOL pageLoading;
-@property (nonatomic) NSUInteger loadingAnimationGeneration;
 @property (nonatomic, strong) NSTextField *domainLabel;
 @property (nonatomic) BOOL addressFocused;
 @property (nonatomic) NSUInteger addressAnimationGeneration;
@@ -2516,12 +2513,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 - (instancetype)initWithFrame:(NSRect)frameRect {
   self = [super initWithFrame:frameRect];
   if (self) {
-    _loadingLine = [CAShapeLayer layer];
-    _loadingLine.hidden = YES;
-    _loadingLine.strokeEnd = 0;
-    _loadingLine.zPosition = 1;
-    _loadingLine.lineCap = kCALineCapRound;
-    [self.layer addSublayer:_loadingLine];
     self.sendButton.hoverSurfaceOnly = YES;
     _backButton = [self toolbarButtonWithToolTip:@"Back"];
     _forwardButton = [self toolbarButtonWithToolTip:@"Forward"];
@@ -2605,85 +2596,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   [self applyBrowserPalette];
 }
 
-- (void)setLoading:(BOOL)loading progress:(double)progress {
-  CGFloat next = loading ? MIN(1, MAX(0, isfinite(progress) ? progress : 0)) : 1;
-  BOOL wasLoading = self.pageLoading;
-  CGFloat target = self.loadingLine.strokeEnd;
-  if (wasLoading == loading && (!loading || target == next)) return;
-  CGFloat previous = wasLoading && next >= target
-    ? ((CAShapeLayer *)self.loadingLine.presentationLayer ?: self.loadingLine).strokeEnd : 0;
-  self.pageLoading = loading;
-  NSUInteger generation = ++self.loadingAnimationGeneration;
-  BOOL animateProgress = next > previous && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
-  NSTimeInterval progressDuration = animateProgress ? self.palette.browserLoadingProgressDuration : 0;
-  [CATransaction begin];
-  [CATransaction setDisableActions:YES];
-  [self.loadingLine removeAllAnimations];
-  self.loadingLine.hidden = NO;
-  self.loadingLine.opacity = 1;
-  self.loadingLine.strokeEnd = next;
-  if (animateProgress) {
-    CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:@"strokeEnd"];
-    animation.fromValue = @(previous);
-    animation.toValue = @(next);
-    animation.duration = progressDuration;
-    animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-    [self.loadingLine addAnimation:animation forKey:@"loadingProgress"];
-  }
-  if (!loading) {
-    // Finish the stroke, hold the complete line, then fade. A new navigation
-    // invalidates this completion so its line cannot be hidden by an old load.
-    NSTimeInterval holdEnd = progressDuration + self.palette.browserLoadingCompletionHoldDuration;
-    NSTimeInterval duration = holdEnd + self.palette.browserLoadingFadeDuration;
-    CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-    fade.values = @[@1, @1, @0];
-    fade.keyTimes = @[@0, @(holdEnd / duration), @1];
-    fade.duration = duration;
-    self.loadingLine.opacity = 0;
-    [self.loadingLine addAnimation:fade forKey:@"loadingCompletion"];
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-      TLBrowserAddressInput *input = weakSelf;
-      if (!input || input.loadingAnimationGeneration != generation || input.pageLoading) return;
-      [CATransaction begin]; [CATransaction setDisableActions:YES];
-      input.loadingLine.hidden = YES;
-      [input.loadingLine removeAllAnimations];
-      [CATransaction commit];
-    });
-  }
-  [CATransaction commit];
-}
-
-- (void)layoutLoadingLine {
-  if (!self.loadingLine) return;
-  CGFloat inset = self.palette.browserLoadingLineWidth / 2;
-  CGRect rect = CGRectInset(self.bounds, inset, inset);
-  if (CGRectIsEmpty(rect)) return;
-  CGFloat radius = MAX(0, MIN(self.palette.messageInputCornerRadius - inset, MIN(rect.size.width, rect.size.height) / 2));
-  CGFloat left = CGRectGetMinX(rect), right = CGRectGetMaxX(rect), middle = CGRectGetMidY(rect);
-  // Build in unflipped coordinates, then mirror for the input's flipped view.
-  CGFloat bottom = CGRectGetMinY(rect);
-  CGMutablePathRef path = CGPathCreateMutable();
-  CGPathMoveToPoint(path, NULL, left, middle);
-  CGPathAddArcToPoint(path, NULL, left, bottom, left + radius, bottom, radius);
-  CGPathAddArcToPoint(path, NULL, right, bottom, right, bottom + radius, radius);
-  CGPathAddLineToPoint(path, NULL, right, middle);
-  CGAffineTransform transform = self.isFlipped ? CGAffineTransformMake(1, 0, 0, -1, 0, NSHeight(self.bounds)) : CGAffineTransformIdentity;
-  CGPathRef resolved = CGPathCreateCopyByTransformingPath(path, &transform);
-  [CATransaction begin];
-  [CATransaction setDisableActions:YES];
-  self.loadingLine.frame = self.bounds;
-  self.loadingLine.path = resolved;
-  self.loadingLine.fillColor = TLCGColor(self.palette.transparentSurface);
-  self.loadingLine.strokeColor = TLCGColor(self.palette.browserLoadingProgress);
-  self.loadingLine.lineWidth = self.palette.browserLoadingLineWidth;
-  [CATransaction commit];
-  CGPathRelease(resolved);
-  CGPathRelease(path);
-}
-
 - (void)applyBrowserPalette {
-  [self layoutLoadingLine];
   TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
   glass.palette = self.palette;
   glass.cornerRadius = self.palette.messageInputCornerRadius;
@@ -2723,7 +2636,6 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   }
   [super layout];
   [self layoutDomainLabel];
-  [self layoutLoadingLine];
 }
 
 - (NSString *)idleAddress {

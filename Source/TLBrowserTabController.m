@@ -1,4 +1,5 @@
 #import "design_system/TLBrowserFooterView.h"
+#import "design_system/TLBrowserContentEdgeView.h"
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "TLBrowserContentColor.h"
@@ -28,6 +29,7 @@
 @property (nonatomic, strong) TLWebKitBrowserSession *browserSession;
 @property (nonatomic, strong) TLBrowserViewportView *browserHostView;
 @property TLBrowserFooterView *bottomBlur;
+@property TLBrowserContentEdgeView *contentEdge;
 @property NSLayoutConstraint *bottomBlurHeight;
 @property (nonatomic, strong) TLBrowserAddressInput *browserAddressInput;
 @property (nonatomic, strong) TLInputSuggestionPanelView *suggestionPanel;
@@ -131,6 +133,7 @@
   self.footerColorNext = 0;
   self.browserHostView.palette = palette;
   self.bottomBlur.palette = palette;
+  self.contentEdge.palette = palette;
   self.browserAddressInput.palette = palette;
   self.suggestionPanel.palette = palette;
   self.suggestionList.palette = palette;
@@ -167,6 +170,16 @@
     [self.bottomBlur.leadingAnchor constraintEqualToAnchor:browserHostView.leadingAnchor],
     [self.bottomBlur.trailingAnchor constraintEqualToAnchor:browserHostView.trailingAnchor],
     [self.bottomBlur.bottomAnchor constraintEqualToAnchor:browserHostView.bottomAnchor], self.bottomBlurHeight]];
+  self.contentEdge = [[TLBrowserContentEdgeView alloc] init];
+  self.contentEdge.palette = self.palette;
+  self.contentEdge.translatesAutoresizingMaskIntoConstraints = NO;
+  [browserContentView addSubview:self.contentEdge];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.contentEdge.leadingAnchor constraintEqualToAnchor:self.bottomBlur.leadingAnchor],
+    [self.contentEdge.trailingAnchor constraintEqualToAnchor:self.bottomBlur.trailingAnchor],
+    [self.contentEdge.topAnchor constraintEqualToAnchor:self.bottomBlur.topAnchor],
+    [self.contentEdge.bottomAnchor constraintEqualToAnchor:self.bottomBlur.bottomAnchor],
+  ]];
   self.browserHostView = browserHostView;
   self.view = browserContentView;
 
@@ -425,7 +438,7 @@
   if (self.loading == loading && self.loadingProgress == progress) return;
   self.loading = loading;
   self.loadingProgress = progress;
-  [self.browserAddressInput setLoading:loading progress:progress];
+  [self.contentEdge setLoading:loading progress:progress];
   if (self.loadingChangedHandler) self.loadingChangedHandler();
 }
 
@@ -464,7 +477,7 @@
 }
 - (BOOL)canSamplePageAppearance {
   if (self.browserSession.fullscreen) return NO;
-  return !self.isClosed && self.browserSession && self.view.window.isVisible &&
+  return !self.isClosed && self.browserSession.pageAppearanceReady && self.view.window.isVisible &&
     !self.view.window.isMiniaturized && !self.view.isHiddenOrHasHiddenAncestor;
 }
 - (void)restoreHeaderContentColor:(NSColor *)color {
@@ -474,7 +487,10 @@
   return self.headerContentColor != nil && self.browserSession != nil && !self.browserSession.webView.loading;
 }
 - (void)updateTabEdgeColor:(NSColor *)color {
-  if(!color || self.isClosed || [color isEqual:self.headerContentColor])return;
+  // Both timer samples and pushed scroll colors can arrive before the new
+  // document paints. Retain the previous/restored color (or theme default)
+  // instead of adopting WebKit's empty navigation surface.
+  if(!color || self.isClosed || !self.browserSession.pageAppearanceReady || [color isEqual:self.headerContentColor])return;
   self.headerContentColor=color;
   if(self.headerColorChangedHandler)self.headerColorChangedHandler();
 }
