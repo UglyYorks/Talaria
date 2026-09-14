@@ -945,10 +945,11 @@ class CredentialRPCTests(unittest.TestCase):
 
     def test_rpc_error_never_echoes_value(self):
         from talaria_gateway_entry import register
-        server = Mock()
+        server = Mock(_LONG_HANDLERS=frozenset())
         handlers = {}
         server.method.side_effect = lambda name: lambda fn: handlers.update({name: fn})
-        register(server)
+        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/talaria-entry-test"}):
+            register(server)
         with patch("talaria_gateway_entry.credentials", side_effect=RuntimeError("test-secret")):
             handlers["talaria.credentials.set"](1, {"value": "test-secret"})
         self.assertNotIn("test-secret", str(server._err.call_args))
@@ -967,6 +968,7 @@ class CredentialRPCTests(unittest.TestCase):
                 with patch.dict(sys.modules, {"tui_gateway": types.SimpleNamespace(entry=entry)}), \
                      patch.dict(os.environ, {"HERMES_HOME": "/tmp/talaria-entry-test"}), \
                      patch("talaria_gateway_entry.configure_vm_database") as configure_database, \
+                     patch("hermes_shared_folders.install") as install_folders, \
                      patch("hermes_automations.Automations", return_value=automations):
                     if failure:
                         with self.assertRaisesRegex(RuntimeError, "gateway stopped"):
@@ -978,10 +980,12 @@ class CredentialRPCTests(unittest.TestCase):
                                     "talaria.providers", "talaria.providers.usage", "talaria.session.ready", "talaria.session.verify_model", "talaria.models.thinking",
                                                 "talaria.notifications.sync", "talaria.notifications.set_read",
                                     "talaria.notifications.open_source", "talaria.plugins",
-                                    "talaria.host.configure", "talaria.host.attach", "talaria.host.detach", "talaria.host.respond"})
+                                    "talaria.host.configure", "talaria.host.attach", "talaria.host.detach", "talaria.host.respond",
+                                    "talaria.shared_folders.configure", "talaria.shared_folders.attach"})
                 self.assertIn("talaria.automations", server._LONG_HANDLERS)
                 entry.main.assert_called_once_with()
                 configure_database.assert_called_once_with()
+                install_folders.assert_called_once_with("/tmp/talaria-entry-test")
                 automations.stop_event.set.assert_called_once_with()
 
     def test_worker_uses_gateway_and_returns_structured_response(self):

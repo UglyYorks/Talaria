@@ -6,6 +6,7 @@
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLMessageInput.h"
 #import <AppKit/AppKit.h>
+#import "PromptBuilder.h"
 #import <QuartzCore/QuartzCore.h>
 #import <WebKit/WebKit.h>
 #import "TLBrowserTabController.h"
@@ -4133,6 +4134,12 @@ static void TestLiveThinkingPresentation(void) {
     [chat renderMessagesScrollingToBottom:NO];
     NSView *questionView = [chat.messageMarkdownViews objectForKey:message];
     Check([[questionView valueForKey:@"text"] isEqual:@"Which dates?\n\nReply with your answer."], @"old question envelopes render readable text without protocol fields");
+    NSString *legacy = [[TLPromptBuilder sharedFolderContext:@{@"/Mac/work":@"/mnt/mac/work"}] stringByAppendingString:@"\nMy actual request"];
+    TLChatMessage *user = [TLChatMessage messageWithRole:TLRoleUser content:legacy thinking:nil];
+    chat.messages = [@[user] mutableCopy];
+    [chat renderMessagesScrollingToBottom:NO];
+    NSTextField *userText = (id)[chat.messageMarkdownViews objectForKey:user];
+    Check([userText.stringValue isEqual:@"My actual request"] && [user.content isEqual:legacy], @"old bubbles hide generated folder context without changing stored content");
     [chat close];
     [window close];
   }

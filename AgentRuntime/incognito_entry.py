@@ -73,10 +73,12 @@ def main():
     (plugin / "__init__.py").write_text("from incognito_policy import register\n")
     cfg["plugins"]["enabled"] = [PLUGIN]
     path.write_text(yaml.safe_dump(cfg))
+    from hermes_shared_folders import install as install_shared_folders, PLUGIN as SHARED_FOLDERS_PLUGIN
+    install_shared_folders(path.parent)
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
     discover_plugins()
     active = {item["key"] for item in get_plugin_manager().list_plugins() if item.get("enabled")}
-    if active != {PLUGIN}:
+    if active != {PLUGIN, SHARED_FOLDERS_PLUGIN}:
         raise RuntimeError("Could not isolate Hermes plugin hooks for Incognito.")
     from hermes_cli import config as hermes_config
     resolved = hermes_config.load_config_readonly()

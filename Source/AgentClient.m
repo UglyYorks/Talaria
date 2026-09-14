@@ -418,6 +418,8 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     @"prompt": prompt ?: @"",
     @"soul": agent.soul ?: @"",
     @"host_command_description": TLPromptBuilder.hostCommandToolDescription,
+    @"shared_folder_context": [TLPromptBuilder sharedFolderContext:[self.vmService folderMountPathsForAgent:agent] ?: @{} readOnly:self.incognitoID.length > 0],
+    @"shared_folder_summary": TLPromptBuilder.sharedFolderPluginSummary,
   } mutableCopy];
   payload[@"reasoning_effort"] = reasoningEffort ?: @"";
   if (approvalResponse) payload[@"approval_response"] = approvalResponse;

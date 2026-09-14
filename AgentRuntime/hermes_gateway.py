@@ -667,7 +667,7 @@ class HermesGateway:
             return self.command(chat_id, sid, target + (" " + arg if arg else ""), model, depth + 1)
         return result
 
-    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort=""):
+    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort="", shared_folders=False):
         if cancellation and cancellation.cancelled():
             return
         with self.lock:
@@ -712,6 +712,8 @@ class HermesGateway:
                 self._apply_session_thinking(sid, reasoning_effort)
                 self.sessions[chat_id]["reasoning_effort"] = reasoning_effort
             waiting = self.waiting.get(chat_id)
+            if shared_folders and not waiting:
+                self.call("talaria.shared_folders.attach", {"session_id": sid})
             if approval_response is not None and (not waiting or waiting[2] not in {"approval.request", "clarify.request"}):
                 raise RuntimeError("This approval is no longer pending. Send your request again.")
             if waiting:

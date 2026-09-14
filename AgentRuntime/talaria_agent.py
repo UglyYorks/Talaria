@@ -405,6 +405,10 @@ def stream_hermes_session(request, output=None, cancellation=None):
             return
         save_agent_soul(request)
         gateway = tui_gateway(token, model)
+        folder_context = request.get("shared_folder_context")
+        if folder_context is not None:
+            gateway.call("talaria.shared_folders.configure", {"context": folder_context,
+                         "summary": request.get("shared_folder_summary")})
         host_description = request.get("host_command_description")
         if host_description:
             gateway.call("talaria.host.configure", {"description": host_description})
@@ -413,7 +417,8 @@ def stream_hermes_session(request, output=None, cancellation=None):
              ("payload" if isinstance(text, dict) else "text"): text}, output),
             cancellation=cancellation, approval_response=request.get("approval_response"),
             wait_for_previous_turn=request.get("wait_for_previous_turn") is True,
-            host_commands=bool(host_description), reasoning_effort=trim(request.get("reasoning_effort")))
+            host_commands=bool(host_description), reasoning_effort=trim(request.get("reasoning_effort")),
+            shared_folders=folder_context is not None)
         cancellation.finish()
         if not cancellation.cancelled():
             emit({"type": "complete"}, output)

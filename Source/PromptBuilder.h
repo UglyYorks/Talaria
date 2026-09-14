@@ -43,6 +43,9 @@ typedef NS_ENUM(NSInteger, TLPromptCompactionStrategy) {
 + (NSString *)notificationToolDescription;
 + (NSString *)hostCommandToolDescription;
 + (NSString *)sharedFolderContext:(NSDictionary<NSString *, NSString *> *)mountPaths;
++ (NSString *)sharedFolderContext:(NSDictionary<NSString *, NSString *> *)mountPaths readOnly:(BOOL)readOnly;
++ (NSString *)sharedFolderPluginSummary;
++ (NSString *)userTextWithoutLegacySharedFolders:(NSString *)text;
 - (instancetype)init;
 - (instancetype)initWithLimit:(nullable NSNumber *)limit separator:(NSString *)separator NS_DESIGNATED_INITIALIZER;
 - (instancetype)addPartWithContent:(NSString *)content

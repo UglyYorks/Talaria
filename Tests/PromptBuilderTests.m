@@ -261,6 +261,14 @@ static NSInteger TLReadSQLiteUserVersion(NSURL *url) {
 }
 
 static void TestPromptBuilder(void) {
+  NSDictionary *mounts = @{@"/Users/test/Work Projects":@"/mnt/mac/Work-Projects"};
+  NSString *folderContext = [TLPromptBuilder sharedFolderContext:mounts];
+  NSString *legacy = [folderContext stringByAppendingString:@"\nKeep exactly my words\n"];
+  TLAssertEqualObjects([TLPromptBuilder userTextWithoutLegacySharedFolders:legacy], @"Keep exactly my words\n", @"old generated envelope is removed without trimming the user text");
+  TLAssertEqualObjects([TLPromptBuilder userTextWithoutLegacySharedFolders:[@"Quoted:\n" stringByAppendingString:legacy]], [@"Quoted:\n" stringByAppendingString:legacy], @"quoted folder instructions are kept");
+  TLAssertEqualObjects([TLPromptBuilder userTextWithoutLegacySharedFolders:[legacy stringByReplacingOccurrencesOfString:@"/mnt/mac/" withString:@"/something/other/"]], [legacy stringByReplacingOccurrencesOfString:@"/mnt/mac/" withString:@"/something/other/"], @"unrecognized path envelopes are left alone");
+  TLAssertTrue([[TLPromptBuilder sharedFolderContext:mounts readOnly:YES] containsString:@"read-only in Incognito"], @"private plugin instructions reflect enforced read-only folders");
+  TLAssertEqualObjects([TLPromptBuilder sharedFolderContext:@{}], @"", @"removed mounts leave no mapping in system context");
   TLCompactedPrompt *fullPrompt = [[[[TLPromptBuilder alloc] initWithLimit:@30 separator:@"\n"]
     addPartWithContent:@"system" importance:TLPromptImportanceRequired strategy:TLPromptCompactionStrategyWhole name:nil]
     addPartWithContent:@"user" importance:TLPromptImportanceUseful strategy:TLPromptCompactionStrategyWhole name:nil].compact;
@@ -786,8 +794,10 @@ static void TestChatIconGenerator(void) {
 
 @interface TLDeferredSocketService : TLAgentVMService
 @property (copy) TLAgentVMConnectionCompletionHandler connected;
+@property NSDictionary *mountedFolders;
 @end
 @implementation TLDeferredSocketService
+- (NSDictionary *)folderMountPathsForAgent:(TLAgentRecord *)agent { return self.mountedFolders; }
 - (void)connectToAgent:(TLAgentRecord *)agent port:(uint32_t)port timeout:(NSTimeInterval)timeout
   completion:(TLAgentVMConnectionCompletionHandler)completion { self.connected = completion; }
 @end
@@ -856,6 +866,7 @@ static void TestHostCommandTransport(void) {
   for (NSString *policy in @[@"deny", @"always", @"ask"]) {
     [bridge setPolicy:policy forAgent:@"host-agent"];
     TLDeferredSocketService *vm = [TLDeferredSocketService new];
+    vm.mountedFolders = @{@"/Mac/work":@"/mnt/mac/work"};
     TLBundledAgentClient *client = [[TLBundledAgentClient alloc] initWithVMService:vm];
     [client setValue:bridge forKey:@"hostBridge"];
     TLAgentRecord *agent = [TLAgentRecord new]; agent.vmDirectory = @"host-agent";
@@ -875,6 +886,9 @@ static void TestHostCommandTransport(void) {
     char bytes[8192]; ssize_t count = recv(stream[1], bytes, sizeof(bytes), MSG_DONTWAIT);
     NSDictionary *initial = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:bytes length:MAX(0, count)] options:0 error:nil];
     TLAssertTrue([initial[@"host_command_description"] containsString:@"user's Mac"], @"tool description is supplied by native prompt builder");
+    TLAssertEqualObjects(initial[@"prompt"], @"host test", @"shared folders do not alter the user prompt on the wire");
+    TLAssertTrue([initial[@"shared_folder_context"] containsString:@"/mnt/mac/work"], @"actual VM mappings travel as separate native context");
+    TLAssertTrue([initial[@"shared_folder_summary"] containsString:@"$HERMES_HOME"], @"large mappings have native-generated plugin guidance");
     NSDictionary *event = @{@"type":@"delta", @"request_id":@"turn", @"kind":@"host_command", @"payload":@{
       @"request_id":@"host-call", @"session_id":@"runtime-chat", @"command":@"printf native-bridge", @"cwd":@"/private/tmp", @"timeout_seconds":@3}};
     NSMutableData *line = [[NSJSONSerialization dataWithJSONObject:event options:0 error:nil] mutableCopy];
@@ -1374,8 +1388,7 @@ static void TestAssistantTurnRunner(void) {
   runner.referenceContext = nil;
   [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
     nextPrompt:@"List shared files" updateHandler:nil completionHandler:nil error:&error];
-  TLAssertTrue([client.capturedMessages[0].content containsString:@"/mnt/mac/work"] && [client.capturedMessages[0].content containsString:@"List shared files"],
-    @"chat receives the actual running VM's shared paths alongside the user prompt");
+  TLAssertEqualObjects(client.capturedMessages[0].content, @"List shared files", @"shared-folder instructions never become part of a user message");
   TLAssertEqualObjects(messages[messages.count - 2].content, @"List shared files", @"mount context does not change the visible user message");
   vmService.mountedFolders = @{};
   [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages

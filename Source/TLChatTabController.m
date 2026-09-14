@@ -1,5 +1,6 @@
 #import "TLQuestionRequest.h"
 #import "TLChatTabController.h"
+#import "PromptBuilder.h"
 #import "MarkdownRenderer.h"
 #import "design_system/TLNotificationMessageCardView.h"
 #import "TLEmptyStateTips.h"
@@ -808,6 +809,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 
 - (NSString *)displayTextForMessage:(TLChatMessage *)message {
   NSString *displayText = message.content ?: @"";
+  if ([message.role isEqual:TLRoleUser]) return [TLPromptBuilder userTextWithoutLegacySharedFolders:displayText];
   // Older builds persisted the gateway's question array as visible JSON.
   // Repair only that exact envelope for display; keep stored content intact.
   NSString *suffix = @"Reply with your answer.";
@@ -944,7 +946,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 
   BOOL hasResponseContent = message.content.length > 0;
   if (user) {
-    NSString *content = hasResponseContent ? message.content : @"";
+    NSString *content = hasResponseContent ? [self displayTextForMessage:message] : @"";
     userLeadingInset = self.palette.userMessageHorizontalPadding;
     userTrailingInset = self.palette.userMessageHorizontalPadding;
     userTopInset = self.palette.userMessageVerticalPadding;
