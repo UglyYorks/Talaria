@@ -31,16 +31,16 @@ class DevelopmentLaunchTests(unittest.TestCase):
         """)
         self.live.commit()
 
-    def test_live_wal_snapshot_is_independent_and_rebases_agents(self):
+    def test_live_wal_snapshot_is_independent_and_reuses_agents(self):
         data = self.root / "local"
         data.mkdir()
         destination = data / "talaria.sqlite3"
         self.live.execute("INSERT INTO chats VALUES(2, 'uncommitted')")
-        launcher.snapshot_database(self.source, destination, data)
+        launcher.snapshot_database(self.source, destination)
         with sqlite3.connect(destination) as copied:
             self.assertEqual(copied.execute("SELECT * FROM chats").fetchall(), [(1, "Committed in WAL")])
             self.assertEqual(copied.execute("SELECT vm_directory, status, last_error, folder_paths FROM agents").fetchone(),
-                             (str(data / "Agents/1"), "stopped", None, "[]"))
+                             ("/original/VM", "stopped", None, '["/original/files"]'))
             copied.execute("UPDATE chats SET content='local edit'")
         self.live.rollback()
         self.assertEqual(self.live.execute("SELECT content FROM chats").fetchone()[0], "Committed in WAL")
@@ -51,12 +51,12 @@ class DevelopmentLaunchTests(unittest.TestCase):
     def test_missing_or_invalid_source_never_creates_a_database(self):
         destination = self.root / "copy.sqlite3"
         with self.assertRaises(FileNotFoundError):
-            launcher.snapshot_database(self.root / "missing.sqlite3", destination, self.root)
+            launcher.snapshot_database(self.root / "missing.sqlite3", destination)
         self.assertFalse(destination.exists())
         bad = self.root / "bad.sqlite3"
         bad.write_text("not sqlite")
         with self.assertRaises(sqlite3.DatabaseError):
-            launcher.snapshot_database(bad, destination, self.root)
+            launcher.snapshot_database(bad, destination)
         self.assertFalse(destination.exists())
 
     def test_repeated_launches_use_distinct_desktop_bundles_and_snapshots(self):
@@ -91,15 +91,24 @@ class DevelopmentLaunchTests(unittest.TestCase):
             self.assertTrue((app / "Contents/MacOS" / info["CFBundleExecutable"]).is_file())
             self.assertFalse((app / "Contents/MacOS/Talaria").exists())
             self.assertNotIn("CFBundleURLTypes", info)
+            self.assertTrue(info["TLDevelopmentReuseAgentState"])
             data = Path(info["TLDevelopmentDataDirectory"])
             self.assertTrue(data.is_relative_to(app.parent))
             self.assertTrue((data / "talaria.sqlite3").is_file())
+            with sqlite3.connect(data / "talaria.sqlite3") as copied:
+                self.assertEqual(copied.execute("SELECT vm_directory, folder_paths, status FROM agents").fetchone(),
+                                 ("/original/VM", '["/original/files"]', "stopped"))
+            self.assertFalse((data / "Agents").exists())
         self.assertNotEqual(*identifiers)
         with (first / "Contents/Info.plist").open("rb") as handle:
             self.assertEqual(plistlib.load(handle)["TLDevelopmentTestInstructions"], instructions)
         self.assertEqual([call for call in calls if call[0] == "/usr/bin/open"],
                          [["/usr/bin/open", "-n", str(first)], ["/usr/bin/open", "-n", str(second)]])
         self.assertFalse(any("pkill" in str(call) or "close-running-app" in call for call in calls))
+        signatures = [call for call in calls if call[0] == "/usr/bin/codesign"]
+        self.assertEqual(len(signatures), 2)
+        for signature in signatures:
+            self.assertEqual(signature[signature.index("--identifier") + 1], "com.talaria.chat")
         self.assertEqual((first.parent / "test-instructions.txt").read_text(), instructions + "\n")
 
     def test_isolation_is_required(self):
