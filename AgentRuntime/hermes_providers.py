@@ -173,7 +173,51 @@ def login_action(action, slug, params):
                 "text": text}
 
 
+def account_usage(slugs):
+    """Read live limits with Hermes's own helpers, inside the gateway process.
+
+    No credentials, session changes, inference calls, or local usage estimates
+    cross this RPC. Unsupported/unavailable snapshots are omitted by Hermes.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from agent.account_usage import fetch_account_usage
+    from hermes_cli.provider_catalog import provider_catalog
+
+    catalogue = {row.slug: row.label for row in provider_catalog()}
+    selected = list(dict.fromkeys(slug for slug in slugs if slug in catalogue))
+
+    def fetch(slug):
+        if slug == "nous":
+            from agent.account_usage import build_nous_credits_snapshot
+            from hermes_cli.nous_account import get_nous_portal_account_info
+            snapshot = build_nous_credits_snapshot(get_nous_portal_account_info(force_fresh=True))
+        else:
+            snapshot = fetch_account_usage(slug)
+        if not snapshot or not snapshot.available:
+            return None
+        return {"slug": slug, "name": catalogue[slug],
+                "windows": [{"label": window.label, "used_percent": window.used_percent,
+                             "reset_at": window.reset_at.timestamp() if window.reset_at else None,
+                             "detail": window.detail} for window in snapshot.windows],
+                "details": list(snapshot.details)}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return {"providers": [row for row in pool.map(fetch, selected) if row]}
+
+
 def register(server):
+    # Usage can involve several network reads; never block Stop or approvals.
+    server._LONG_HANDLERS = server._LONG_HANDLERS | {"talaria.providers.usage"}
+
+    @server.method("talaria.providers.usage")
+    def usage(rid, params):
+        try:
+            return server._ok(rid, account_usage(params.get("slugs", [])))
+        except (ImportError, AttributeError):
+            return server._err(rid, -32601, "Update Hermes to view provider limits.")
+        except Exception:
+            return server._err(rid, -32603, "Could not refresh provider limits. Retry shortly.")
+
     @server.method("talaria.providers")
     def handle(rid, params):
         try:
