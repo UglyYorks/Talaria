@@ -4,6 +4,8 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface TLHoverIconButton : NSButton
+// Fill a segment of a parent-clipped group instead of drawing a circular hover.
+@property (nonatomic) BOOL rectangularHoverSurface;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic) BOOL hoverSurfaceOnly;
 @property (nonatomic, strong, nullable) NSColor *idleSurfaceColor;

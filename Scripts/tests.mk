@@ -164,7 +164,7 @@ test-browser-popup-tab: $(BUILD_DIR)/BrowserPopupTabTests
 	python3 Tests/run-browser-popup-tab.py
 
 # Desktop WebKit blur geometry plus a live compositor fixture for visual QA.
-$(BUILD_DIR)/BrowserBackdropTests: Tests/BrowserBackdropTests.m Source/design_system/TLProgressiveBlurView.m $(THEME_SOURCES)
+$(BUILD_DIR)/BrowserBackdropTests: Tests/BrowserBackdropTests.m Source/design_system/TLBrowserFooterView.m $(THEME_SOURCES)
 	mkdir -p "$(BUILD_DIR)"
 	xcrun clang $(OBJCFLAGS) -ISource $^ -framework AppKit -framework WebKit -framework CoreImage -framework QuartzCore -o "$@"
 

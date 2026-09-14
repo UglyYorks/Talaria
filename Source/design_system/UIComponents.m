@@ -2344,12 +2344,47 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 - (NSView *)hitTest:(NSPoint)point { return nil; }
 @end
 
+// Full-height navigation segments share one clipped glass outline. The layer
+// divider is decorative, so even the center seam belongs to a button hit area.
+@interface TLBrowserNavigationView : TLGlassPaneView
+@property (nonatomic, strong) CALayer *divider;
+@end
+@implementation TLBrowserNavigationView
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.wantsLayer = YES;
+    self.layer.masksToBounds = YES;
+    self.divider = [CALayer layer];
+    self.divider.zPosition = 1;
+    [self.layer addSublayer:self.divider];
+  }
+  return self;
+}
+- (void)setPalette:(TLThemePalette *)palette {
+  [super setPalette:palette];
+  self.divider.backgroundColor = TLCGColor(palette.controlBorder);
+  self.needsLayout = YES;
+}
+- (void)layout {
+  [super layout];
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  self.layer.cornerRadius = MIN(NSHeight(self.bounds) / 2, self.palette.messageInputCornerRadius);
+  self.divider.backgroundColor = TLCGColor(self.palette.controlBorder);
+  self.divider.frame = CGRectMake(NSMidX(self.bounds) - self.palette.borderWidth / 2,
+    self.palette.space5, self.palette.borderWidth, MAX(0, NSHeight(self.bounds) - self.palette.space5 * 2));
+  [CATransaction commit];
+}
+@end
+
 @interface TLBrowserAddressInput ()
 @property (nonatomic, strong) CAShapeLayer *loadingLine;
 @property (nonatomic) BOOL pageLoading;
 @property (nonatomic) NSUInteger loadingAnimationGeneration;
 @property (nonatomic, strong) NSTextField *domainLabel;
 @property (nonatomic) BOOL addressFocused;
+@property (nonatomic) NSUInteger addressAnimationGeneration;
+@property (nonatomic, strong, readwrite) NSView *navigationControls;
+@property (nonatomic, strong) NSLayoutConstraint *navigationHeight;
 @property (nonatomic, readwrite) BOOL hasUserDraft;
 @property (nonatomic, copy) NSString *latestAddress;
 @property (nonatomic, strong, readwrite) NSButton *backButton;
@@ -2358,7 +2393,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 @property (nonatomic, strong, readwrite) NSButton *chatButton;
 @property (nonatomic, strong) NSTextField *responseCountLabel;
 @property (nonatomic, strong) NSStackView *trailingStack;
-@property (nonatomic, strong) NSStackView *navigationStack;
+@property (nonatomic, strong) NSLayoutConstraint *navigationWidth;
 @property (nonatomic, strong) NSArray<NSLayoutConstraint *> *buttonSizeConstraints;
 - (NSButton *)toolbarButtonWithToolTip:(NSString *)toolTip;
 - (NSImage *)toolbarImageWithSystemName:(NSString *)systemName accessibilityDescription:(NSString *)description;
@@ -2435,19 +2470,33 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     _forwardButton.enabled = NO;
     _reloadButton.enabled = NO;
 
-    _navigationStack = [[NSStackView alloc] init];
-    _navigationStack.translatesAutoresizingMaskIntoConstraints = NO;
-    _navigationStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    _navigationStack.alignment = NSLayoutAttributeCenterY;
-    _navigationStack.distribution = NSStackViewDistributionFill;
-    [_navigationStack addArrangedSubview:_backButton];
-    [_navigationStack addArrangedSubview:_forwardButton];
-    [_navigationStack addArrangedSubview:_reloadButton];
+    TLGlassPaneView *navigationGlass = [[TLBrowserNavigationView alloc] init];
+    navigationGlass.translatesAutoresizingMaskIntoConstraints = NO;
+    _navigationControls = navigationGlass;
+    for (TLHoverIconButton *button in @[_backButton, _forwardButton]) {
+      button.rectangularHoverSurface = YES;
+      [navigationGlass addSubview:button];
+    }
+    _navigationHeight = [navigationGlass.heightAnchor constraintEqualToConstant:self.palette.composerButtonHeight];
+    _navigationWidth = [navigationGlass.widthAnchor constraintEqualToConstant:self.palette.composerButtonHeight * 2];
+    _navigationWidth.priority = NSLayoutPriorityDefaultHigh - 1;
+    [NSLayoutConstraint activateConstraints:@[
+      [_backButton.leadingAnchor constraintEqualToAnchor:navigationGlass.leadingAnchor],
+      [_backButton.trailingAnchor constraintEqualToAnchor:_forwardButton.leadingAnchor],
+      [_forwardButton.trailingAnchor constraintEqualToAnchor:navigationGlass.trailingAnchor],
+      [_backButton.widthAnchor constraintEqualToAnchor:_forwardButton.widthAnchor],
+      [_backButton.topAnchor constraintEqualToAnchor:navigationGlass.topAnchor],
+      [_backButton.bottomAnchor constraintEqualToAnchor:navigationGlass.bottomAnchor],
+      [_forwardButton.topAnchor constraintEqualToAnchor:navigationGlass.topAnchor],
+      [_forwardButton.bottomAnchor constraintEqualToAnchor:navigationGlass.bottomAnchor],
+      [navigationGlass.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.browserToolbarButtonSize * 2],
+      _navigationWidth, _navigationHeight,
+    ]];
     _trailingStack = [NSStackView stackViewWithViews:@[_chatButton, _responseCountLabel]];
     _trailingStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     _trailingStack.alignment = NSLayoutAttributeCenterY;
     _trailingStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self setLeadingAccessoryView:_navigationStack trailingAccessoryView:_trailingStack];
+    [self setLeadingAccessoryView:_reloadButton trailingAccessoryView:_trailingStack];
     self.selectsAllOnFocus = YES;
     self.textView.wantsLayer = YES;
     self.textView.delegate = self;
@@ -2464,13 +2513,16 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     self.textChangeHandler = ^{
       TLBrowserAddressInput *input = weakSelf;
       input.hasUserDraft = YES;
+      input.addressAnimationGeneration++;
+      [input.domainLabel.layer removeAllAnimations];
+      [input.textView.layer removeAnimationForKey:@"talaria.addressFocus"];
       input.singleLine = [TLInputSuggestions browserURLForInput:input.textView.string] != nil;
       input.domainLabel.layer.opacity = 0;
       input.textView.alphaValue = 1;
       input.sendButton.enabled = [input.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length > 0;
     };
     NSMutableArray<NSLayoutConstraint *> *buttonSizeConstraints = [NSMutableArray array];
-    for (NSButton *button in @[_backButton, _forwardButton, _reloadButton, _chatButton]) {
+    for (NSButton *button in @[_reloadButton, _chatButton]) {
       [buttonSizeConstraints addObject:[button.widthAnchor constraintEqualToConstant:self.palette.browserToolbarButtonSize]];
       [buttonSizeConstraints addObject:[button.heightAnchor constraintEqualToConstant:self.palette.browserToolbarButtonSize]];
     }
@@ -2569,7 +2621,11 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
   glass.palette = self.palette;
   glass.cornerRadius = self.palette.messageInputCornerRadius;
-  self.navigationStack.spacing = self.palette.space0;
+  TLGlassPaneView *navigationGlass = (TLGlassPaneView *)self.navigationControls;
+  navigationGlass.palette = self.palette;
+  navigationGlass.cornerRadius = self.palette.messageInputCornerRadius;
+  self.navigationHeight.constant = self.palette.composerButtonHeight;
+  self.navigationWidth.constant = self.palette.composerButtonHeight * 2;
   self.trailingStack.spacing = self.palette.space0;
   [self.trailingStack setCustomSpacing:self.palette.space2 afterView:self.chatButton];
   [self.trailingStack setCustomSpacing:self.palette.space3 afterView:self.responseCountLabel];
@@ -2625,16 +2681,25 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 
 - (void)addressFocusChanged:(BOOL)focused {
-  CGPoint oldPosition = self.domainLabel.layer.position;
-  BOOL animate = focused && !self.addressFocused && !self.hasUserDraft && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  CALayer *domainPresentation = self.domainLabel.layer.presentationLayer ?: self.domainLabel.layer;
+  CALayer *textPresentation = self.textView.layer.presentationLayer ?: self.textView.layer;
+  CGPoint oldPosition = domainPresentation.position;
+  CGFloat oldDomainOpacity = domainPresentation.opacity, oldTextOpacity = textPresentation.opacity;
+  BOOL animate = focused != self.addressFocused && !self.hasUserDraft &&
+    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  NSUInteger generation = ++self.addressAnimationGeneration;
   self.addressFocused = focused;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
   [self.domainLabel.layer removeAllAnimations];
   [self.textView.layer removeAnimationForKey:@"talaria.addressFocus"];
   if (!self.hasUserDraft) {
-    self.textView.string = focused ? self.latestAddress ?: @"" : [self idleAddress];
+    // Keep the full URL visible while it fades out on blur. Replacing it now
+    // would make the path disappear before the return animation has begun.
+    if (focused || !animate) self.textView.string = focused ? self.latestAddress ?: @"" : [self idleAddress];
     self.domainLabel.stringValue = [self idleAddress];
     self.singleLine = YES;
-    [self.textView scrollRangeToVisible:NSMakeRange(0,0)];
+    if (focused || !animate) [self.textView scrollRangeToVisible:NSMakeRange(0,0)];
   }
   BOOL compact = !focused && !self.hasUserDraft;
   self.textView.alphaValue = compact ? 0 : 1;
@@ -2645,14 +2710,27 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:@"position"];
     move.fromValue = [NSValue valueWithPoint:oldPosition]; move.toValue = [NSValue valueWithPoint:self.domainLabel.layer.position];
     CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-    fade.values = @[@1,@1,@0]; fade.keyTimes = @[@0,@0.6,@1];
+    fade.values = focused ? @[@(oldDomainOpacity),@1,@0] : @[@(oldDomainOpacity),@1,@1];
+    fade.keyTimes = focused ? @[@0,@0.6,@1] : @[@0,@0.4,@1];
     CAAnimationGroup *group = [CAAnimationGroup animation]; group.animations = @[move,fade]; group.duration = duration;
     group.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
     [self.domainLabel.layer addAnimation:group forKey:@"talaria.domainFocus"];
     CAKeyframeAnimation *reveal = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-    reveal.values = @[@0,@0,@1]; reveal.keyTimes = @[@0,@0.6,@1]; reveal.duration = duration;
+    reveal.values = focused ? @[@(oldTextOpacity),@0,@1] : @[@(oldTextOpacity),@0,@0];
+    reveal.keyTimes = focused ? @[@0,@0.6,@1] : @[@0,@0.4,@1];
+    reveal.duration = duration;
     [self.textView.layer addAnimation:reveal forKey:@"talaria.addressFocus"];
+    if (!focused) {
+      __weak typeof(self) weakSelf = self;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        TLBrowserAddressInput *input = weakSelf;
+        if (!input || input.addressAnimationGeneration != generation || input.addressFocused || input.hasUserDraft) return;
+        input.textView.string = [input idleAddress];
+        [input.textView scrollRangeToVisible:NSMakeRange(0,0)];
+      });
+    }
   }
+  [CATransaction commit];
 }
 
 - (void)setDisplayedAddress:(NSString *)address {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify old content survives blocked paint, then reveal before slow images load."""
+"""Verify clicks hide old content immediately, then reveal before slow images load."""
 from collections import Counter
 from browser_test_launcher import launch_browser_test_app
 import http.server
@@ -16,7 +16,12 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         requests[self.path] += 1
         kind = 'text/html'
-        if self.path == '/next':
+        if self.path == '/no-content':
+            self.send_response(204); self.end_headers(); return
+        if self.path == '/download':
+            body = b'navigation download fixture'
+            kind = 'application/octet-stream'
+        elif self.path == '/next':
             time.sleep(.3)
             body = b'<!doctype html><link rel="stylesheet" href="/delayed.css"><title>Destination</title><body><h1>Destination page</h1><img id="slow-image" src="/delayed-image.svg"></body>'
         elif self.path == '/delayed.css':

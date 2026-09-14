@@ -326,6 +326,11 @@ static void TestBrowserComposer(void) {
     styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
   TLBrowserAddressInput *input = [[TLBrowserAddressInput alloc] init];
+  [window.contentView addSubview:input.navigationControls];
+  [NSLayoutConstraint activateConstraints:@[
+    [input.navigationControls.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor constant:5],
+    [input.navigationControls.topAnchor constraintEqualToAnchor:window.contentView.topAnchor constant:5],
+  ]];
   [window.contentView addSubview:input];
   NSLayoutConstraint *width = [input.widthAnchor constraintEqualToConstant:700];
   [NSLayoutConstraint activateConstraints:@[
@@ -383,6 +388,7 @@ static void TestBrowserComposer(void) {
     Check(line.hidden && ![line animationForKey:@"loadingCompletion"], @"completion removes the faded indicator");
   }
   [window makeFirstResponder:nil];
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:input.palette.browserHeightTransitionDuration + 0.02]];
   CGFloat compactHeight = NSHeight(input.frame);
   Check(compactHeight == input.palette.composerButtonHeight, @"browser starts at chat composer height");
   Check(input.textView.editable && !input.textView.richText && input.singleLine, @"URL uses editable single-line plain text");
@@ -410,7 +416,7 @@ static void TestBrowserComposer(void) {
   [input updateDisplayedAddress:@"example.com/redirect"];
   Check([input.textView.string isEqualToString:@"example.com/path"], @"redirect does not disturb focused address");
   [window makeFirstResponder:nil];
-  Check([input.textView.string isEqualToString:@"example.com"], @"latest domain appears after focus leaves");
+  Check([[[input valueForKey:@"domainLabel"] stringValue] isEqualToString:@"example.com"], @"latest domain appears after focus leaves");
 
   [input beginPromptEditing];
   Check(input.textView.string.length == 0 && window.firstResponder == input.textView, @"opening browser chat clears and focuses composer");
@@ -458,7 +464,7 @@ static void TestBrowserComposer(void) {
   Check([input.textView.string hasSuffix:@"\n"] && target.activationCount == 1, @"Shift+Return inserts newline without sending");
   [input textView:input.textView doCommandBySelector:@selector(cancelOperation:)];
   [window.contentView layoutSubtreeIfNeeded];
-  Check([input.textView.string isEqualToString:@"example.com"] && !input.hasUserDraft, @"escape restores latest domain");
+  Check([[[input valueForKey:@"domainLabel"] stringValue] isEqualToString:@"example.com"] && !input.hasUserDraft, @"escape restores latest domain");
   Check(NSHeight(input.frame) == compactHeight, @"restoring address collapses composer");
 
   input.textView.string = @" \n ";
@@ -491,7 +497,23 @@ static void TestBrowserComposer(void) {
   [input.textView insertText:@"\n" replacementRange:input.textView.selectedRange];
   Check([input.textView.string isEqual:longURL], @"URL editing rejects inserted newlines");
   [window makeFirstResponder:nil];
-  Check([input.textView.string isEqual:@"example.com"], @"blur restores the compact domain");
+  if(!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    CAAnimationGroup *returnAnimation=(CAAnimationGroup *)[domain.layer animationForKey:@"talaria.domainFocus"];
+    Check(returnAnimation!=nil && [input.textView.layer animationForKey:@"talaria.addressFocus"]!=nil,
+      @"blur animates the domain back and fades out the full URL");
+    CABasicAnimation *movement=(CABasicAnimation *)returnAnimation.animations.firstObject;
+    Check([movement.toValue pointValue].x>[movement.fromValue pointValue].x, @"return motion heads toward the center");
+    Check([input.textView.string isEqual:longURL], @"full URL is retained until the outgoing fade finishes");
+  }
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:input.palette.browserHeightTransitionDuration + 0.02]];
+  Check([input.textView.string isEqual:@"example.com"], @"blur settles on the compact domain");
+  [window makeFirstResponder:input.textView];
+  [window makeFirstResponder:nil];
+  [window makeFirstResponder:input.textView];
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:input.palette.browserHeightTransitionDuration + 0.02]];
+  Check([input.textView.string isEqual:longURL] && input.textView.alphaValue==1,
+    @"rapid refocus cancels the pending compact-text replacement");
+  [window makeFirstResponder:nil];
   NSBitmapImageRep *domainPreview=[input bitmapImageRepForCachingDisplayInRect:input.bounds];
   [input cacheDisplayInRect:input.bounds toBitmapImageRep:domainPreview];
   [[domainPreview representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@"/tmp/talaria-domain-idle.png" atomically:YES];
@@ -499,6 +521,31 @@ static void TestBrowserComposer(void) {
   for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
     input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
     Check([input.backgroundView isKindOfClass:TLGlassPaneView.class], @"browser reuses native selector glass");
+    Check([input.navigationControls isKindOfClass:TLGlassPaneView.class] &&
+      [input.backButton isDescendantOf:input.navigationControls] && [input.forwardButton isDescendantOf:input.navigationControls] &&
+      ![input.reloadButton isDescendantOf:input.navigationControls], @"Back and Forward own a separate glass group");
+    Check(((TLGlassPaneView *)input.navigationControls).palette==input.palette,
+      @"navigation glass follows both themes");
+    [window.contentView layoutSubtreeIfNeeded];
+    NSView *navigation=input.navigationControls;
+    Check(NSWidth(navigation.bounds)==input.palette.composerButtonHeight*2,
+      @"navigation has two spacious button segments");
+    for (NSButton *button in @[input.backButton,input.forwardButton]) {
+      button.enabled=YES;
+      Check(NSHeight(button.bounds)==NSHeight(navigation.bounds) && NSWidth(button.bounds)==NSWidth(navigation.bounds)/2,
+        @"each navigation button fills its complete half of the glass");
+      for (NSValue *point in @[[NSValue valueWithPoint:NSMakePoint(NSMinX(button.frame)+1,NSMidY(button.frame))],
+                               [NSValue valueWithPoint:NSMakePoint(NSMaxX(button.frame)-1,NSMidY(button.frame))],
+                               [NSValue valueWithPoint:NSMakePoint(NSMidX(button.frame),1)],
+                               [NSValue valueWithPoint:NSMakePoint(NSMidX(button.frame),NSHeight(button.frame)-1)]]) {
+        NSPoint parentPoint=[navigation.superview convertPoint:point.pointValue fromView:navigation];
+        Check([navigation hitTest:parentPoint]==button,@"navigation segment edges are clickable beyond the icon");
+      }
+    }
+    CALayer *divider=[navigation valueForKey:@"divider"];
+    Check(CGColorEqualToColor(divider.backgroundColor,TLCGColor(input.palette.controlBorder)) &&
+      fabs(CGRectGetMidX(divider.frame)-NSMidX(navigation.bounds))<0.5,
+      @"themed divider separates the two hit areas without consuming space");
     Check(CGColorGetAlpha(input.layer.backgroundColor) == 0 && input.layer.borderWidth == 0, @"composer does not cover glass with opaque fill or border");
     TLGlassPaneView *glass = (TLGlassPaneView *)input.backgroundView;
     Check(glass.cornerRadius == input.palette.messageInputCornerRadius, @"glass has composer pill radius");
@@ -533,8 +580,26 @@ static void TestBrowserComposer(void) {
       Check(CGColorGetAlpha(button.layer.backgroundColor) == 0, @"idle button is transparent");
       [button mouseEntered:click];
       Check(CGColorEqualToColor(button.layer.backgroundColor, input.palette.chromeHoverSurface.CGColor), @"button hover matches notifications");
-      Check(button.layer.cornerRadius == NSHeight(button.bounds) / 2.0,
-        [NSString stringWithFormat:@"hover surface is circular: %@ %@ %g", button.toolTip, NSStringFromRect(button.bounds), button.layer.cornerRadius]);
+      Check(button.layer.cornerRadius == (button.rectangularHoverSurface ? 0 : NSHeight(button.bounds) / 2.0),
+        [NSString stringWithFormat:@"hover surface matches its button or segment: %@ %@ %g", button.toolTip, NSStringFromRect(button.bounds), button.layer.cornerRadius]);
+      if (button.rectangularHoverSurface) {
+        NSBitmapImageRep *bitmap=[button bitmapImageRepForCachingDisplayInRect:button.bounds];
+        [button cacheDisplayInRect:button.bounds toBitmapImageRep:bitmap];
+        NSColor *edge=[[bitmap colorAtX:2 y:bitmap.pixelsHigh/2] colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+        NSColor *expected=[[NSColor colorWithCGColor:TLCGColor(input.palette.chromeHoverSurface)] colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+        NSColor *inside=[[bitmap colorAtX:6 y:bitmap.pixelsHigh/2] colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+        // Compare within the rendered surface: native glass captures can use
+        // an extended color space, but the whole segment must paint evenly.
+        Check(fabs(edge.alphaComponent-expected.alphaComponent)<0.03 &&
+          fabs(edge.redComponent-inside.redComponent)<0.01 &&
+          fabs(edge.greenComponent-inside.greenComponent)<0.01 &&
+          fabs(edge.blueComponent-inside.blueComponent)<0.01,
+          @"hover paints the same themed surface through the full segment edge");
+        NSUInteger ink=0;
+        for(NSInteger y=0;y<bitmap.pixelsHigh;y++) for(NSInteger x=0;x<bitmap.pixelsWide;x++)
+          if([bitmap colorAtX:x y:y].alphaComponent>expected.alphaComponent+0.15) ink++;
+        Check(ink>0,@"navigation chevron renders visibly over its hover surface");
+      }
       button.enabled = NO;
       Check(CGColorGetAlpha(button.layer.backgroundColor) == 0, @"disabled buttons do not highlight");
       [button mouseExited:click];
