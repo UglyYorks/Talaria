@@ -4,13 +4,13 @@
 
 @interface TLBrowserConversation ()
 @property TLDatabase *database;
-@property TLAssistantTurnRunner *runner;
-@property TLChatRecord *chat;
-@property NSMutableArray<TLChatMessage *> *messages;
+@property (nonatomic, strong, readwrite) TLAssistantTurnRunner *runner;
+@property (nonatomic, strong, readwrite) TLChatRecord *chat;
+@property (nonatomic, strong, readwrite) NSMutableArray<TLChatMessage *> *messages;
 @property (nonatomic, readwrite) BOOL busy;
 @property (nonatomic, readwrite) NSUInteger responseCount;
 @property (nonatomic, strong, readwrite) TLAssistantTurnResult *lastTurnResult;
-@property NSString *errorText;
+@property (nonatomic, copy, readwrite) NSString *errorText;
 @property NSUInteger turnStart;
 @end
 
@@ -20,11 +20,24 @@
     _database = database;
     _runner = [[TLAssistantTurnRunner alloc] initWithDatabase:database agentOrchestrator:orchestrator];
     _messages = [NSMutableArray array];
+    _draft = @"";
   }
   return self;
 }
-- (void)changed { if (self.changeHandler) self.changeHandler(); }
-- (NSString *)title { return self.chat.title ?: @"New chat"; }
+- (void)changed {
+  BOOL needsAnswer = self.pendingApproval != nil;
+  for (TLQuestionRequest *question in self.questions) needsAnswer |= question.pending;
+  if (!self.busy || needsAnswer) self.collapsed = NO;
+  if (self.changeHandler) self.changeHandler();
+}
+- (NSString *)title {
+  return [NSString stringWithFormat:@"%@ %@", self.chat.icon.length ? self.chat.icon : TLDefaultChatIcon(),
+    self.chat.icon.length && self.chat.title.length ? self.chat.title : @"New chat"];
+}
+- (void)refreshChatIdentity {
+  self.chat = [self.database chatWithID:self.chat.chatID error:nil] ?: self.chat;
+  if (self.changeHandler) self.changeHandler();
+}
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)toolActivities {
   return self.messages.count > self.turnStart ? self.messages.lastObject.toolActivities : @[];
 }
@@ -73,9 +86,13 @@
   return [responses componentsJoinedByString:@"\n\n---\n\n"];
 }
 - (BOOL)sendPrompt:(NSString *)prompt token:(NSString *)token model:(NSString *)model pageReader:(TLBrowserPageReader)reader {
-  if (self.busy || !reader) return NO;
+  if (self.busy || !reader || ![prompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) return NO;
+  // NSTextView.string can alias mutable text storage, which the address bar resets
+  // to the page URL before asynchronous extraction completes.
+  NSString *submittedPrompt = [prompt copy];
   self.busy = YES;
   self.minimized = NO;
+  self.collapsed = YES;
   self.errorText = nil;
   self.lastTurnResult = nil;
   self.turnStart = self.messages.count;
@@ -88,6 +105,8 @@
     [self changed];
     return NO;
   }
+  [self changed];
+  if (!self.runner.approvalResponse && self.promptSubmittedHandler) self.promptSubmittedHandler(self, submittedPrompt);
   // Retain the conversation through the request so closing the browser still saves its reply.
   reader(^(NSDictionary *page, NSError *readError) {
     if (readError) {
@@ -98,7 +117,7 @@
     }
     self.runner.referenceContext = TLBrowserPageContext(page ?: @{});
     NSError *startError = nil;
-    BOOL started = [self.runner startTurnWithChat:self.chat token:token model:model messages:self.messages nextPrompt:prompt
+    BOOL started = [self.runner startTurnWithChat:self.chat token:token model:model messages:self.messages nextPrompt:submittedPrompt
       updateHandler:^{ [self changed]; }
       completionHandler:^(TLAssistantTurnResult *result) {
         self.busy = NO;
@@ -113,7 +132,7 @@
         [self changed];
       } error:&startError];
     if (started) {
-      // Saving the first user message generates the title through the normal chat path.
+      // Keep persisted chat metadata in sync without displaying the raw prompt as its name.
       self.chat = [self.database chatWithID:self.chat.chatID error:nil] ?: self.chat;
       [self changed];
     }

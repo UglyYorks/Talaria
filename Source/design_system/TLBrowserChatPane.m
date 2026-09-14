@@ -13,8 +13,12 @@
 @property NSStackView *contentStack;
 @property TLToolActivityView *activityView;
 @property (nonatomic, readwrite) NSButton *minimizeButton;
+@property (nonatomic, readwrite) NSButton *closeButton;
+@property (nonatomic, readwrite) NSButton *splitButton;
 @property NSTextField *titleLabel;
 @property NSProgressIndicator *spinner;
+@property NSProgressIndicator *headerSpinner;
+@property NSLayoutConstraint *titleLeading;
 @property NSScrollView *scrollView;
 @property TLFlippedView *document;
 @property NSView *markdownView;
@@ -30,6 +34,8 @@
 - (instancetype)initWithFrame:(NSRect)frame {
   if ((self = [super initWithFrame:frame])) {
     self.translatesAutoresizingMaskIntoConstraints = NO;
+    [self setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow - 1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     TLHoverIconButton *button = [[TLHoverIconButton alloc] init];
     button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -39,6 +45,22 @@
     button.refusesFirstResponder = YES;
     _minimizeButton = button;
     [self addSubview:button];
+    TLHoverIconButton *close = [TLHoverIconButton new];
+    close.translatesAutoresizingMaskIntoConstraints = NO;
+    close.hoverSurfaceOnly = YES;
+    close.refusesFirstResponder = YES;
+    close.image = [NSImage imageWithSystemSymbolName:@"xmark" accessibilityDescription:@"Close chat"];
+    close.toolTip = @"Close chat";
+    _closeButton = close;
+    [self addSubview:close];
+    TLHoverIconButton *split = [TLHoverIconButton new];
+    split.translatesAutoresizingMaskIntoConstraints = NO;
+    split.hoverSurfaceOnly = YES;
+    split.refusesFirstResponder = YES;
+    split.image = [NSImage imageWithSystemSymbolName:@"rectangle.split.2x1" accessibilityDescription:@"Open in split view"];
+    split.toolTip = @"Open in split view";
+    _splitButton = split;
+    [self addSubview:split];
     _titleLabel = [NSTextField labelWithString:@"New chat"];
     _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -65,15 +87,40 @@
     _spinner.indeterminate = YES;
     _spinner.displayedWhenStopped = NO;
     [self addSubview:_spinner];
+    _headerSpinner = [NSProgressIndicator new];
+    _headerSpinner.translatesAutoresizingMaskIntoConstraints = NO;
+    _headerSpinner.style = NSProgressIndicatorStyleSpinning;
+    _headerSpinner.controlSize = NSControlSizeSmall;
+    _headerSpinner.indeterminate = YES;
+    _headerSpinner.displayedWhenStopped = NO;
+    _headerSpinner.accessibilityLabel = @"Working on your request";
+    [self addSubview:_headerSpinner];
+    _titleLeading = [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:palette.space8];
+    NSLayoutConstraint *scrollTop = [_scrollView.topAnchor constraintEqualToAnchor:button.bottomAnchor constant:palette.space4];
+    // Hidden content can shrink to zero when only the status header is shown.
+    scrollTop.priority = NSLayoutPriorityDefaultLow;
     [NSLayoutConstraint activateConstraints:@[
       [button.topAnchor constraintEqualToAnchor:self.topAnchor constant:palette.space4],
-      [button.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-palette.space4],
+      [close.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-palette.space4],
+      [split.trailingAnchor constraintEqualToAnchor:close.leadingAnchor],
+      [button.trailingAnchor constraintEqualToAnchor:split.leadingAnchor],
+      [close.centerYAnchor constraintEqualToAnchor:button.centerYAnchor],
+      [split.centerYAnchor constraintEqualToAnchor:button.centerYAnchor],
+      [close.widthAnchor constraintEqualToAnchor:button.widthAnchor],
+      [close.heightAnchor constraintEqualToAnchor:button.heightAnchor],
+      [split.widthAnchor constraintEqualToAnchor:button.widthAnchor],
+      [split.heightAnchor constraintEqualToAnchor:button.heightAnchor],
       [button.widthAnchor constraintEqualToConstant:palette.browserToolbarButtonSize],
       [button.heightAnchor constraintEqualToConstant:palette.browserToolbarButtonSize],
-      [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:palette.space8],
+      _titleLeading,
+      [_headerSpinner.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:palette.space8],
+      [_headerSpinner.centerYAnchor constraintEqualToAnchor:button.centerYAnchor],
+      [_headerSpinner.widthAnchor constraintEqualToConstant:palette.space8],
+      [_headerSpinner.heightAnchor constraintEqualToConstant:palette.space8],
       [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:button.leadingAnchor constant:-palette.space4],
       [_titleLabel.centerYAnchor constraintEqualToAnchor:button.centerYAnchor],
-      [_scrollView.topAnchor constraintEqualToAnchor:button.bottomAnchor constant:palette.space4],
+      scrollTop,
+      [_scrollView.heightAnchor constraintGreaterThanOrEqualToConstant:0],
       [_scrollView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:palette.space8],
       [_scrollView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-palette.space8],
       [_scrollView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-palette.space8],
@@ -89,15 +136,21 @@
     self.wantsLayer = YES;
     self.hidden = YES;
     self.alphaValue = 0;
+    [self updateHeaderSpinner];
   }
   return self;
 }
 - (void)setPalette:(TLThemePalette *)palette {
   [super setPalette:palette];
-  ((TLHoverIconButton *)self.minimizeButton).palette = palette;
-  self.minimizeButton.contentTintColor = palette.controlText;
+  [self updateCornerRadius];
+  for (TLHoverIconButton *button in self.subviews) {
+    if (![button isKindOfClass:TLHoverIconButton.class]) continue;
+    button.palette = palette;
+    button.contentTintColor = palette.controlText;
+  }
   self.titleLabel.font = palette.labelFont;
   self.titleLabel.textColor = palette.controlText;
+  [self updateHeaderSpinner];
   if (!self.document) return;
   self.contentStack.spacing = palette.space5;
   self.activityView.palette = palette;
@@ -182,8 +235,9 @@
 }
 - (void)setTitle:(NSString *)title {
   _title = [title copy];
-  self.titleLabel.stringValue = title.length ? title : @"New chat";
+  self.titleLabel.stringValue = title.length ? title : @"💬 New chat";
   self.titleLabel.toolTip = self.titleLabel.stringValue;
+  [self invalidateIntrinsicContentSize];
 }
 - (void)showMarkdown:(NSString *)markdown loading:(BOOL)loading {
   self.followsBottom = self.loading || !self.markdown.length ||
@@ -191,14 +245,70 @@
   self.markdown = markdown ?: @"";
   self.markdownView.hidden = !self.markdown.length;
   self.loading = loading;
-  self.scrollView.hidden = loading;
-  if (loading && !self.hidden) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];
+  self.scrollView.hidden = self.collapsed || loading;
+  if (loading && !self.hidden && !self.collapsed) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];
+  [self updateHeaderSpinner];
   [self.renderer updateMarkdown:self.markdown inView:self.markdownView];
 }
 - (void)setHidden:(BOOL)hidden {
   [super setHidden:hidden];
+  [self updateHeaderSpinner];
   if (hidden) [self.spinner stopAnimation:nil];
-  else if (self.loading) [self.spinner startAnimation:nil];
+  else if (self.loading && !self.collapsed) [self.spinner startAnimation:nil];
+}
+
+- (void)setCollapsed:(BOOL)collapsed {
+  _collapsed = collapsed;
+  [self updateCornerRadius];
+  [self invalidateIntrinsicContentSize];
+  self.scrollView.hidden = collapsed || self.loading;
+  self.minimizeButton.image = [NSImage imageWithSystemSymbolName:collapsed ? @"chevron.up" : @"chevron.down"
+    accessibilityDescription:collapsed ? @"Expand chat" : @"Collapse chat"];
+  self.minimizeButton.toolTip = collapsed ? @"Expand chat" : @"Collapse chat";
+  self.title = self.title;
+  if (collapsed) [self.spinner stopAnimation:nil];
+  else if (self.loading && !self.hidden) [self.spinner startAnimation:nil];
+}
+- (void)setBusy:(BOOL)busy {
+  _busy = busy;
+  self.title = self.title;
+  [self updateHeaderSpinner];
+}
+- (NSSize)intrinsicContentSize {
+  if (!self.collapsed) return NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
+  CGFloat width = self.titleLeading.constant + self.titleLabel.intrinsicContentSize.width +
+    self.palette.space4 * 2 + self.palette.browserToolbarButtonSize * 3;
+  return NSMakeSize(ceil(width), NSViewNoIntrinsicMetric);
+}
+- (void)updateCornerRadius {
+  self.cornerRadius = self.collapsed ? (self.palette.browserToolbarButtonSize + self.palette.space4 * 2) / 2 : self.palette.messageInputCornerRadius;
+}
+- (void)updateHeaderSpinner {
+  BOOL working = self.busy || self.loading;
+  self.headerSpinner.hidden = !working;
+  self.headerSpinner.accessibilityLabel = @"Working on your request";
+  self.headerSpinner.toolTip = @"Working on your request…";
+  self.titleLeading.constant = self.palette.space8 + (working ? self.palette.space8 + self.palette.space4 : 0);
+  [self invalidateIntrinsicContentSize];
+  if (working && !self.hidden) [self.headerSpinner startAnimation:nil];
+  else [self.headerSpinner stopAnimation:nil];
+}
+- (NSRect)headerRect {
+  return NSMakeRect(0, NSMinY(self.minimizeButton.frame) - self.palette.space4,
+    NSWidth(self.bounds), NSHeight(self.minimizeButton.frame) + self.palette.space4 * 2);
+}
+- (NSView *)hitTest:(NSPoint)point {
+  NSView *hit = [super hitTest:point];
+  if (!hit || !NSPointInRect([self convertPoint:point fromView:self.superview], self.headerRect)) return hit;
+  for (NSButton *button in @[self.minimizeButton, self.closeButton, self.splitButton])
+    if (hit == button || [hit isDescendantOf:button]) return hit;
+  return self;
+}
+- (void)mouseDown:(NSEvent *)event {
+  NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  if (NSPointInRect(point, self.headerRect)) {
+    [NSApp sendAction:self.minimizeButton.action to:self.minimizeButton.target from:self.minimizeButton];
+  } else [super mouseDown:event];
 }
 
 - (void)setPresented:(BOOL)presented animated:(BOOL)animated {

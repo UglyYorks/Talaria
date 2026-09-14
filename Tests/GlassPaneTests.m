@@ -103,6 +103,78 @@ static void TestGlassAccountButtonSizing(void) {
   [window close];
 }
 
+static void TestBrowserChatControls(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 520, 500)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLBrowserChatPane *pane = [TLBrowserChatPane new];
+  [window.contentView addSubview:pane];
+  [NSLayoutConstraint activateConstraints:@[
+    [pane.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [pane.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [pane.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [pane.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+  ]];
+  [pane setPresented:YES animated:NO];
+  TLCommandTarget *target = [TLCommandTarget new];
+  for (NSButton *button in @[pane.minimizeButton, pane.closeButton, pane.splitButton]) {
+    button.target = target; button.action = @selector(activate:);
+  }
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    pane.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:pane.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    pane.title = @"🌤 Tokyo packing advice";
+    pane.busy = YES;
+    pane.collapsed = YES;
+    [window setContentSize:NSMakeSize(520, pane.palette.browserToolbarButtonSize + pane.palette.space4 * 2)];
+    [window.contentView layoutSubtreeIfNeeded];
+    Check([[[pane valueForKey:@"titleLabel"] stringValue] isEqual:@"🌤 Tokyo packing advice"], @"collapsed row retains the generated identity while working");
+    Check([[pane valueForKey:@"scrollView"] isHidden], @"collapsed status hides the transcript");
+    NSProgressIndicator *headerSpinner = [pane valueForKey:@"headerSpinner"];
+    Check(!headerSpinner.hidden && headerSpinner.indeterminate && headerSpinner.style == NSProgressIndicatorStyleSpinning,
+      @"working status has a visible animated spinner even when collapsed");
+    for (NSView *view in pane.subviews) Check(![view isKindOfClass:TLMessageInput.class], @"pane has no duplicate composer");
+    NSTextField *title = [pane valueForKey:@"titleLabel"];
+    NSPoint titlePoint = [title convertPoint:NSMakePoint(NSMidX(title.bounds), NSMidY(title.bounds)) toView:window.contentView];
+    Check([pane hitTest:titlePoint] == pane, @"clicking the status text routes to the expandable header");
+    NSUInteger beforeHeader = target.activationCount;
+    [pane mouseDown:[NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:[window.contentView convertPoint:titlePoint toView:nil]
+      modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1]];
+    Check(target.activationCount == beforeHeader + 1, @"the whole status header toggles expansion");
+    for (NSButton *button in @[pane.minimizeButton, pane.closeButton, pane.splitButton]) {
+      Check(!button.hidden && NSMinX(button.frame) >= 0 && NSMaxX(button.frame) <= NSWidth(pane.bounds), @"all three status controls fit the collapsed row");
+      NSBitmapImageRep *iconBitmap = [button bitmapImageRepForCachingDisplayInRect:button.bounds];
+      [button cacheDisplayInRect:button.bounds toBitmapImageRep:iconBitmap];
+      NSColor *foreground = [pane.palette.controlText colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+      CGFloat closest = CGFLOAT_MAX;
+      for (NSInteger y = 0; y < iconBitmap.pixelsHigh; y++) for (NSInteger x = 0; x < iconBitmap.pixelsWide; x++) {
+        NSColor *pixel = [[iconBitmap colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+        if (pixel.alphaComponent > 0.9) closest = MIN(closest, fabs(pixel.redComponent - foreground.redComponent) +
+          fabs(pixel.greenComponent - foreground.greenComponent) + fabs(pixel.blueComponent - foreground.blueComponent));
+      }
+      Check(closest < 0.2, @"collapse, sidebar, and close icons all render with the same themed foreground");
+      NSUInteger previous = target.activationCount;
+      [button performClick:nil];
+      Check(target.activationCount == previous + 1, @"status controls remain clickable while working");
+    }
+    NSBitmapImageRep *bitmap = [pane bitmapImageRepForCachingDisplayInRect:pane.bounds];
+    [pane cacheDisplayInRect:pane.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"/tmp/page-prompt-status-%@.png", pane.palette.dark ? @"dark" : @"light"] atomically:YES];
+  }
+  pane.collapsed = NO;
+  pane.busy = NO;
+  [window setContentSize:NSMakeSize(520, 500)];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSProgressIndicator *headerSpinner = [pane valueForKey:@"headerSpinner"];
+  Check(headerSpinner.hidden, @"header spinner disappears when the request finishes");
+  pane.busy = YES;
+  Check(!headerSpinner.hidden, @"expanded requests also display progress in the header");
+  [pane setPresented:NO animated:NO];
+  Check(headerSpinner.isHiddenOrHasHiddenAncestor, @"closing the pane hides progress");
+  [window close];
+}
+
 static void TestBrowserChatPane(void) {
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, 500) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
@@ -823,6 +895,7 @@ int main(void) {
     [TLFocusTestApplication sharedApplication];
     TestHermesSuggestions();
     TestURLSuggestions();
+    TestBrowserChatControls();
     TestBrowserChatPane();
     TestNativeMessageComposer();
     TestSendStopImageTransition();

@@ -4,6 +4,7 @@
 #import "WebKitBrowserController.h"
 
 @class TLAgentOrchestrator;
+@class TLBrowserConversation;
 NS_ASSUME_NONNULL_BEGIN
 @interface TLBrowserTabController : TLFeatureTabController <TLFindActionTarget>
 @property (nonatomic, strong, readonly, nullable) NSImage *favicon;
@@ -21,6 +22,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^settingsRequiredHandler)(void);
 @property (nonatomic, copy, nullable) NSArray * (^suggestionsProvider)(NSString *input);
 @property (nonatomic, copy, nullable) BOOL (^switchToTabHandler)(NSString *tabID);
+@property (nonatomic, copy, nullable) void (^promptSubmittedHandler)(TLBrowserConversation *conversation, NSString *prompt);
+@property (nonatomic, copy, nullable) BOOL (^splitConversationHandler)(TLBrowserConversation *conversation);
 - (void)updateInputSuggestions;
 - (instancetype)initWithURL:(NSURL *)URL palette:(TLThemePalette *)palette
                   database:(TLDatabase *)database orchestrator:(TLAgentOrchestrator *)orchestrator

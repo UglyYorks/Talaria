@@ -394,6 +394,30 @@ static id TLJSONValue(NSString *text) {
   if (error) *error = queryError;
   return result;
 }
+- (TLChatSummary *)saveChatTitle:(NSString *)title icon:(NSString *)icon chatID:(NSInteger)chatID error:(NSError **)error {
+  __block TLChatSummary *result = nil;
+  __block NSError *queryError = nil;
+  void (^save)(void) = ^{
+    @synchronized (self) {
+      NSString *trimmedTitle = TLTrimmedString(title), *trimmedIcon = TLTrimmedString(icon);
+      if (!trimmedTitle.length || !trimmedIcon.length) { TLSetDatabaseError(&queryError, @"Chat name and emoji cannot be empty."); return; }
+      BOOL saved = [self performTransaction:^BOOL(NSError **transactionError) {
+        TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+          "UPDATE chats SET title = ?1, icon = ?2, updated_at = datetime('now') WHERE id = ?3" error:transactionError];
+        if (!statement) return NO;
+        [statement bindText:trimmedTitle atIndex:1];
+        [statement bindText:trimmedIcon atIndex:2];
+        [statement bindInt64:chatID atIndex:3];
+        return [statement stepDone:transactionError];
+      } error:&queryError];
+      if (saved) result = [self loadChatSummaryWithID:chatID error:&queryError];
+    }
+  };
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) save();
+  else dispatch_sync(self.databaseQueue, save);
+  if (error) *error = queryError;
+  return result;
+}
 - (TLChatSummary *)saveChatIcon:(NSString *)icon chatID:(NSInteger)chatID error:(NSError **)error {
   if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_saveChatIcon:icon chatID:chatID error:error];
   __block TLChatSummary * result;
@@ -758,7 +782,7 @@ static id TLJSONValue(NSString *text) {
       TLSQLiteStatement *upsert = [self.sqliteConnection prepareSQL:
         "INSERT INTO chats (title, model, icon, hermes_session_id, created_at, updated_at, source_agent_id, source_session_id, continuation_session_id) "
         "VALUES (?1, ?2, '', ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(source_agent_id, hermes_session_id) DO UPDATE SET "
-        "title = excluded.title, model = CASE WHEN excluded.model = '' THEN chats.model ELSE excluded.model END, "
+        "title = CASE WHEN chats.icon <> '' THEN chats.title ELSE excluded.title END, model = CASE WHEN excluded.model = '' THEN chats.model ELSE excluded.model END, "
         "created_at = excluded.created_at, updated_at = excluded.updated_at, "
         "source_session_id = CASE WHEN chats.source_session_id = '' THEN excluded.source_session_id ELSE chats.source_session_id END, "
         "continuation_session_id = CASE WHEN excluded.continuation_session_id = '' THEN chats.continuation_session_id ELSE excluded.continuation_session_id END" error:error];

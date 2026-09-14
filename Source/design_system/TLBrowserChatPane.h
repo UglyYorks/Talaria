@@ -4,6 +4,10 @@
 
 @interface TLBrowserChatPane : TLGlassPaneView
 @property (nonatomic, readonly) NSButton *minimizeButton;
+@property (nonatomic, readonly) NSButton *closeButton;
+@property (nonatomic, readonly) NSButton *splitButton;
+@property (nonatomic) BOOL collapsed;
+@property (nonatomic) BOOL busy;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) TLMarkdownLinkHandler linkHandler;
 @property (nonatomic, copy) TLMarkdownLinkContextMenuHandler linkContextMenuHandler;

@@ -40,6 +40,9 @@
 @property (nonatomic, strong) NSLayoutConstraint *browserHostBottomConstraint;
 @property (nonatomic, strong) TLBrowserConversation *browserConversation;
 @property (nonatomic, strong) TLBrowserChatPane *browserChatPane;
+@property (nonatomic, strong) NSLayoutConstraint *browserChatExpandedHeight;
+@property (nonatomic, strong) NSLayoutConstraint *browserChatExpandedWidth;
+@property (nonatomic, strong) NSLayoutConstraint *browserChatCollapsedHeight;
 @property (nonatomic, strong, readwrite, nullable) NSImage *favicon;
 @property (nonatomic, strong, readwrite, nullable) NSColor *headerContentColor;
 @property (nonatomic, strong) NSURL *URL;
@@ -102,6 +105,10 @@
   self.browserChatPane.linkHandler = nil;
   self.browserChatPane.linkContextMenuHandler = nil;
   self.browserChatPane.minimizeButton.target = nil;
+  self.browserChatPane.closeButton.target = nil;
+  self.browserChatPane.splitButton.target = nil;
+  self.splitConversationHandler = nil;
+  self.promptSubmittedHandler = nil;
   self.browserAddressInput.heightChangeHandler = nil;
   self.browserAddressInput.suggestionCommandHandler = nil;
   self.suggestionsProvider = nil;
@@ -637,6 +644,13 @@
 - (void)updateBrowserChat {
   if (self.isClosed) return;
   TLBrowserConversation *conversation = self.browserConversation;
+  if (!conversation) return;
+  self.browserChatExpandedHeight.active = !conversation.collapsed;
+  self.browserChatCollapsedHeight.active = conversation.collapsed;
+  self.browserChatExpandedWidth.active = !conversation.collapsed;
+  self.browserChatPane.busy = conversation.busy;
+  self.browserChatPane.collapsed = conversation.collapsed;
+  self.browserChatPane.splitButton.enabled = self.splitConversationHandler != nil && conversation.chat != nil;
   [self.browserChatPane setPresented:!conversation.minimized animated:YES];
   self.browserChatPane.title = conversation.title;
   __weak typeof(self) weakSelf = self;
@@ -656,39 +670,85 @@
 }
 
 - (void)minimizeBrowserChat:(id)sender {
+  self.browserConversation.collapsed = !self.browserConversation.collapsed;
+  [self updateBrowserChat];
+}
+
+- (void)closeBrowserChat:(id)sender {
   self.browserConversation.minimized = YES;
-  [self.browserAddressInput setDisplayedAddress:[self displayAddressForBrowserURL:self.URL]];
   [self updateBrowserChat];
 }
 
 - (void)restoreBrowserChat:(id)sender {
   if (!self.browserConversation) return;
   self.browserConversation.minimized = NO;
+  self.browserConversation.collapsed = NO;
   [self updateBrowserChat];
-  [self.browserAddressInput beginPromptEditing];
+  if (!self.browserAddressInput.hasUserDraft) [self.browserAddressInput beginPromptEditing];
+  else [self.view.window makeFirstResponder:self.browserAddressInput.textView];
 }
 
-- (void)sendBrowserPrompt:(NSString *)prompt {
-  if (self.browserConversation.busy) { NSBeep(); return; }
+- (void)splitBrowserChat:(id)sender {
+  TLBrowserConversation *conversation = self.browserConversation;
+  conversation.draft = self.browserAddressInput.hasUserDraft ? self.browserAddressInput.textView.string : @"";
+  if (!conversation.chat || !self.splitConversationHandler || !self.splitConversationHandler(conversation)) return;
+  // The normal chat workspace now owns the live runner and transcript.
+  [self.browserChatPane removeFromSuperview];
+  self.browserChatPane = nil;
+  self.browserConversation = nil;
+  self.browserChatExpandedHeight = nil;
+  self.browserChatExpandedWidth = nil;
+  self.browserChatCollapsedHeight = nil;
+  self.browserAddressInput.chatVisible = NO;
+  self.browserAddressInput.responseCount = 0;
+  [self.browserAddressInput setDisplayedAddress:[self displayAddressForBrowserURL:self.URL]];
+}
+
+- (BOOL)sendBrowserPrompt:(NSString *)prompt {
+  if (self.isClosed || ![prompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) return NO;
+  prompt = [prompt copy];
+  if (self.browserConversation.busy) { NSBeep(); return NO; }
   TLAppSettings *settings = self.settingsProvider ? self.settingsProvider() : nil;
   if (!settings.selectedModel.length) {
     if (self.settingsRequiredHandler) self.settingsRequiredHandler();
-    return;
+    return NO;
   }
   TLBrowserAddressInput *input = self.browserAddressInput;
   if (!self.browserConversation) {
     self.browserConversation = [[TLBrowserConversation alloc] initWithDatabase:self.database orchestrator:self.agentOrchestrator];
+    __weak typeof(self) weakController = self;
+    self.browserConversation.promptSubmittedHandler = ^(TLBrowserConversation *conversation, NSString *submittedPrompt) {
+      if (weakController.promptSubmittedHandler) weakController.promptSubmittedHandler(conversation, submittedPrompt);
+    };
     TLBrowserChatPane *pane = [[TLBrowserChatPane alloc] init];
     pane.palette = self.palette;
     pane.minimizeButton.target = self;
     pane.minimizeButton.action = @selector(minimizeBrowserChat:);
+    pane.closeButton.target = self;
+    pane.closeButton.action = @selector(closeBrowserChat:);
+    pane.splitButton.target = self;
+    pane.splitButton.action = @selector(splitBrowserChat:);
     self.browserChatPane = pane;
     [self.view addSubview:pane positioned:NSWindowAbove relativeTo:input];
     NSLayoutConstraint *height = [pane.heightAnchor constraintEqualToAnchor:self.view.heightAnchor multiplier:self.palette.browserChatPaneHeightFraction];
     height.priority = NSLayoutPriorityDefaultHigh;
+    self.browserChatExpandedHeight = height;
+    self.browserChatCollapsedHeight = [pane.heightAnchor constraintEqualToConstant:self.palette.browserToolbarButtonSize + self.palette.space4 * 2];
+    NSLayoutConstraint *center = [pane.centerXAnchor constraintEqualToAnchor:input.centerXAnchor];
+    // Keep the compact pill centered; expanded responses fill the input width.
+    // Stay below the window's size priority so narrow windows remain resizable.
+    center.priority = NSLayoutPriorityWindowSizeStayPut - 1;
+    NSLayoutConstraint *width = [pane.widthAnchor constraintEqualToAnchor:input.widthAnchor];
+    width.priority = NSLayoutPriorityWindowSizeStayPut - 1;
+    self.browserChatExpandedWidth = width;
+    NSLayoutConstraint *maximumWidth = [pane.widthAnchor constraintLessThanOrEqualToAnchor:input.widthAnchor];
+    maximumWidth.priority = NSLayoutPriorityWindowSizeStayPut - 1;
+    NSLayoutConstraint *minimumWidth = [pane.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.messageInputMinWidth];
+    minimumWidth.priority = NSLayoutPriorityWindowSizeStayPut - 1;
     [NSLayoutConstraint activateConstraints:@[
-      [pane.leadingAnchor constraintEqualToAnchor:input.leadingAnchor],
-      [pane.widthAnchor constraintEqualToAnchor:input.widthAnchor],
+      center, width, minimumWidth, maximumWidth,
+      [pane.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:self.palette.space4],
+      [pane.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-self.palette.space4],
       [pane.bottomAnchor constraintEqualToAnchor:input.topAnchor constant:-self.palette.space4],
       [pane.topAnchor constraintGreaterThanOrEqualToAnchor:self.view.topAnchor constant:self.palette.space4],
       height,
@@ -717,6 +777,8 @@
       [service readPageInSession:session expectedURL:pageURL completion:completion];
     }];
   if (started) [input setDisplayedAddress:[self displayAddressForBrowserURL:self.URL]];
+  self.suggestionPanel.hidden = YES;
+  return started;
 }
 
 - (NSString *)displayAddressForBrowserURL:(NSURL *)URL {
