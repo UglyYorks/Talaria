@@ -94,6 +94,10 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 - (void)hermesProvidersForAgentID:(NSInteger)agentID parameters:(NSDictionary *)parameters
                        completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 
+- (void)hermesNotesWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
+                                  token:(NSString *)token model:(NSString *)model
+                             completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
+
 - (void)hermesAutomationsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
                                   token:(NSString *)token model:(NSString *)model
                              completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;

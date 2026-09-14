@@ -135,6 +135,8 @@ def main():
     from hermes_providers import register as register_providers
     register_providers(entry.server)
     register_plugins(entry.server)
+    from hermes_notes import register as register_notes
+    register_notes(entry.server, os.environ["HERMES_HOME"])
     notifications = register_notifications(entry.server, os.environ["HERMES_HOME"])
     description_path = Path(os.environ["HERMES_HOME"]) / DESCRIPTION_FILE
     if description_path.exists():
