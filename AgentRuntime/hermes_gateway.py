@@ -398,12 +398,13 @@ class HermesGateway:
             self._session_registry().save_mappings()
         return {"deleted": stored}
 
-    def model_options(self):
+    def model_options(self, include_thinking=True):
         result = self.call("model.options", {"explicit_only": True})
         if not isinstance(result.get("providers"), list):
             raise RuntimeError("Hermes returned an invalid model catalogue.")
-        thinking = self.call("talaria.models.thinking", {"providers": result["providers"]})
-        result["thinking"] = thinking.get("models", {})
+        if include_thinking:
+            thinking = self.call("talaria.models.thinking", {"providers": result["providers"]})
+            result["thinking"] = thinking.get("models", {})
         return result
 
     def providers(self, params):
@@ -425,7 +426,7 @@ class HermesGateway:
     def _provider_request(self, params):
         action = params.get("action")
         if action == "usage":
-            catalogue = self.model_options()
+            catalogue = self.model_options(include_thinking=False)
             slugs = [row["slug"] for row in catalogue["providers"] if row.get("authenticated")]
             return self.call("talaria.providers.usage", {"slugs": slugs})
         if action == "list":
