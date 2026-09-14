@@ -440,7 +440,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 }
 - (void)loadURL:(NSURL *)URL session:(TLWebKitBrowserSession *)session {
   if(session.closed)return;
-  [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
   if(URL.isFileURL)[session.webView loadFileURL:URL allowingReadAccessToURL:URL.URLByDeletingLastPathComponent];
   else [session.webView loadRequest:[TLWebKitBrowserSettings requestForURL:URL]];
 }
@@ -477,7 +476,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 - (void)reloadSession:(TLWebKitBrowserSession *)session {if(!session.closed){[self resumeSession:session];[self beginNavigationCover:session];[session.webView reload];}}
 - (void)focusSession:(TLWebKitBrowserSession *)session {if(session.closed)return;[self resumeSession:session];[session.webView.window makeFirstResponder:session.webView];}
 - (void)beginNavigationCover:(TLWebKitBrowserSession *)session {
-  [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
   if (@available(macOS 26.0, *)) {
     // WKSnapshot omits live content in obscured insets. Covering the web view
     // with that image introduces a blank footer as soon as navigation begins.
@@ -510,7 +508,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
     if(session.titleHandler)session.titleHandler(session.webView.title);else session.standaloneWindow.title=session.webView.title;
   }
   if([keyPath isEqual:@"URL"] && session.webView.URL) {
-    [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
     NSString *host=session.webView.URL.host ?: @"";
     if(![session.lastHost isEqual:host]){session.lastFaviconURL=nil;if(session.faviconHandler)session.faviconHandler(nil);}session.lastHost=host;
     if(session.URLHandler)session.URLHandler(session.webView.URL);
@@ -528,7 +525,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   if(session.navigationHandler)session.navigationHandler(session.webView.canGoBack,session.webView.canGoForward,session.webView.loading);
 }
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
-  [(TLBrowserWebView *)webView cancelMouseWheelScrolling];
   TLWebKitBrowserSession *session=[self sessionForWebView:webView];if(!session)return;
   [session.passwordAutofill reset];
   for(NSAlert *alert in self.alerts.copy)if(alert.window.sheetParent==session.originWindow)[session.originWindow endSheet:alert.window returnCode:NSAlertFirstButtonReturn];
@@ -1047,7 +1043,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   WKWebView *webView=session.webView;
   NSNumber *renderer=TLWebKitOptionalValue(webView,@"_webProcessIdentifier");
   __block BOOL mediaSuspended=NO;
-  [(TLBrowserWebView *)webView cancelMouseWheelScrolling];
   [webView setAllMediaPlaybackSuspended:YES completionHandler:^{mediaSuspended=YES;}];
   [self closeInspectorInSession:session];[webView closeAllMediaPresentationsWithCompletionHandler:nil];
   [self clearNavigationCover:session];[session.pageBridge stop];

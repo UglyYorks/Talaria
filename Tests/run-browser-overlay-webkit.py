@@ -28,8 +28,6 @@ os.chdir(ROOT)
 subprocess.run(["make", "build"], check=True)
 work = Path(tempfile.mkdtemp(prefix="overlay-webkit-check-", dir=ROOT / "build"))
 profile = Path(tempfile.mkdtemp(prefix="talaria-overlay-profile-"))
-if os.environ.get("TL_BROWSER_TEST_DISABLE_SMOOTHING") == "1":
-    (profile / "TalariaSettings.json").write_text(json.dumps({"smoothMouseWheelScrolling": False}))
 server = None
 peer_server = None
 runner = None

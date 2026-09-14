@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def verify(records):
-    """Assert native contracts; report experimental failures without shipping them."""
+    """Assert original wheel input reaches pages without event subdivision."""
     def check(condition, message):
         if not condition:
             raise AssertionError(message)
@@ -21,7 +21,8 @@ def verify(records):
     def wheel(name):
         return records[name]['wheel']
 
-    check(records['native-long']['y'] == 120, 'one native wheel step scrolls 120 pixels')
+    check(records['native-long']['y'] == 120 and len(wheel('native-long')) == 1,
+          'one native wheel step scrolls 120 pixels with one DOM event')
     check(records['native-repeated']['y'] == 360 and len(wheel('native-repeated')) == 3,
           'three native wheel steps preserve their combined distance')
     check(records['native-reversal']['y'] == 0 and len(wheel('native-reversal')) == 2,
@@ -34,33 +35,29 @@ def verify(records):
           'native input scrolls the nested panel without scrolling its parent')
     check(records['native-iframe']['frame']['y'] == 120 and records['native-iframe']['y'] == 0,
           'native input scrolls the cross-origin frame without scrolling its parent')
-    for name in ('native-consumer', 'native-control-consumer'):
+    for name in ('native-consumer', 'native-control-consumer', 'native-command-consumer', 'native-option-consumer'):
         check(records[name]['actions'] == 1 and records[name]['y'] == 0 and len(wheel(name)) == 1,
               name + ' receives one action and prevents default scrolling')
     check(wheel('native-control-consumer')[0]['control'], 'Control modifier reaches the consuming site')
-    for name in ('native-precise', 'native-momentum'):
+    for name in ('native-precise', 'native-phased'):
         check(records[name]['y'] == 120 and sum(e['y'] for e in wheel(name)) == 120,
               name + ' reaches WebKit with the original total distance')
     check(all(e['trusted'] for r in records.values() for e in r['wheel']),
           'page events came through the native input path')
 
-    # These are observed incompatibilities, not successful smoothing tests.
-    for name in ('subdivided-consumer', 'phased-consumer'):
-        r = records[name]
-        equivalent = r['actions'] == records['native-consumer']['actions'] and len(r['wheel']) == 1
-        print('EXPERIMENT:', name, 'site behavior preserved =', equivalent,
-              f"({r['actions']} actions, {len(r['wheel'])} events)")
-    for name in ('native-moving-panel', 'subdivided-moving-panel', 'phased-moving-panel',
-                 'native-boundary', 'subdivided-boundary', 'phased-boundary',
-                 'native-near-boundary', 'subdivided-near-boundary', 'phased-near-boundary'):
-        r = records[name]
-        overshoot = max(f['panel'] for f in r['frames']) - r['panelMax']
-        print('EXPERIMENT:', name, f"page={r['y']}, panel={r['panel']}, "
-              f"panel overshoot={max(0, overshoot)}, wheel events={len(r['wheel'])}")
-    animator = records['native-animator-enabled']
-    intermediate = any(0 < f['y'] < 120 for f in animator['frames'])
-    print('EXPERIMENT: native animator available =', animator['animatorFeatureAvailable'],
-          '; intermediate scroll positions observed =', intermediate)
+    check(records['native-panel-horizontal']['panelX'] == 120 and records['native-panel-horizontal']['x'] == 0,
+          'horizontal wheel input scrolls only its nested panel')
+    check(records['native-diagonal']['x'] == 120 and records['native-diagonal']['y'] == 120,
+          'diagonal input preserves both axes')
+    check(wheel('native-command-consumer')[0]['command'] and wheel('native-option-consumer')[0]['option'],
+          'Command and Option modifiers reach the consuming site')
+    check(records['native-moving-panel']['panel'] == 120 and records['native-moving-panel']['y'] == 0,
+          'one wheel step completes on its original nested target')
+    for name in ('native-boundary', 'native-near-boundary'):
+        check(records[name]['panel'] == records[name]['panelMax'], name + ' respects the nested scroll limit')
+    # Pointer identity and momentum metadata are asserted in the native fixture.
+    # AppKit can discard fabricated standalone momentum downstream.
+    print('Hardware trackpad momentum remains a manual check.')
 
 
 class Fixture(http.server.BaseHTTPRequestHandler):
@@ -81,7 +78,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             const panel=document.querySelector('#panel'),consumer=document.querySelector('#consumer');
             addEventListener('message',e=>{if(e.data.frame){frameState=e.data;frameReady=true}});
             addEventListener('wheel',e=>{wheel.push({x:e.deltaX,y:e.deltaY,mode:e.deltaMode,
-              target:e.target.id,cancelable:e.cancelable,trusted:e.isTrusted,shift:e.shiftKey,control:e.ctrlKey,time:performance.now()});
+              target:e.target.id,cancelable:e.cancelable,trusted:e.isTrusted,shift:e.shiftKey,control:e.ctrlKey,command:e.metaKey,option:e.altKey,time:performance.now()});
               if(moving && e.target.closest('#panel'))panel.style.left='1200px';},{capture:true});
             consumer.addEventListener('wheel',e=>{e.preventDefault();if(Math.abs(e.deltaY)>=40)actions++},{passive:false});
             function trace(){frames.push({time:performance.now(),x:scrollX,y:scrollY,panel:panel.scrollTop});requestAnimationFrame(trace)}
@@ -102,6 +99,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
 if __name__ == '__main__':
     require_unlocked_desktop()
     with tempfile.TemporaryDirectory(prefix='talaria-wheel-test-',dir='/tmp') as profile:
+        # A profile from the old release must not re-enable wheel conversion.
+        (Path(profile) / 'TalariaSettings.json').write_text(json.dumps({'smoothMouseWheelScrolling': True}))
         server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Fixture)
         threading.Thread(target=server.serve_forever,daemon=True).start()
         output=ROOT/'build/BrowserWheelRoutingWebKitResults.json'
