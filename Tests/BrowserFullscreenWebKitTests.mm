@@ -62,7 +62,7 @@
   NSString *script=[NSString stringWithFormat:@"(()=>{let button=document.createElement('button');button.id='talaria-fullscreen-test';button.textContent='Enter fullscreen';button.style='position:fixed;top:0;left:0;width:180px;height:60px;z-index:2147483647';button.onclick=()=>{button.remove();%@.requestFullscreen().then(()=>{document.title=JSON.stringify({test:%lu,value:true})}).catch(error=>{document.title=JSON.stringify({test:%lu,value:{error:String(error)}})})};document.body.append(button)})()",target,(unsigned long)self.scriptID,(unsigned long)self.scriptID];
   [self.webView evaluateJavaScript:script completionHandler:^(id value,NSError *error){
     if(error){NSLog(@"Fullscreen setup failed: %@",error);completion(@NO);return;}
-    [self after:0.1 run:^{
+    TLTestActivateWindow(self.window,^{
       NSView *view=self.webView;
       NSPoint point=[view convertPoint:NSMakePoint(50,view.isFlipped?30:NSHeight(view.bounds)-30) toView:nil];
       NSView *targetView=[self.window.contentView hitTest:[self.window.contentView convertPoint:point fromView:nil]];
@@ -70,7 +70,7 @@
       NSEvent *up=[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:self.window.windowNumber context:nil eventNumber:2 clickCount:1 pressure:0];
       NSLog(@"Posting trusted fullscreen click to %@",targetView);
       [NSApp postEvent:down atStart:NO];[NSApp postEvent:up atStart:NO];
-    }];
+    });
   }];
 }
 - (void)clickPlayerFullscreen:(void (^)(id))completion {
@@ -78,18 +78,21 @@
     if(error || ![rect isKindOfClass:NSDictionary.class] || [rect[@"width"] doubleValue]<=0){completion(@NO);return;}
     NSView *view=self.webView;NSWindow *window=view.window;
     NSPoint point=[view convertPoint:NSMakePoint([rect[@"x"] doubleValue],view.isFlipped ? [rect[@"y"] doubleValue] : NSHeight(view.bounds)-[rect[@"y"] doubleValue]) toView:nil];
-    // YouTube fades its controls and disables their hit testing while idle.
-    // Reveal them with native pointer motion before sending the trusted click.
-    window.acceptsMouseMovedEvents=YES;
-    NSEvent *move=[NSEvent mouseEventWithType:NSEventTypeMouseMoved location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
-    [NSApp postEvent:move atStart:NO];
-    [self after:.25 run:^{
-    for(NSNumber *type in @[@(NSEventTypeLeftMouseDown),@(NSEventTypeLeftMouseUp)]) {
-      NSEvent *event=[NSEvent mouseEventWithType:(NSEventType)type.integerValue location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:0];
-      [NSApp postEvent:event atStart:NO];
-    }
-    completion(@YES);
-    }];
+    // Activate before revealing controls: mouse movement in an inactive window
+    // does not reliably undo YouTube's idle control hit-testing suppression.
+    TLTestActivateWindow(window,^{
+      [window makeFirstResponder:view];
+      window.acceptsMouseMovedEvents=YES;
+      NSEvent *move=[NSEvent mouseEventWithType:NSEventTypeMouseMoved location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:0 pressure:0];
+      [NSApp postEvent:move atStart:NO];
+      [self after:.25 run:^{
+        for(NSNumber *type in @[@(NSEventTypeLeftMouseDown),@(NSEventTypeLeftMouseUp)]) {
+          NSEvent *event=[NSEvent mouseEventWithType:(NSEventType)type.integerValue location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:0];
+          [NSApp postEvent:event atStart:NO];
+        }
+        completion(@YES);
+      }];
+    });
   }];
 }
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -142,7 +145,7 @@
     if(self.diagnostic.length)[self.results addObject:@{@"name":@"Diagnostic configuration",@"passed":@YES,@"diagnostic":self.diagnostic}];
   }
   TLTestActivateWindow(self.window,^{[self waitForPage:0];});
-  [self after:self.liveURL ? 100 : 35 run:^{if(self.tab){[self check:NO name:@"Fullscreen integration deadline"];[self finish];}}];
+  [self after:self.liveURL ? 100 : 45 run:^{if(self.tab){[self check:NO name:@"Fullscreen integration deadline"];[self finish];}}];
 }
 - (void)waitForPage:(NSUInteger)attempt {
   if(self.session.browserIdentifier<0 || ![[[self.session valueForKey:@"pageBridge"] valueForKey:@"ready"] boolValue]) {
@@ -164,14 +167,14 @@
   }];
 }
 - (void)cycle:(NSUInteger)index {
-  if(index==4){[self finish];return;}
+  if(index==5){[self finish];return;}
   TLTestActivateWindow(self.window,^{[self beginCycle:index];});
 }
 - (void)beginCycle:(NSUInteger)index {
   [self after:0.6 run:^{
     self.originalHost=[self nativeView].superview;
     if (@available(macOS 26.0, *)) self.originalInset=self.webView.obscuredContentInsets.bottom;
-    NSString *target=index==1?@"document.querySelector('video')":@"document.querySelector('#target')";
+    NSString *target=(index==1 || index==3)?@"document.querySelector('video')":@"document.querySelector('#target')";
     if(index==2)target=@"document.querySelector('iframe')";
     [self enterFullscreen:target then:^(id entered){
       if(![entered isEqual:@YES])NSLog(@"Fullscreen request result: %@",entered);
@@ -190,54 +193,72 @@
   [self check:self.session.fullscreen && self.session.webView.fullscreenState == WKFullscreenStateInFullscreen && fullscreenWindow!=nil name:@"Browser content enters native fullscreen"];
   [self check:fullscreenWindow && NSEqualSizes(fullscreenWindow.frame.size,fullscreenWindow.screen.frame.size) name:@"Browser fills the selected display"];
   [self check:NSEqualRects(self.originalWindow,self.window.frame) && NSWidth(host.bounds)<NSWidth(self.window.contentView.bounds) name:@"Original split layout and window stay unchanged"];
+  NSButton *exitButton=[self.session valueForKey:@"fullscreenExitButton"];
+  [self check:exitButton.superview==host && NSEqualRects(exitButton.frame,host.bounds) && [exitButton.title isEqual:@"Click to exit Fullscreen"] name:@"Original pane has a full-size fullscreen exit action"];
+  NSPoint paneCenter=[host convertPoint:NSMakePoint(NSMidX(host.bounds),NSMidY(host.bounds)) toView:host.superview];
+  [self check:[host hitTest:paneCenter]==exitButton name:@"Fullscreen placeholder does not cover the clickable recovery area"];
   [self check:![self.tab canSamplePageAppearance] name:@"Footer probes pause in fullscreen"];
   [self eval:@"let f=document.querySelector('[data-talaria-document-footer]');return {fullscreen:!!document.fullscreenElement,spacer:f?f.getBoundingClientRect().height:0,width:innerWidth,height:innerHeight}" then:^(NSDictionary *state){
     [self check:[state[@"fullscreen"] boolValue] && [state[@"spacer"] doubleValue]==0 name:@"Fullscreen has no document extension"];
     NSLog(@"Fullscreen geometry: page=%@ view=%@ window=%@",state,NSStringFromRect(view.bounds),NSStringFromRect(fullscreenWindow.frame));
     [self check:fullscreenWindow && fabs([state[@"width"] doubleValue]-NSWidth(view.bounds))<1 && fabs([state[@"height"] doubleValue]-NSHeight(view.bounds))<1 name:@"Renderer viewport matches native fullscreen content size"];
-    if(index==3){
+    if(index==4){
       [self.tab close];
       [self check:!fullscreenWindow.isVisible && !view.inFullScreenMode name:@"Closing fullscreen tab restores native presentation"];
       [self after:0.2 run:^{[self finish];}];return;
     }
-    NSTimeInterval exitStarted=NSProcessInfo.processInfo.systemUptime;
-    if(index==1){
-      NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
-        timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:fullscreenWindow.windowNumber context:nil
-        characters:@"\033" charactersIgnoringModifiers:@"\033" isARepeat:NO keyCode:53];
-      [NSApp sendEvent:escape];
-    }else if(index==2 && self.liveURL){
-      [self clickPlayerFullscreen:^(id clicked){[self check:[clicked isEqual:@YES] name:@"Click YouTube exit fullscreen control"];}];
-    }else if(index==2){
-      [self.browser navigateSession:self.session toURL:[NSURL URLWithString:[NSProcessInfo.processInfo.arguments[1] stringByAppendingString:@"/fullscreen?again"]]];
-    }else{
-      [self eval:@"return document.exitFullscreen().then(()=>true)" then:^(id result){}];
-    }
-    [self waitFor:^BOOL{return self.webView.fullscreenState==WKFullscreenStateNotInFullscreen && view.window==self.window && NSEqualRects(view.frame,host.bounds);} then:^{
-      [self.results addObject:@{@"name":@"Fullscreen exit latency",@"passed":@YES,@"cycle":@(index),@"elapsedMS":@((NSProcessInfo.processInfo.systemUptime-exitStarted)*1000)}];
-      [self check:!self.session.fullscreen && !(self.session.webView.fullscreenState == WKFullscreenStateInFullscreen) && view.superview==host name:@"Exit restores the browser to its original host"];
-      [self check:NSEqualRects(view.frame,host.bounds) && NSEqualRects(self.window.frame,self.originalWindow) name:@"Exit restores exact browser and window geometry"];
-      if (@available(macOS 26.0, *)) {
-        if(index!=2)[self check:self.originalInset==self.webView.obscuredContentInsets.bottom name:@"Exit restores the native footer inset"];
+    dispatch_block_t exitAndVerify=^{
+      NSTimeInterval exitStarted=NSProcessInfo.processInfo.systemUptime;
+      if(index==1){
+        NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+          timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:fullscreenWindow.windowNumber context:nil
+          characters:@"\033" charactersIgnoringModifiers:@"\033" isARepeat:NO keyCode:53];
+        [NSApp sendEvent:escape];
+      }else if(index==2 && self.liveURL){
+        [self clickPlayerFullscreen:^(id clicked){[self check:[clicked isEqual:@YES] name:@"Click YouTube exit fullscreen control"];}];
+      }else if(index==2){
+        [self.browser navigateSession:self.session toURL:[NSURL URLWithString:[NSProcessInfo.processInfo.arguments[1] stringByAppendingString:@"/fullscreen?again"]]];
+      }else{
+        NSPoint center=[exitButton convertPoint:NSMakePoint(NSMidX(exitButton.bounds),NSMidY(exitButton.bounds)) toView:self.window.contentView];
+        [self check:!exitButton.hiddenOrHasHiddenAncestor && [self.window.contentView hitTest:center]==exitButton name:@"Recovery remains visible and clickable after the original window regains focus"];
+        if(index==0) {
+          NSView *content=self.window.contentView;
+          NSBitmapImageRep *bitmap=[content bitmapImageRepForCachingDisplayInRect:content.bounds];
+          [content cacheDisplayInRect:content.bounds toBitmapImageRep:bitmap];
+          NSString *buildDirectory=[[NSBundle.mainBundle.bundlePath stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
+          [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[buildDirectory stringByAppendingPathComponent:@"FullscreenRecoveryPane.png"] atomically:YES];
+        }
+        [exitButton performClick:nil];
       }
-      [self eval:@"return !document.fullscreenElement" then:^(id cleared){
-        [self check:[cleared isEqual:@YES] name:@"Exit also clears renderer fullscreen"];
-        NSTimeInterval began=NSProcessInfo.processInfo.systemUptime;
-        [self eval:@"return new Promise(resolve=>{let last=performance.now(),maxGap=0,frames=0;const start=last;function frame(now){maxGap=Math.max(maxGap,now-last);last=now;frames++;if(now-start<1000)requestAnimationFrame(frame);else resolve({maxGap,frames})}requestAnimationFrame(frame)})" then:^(NSDictionary *cadence){
-          [self.results addObject:@{@"name":@"Post-fullscreen frame cadence",@"passed":@([cadence[@"frames"] intValue]>20 && [cadence[@"maxGap"] doubleValue]<250),@"cycle":@(index),@"cadence":cadence,@"elapsedMS":@((NSProcessInfo.processInfo.systemUptime-began)*1000)}];
-          // Keep the immediate measurement above: WebKit can publish its
-          // NotInFullscreen state before its native presentation is removed.
-          // Separately measure recovery once the original window is interactive.
-          [self waitFor:^BOOL{return !fullscreenWindow.isVisible && self.window.isKeyWindow;} then:^{
-            [self.results addObject:@{@"name":@"Fullscreen recovery observation time",@"passed":@YES,@"cycle":@(index),@"elapsedMS":@((NSProcessInfo.processInfo.systemUptime-exitStarted)*1000)}];
-            [self eval:@"return new Promise(resolve=>{let last=performance.now(),maxGap=0,frames=0;const start=last;function frame(now){maxGap=Math.max(maxGap,now-last);last=now;frames++;if(now-start<1000)requestAnimationFrame(frame);else resolve({maxGap,frames,visible:document.visibilityState==='visible',focused:document.hasFocus()})}requestAnimationFrame(frame)})" then:^(NSDictionary *recovery){
-              [self.results addObject:@{@"name":@"Recovered fullscreen frame cadence",@"passed":@([recovery[@"frames"] intValue]>20 && [recovery[@"maxGap"] doubleValue]<250 && [recovery[@"visible"] boolValue] && [recovery[@"focused"] boolValue]),@"cycle":@(index),@"cadence":recovery}];
-              [self cycle:index+1];
-            }];
-          } attempt:0];
+      [self waitFor:^BOOL{return self.webView.fullscreenState==WKFullscreenStateNotInFullscreen && view.window==self.window && NSEqualRects(view.frame,host.bounds) && !exitButton.superview;} then:^{
+        [self.results addObject:@{@"name":@"Fullscreen exit latency",@"passed":@YES,@"cycle":@(index),@"elapsedMS":@((NSProcessInfo.processInfo.systemUptime-exitStarted)*1000)}];
+        [self check:!self.session.fullscreen && !(self.session.webView.fullscreenState == WKFullscreenStateInFullscreen) && view.superview==host name:@"Exit restores the browser to its original host"];
+        [self check:[self.session valueForKey:@"fullscreenExitButton"]==nil name:@"Exit removes the recovery action"];
+        [self check:NSEqualRects(view.frame,host.bounds) && NSEqualRects(self.window.frame,self.originalWindow) name:@"Exit restores exact browser and window geometry"];
+        if (@available(macOS 26.0, *)) {
+          if(index!=2)[self check:self.originalInset==self.webView.obscuredContentInsets.bottom name:@"Exit restores the native footer inset"];
+        }
+        [self eval:@"return !document.fullscreenElement" then:^(id cleared){
+          [self check:[cleared isEqual:@YES] name:@"Exit also clears renderer fullscreen"];
+          NSTimeInterval began=NSProcessInfo.processInfo.systemUptime;
+          [self eval:@"return new Promise(resolve=>{let last=performance.now(),maxGap=0,frames=0;const start=last;function frame(now){maxGap=Math.max(maxGap,now-last);last=now;frames++;if(now-start<1000)requestAnimationFrame(frame);else resolve({maxGap,frames})}requestAnimationFrame(frame)})" then:^(NSDictionary *cadence){
+            [self.results addObject:@{@"name":@"Post-fullscreen frame cadence",@"passed":@([cadence[@"frames"] intValue]>20 && [cadence[@"maxGap"] doubleValue]<250),@"cycle":@(index),@"cadence":cadence,@"elapsedMS":@((NSProcessInfo.processInfo.systemUptime-began)*1000)}];
+            // Keep the immediate measurement above: WebKit can publish its
+            // NotInFullscreen state before its native presentation is removed.
+            // Separately measure recovery once the original window is interactive.
+            [self waitFor:^BOOL{return !fullscreenWindow.isVisible && self.window.isKeyWindow;} then:^{
+              [self.results addObject:@{@"name":@"Fullscreen recovery observation time",@"passed":@YES,@"cycle":@(index),@"elapsedMS":@((NSProcessInfo.processInfo.systemUptime-exitStarted)*1000)}];
+              [self eval:@"return new Promise(resolve=>{let last=performance.now(),maxGap=0,frames=0;const start=last;function frame(now){maxGap=Math.max(maxGap,now-last);last=now;frames++;if(now-start<1000)requestAnimationFrame(frame);else resolve({maxGap,frames,visible:document.visibilityState==='visible',focused:document.hasFocus()})}requestAnimationFrame(frame)})" then:^(NSDictionary *recovery){
+                [self.results addObject:@{@"name":@"Recovered fullscreen frame cadence",@"passed":@([recovery[@"frames"] intValue]>20 && [recovery[@"maxGap"] doubleValue]<250 && [recovery[@"visible"] boolValue] && [recovery[@"focused"] boolValue]),@"cycle":@(index),@"cadence":recovery}];
+                [self cycle:index+1];
+              }];
+            } attempt:0];
+          }];
         }];
-      }];
-    } attempt:0];
+      } attempt:0];
+    };
+    if(index==0 || index==3) TLTestActivateWindow(self.window,exitAndVerify);
+    else exitAndVerify();
   }];
 }
 - (void)finish {

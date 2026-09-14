@@ -174,6 +174,8 @@ try:
     if not result.exists():
         raise RuntimeError('The desktop probe exited before producing results:\n' + app_log.read_text(errors='replace'))
     records = json.loads(result.read_text())
+    if any(not record["passed"] for record in records):
+        print(app_log.read_text(errors="replace"))
     output = ROOT / ("build/BrowserDevToolsWebKitResults.json" if DEVTOOLS else "build/BrowserFullscreenWebKitResults.json" if FULLSCREEN else "build/BrowserDocumentFooterWebKitResults.json" if DOCUMENT_FOOTER else "build/BrowserOverlayWebKitResults.json")
     output.write_text(json.dumps(records, indent=2))
     print(json.dumps(records, indent=2))

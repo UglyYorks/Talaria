@@ -3,6 +3,7 @@
 #import "WebKitPageBridge.h"
 #import "WebKitBrowserSettings.h"
 #import "design_system/TLBrowserWebView.h"
+#import "design_system/TLThemedButton.h"
 #import "design_system/UIComponents.h"
 #import "design_system/TLSourceWindowController.h"
 #import "WebKitImageLoader.h"
@@ -87,6 +88,7 @@ static void TLStyleBrowserPrompt(NSAlert *alert, TLThemePalette *palette) {
 @property (nonatomic) NSDate *backgroundSince;
 @property (nonatomic) NSDictionary *documentFooterConfiguration;
 @property (nonatomic) TLTokenView *navigationCover;
+@property (nonatomic) TLThemedButton *fullscreenExitButton;
 @property (nonatomic) NSUInteger transitionGeneration;
 @property (nonatomic) BOOL awaitingNavigationCommit;
 @property (nonatomic) NSDictionary *context;
@@ -98,6 +100,31 @@ static void TLStyleBrowserPrompt(NSAlert *alert, TLThemePalette *palette) {
 @property (nonatomic) NSArray<NSNumber *> *lastNavigationState;
 @end
 @implementation TLWebKitBrowserSession
+- (void)restoreDetachedFullscreenContent {
+  if (self.closed || self.paused || !self.containerView || !self.webView || self.webView.superview ||
+      self.webView.fullscreenState!=WKFullscreenStateNotInFullscreen) return;
+  self.webView.frame=self.containerView.bounds;
+  self.webView.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+  [self.containerView addSubview:self.webView positioned:NSWindowBelow relativeTo:nil];
+  [self.containerView.window makeFirstResponder:self.webView];
+}
+- (void)exitFullscreen:(id)sender {
+  if (self.closed) return;
+  NSWindow *presentationWindow=self.webView.window;
+  if (presentationWindow && presentationWindow!=self.containerView.window &&
+      [presentationWindow.windowController respondsToSelector:@selector(cancelOperation:)]) {
+    [presentationWindow.windowController cancelOperation:sender];
+    return;
+  }
+  // Finish DOM fullscreen before closing any native video presentation so the
+  // two WebKit transitions cannot race while restoring the original pane.
+  [self.webView callAsyncJavaScript:@"if (document.fullscreenElement) await document.exitFullscreen();"
+    arguments:@{} inFrame:nil inContentWorld:TLBrowserUIWorld() completionHandler:^(id result,NSError *error){
+      if (!self.closed) [self.webView closeAllMediaPresentationsWithCompletionHandler:^{
+        [self restoreDetachedFullscreenContent];
+      }];
+    }];
+}
 - (BOOL)pageAppearanceReady {
   return !self.closed && self.documentGeneration > 0 && !self.awaitingNavigationCommit && !self.navigationCover;
 }
@@ -494,11 +521,46 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   [session.containerView addSubview:cover positioned:NSWindowAbove relativeTo:session.webView];
 }
 - (void)clearNavigationCover:(TLWebKitBrowserSession *)session {session.transitionGeneration++;[session.navigationCover removeFromSuperview];session.navigationCover=nil;}
+// WebKit moves its content into a native fullscreen window. Keep a recovery
+// action in the original pane, where switching focus can expose the placeholder.
+- (void)updateFullscreenExitButton:(TLWebKitBrowserSession *)session {
+  // WebKit can publish NotInFullscreen before it removes the placeholder.
+  // Its actual placeholder is the source of truth for the still-empty pane.
+  NSView *placeholder=TLWebKitOptionalValue(session.webView,@"_fullScreenPlaceholderView");
+  BOOL hasPlaceholder=[placeholder isKindOfClass:NSView.class] && placeholder.superview==session.containerView;
+  // A focus interruption can finish WebKit's transition without putting the
+  // WKWebView back. There is then no native placeholder or fullscreen flag.
+  BOOL detachedContent=session.documentGeneration>0 && session.webView && session.containerView &&
+    !session.webView.superview && !session.paused;
+  if ((!session.fullscreen && !hasPlaceholder && !detachedContent) || session.closed) {
+    [session.fullscreenExitButton removeFromSuperview];
+    session.fullscreenExitButton=nil;
+    return;
+  }
+  if (session.fullscreenExitButton) {
+    // WebKit can insert or reorder its placeholder after publishing the state.
+    // Reassert the recovery action above it when focus changes or we poll.
+    if (session.containerView.subviews.lastObject!=session.fullscreenExitButton)
+      [session.containerView addSubview:session.fullscreenExitButton positioned:NSWindowAbove relativeTo:nil];
+    return;
+  }
+  TLThemedButton *button=[[TLThemedButton alloc] initWithFrame:session.containerView.bounds];
+  button.palette=[TLThemePalette paletteForPreference:self.darkAppearance ? TLThemePreferenceDark : TLThemePreferenceLight];
+  button.title=@"Click to exit Fullscreen";
+  button.wantsLayer=YES;
+  button.bezelStyle=NSBezelStyleRegularSquare;
+  button.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+  button.target=session;
+  button.action=@selector(exitFullscreen:);
+  session.fullscreenExitButton=button;
+  [session.containerView addSubview:button positioned:NSWindowAbove relativeTo:nil];
+}
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
   TLWebKitBrowserSession *session=[self sessionForWebView:object];if(!session)return;
   if([keyPath isEqual:@"fullscreenState"]) {
     BOOL fullscreen=session.webView.fullscreenState!=WKFullscreenStateNotInFullscreen;
     if(fullscreen!=session.fullscreen){session.fullscreen=fullscreen;[self clearNavigationCover:session];[session.pageBridge configureDocumentFooter:fullscreen ? @{@"enabled":@NO} : session.documentFooterConfiguration ?: @{@"enabled":@NO} completion:nil];}
+    [self updateFullscreenExitButton:session];
   }
   if([keyPath isEqual:@"title"] && session.webView.title.length) {
     if(session.titleHandler)session.titleHandler(session.webView.title);else session.standaloneWindow.title=session.webView.title;
@@ -871,7 +933,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   self.darkAppearance=dark;[TLSourceWindowController applyPaletteToOpenWindows:[TLThemePalette paletteForPreference:dark ? TLThemePreferenceDark : TLThemePreferenceLight]];for(TLWebKitBrowserSession *session in self.sessions.allValues)session.webView.appearance=[NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   TLThemePalette *palette=[TLThemePalette paletteForPreference:dark ? TLThemePreferenceDark : TLThemePreferenceLight];
   for(NSAlert *alert in self.alerts)TLStyleBrowserPrompt(alert,palette);
-  for(TLWebKitBrowserSession *session in self.sessions.allValues){[session.passwordAutofill applyPalette:palette];session.navigationCover.fillColor=palette.tabBackground;}
+  for(TLWebKitBrowserSession *session in self.sessions.allValues){[session.passwordAutofill applyPalette:palette];session.navigationCover.fillColor=palette.tabBackground;session.fullscreenExitButton.palette=palette;}
 }
 - (void)importCookies:(NSArray<NSDictionary *> *)cookies completion:(void (^)(NSUInteger,NSUInteger))completion {
   if(!self.persistentStore || self.shuttingDown){completion(0,cookies.count);return;}
@@ -913,6 +975,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   if(self.shuttingDown)return;
   for(TLWebKitBrowserSession *session in self.sessions.allValues.copy) {
     if(session.closed)continue;
+    [self updateFullscreenExitButton:session];
     id inspector=TLWebKitOptionalValue(session.webView,@"_inspector");
     BOOL visible=[TLWebKitOptionalValue(inspector,@"visible") boolValue] || [TLWebKitOptionalValue(session.webView,@"_isBeingInspected") boolValue];
     // WebKit initially docks its inspector inside the page. Wait until the
@@ -1044,6 +1107,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   // Invalidate first: stopping the bridge drains callbacks synchronously, and
   // none of those callbacks may revive this page or enter close a second time.
   session.closed=YES;session.fullscreen=NO;
+  [self updateFullscreenExitButton:session];
   [session.passwordAutofill stop];session.passwordAutofill=nil;
   WKWebView *webView=session.webView;
   NSNumber *renderer=TLWebKitOptionalValue(webView,@"_webProcessIdentifier");
