@@ -368,6 +368,9 @@ BOOL TLDatabaseMigrate(TLSQLiteConnection *connection, NSInteger targetVersion, 
       const char *sql =
         "DROP INDEX IF EXISTS chats_hermes_session_id;"
         "CREATE UNIQUE INDEX IF NOT EXISTS chats_agent_hermes_session_id ON chats(source_agent_id, hermes_session_id);"
+        "CREATE TABLE IF NOT EXISTS chat_model_settings ("
+        "chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE, "
+        "reasoning_effort TEXT NOT NULL DEFAULT '');"
         "CREATE TABLE IF NOT EXISTS notifications (agent_id INTEGER NOT NULL, notification_id TEXT NOT NULL, "
         "change_seq INTEGER NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, "
         "PRIMARY KEY(agent_id, notification_id));"

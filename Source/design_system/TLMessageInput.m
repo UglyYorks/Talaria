@@ -359,9 +359,9 @@
   if (visible && !self.settingsButton) {
     self.settingsButton = [[TLGlassButton alloc] initWithUsesGlassEffect:NO];
     self.settingsButton.hoverSurfaceOnly = YES;
-    self.settingsButton.image = [NSImage imageWithSystemSymbolName:@"switch.2" accessibilityDescription:@"Chat model settings"];
-    self.settingsButton.toolTip = @"Chat model settings";
-    [self.settingsButton setAccessibilityLabel:@"Chat model settings"];
+    self.settingsButton.image = [NSImage imageWithSystemSymbolName:@"switch.2" accessibilityDescription:@"Chat settings"];
+    self.settingsButton.toolTip = @"Chat settings";
+    [self.settingsButton setAccessibilityLabel:@"Chat settings"];
     [self.contentView addSubview:self.settingsButton];
     [NSLayoutConstraint activateConstraints:@[
       [self.settingsButton.widthAnchor constraintEqualToAnchor:self.sendButton.widthAnchor],

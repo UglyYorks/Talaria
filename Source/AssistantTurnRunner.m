@@ -288,7 +288,12 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     }
   };
   NSString *sessionID = chat.continuationSessionID.length ? chat.continuationSessionID : chat.hermesSessionID;
-  if (chat.sourceAgentID > 0) {
+  if (chat.reasoningEffort.length) {
+    if ([self.streaming respondsToSelector:@selector(streamChatWithAgentID:requestID:sessionID:token:model:reasoningEffort:messages:delta:completion:)]) {
+      [self.streaming streamChatWithAgentID:chat.sourceAgentID requestID:requestID sessionID:sessionID
+        token:trimmedToken model:trimmedModel reasoningEffort:chat.reasoningEffort messages:requestMessages delta:delta completion:self.finishStream];
+    } else self.finishStream(TLAssistantTurnError(@"This runtime cannot apply the selected thinking level."));
+  } else if (chat.sourceAgentID > 0) {
     if ([self.streaming respondsToSelector:@selector(streamChatWithAgentID:requestID:sessionID:token:model:messages:delta:completion:)]) {
       [self.streaming streamChatWithAgentID:chat.sourceAgentID requestID:requestID sessionID:sessionID
         token:trimmedToken model:trimmedModel messages:requestMessages delta:delta completion:self.finishStream];

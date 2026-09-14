@@ -49,6 +49,14 @@ typedef void (^TLAgentModelCatalogueHandler)(NSArray<TLAgentModel *> *_Nullable 
                                delta:(TLAgentStreamDeltaHandler)delta
                           completion:(TLAgentStreamCompletionHandler)completion;
 @optional
+- (void)selectHermesModelWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
+                           token:(NSString *)token model:(NSString *)model reasoningEffort:(NSString *)reasoningEffort
+                      completion:(TLAgentStreamCompletionHandler)completion;
+- (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent requestID:(NSString *)requestID
+                          sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model
+                             prompt:(NSString *)prompt approvalResponse:(nullable NSDictionary *)approvalResponse
+                    reasoningEffort:(NSString *)reasoningEffort delta:(TLAgentStreamDeltaHandler)delta
+                         completion:(TLAgentStreamCompletionHandler)completion;
 - (void)hermesActivityWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
                     completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 - (void)hermesProvidersWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters

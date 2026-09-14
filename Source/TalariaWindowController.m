@@ -31,7 +31,7 @@
 #import "TLHistoryPanelController.h"
 #import "TLBrowserTabController.h"
 #import "TLSettingsTabController.h"
-#import "TLModelSelectionWindowController.h"
+#import "TLChatSettingsController.h"
 #import "TLMainWindow.h"
 #import "TLOnboardingDemoWindowController.h"
 #import "TLHermesOnboardingWindowController.h"
@@ -259,7 +259,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong) NSImage *mainWindowSnapshotBeforeOnboarding;
 @property (nonatomic, strong) NSWindow *mainWindowRevealOverlayWindow;
 @property (nonatomic, strong) TLGlassButton *sendButton;
-@property (nonatomic, strong) TLModelSelectionWindowController *modelSelectionController;
+@property (nonatomic, strong) TLChatSettingsController *chatSettingsController;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLChatRecord *> *modelDraftChats;
 
 - (void)handleFileURLsDroppedOnNotch:(NSArray<NSURL *> *)fileURLs;
@@ -2841,7 +2841,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   NSInteger draftChatID = self.activeChat.chatID;
   NSError *error = nil;
-  TLChatRecord *persistedChat = [self.database createChatWithModel:model supportingModel:self.activeChat.supportingModel error:&error];
+  TLChatRecord *persistedChat = [self.database createChatWithModel:model supportingModel:self.activeChat.supportingModel reasoningEffort:self.activeChat.reasoningEffort error:&error];
   if (!persistedChat) {
     [self presentErrorMessage:error.localizedDescription ?: @"Could not create chat."];
     return NO;
@@ -2909,62 +2909,43 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)showChatModelMenu:(id)sender {
   [self focusChatContainingView:sender];
-  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Chat models"];
-  NSString *large = self.activeChat.model ?: self.settings.selectedModel;
-  NSString *small = self.activeChat.supportingModel ?: self.settings.supportingModel;
-  for (NSNumber *smallChoice in @[@NO, @YES]) {
-    BOOL isSmall = smallChoice.boolValue;
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"%@: %@",
-      isSmall ? @"Small model" : @"Large model", isSmall ? small : large]
-      action:@selector(chooseChatModel:) keyEquivalent:@""];
-    item.target = self;
-    item.representedObject = smallChoice;
-    [menu addItem:item];
-  }
-  NSView *button = self.messageInput.settingsButton;
-  [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(button.bounds)) inView:button];
-}
-
-- (void)chooseChatModel:(NSMenuItem *)sender {
-  if (self.window.attachedSheet) return;
-  BOOL small = [sender.representedObject boolValue];
+  if (self.chatSettingsController.popover.shown) { [self.chatSettingsController.popover close]; return; }
   TLChatRecord *chat = self.activeChat;
-  NSString *largeModel = chat.model ?: self.settings.selectedModel;
-  NSString *smallModel = chat.supportingModel ?: self.settings.supportingModel;
-  TLModelSelectionWindowController *controller = [[TLModelSelectionWindowController alloc]
-    initWithSmallModel:small selectedModel:small ? smallModel : largeModel token:self.settings.openRouterToken
-    orchestrator:self.agentOrchestrator palette:self.palette];
-  self.modelSelectionController = controller;
+  if (!chat || self.window.attachedSheet) return;
+  TLChatTabController *presentation = [self currentChatPresentation];
+  TLChatSettingsController *controller = [[TLChatSettingsController alloc]
+    initWithModel:chat.model supportingModel:chat.supportingModel reasoningEffort:chat.reasoningEffort
+    agentID:chat.sourceAgentID token:self.settings.openRouterToken orchestrator:self.agentOrchestrator palette:self.palette];
+  self.chatSettingsController = controller;
   __weak typeof(self) weakSelf = self;
-  controller.selectionHandler = ^(NSString *model, void (^completion)(NSError *)) {
+  controller.selectionHandler = ^(NSString *model, NSString *supporting, NSString *effort, void (^completion)(NSError *)) {
     typeof(self) owner = weakSelf;
     if (!owner) return;
-    NSString *largeChoice = small ? largeModel : model;
-    NSString *smallChoice = small ? model : smallModel;
-    void (^saveSelection)(NSError *) = ^(NSError *switchError) {
+    // Pin identity to the chat whose popover was opened, even if another tab gains focus.
+    if ([owner isSendingForChat:presentation] || [owner hasPendingChatApprovalForChat:presentation]) {
+      completion([NSError errorWithDomain:@"Talaria" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Finish the current response before changing chat settings."}]); return;
+    }
+    void (^save)(NSError *) = ^(NSError *switchError) {
       if (switchError) { completion(switchError); return; }
       NSError *error = nil;
-      if (![owner.database saveModelsForChatID:chat.chatID model:largeChoice supportingModel:smallChoice error:&error]) {
+      if (![owner.database saveChatSettingsForChatID:chat.chatID model:model supportingModel:supporting reasoningEffort:effort error:&error]) {
         completion(error); return;
       }
-      chat.model = largeChoice;
-      chat.supportingModel = smallChoice;
-      owner.settings.selectedModel = largeChoice;
-      owner.settings.supportingModel = smallChoice;
-      for (TLChatSummary *summary in owner.chats) {
-        if (summary.chatID == chat.chatID) { summary.model = largeChoice; summary.supportingModel = smallChoice; }
+      chat.model = model; chat.supportingModel = supporting; chat.reasoningEffort = effort;
+      owner.settings.selectedModel = model; owner.settings.supportingModel = supporting;
+      for (TLChatSummary *summary in owner.chats) if (summary.chatID == chat.chatID) {
+        summary.model = model; summary.supportingModel = supporting; summary.reasoningEffort = effort;
       }
-      [owner updateControlStates];
+      [owner updateControlStatesForChat:presentation];
       completion(nil);
     };
-    // Small models use isolated supporting sessions. Draft chats have no Hermes
-    // conversation yet; their selection is verified when the first turn starts.
-    if (small || !chat.hermesSessionID.length) { saveSelection(nil); return; }
-    [owner.agentOrchestrator selectModel:model sessionID:chat.continuationSessionID.length ? chat.continuationSessionID : chat.hermesSessionID
-      agentID:chat.sourceAgentID token:owner.settings.openRouterToken
-      completion:saveSelection];
+    BOOL changed = ![model isEqual:chat.model] || ![effort isEqual:chat.reasoningEffort];
+    if (chat.chatID <= 0 || !chat.hermesSessionID.length || !changed) { save(nil); return; }
+    [owner.agentOrchestrator selectModel:model reasoningEffort:effort
+      sessionID:chat.continuationSessionID.length ? chat.continuationSessionID : chat.hermesSessionID
+      agentID:chat.sourceAgentID token:owner.settings.openRouterToken completion:save];
   };
-  [controller presentForWindow:self.window];
+  [controller presentRelativeToView:presentation.messageInput.settingsButton];
 }
 
 - (BOOL)hasPendingChatApproval { return [self hasPendingChatApprovalForChat:[self currentChatPresentation]]; }
@@ -6161,7 +6142,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.agentCreationWindowController applyPalette:self.palette];
   [self.agentFolderAccessWindowController applyPalette:self.palette];
   [self.agentSettingsWindowController applyPalette:self.palette];
-  [self.modelSelectionController applyPalette:self.palette];
+  [self.chatSettingsController applyPalette:self.palette];
   [self.bookmarkEditor applyPalette:self.palette];
   self.bookmarkPopover.appearance = self.bookmarkEditor.view.appearance;
   [self styleSidebarActionButtons];
@@ -6248,6 +6229,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   } else {
     [self startNewChatWithModel:self.quickInputController.model focus:NO];
     self.activeChat.supportingModel = self.quickInputController.supportingModel;
+    self.activeChat.reasoningEffort = self.quickInputController.reasoningEffort;
     self.promptTextView.string = text;
     [self.messageInput setAttachmentURLs:files animated:NO];
     [self updateControlStates];
@@ -6257,34 +6239,19 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)showQuickInputModelMenu {
-  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Chat models"];
-  for (NSNumber *smallChoice in @[@NO, @YES]) {
-    BOOL small = smallChoice.boolValue;
-    NSString *model = small ? self.quickInputController.supportingModel : self.quickInputController.model;
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"%@: %@", small ? @"Small model" : @"Large model", model]
-      action:@selector(chooseQuickInputModel:) keyEquivalent:@""];
-    item.target = self;
-    item.representedObject = smallChoice;
-    [menu addItem:item];
-  }
-  NSView *button = self.quickInputController.messageInput.settingsButton;
-  [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(button.bounds)) inView:button];
-}
-
-- (void)chooseQuickInputModel:(NSMenuItem *)sender {
+  if (self.chatSettingsController.popover.shown) { [self.chatSettingsController.popover close]; return; }
   TLQuickInputWindowController *quickInput = self.quickInputController;
-  if (quickInput.window.attachedSheet) return;
-  BOOL small = [sender.representedObject boolValue];
-  TLModelSelectionWindowController *controller = [[TLModelSelectionWindowController alloc]
-    initWithSmallModel:small selectedModel:small ? quickInput.supportingModel : quickInput.model
-    token:self.settings.openRouterToken orchestrator:self.agentOrchestrator palette:self.palette];
-  self.modelSelectionController = controller;
-  controller.selectionHandler = ^(NSString *model, void (^completion)(NSError *)) {
-    if (small) quickInput.supportingModel = model;
-    else quickInput.model = model;
+  TLChatSettingsController *controller = [[TLChatSettingsController alloc]
+    initWithModel:quickInput.model supportingModel:quickInput.supportingModel reasoningEffort:quickInput.reasoningEffort
+    agentID:self.database.currentAgentID token:self.settings.openRouterToken orchestrator:self.agentOrchestrator palette:self.palette];
+  self.chatSettingsController = controller;
+  controller.selectionHandler = ^(NSString *model, NSString *supporting, NSString *effort, void (^completion)(NSError *)) {
+    quickInput.model = model; quickInput.supportingModel = supporting; quickInput.reasoningEffort = effort;
     completion(nil);
   };
-  [controller presentForWindow:quickInput.window];
+  quickInput.settingsPopoverVisible = YES;
+  controller.closeHandler = ^{ quickInput.settingsPopoverVisible = NO; };
+  [controller presentRelativeToView:quickInput.messageInput.settingsButton];
 }
 
 - (void)styleButton:(NSButton *)button background:(NSColor *)background foreground:(NSColor *)foreground {

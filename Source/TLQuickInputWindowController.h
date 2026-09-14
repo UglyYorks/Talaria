@@ -7,6 +7,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong, readonly) TLGlassMessageInput *messageInput;
 @property (nonatomic, copy) NSString *model;
 @property (nonatomic, copy) NSString *supportingModel;
+@property (nonatomic, copy) NSString *reasoningEffort;
+@property (nonatomic) BOOL settingsPopoverVisible;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *commands;
 @property (nonatomic, copy, nullable) void (^submissionHandler)(NSString *text, NSArray<NSURL *> *files, BOOL allowAutomaticRouting);
 @property (nonatomic, copy, nullable) void (^settingsHandler)(void);

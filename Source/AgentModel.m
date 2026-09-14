@@ -14,6 +14,9 @@ static NSString *TLModelString(id value) {
     _modelDescription = @"";
     _inputPrice = @"";
     _outputPrice = @"";
+    _thinkingLevels = @[];
+    _defaultThinkingLevel = @"";
+    _thinkingUnavailableReason = @"Thinking levels are unavailable for this model.";
   }
   return self;
 }
@@ -25,6 +28,9 @@ static NSString *TLModelString(id value) {
   copy.modelDescription = self.modelDescription;
   copy.inputPrice = self.inputPrice;
   copy.outputPrice = self.outputPrice;
+  copy.thinkingLevels = self.thinkingLevels;
+  copy.defaultThinkingLevel = self.defaultThinkingLevel;
+  copy.thinkingUnavailableReason = self.thinkingUnavailableReason;
   return copy;
 }
 - (NSString *)displayTitle { return self.name.length ? self.name : self.modelID; }
@@ -63,6 +69,17 @@ NSArray<TLAgentModel *> *TLParseHermesModelOptions(NSData *data, NSError **error
       NSDictionary *prices = [pricing[modelID] isKindOfClass:NSDictionary.class] ? pricing[modelID] : @{};
       model.inputPrice = TLModelString(prices[@"input"]);
       model.outputPrice = TLModelString(prices[@"output"]);
+      NSDictionary *thinking = [json[@"thinking"] isKindOfClass:NSDictionary.class] ? json[@"thinking"][selection] : nil;
+      if ([thinking isKindOfClass:NSDictionary.class]) {
+        NSMutableOrderedSet *levels = [NSMutableOrderedSet orderedSet];
+        if ([thinking[@"levels"] isKindOfClass:NSArray.class]) {
+          for (id level in thinking[@"levels"]) if (TLModelString(level).length) [levels addObject:level];
+        }
+        model.thinkingLevels = levels.array;
+        NSString *preferred = TLModelString(thinking[@"default"]);
+        model.defaultThinkingLevel = [levels containsObject:preferred] ? preferred : model.thinkingLevels.firstObject ?: @"";
+        if (TLModelString(thinking[@"error"]).length) model.thinkingUnavailableReason = thinking[@"error"];
+      }
       [models addObject:model];
     }
   }

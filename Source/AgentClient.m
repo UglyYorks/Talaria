@@ -399,6 +399,15 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                           sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model
                              prompt:(NSString *)prompt approvalResponse:(NSDictionary *)approvalResponse
                               delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
+  [self streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID token:token model:model
+    prompt:prompt approvalResponse:approvalResponse reasoningEffort:@"" delta:delta completion:completion];
+}
+
+- (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent requestID:(NSString *)requestID
+                          sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model
+                             prompt:(NSString *)prompt approvalResponse:(NSDictionary *)approvalResponse
+                    reasoningEffort:(NSString *)reasoningEffort delta:(TLAgentStreamDeltaHandler)delta
+                         completion:(TLAgentStreamCompletionHandler)completion {
   NSMutableDictionary *payload = [@{
     @"operation": @"hermes_session_chat",
     @"wait_for_previous_turn": @YES,
@@ -410,6 +419,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     @"soul": agent.soul ?: @"",
     @"host_command_description": TLPromptBuilder.hostCommandToolDescription,
   } mutableCopy];
+  payload[@"reasoning_effort"] = reasoningEffort ?: @"";
   if (approvalResponse) payload[@"approval_response"] = approvalResponse;
   [self startWorkerWithAgent:agent payload:payload operation:@"hermes_session_chat"
                        delta:delta streamCompletion:completion modelCompletion:nil];
@@ -418,8 +428,14 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 - (void)selectHermesModelWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
                            token:(NSString *)token model:(NSString *)model
                       completion:(TLAgentStreamCompletionHandler)completion {
+  [self selectHermesModelWithAgent:agent sessionID:sessionID token:token model:model reasoningEffort:@"" completion:completion];
+}
+
+- (void)selectHermesModelWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
+                           token:(NSString *)token model:(NSString *)model reasoningEffort:(NSString *)reasoningEffort
+                      completion:(TLAgentStreamCompletionHandler)completion {
   NSDictionary *payload = @{@"operation": @"hermes_select_model", @"request_id": NSUUID.UUID.UUIDString,
-    @"session_id": sessionID, @"token": token, @"model": model};
+    @"session_id": sessionID, @"token": token, @"model": model, @"reasoning_effort": reasoningEffort ?: @""};
   [self startWorkerWithAgent:agent payload:payload operation:@"hermes_select_model"
     delta:nil
     streamCompletion:completion modelCompletion:nil];

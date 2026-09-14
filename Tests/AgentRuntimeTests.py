@@ -83,8 +83,9 @@ class HermesStreamingTests(unittest.TestCase):
         output = FlushedOutput()
         chunks = ["Hello", " 🦊", "\n```swift\n", 'print("hi")']
         gateway = Mock()
-        def run(session, model, prompt, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False):
+        def run(session, model, prompt, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort=""):
             self.assertTrue(wait_for_previous_turn)
+            self.assertEqual(reasoning_effort, "")
             for index, chunk in enumerate(chunks):
                 delta("content", chunk)
                 self.assertEqual([json.loads(line)["text"] for line in output.flushed.splitlines()], chunks[:index + 1])

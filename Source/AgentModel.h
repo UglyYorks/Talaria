@@ -11,6 +11,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *inputPrice;
 @property (nonatomic, copy) NSString *outputPrice;
 
+@property (nonatomic, copy) NSArray<NSString *> *thinkingLevels;
+@property (nonatomic, copy) NSString *defaultThinkingLevel;
+@property (nonatomic, copy) NSString *thinkingUnavailableReason;
+
 - (NSString *)displayTitle;
 - (NSString *)detailText;
 

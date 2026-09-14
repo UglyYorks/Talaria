@@ -792,7 +792,8 @@ class TUIOnlyTests(unittest.TestCase):
         gateway.lock = threading.RLock()
         gateway.call = Mock(return_value={'providers': [{'slug': 'openrouter', 'models': ['test']}]})
         self.assertEqual(gateway.model_options()['providers'][0]['models'], ['test'])
-        gateway.call.assert_called_once_with('model.options', {'explicit_only': True})
+        gateway.call.assert_has_calls([call('model.options', {'explicit_only': True}),
+                                       call('talaria.models.thinking', {'providers': [{'slug': 'openrouter', 'models': ['test']}]})])
 
     def test_invalid_model_catalogue_reports_an_error(self):
         gateway = HermesGateway.__new__(HermesGateway)
@@ -961,7 +962,7 @@ class CredentialRPCTests(unittest.TestCase):
                         main()
                 self.assertEqual(set(handlers), {"talaria.credentials.list", "talaria.credentials.set",
                                                 "talaria.credentials.remove", "talaria.skills.describe", "talaria.automations", "talaria.notes",
-                                    "talaria.providers", "talaria.providers.usage", "talaria.session.ready", "talaria.session.verify_model",
+                                    "talaria.providers", "talaria.providers.usage", "talaria.session.ready", "talaria.session.verify_model", "talaria.models.thinking",
                                                 "talaria.notifications.sync", "talaria.notifications.set_read",
                                     "talaria.notifications.open_source", "talaria.plugins",
                                     "talaria.host.configure", "talaria.host.attach", "talaria.host.detach", "talaria.host.respond"})
