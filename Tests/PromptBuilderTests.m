@@ -1398,7 +1398,7 @@ static void TestAssistantTurnRunner(void) {
   runner.referenceContext = nil;
   [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
     nextPrompt:@"List shared files" updateHandler:nil completionHandler:nil error:&error];
-  TLAssertEqualObjects(client.capturedMessages[0].content, @"List shared files", @"shared-folder instructions never become part of a user message");
+  TLAssertEqualObjects(client.capturedMessages[0].content, [TLPromptBuilder.notesContext stringByAppendingString:@"\nList shared files"], @"upstream notes context is preserved without prepending shared-folder instructions");
   TLAssertEqualObjects(messages[messages.count - 2].content, @"List shared files", @"mount context does not change the visible user message");
   vmService.mountedFolders = @{};
   [runner startTurnWithChat:chat token:@"token" model:@"openai/gpt-4" messages:messages
