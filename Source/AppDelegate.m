@@ -1,3 +1,4 @@
+#import "TLDevelopmentMode.h"
 #import "TLMainWindow.h"
 #import <Carbon/Carbon.h>
 #import "AppDelegate.h"
@@ -44,7 +45,7 @@
 
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-  // Installed and worktree builds share their database and WebKit profile.
+  // Ordinary builds share data; each development snapshot has its own bundle identity.
   // Hand off before restoring tabs can initialize a second browser runtime.
   NSRunningApplication *existing = [self earlierRunningInstance];
   if (existing) {
@@ -87,7 +88,7 @@
   [self installMainMenu];
 
   TLAppReset *reset = [[TLAppReset alloc] init];
-  while (reset.resetPending) {
+  while (!TLDevelopmentDataURL() && reset.resetPending) {
     NSError *resetError = nil;
     if (![self hasOtherRunningInstance] && [reset performPendingReset:&resetError]) break;
     NSAlert *alert = [[NSAlert alloc] init];
@@ -125,6 +126,8 @@
                                                             agentOrchestrator:self.agentOrchestrator
                                                               appStateManager:self.appStateManager];
   self.windowController.shouldCascadeWindows = NO;
+  if (TLDevelopmentDataURL())
+    self.windowController.window.subtitle = [@"Development · " stringByAppendingString:TLDevelopmentDataURL().URLByDeletingLastPathComponent.lastPathComponent];
   if (!TLWidgetbookModeEnabled()) [(TLMainWindow *)self.windowController.window restorePlacementWithName:@"TalariaMainWindow"];
   [self.workspaceSessionStore observeStateManager:self.appStateManager];
   [self installStatusItem];
@@ -133,6 +136,7 @@
   [self.pendingWebURLs removeAllObjects];
   dispatch_async(dispatch_get_main_queue(), ^{
     [self presentMainWindow:self];
+    if ([self testInstructions].length) [self showTestInstructions:self];
   });
 }
 
@@ -171,7 +175,7 @@
 }
 
 - (BOOL)hasOtherRunningInstance {
-  for (NSRunningApplication *app in [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.talaria.chat"]) {
+  for (NSRunningApplication *app in [NSRunningApplication runningApplicationsWithBundleIdentifier:TLInstanceBundleIdentifier()]) {
     if (app.processIdentifier != NSProcessInfo.processInfo.processIdentifier && !app.terminated) return YES;
   }
   return NO;
@@ -181,7 +185,7 @@
   NSRunningApplication *current = NSRunningApplication.currentApplication;
   NSMutableArray<NSRunningApplication *> *others = [NSMutableArray array];
   BOOL hasLaunchDates = current.launchDate != nil;
-  for (NSRunningApplication *app in [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.talaria.chat"]) {
+  for (NSRunningApplication *app in [NSRunningApplication runningApplicationsWithBundleIdentifier:TLInstanceBundleIdentifier()]) {
     if (app.terminated || app.processIdentifier <= 0 || app.processIdentifier == current.processIdentifier) continue;
     [others addObject:app];
     hasLaunchDates = hasLaunchDates && app.launchDate != nil;
@@ -201,6 +205,13 @@
 }
 
 - (void)resetApp:(id)sender {
+  if (TLDevelopmentDataURL()) {
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Development copy";
+    alert.informativeText = @"To start fresh, quit this copy and launch again with --copy-db. Each launch creates a new database snapshot.";
+    [alert beginSheetModalForWindow:self.windowController.window completionHandler:nil];
+    return;
+  }
   if (self.resetInProgress) return;
   NSAlert *alert = [[NSAlert alloc] init];
   alert.alertStyle = NSAlertStyleCritical;
@@ -243,6 +254,19 @@
     self.resetInProgress = YES;
     [NSApp terminate:self];
   }];
+}
+
+- (NSString *)testInstructions {
+  return [NSBundle.mainBundle objectForInfoDictionaryKey:@"TLDevelopmentTestInstructions"] ?: @"";
+}
+
+- (void)showTestInstructions:(id)sender {
+  if (![self testInstructions].length || self.windowController.window.attachedSheet) return;
+  NSAlert *alert = [NSAlert new];
+  alert.messageText = @"Test instructions";
+  alert.informativeText = [self testInstructions];
+  [alert addButtonWithTitle:@"Start testing"];
+  [alert beginSheetModalForWindow:self.windowController.window completionHandler:nil];
 }
 
 - (void)openChat:(id)sender {
@@ -362,6 +386,8 @@
 
   NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"Talaria"];
   [appMenu addItemWithTitle:@"Open Chat" action:@selector(openChat:) keyEquivalent:@"0"].target = self;
+  if ([self testInstructions].length)
+    [appMenu addItemWithTitle:@"Test Instructions…" action:@selector(showTestInstructions:) keyEquivalent:@""].target = self;
   [appMenu addItem:NSMenuItem.separatorItem];
   [appMenu addItemWithTitle:@"Hide Talaria" action:@selector(hide:) keyEquivalent:@"h"];
   NSMenuItem *quitItem = [appMenu addItemWithTitle:@"Quit Talaria" action:@selector(terminate:) keyEquivalent:@"q"];

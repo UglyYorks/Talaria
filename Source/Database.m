@@ -1,3 +1,4 @@
+#import "TLDevelopmentMode.h"
 #import "Database.h"
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
@@ -521,6 +522,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 + (NSURL *)defaultDatabaseURL {
+  if (TLDevelopmentDataURL()) return [TLDevelopmentDataURL() URLByAppendingPathComponent:@"talaria.sqlite3"];
   NSURL *supportURL = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                             inDomains:NSUserDomainMask] firstObject];
   return [[supportURL URLByAppendingPathComponent:@"com.talaria.chat" isDirectory:YES]

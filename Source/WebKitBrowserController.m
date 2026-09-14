@@ -1,3 +1,4 @@
+#import "TLDevelopmentMode.h"
 #import "WebKitBrowserController.h"
 #import "WebKitPageBridge.h"
 #import "WebKitBrowserSettings.h"
@@ -302,7 +303,11 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   if(@available(macOS 14.0,*)) {} else useDefaultStore=YES;
   // Keep a macOS 13 profile in the same WebKit store after upgrading macOS.
   // Creating a new named store then would silently discard its signed-in state.
-  if(useDefaultStore) {
+  if(TLDevelopmentDataURL()) {
+    // A development run has no shared browser cookies, storage, or credentials,
+    // including on macOS 13 where named persistent stores are unavailable.
+    self.persistentStore=WKWebsiteDataStore.nonPersistentDataStore;
+  }else if(useDefaultStore) {
     if(![NSFileManager.defaultManager fileExistsAtPath:defaultStoreRecord.path] &&
        ![@"default\n" writeToURL:defaultStoreRecord atomically:YES encoding:NSUTF8StringEncoding error:&error]){[self presentError:error window:window];return NO;}
     self.persistentStore=WKWebsiteDataStore.defaultDataStore;

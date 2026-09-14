@@ -218,10 +218,10 @@ close-running-app:
 	@pkill -x "$(APP_NAME)" 2>/dev/null || true
 	@sleep 0.2
 
-run: build close-running-app
+run: build
 	open -n "$(CURDIR)/$(APP_BUNDLE)"
 
-widgetbook: build close-running-app
+widgetbook: build
 	open -n "$(CURDIR)/$(APP_BUNDLE)" --args --widgetbook
 
 clean:
