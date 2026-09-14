@@ -103,6 +103,164 @@ static void TestGlassAccountButtonSizing(void) {
   [window close];
 }
 
+static void TestBrowserChatControls(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 520, 500)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLBrowserChatPane *pane = [TLBrowserChatPane new];
+  [window.contentView addSubview:pane];
+  [NSLayoutConstraint activateConstraints:@[
+    [pane.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [pane.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [pane.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [pane.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+  ]];
+  [pane setPresented:YES animated:NO];
+  TLCommandTarget *target = [TLCommandTarget new];
+  for (NSButton *button in @[pane.minimizeButton, pane.closeButton, pane.splitButton]) {
+    button.target = target; button.action = @selector(activate:);
+  }
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    pane.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    window.appearance = [NSAppearance appearanceNamed:pane.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    pane.title = @"🌤 Tokyo packing advice";
+    pane.busy = YES;
+    pane.collapsed = YES;
+    [window setContentSize:NSMakeSize(520, pane.palette.browserToolbarButtonSize + pane.palette.space4 * 2)];
+    [window.contentView layoutSubtreeIfNeeded];
+    Check([[[pane valueForKey:@"titleLabel"] stringValue] isEqual:@"Thinking…"], @"working pill shows activity instead of the chat name");
+    pane.activityText = @"Searching…";
+    Check([[[pane valueForKey:@"titleLabel"] stringValue] isEqual:@"Searching…"], @"pill updates live activity text");
+    pane.busy = NO;
+    Check([[[pane valueForKey:@"titleLabel"] stringValue] isEqual:@"🌤 Tokyo packing advice"], @"finished pill restores the generated emoji and name");
+    pane.busy = YES;
+    pane.activityText = @"";
+    Check([[pane valueForKey:@"scrollView"] isHidden], @"collapsed status hides the transcript");
+    NSProgressIndicator *headerSpinner = [pane valueForKey:@"headerSpinner"];
+    Check(!headerSpinner.hidden && headerSpinner.indeterminate && headerSpinner.style == NSProgressIndicatorStyleSpinning,
+      @"working status has a visible animated spinner even when collapsed");
+    for (NSView *view in pane.subviews) Check(![view isKindOfClass:TLMessageInput.class], @"pane has no duplicate composer");
+    NSTextField *title = [pane valueForKey:@"titleLabel"];
+    NSPoint titlePoint = [title convertPoint:NSMakePoint(NSMidX(title.bounds), NSMidY(title.bounds)) toView:window.contentView];
+    Check([pane hitTest:titlePoint] == pane, @"clicking the status text routes to the expandable header");
+    NSUInteger beforeHeader = target.activationCount;
+    [pane mouseDown:[NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:[window.contentView convertPoint:titlePoint toView:nil]
+      modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1]];
+    Check(target.activationCount == beforeHeader + 1, @"the whole status header toggles expansion");
+    for (NSButton *button in @[pane.minimizeButton, pane.closeButton, pane.splitButton]) {
+      Check(!button.hidden && NSMinX(button.frame) >= 0 && NSMaxX(button.frame) <= NSWidth(pane.bounds), @"all three status controls fit the collapsed row");
+      NSBitmapImageRep *iconBitmap = [button bitmapImageRepForCachingDisplayInRect:button.bounds];
+      [button cacheDisplayInRect:button.bounds toBitmapImageRep:iconBitmap];
+      NSColor *foreground = [pane.palette.controlText colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+      CGFloat closest = CGFLOAT_MAX;
+      for (NSInteger y = 0; y < iconBitmap.pixelsHigh; y++) for (NSInteger x = 0; x < iconBitmap.pixelsWide; x++) {
+        NSColor *pixel = [[iconBitmap colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+        if (pixel.alphaComponent > 0.9) closest = MIN(closest, fabs(pixel.redComponent - foreground.redComponent) +
+          fabs(pixel.greenComponent - foreground.greenComponent) + fabs(pixel.blueComponent - foreground.blueComponent));
+      }
+      Check(closest < 0.2, @"collapse, sidebar, and close icons all render with the same themed foreground");
+      NSUInteger previous = target.activationCount;
+      [button performClick:nil];
+      Check(target.activationCount == previous + 1, @"status controls remain clickable while working");
+    }
+    NSBitmapImageRep *bitmap = [pane bitmapImageRepForCachingDisplayInRect:pane.bounds];
+    [pane cacheDisplayInRect:pane.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"/tmp/page-prompt-status-%@.png", pane.palette.dark ? @"dark" : @"light"] atomically:YES];
+  }
+  pane.collapsed = NO;
+  pane.busy = NO;
+  [window setContentSize:NSMakeSize(520, 500)];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSProgressIndicator *headerSpinner = [pane valueForKey:@"headerSpinner"];
+  Check(headerSpinner.hidden, @"header spinner disappears when the request finishes");
+  pane.busy = YES;
+  Check(!headerSpinner.hidden, @"expanded requests also display progress in the header");
+  [pane setPresented:NO animated:NO];
+  Check(headerSpinner.isHiddenOrHasHiddenAncestor, @"closing the pane hides progress");
+  [window close];
+}
+
+static void TestBrowserTranscript(void) {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, 500) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO;
+  TLBrowserChatPane *pane = [TLBrowserChatPane new];
+  [window.contentView addSubview:pane];
+  [NSLayoutConstraint activateConstraints:@[
+    [pane.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor],
+    [pane.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor],
+    [pane.topAnchor constraintEqualToAnchor:window.contentView.topAnchor],
+    [pane.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor],
+  ]];
+  [window makeKeyAndOrderFront:nil];
+  [pane setPresented:YES animated:NO];
+  NSArray *messages = @[
+    @{@"role":@"user", @"content":@"What should I wear in Tokyo tomorrow?"},
+    @{@"role":@"assistant", @"content":@"Pack **light layers** and an umbrella.\n\n- Breathable clothes\n- Comfortable shoes"},
+    @{@"role":@"user", @"content":@"And what about Tokyo Game Show?"},
+    @{@"role":@"assistant", @"content":@"Casual clothes and comfortable walking shoes are a good choice."}];
+  [pane showTranscript:@[messages[0]] errorText:@"" loading:YES];
+  Check(![[pane valueForKey:@"scrollView"] isHidden], @"expanded popup shows the submitted user bubble while waiting for the reply");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    pane.palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    pane.title = @"👕 Tokyo Game Show Attire";
+    window.appearance = [NSAppearance appearanceNamed:pane.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    [pane showTranscript:messages errorText:@"" loading:NO];
+    NSArray<NSView *> *views = [pane valueForKey:@"transcriptViews"];
+    Check(views.count == 4, @"each user message and answer has its own ordered transcript row");
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+    while ((![[views[1] valueForKey:@"documentReady"] boolValue] || ![[views[3] valueForKey:@"documentReady"] boolValue]) && deadline.timeIntervalSinceNow > 0)
+      [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]];
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    for (NSNumber *width in @[@200, @320, @700]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 500)];
+      [window.contentView layoutSubtreeIfNeeded];
+      for (NSNumber *index in @[@0, @2]) {
+        NSView *row = views[index.unsignedIntegerValue];
+        TLMessageBubbleView *bubble = [row valueForKey:@"bubble"];
+        NSTextField *label = [row valueForKey:@"label"];
+        Check([label.stringValue isEqual:messages[index.unsignedIntegerValue][@"content"]], @"standard bubble shows exact user text");
+        Check(bubble.drawsOutgoingTail && bubble.cornerRadius == pane.palette.userMessageCornerRadius, @"popup reuses the standard outgoing bubble shape");
+        Check(fabs(NSMaxX(bubble.frame) - NSWidth(row.bounds)) < 1 && NSWidth(bubble.frame) <= NSWidth(row.bounds) * pane.palette.userMessageMaxWidthMultiplier + 1,
+          @"user bubbles align right and wrap within the standard width at every window size");
+        Check(NSHeight(label.frame) > 0 && label.selectable, @"user text remains visible and selectable");
+      }
+    }
+    NSScrollView *transcriptScroll = [pane valueForKey:@"scrollView"];
+    [transcriptScroll.contentView scrollToPoint:NSZeroPoint];
+    [transcriptScroll reflectScrolledClipView:transcriptScroll.contentView];
+    [window.contentView displayIfNeeded];
+    TLMessageBubbleView *bubble = [views[0] valueForKey:@"bubble"];
+    NSBitmapImageRep *bubbleBitmap = [bubble bitmapImageRepForCachingDisplayInRect:bubble.bounds];
+    [bubble cacheDisplayInRect:bubble.bounds toBitmapImageRep:bubbleBitmap];
+    [[bubbleBitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[NSString stringWithFormat:@"/tmp/user-bubble-%@.png", pane.palette.dark ? @"dark" : @"light"] atomically:YES];
+    for (NSColor *expectedColor in @[pane.palette.userMessageSurface, pane.palette.userMessageText]) {
+      NSColor *expected = [expectedColor colorUsingColorSpace:bubbleBitmap.colorSpace];
+      CGFloat closest = CGFLOAT_MAX;
+      for (NSInteger y = 0; y < bubbleBitmap.pixelsHigh; y++) for (NSInteger x = 0; x < bubbleBitmap.pixelsWide; x++) {
+        NSUInteger components[4] = {0};
+        [bubbleBitmap getPixel:components atX:x y:y];
+        CGFloat scale = pow(2, bubbleBitmap.bitsPerSample) - 1;
+        if (components[3] / scale > 0.9) closest = MIN(closest, fabs(components[0] / scale - expected.redComponent) +
+          fabs(components[1] / scale - expected.greenComponent) + fabs(components[2] / scale - expected.blueComponent));
+      }
+      Check(closest < 0.2, [NSString stringWithFormat:@"standard bubble renders themed user colors: %@ closest=%g", expected, closest]);
+    }
+    NSView *retainedAnswer = views[3];
+    NSMutableArray *updated = [messages mutableCopy];
+    updated[3] = @{@"role":@"assistant", @"content":@"Casual clothes and comfortable walking shoes are a good choice. **Bring a light layer.**"};
+    [pane showTranscript:updated errorText:@"" loading:NO];
+    Check(((NSArray *)[pane valueForKey:@"transcriptViews"])[3] == retainedAnswer, @"streaming updates preserve existing message views");
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    [window.contentView layoutSubtreeIfNeeded];
+    NSBitmapImageRep *bitmap = [pane bitmapImageRepForCachingDisplayInRect:pane.bounds];
+    [pane cacheDisplayInRect:pane.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"/tmp/page-prompt-transcript-%@.png", pane.palette.dark ? @"dark" : @"light"] atomically:YES];
+  }
+  [window close];
+}
+
 static void TestBrowserChatPane(void) {
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 700, 500) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
@@ -142,7 +300,7 @@ static void TestBrowserChatPane(void) {
   Check(!activityView.expanded && activityView.arrangedSubviews.count == 1,
     @"tool activity starts collapsed with only its disclosure visible");
   NSStackView *contentStack = [pane valueForKey:@"contentStack"];
-  Check(contentStack.arrangedSubviews.firstObject == activityView,
+  Check([contentStack.arrangedSubviews indexOfObject:activityView] < [contentStack.arrangedSubviews indexOfObject:[pane valueForKey:@"markdownView"]],
     @"browser tool activity appears above the answer");
   [pane showMarkdown:@"" loading:NO];
   Check(!activityView.hidden && ![[pane valueForKey:@"scrollView"] isHidden], @"tools are visible before answer text arrives");
@@ -823,7 +981,9 @@ int main(void) {
     [TLFocusTestApplication sharedApplication];
     TestHermesSuggestions();
     TestURLSuggestions();
+    TestBrowserChatControls();
     TestBrowserChatPane();
+    TestBrowserTranscript();
     TestNativeMessageComposer();
     TestSendStopImageTransition();
     TestBrowserComposer();

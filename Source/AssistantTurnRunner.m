@@ -128,7 +128,10 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
   __block NSString *assistantStatus = @"";
 
   TLChatMessage *userMessage = self.regenerationPrompt ?: [TLChatMessage messageWithRole:TLRoleUser content:trimmedPrompt thinking:nil];
-  if (!self.regenerationPrompt) userMessage.attachments = attachments;
+  if (!self.regenerationPrompt) {
+    userMessage.attachments = attachments;
+    userMessage.approvalResponse = self.approvalResponse;
+  }
   TLChatMessage *assistantMessage = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
   self.streamingMessage = assistantMessage;
   if (!self.regenerationPrompt) [messages addObject:userMessage];
@@ -155,6 +158,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     [self finishWithResult:result updateHandler:updateHandler completionHandler:completionHandler];
     return YES;
   }
+  savedUser.approvalResponse = userMessage.approvalResponse;
   if (!self.regenerationPrompt) messages[assistantMessageIndex - 1] = savedUser;
   self.activeUserMessage = savedUser;
 

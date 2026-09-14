@@ -967,6 +967,10 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 - (void)setPalette:(TLThemePalette *)palette {
   _palette = palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
+  [self updateGlassAppearance];
+}
+
+- (void)updateGlassAppearance {
   CGFloat radius = self.cornerRadius < 0 ? _palette.radiusMedium : self.cornerRadius;
   if (@available(macOS 26.0, *)) {
     NSGlassEffectView *effect = (NSGlassEffectView *)self.glassView;
@@ -980,7 +984,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 
 - (void)setCornerRadius:(CGFloat)cornerRadius {
   _cornerRadius = cornerRadius;
-  self.palette = self.palette;
+  [self updateGlassAppearance];
 }
 
 @end

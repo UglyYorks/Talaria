@@ -11,6 +11,8 @@
 #import <QuartzCore/QuartzCore.h>
 #import <WebKit/WebKit.h>
 #import "TLBrowserTabController.h"
+#import "BrowserConversation.h"
+#import "design_system/TLBrowserChatPane.h"
 #import "TLBrowserContentColor.h"
 #import "TLSettingsTabController.h"
 #import "TLBrowserSettingsController.h"
@@ -1144,7 +1146,7 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
   return [[TLAssistantTurnRunner alloc] initWithMessageStore:self.store streaming:self.stream];
 }
 - (void)refreshChatsKeepingActiveSelection {}
-- (void)generateChatIconIfNeededForChatID:(NSInteger)chatID messages:(NSArray *)messages {}
+- (void)generateChatNameForChat:(TLChatRecord *)chat messages:(NSArray *)messages nextPrompt:(NSString *)prompt completion:(void (^)(void))completion {}
 - (void)presentErrorMessage:(NSString *)message { Check(NO, [@"unexpected concurrent chat error: " stringByAppendingString:message]); }
 @end
 
@@ -1553,7 +1555,7 @@ static void TestPromptQueueLayout(void) {
 - (void)reloadWorkspaceTabs {}
 - (void)updateControlStatesForChat:(TLChatTabController *)chatContext {}
 - (void)selectActiveChatInHistory {}
-- (void)generateChatIconIfNeededForChatID:(NSInteger)chatID messages:(NSArray *)messages {}
+- (void)generateChatNameForChat:(TLChatRecord *)chat messages:(NSArray *)messages nextPrompt:(NSString *)prompt completion:(void (^)(void))completion {}
 - (void)presentErrorMessage:(NSString *)message { Check(NO, message); }
 @end
 
@@ -1715,6 +1717,9 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error;
 @end
 @implementation TLFeatureSettingsStoreMock
+- (TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error {
+  TLChatRecord *chat = [TLChatRecord new]; chat.chatID = 91; chat.model = model; chat.title = @"New chat"; return chat;
+}
 - (NSInteger)recordBrowserVisitToURL:(NSURL *)URL title:(NSString *)title error:(NSError **)error { return 0; }
 - (TLAppSettings *)appSettings:(NSError **)error { return self.savedSettings; }
 - (TLAppSettings *)saveAppSettings:(TLAppSettings *)settings error:(NSError **)error {
@@ -1736,6 +1741,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 - (void)updateSession:(TLWebKitBrowserSession *)session;
 @end
 @interface TLFeatureBrowserMock : TLWebKitBrowserController
+@property (nonatomic, copy) void (^pageCompletion)(NSDictionary *, NSError *);
 @property NSURL *navigatedURL;
 @property (nonatomic) NSUInteger startCount;
 @property (nonatomic) NSUInteger closeCount;
@@ -1759,6 +1765,9 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @property (nonatomic, copy) TLWebKitBrowserLinkHandler linkCallback;
 @end
 @implementation TLFeatureBrowserMock
+- (void)readPageInSession:(TLWebKitBrowserSession *)session expectedURL:(NSURL *)URL completion:(void (^)(NSDictionary *, NSError *))completion {
+  self.pageCompletion = completion;
+}
 - (void)configureDocumentFooter:(NSDictionary *)configuration inSession:(TLWebKitBrowserSession *)session completion:(void (^)(BOOL))completion {
   self.footerConfiguration=configuration;
   if(completion){if(self.deferFooter)self.footerCompletion=completion;else completion(YES);}
@@ -1793,6 +1802,7 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @end
 
 @interface TLBrowserTabController (PageAppearanceTests)
+- (void)updateBrowserChat;
 - (void)samplePageAppearance;
 @end
 
@@ -1803,8 +1813,129 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @property (nonatomic, copy) NSString *sentPrompt;
 @end
 @implementation TLSuggestionBrowserProbe
-- (void)sendBrowserPrompt:(NSString *)prompt { self.sentPrompt = prompt; }
+- (BOOL)sendBrowserPrompt:(NSString *)prompt { self.sentPrompt = prompt; return YES; }
 @end
+
+static void TestBrowserPromptPresentation(void) {
+  TLFeatureBrowserMock *service = [TLFeatureBrowserMock new];
+  TLBrowserTabController *browser = [[TLBrowserTabController alloc] initWithURL:[NSURL URLWithString:@"https://example.com/page"]
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight] database:(id)[TLFeatureSettingsStoreMock new]
+    orchestrator:(id)[NSObject new] inputWidth:520 browserService:service];
+  browser.settingsProvider = ^{ TLAppSettings *settings = [TLAppSettings defaultSettings]; settings.selectedModel = @"test/model"; return settings; };
+  __block TLBrowserConversation *promoted;
+  browser.splitConversationHandler = ^BOOL(TLBrowserConversation *conversation) { promoted = conversation; conversation.changeHandler = nil; return YES; };
+  NSWindow *window = HostController(browser);
+  [window setContentSize:NSMakeSize(200, 700)];
+  [window.contentView layoutSubtreeIfNeeded];
+  CGFloat minimumHostWidth = NSWidth(window.contentView.bounds);
+  [window setContentSize:NSMakeSize(1100, 700)];
+  TLBrowserAddressInput *input = [browser valueForKey:@"browserAddressInput"];
+  [input beginPromptEditing];
+  input.textView.string = @"Summarize the page";
+  [input.textView didChangeText];
+  [NSApp sendAction:input.sendButton.action to:input.sendButton.target from:input.sendButton];
+  TLBrowserChatPane *pane = [browser valueForKey:@"browserChatPane"];
+  TLBrowserConversation *conversation = [browser valueForKey:@"browserConversation"];
+  [window.contentView layoutSubtreeIfNeeded];
+  Check(conversation.busy && pane.collapsed && pane.presented && pane.splitButton.enabled, @"page extraction shows a compact status with split available");
+  NSTextField *statusLabel = [pane valueForKey:@"titleLabel"];
+  Check([statusLabel.stringValue isEqual:@"Reading page…"], @"pill reports page extraction");
+  TLChatMessage *activityMessage = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
+  [conversation.messages addObject:activityMessage];
+  [browser updateBrowserChat];
+  Check([statusLabel.stringValue isEqual:@"Thinking…"], @"pill reports thinking before answer text arrives");
+  activityMessage.toolActivities = @[@{@"name":@"web_search", @"state":@"running"}];
+  [browser updateBrowserChat];
+  Check([statusLabel.stringValue isEqual:@"Searching…"], @"pill reports the active search tool");
+  activityMessage.toolActivities = @[@{@"name":@"web_search", @"state":@"completed"}];
+  [browser updateBrowserChat];
+  Check([statusLabel.stringValue isEqual:@"Thinking…"], @"completed tools do not leave a stale searching status");
+  activityMessage.content = @"Here is the answer";
+  [browser updateBrowserChat];
+  Check([statusLabel.stringValue isEqual:@"Writing response…"], @"pill reports streamed answer writing");
+  [conversation.messages removeAllObjects];
+  [browser updateBrowserChat];
+  Check(NSWidth(pane.frame) < NSWidth(input.frame) && fabs(NSMidX(pane.frame) - NSMidX(input.frame)) < 1,
+    @"working pill fits its content and is centered above the address bar");
+  Check(fabs(pane.cornerRadius - NSHeight(pane.frame) / 2) < 1, @"compact status has fully rounded pill ends");
+  pane.title = @"👕 What to wear in Tokyo";
+  pane.busy = NO;
+  [pane showMarkdown:@"" loading:NO];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSTextField *pillTitle = [pane valueForKey:@"titleLabel"];
+  CGFloat fullTitleWidth = [pillTitle.stringValue sizeWithAttributes:@{NSFontAttributeName:pillTitle.font}].width;
+  Check(NSWidth(pane.frame) >= browser.palette.browserPromptWidth && NSWidth(pillTitle.frame) >= fullTitleWidth - 1,
+    @"compact named chat keeps a comfortable width and shows its full title when space is available");
+  Check(fabs(NSMidX(pane.frame) - NSMidX(input.frame)) < 1, @"wider named pill stays centered above input");
+  Check(NSHeight(pane.frame) == browser.palette.browserToolbarButtonSize + browser.palette.space4 * 2, @"status occupies only one header above the address input");
+  window.minSize = NSMakeSize(200, 400);
+  window.contentMinSize = NSMakeSize(200, 400);
+  for (NSNumber *width in @[@200, @320, @1100]) {
+    [window setContentSize:NSMakeSize(width.doubleValue, 700)];
+    [window.contentView layoutSubtreeIfNeeded];
+    Check(NSWidth(window.contentView.bounds) <= MAX(width.doubleValue, minimumHostWidth) && NSMinX(pane.frame) >= 0 && NSMaxX(pane.frame) <= NSWidth(browser.view.bounds),
+      [NSString stringWithFormat:@"floating controls fit at %@: window %@, browser %@, pane %@", width,
+        NSStringFromRect(window.contentView.bounds), NSStringFromRect(browser.view.bounds), NSStringFromRect(pane.frame)]);
+  }
+  [pane.minimizeButton performClick:nil];
+  Check(!pane.collapsed && conversation.busy, @"working status can be expanded without interrupting extraction");
+  [pane.minimizeButton performClick:nil];
+  service.pageCompletion(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Page changed"}]);
+  service.pageCompletion = nil;
+  Check(!pane.collapsed && pane.presented && [conversation.markdown containsString:@"Page changed"], @"extraction failure auto-expands with a useful error");
+  [conversation.messages addObject:[TLChatMessage messageWithRole:TLRoleUser content:@"What should I wear in Tokyo?" thinking:nil]];
+  [conversation.messages addObject:[TLChatMessage messageWithRole:TLRoleAssistant
+    content:@"Based on the forecast on your page, pack for **warm, humid days**, cooler evenings, and frequent rain in Tokyo.\n\n- Light, breathable tops\n- A thin cardigan\n- A compact umbrella" thinking:nil]];
+  [browser updateBrowserChat];
+  [pane setPresented:YES animated:NO];
+  [window makeKeyAndOrderFront:nil];
+  NSView *markdown = [pane valueForKey:@"markdownView"];
+  NSDate *renderDeadline = [NSDate dateWithTimeIntervalSinceNow:10];
+  while (![[markdown valueForKey:@"documentReady"] boolValue] && renderDeadline.timeIntervalSinceNow > 0)
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+  Check([[markdown valueForKey:@"documentReady"] boolValue], @"response Markdown is loaded before checking its width");
+  for (NSNumber *width in @[@320, @520, @720]) {
+    [browser setAddressInputWidth:width.doubleValue];
+    [window.contentView layoutSubtreeIfNeeded];
+    Check(fabs(NSWidth(pane.frame) - NSWidth(input.frame)) < 1 && fabs(NSMinX(pane.frame) - NSMinX(input.frame)) < 1,
+      @"completed response remains aligned to the address bar instead of shrinking to its title");
+  }
+  Check(pane.cornerRadius == input.palette.messageInputCornerRadius, @"response corners match the address input");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    [browser applyPalette:[TLThemePalette paletteForPreference:theme.integerValue]];
+    window.appearance = [NSAppearance appearanceNamed:browser.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    markdown = [pane valueForKey:@"markdownView"];
+    renderDeadline = [NSDate dateWithTimeIntervalSinceNow:10];
+    while (![[markdown valueForKey:@"documentReady"] boolValue] && renderDeadline.timeIntervalSinceNow > 0)
+      [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    [window.contentView layoutSubtreeIfNeeded];
+    NSBitmapImageRep *bitmap = [browser.view bitmapImageRepForCachingDisplayInRect:browser.view.bounds];
+    [browser.view cacheDisplayInRect:browser.view.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"/tmp/page-prompt-response-%@.png", browser.palette.dark ? @"dark" : @"light"] atomically:YES];
+  }
+  [input beginPromptEditing];
+  input.textView.string = @"Try again";
+  [input.textView didChangeText];
+  [NSApp sendAction:input.sendButton.action to:input.sendButton.target from:input.sendButton];
+  Check(conversation.busy && pane.collapsed && [browser valueForKey:@"browserConversation"] == conversation,
+    @"address-bar follow-up reuses the same conversation");
+  [pane.closeButton performClick:nil];
+  service.pageCompletion(nil, [NSError errorWithDomain:@"test" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Unavailable"}]);
+  service.pageCompletion = nil;
+  Check(!pane.presented && input.chatVisible, @"explicit close stays dismissed when the request finishes");
+  [input.chatButton performClick:nil];
+  Check(pane.presented && !pane.collapsed, @"closed conversation can be restored for follow-ups");
+  input.textView.string = @"Continue in the sidebar";
+  [input.textView didChangeText];
+  [pane.splitButton performClick:nil];
+  Check(promoted == conversation && !pane.superview && ![browser valueForKey:@"browserConversation"], @"split transfers this conversation and removes the overlay");
+  Check([promoted.draft isEqual:@"Continue in the sidebar"], @"split carries the unsent address-bar draft");
+  Check(!input.hasUserDraft, @"the transferred draft is removed from the address bar");
+  [browser close];
+  [window close];
+}
 
 static void TestBrowserInputSuggestions(void) {
   TLFeatureBrowserMock *service = [TLFeatureBrowserMock new];
@@ -4251,7 +4382,7 @@ static void TestLiveThinkingPresentation(void) {
     [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
     if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
       Check(![mask.locations isEqual:locations], @"shimmer highlight moves across the text");
-    Check([pill.accessibilityLabel isEqual:@"Browsing web"], @"web tool gets readable activity text");
+    Check([pill.accessibilityLabel isEqual:@"Searching"], @"web search gets readable activity text");
     Check([[[pill valueForKey:@"avatarLabel"] stringValue] isEqual:@"🦊"], @"pill uses this chat's agent avatar");
     NSRect pillFrame = [pill convertRect:pill.bounds toView:workspace];
     NSRect inputFrame = [chat.messageInput convertRect:chat.messageInput.bounds toView:workspace];
@@ -4302,6 +4433,10 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_BROWSER_PROMPT_TESTS_ONLY")) {
+      TestBrowserPromptPresentation();
+      NSLog(@"Browser prompt presentation tests passed"); return 0;
+    }
     if (getenv("TL_INPUT_SUGGESTIONS_TESTS_ONLY")) {
       TestSuggestionsWithQueuedPrompts();
       TestSuggestionTypingAndVirtualization();
@@ -4396,6 +4531,7 @@ int main(void) {
     TestAgentPickerSheet();
     TestSuggestionTypingAndVirtualization();
     TestBrowserInputSuggestions();
+    TestBrowserPromptPresentation();
     TestRunningAgentRepairAction();
     TestWarmupAfterSettingsAndManualStart();
     TestThemedButtonRenderedColors();

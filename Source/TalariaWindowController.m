@@ -32,6 +32,7 @@
 #import "Theme.h"
 #import "TLHistoryPanelController.h"
 #import "TLBrowserTabController.h"
+#import "BrowserConversation.h"
 #import "TLSettingsTabController.h"
 #import "TLChatSettingsController.h"
 #import "TLMainWindow.h"
@@ -108,7 +109,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong) TLAppStateManager *appStateManager;
 @property (nonatomic, strong) NSMutableArray<TLAppStateSubscription *> *appStateSubscriptions;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, TLWorkspaceTabRuntime *> *workspaceTabRuntimes;
-@property (nonatomic, strong) NSMutableSet<NSNumber *> *chatIconRequests;
 @property (nonatomic, strong) NSMutableArray<TLClosedWorkspaceTab *> *closedWorkspaceTabs;
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, strong) TLAppSettings *settings;
@@ -567,7 +567,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     _appStateManager = appStateManager ?: [[TLAppStateManager alloc] init];
     _appStateSubscriptions = [NSMutableArray array];
     _workspaceTabRuntimes = [NSMutableDictionary dictionary];
-    _chatIconRequests = [NSMutableSet set];
     _settings = [TLAppSettings defaultSettings];
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _sidebarPreferredWidth = _palette.sidebarWidth;
@@ -1915,7 +1914,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self selectActiveChatInHistory];
   [self renderMessages];
   [self updateControlStates];
-  if (!self.openingNotificationSource) [self generateChatIconIfNeededForChatID:chat.chatID messages:self.messages];
 }
 
 - (void)activateDraftChatWithID:(NSInteger)chatID {
@@ -2410,9 +2408,67 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   controller.closeTabHandler = ^{ [weakSelf closeBrowserTabWithID:tabID]; };
   controller.settingsProvider = ^{ return weakSelf.settings; };
   controller.settingsRequiredHandler = ^{ [weakSelf showSettings:weakSelf]; };
+  controller.promptSubmittedHandler = ^(TLBrowserConversation *conversation, NSString *prompt) {
+    __weak TLBrowserConversation *weakConversation = conversation;
+    [weakSelf generateChatNameForChat:conversation.chat messages:conversation.messages nextPrompt:prompt completion:^{
+      [weakConversation refreshChatIdentity];
+    }];
+  };
+  controller.splitConversationHandler = ^BOOL(TLBrowserConversation *conversation) {
+    TalariaWindowController *owner = weakSelf;
+    TLWorkspaceTab *source = [owner browserTabWithID:tabID];
+    return source && [owner openBrowserConversation:conversation besideTab:source];
+  };
   [self addWorkspaceContentView:controller.view];
   if (configuration) [controller startInWindow:self.window configuration:configuration];
   else [controller startInWindow:self.window];
+}
+
+- (BOOL)openBrowserConversation:(TLBrowserConversation *)conversation besideTab:(TLWorkspaceTab *)source {
+  if (!conversation.chat || !source) return NO;
+  NSNumber *chatID = @(conversation.chat.chatID);
+  if (!self.turnMessagesByChat) self.turnMessagesByChat = [NSMutableDictionary dictionary];
+  if (!self.turnRunners) self.turnRunners = [NSMutableDictionary dictionary];
+  // Install live state before loading the tab; the database may still be empty
+  // while page extraction is in flight. Never start a second request here.
+  self.turnMessagesByChat[chatID] = conversation.messages;
+  if (conversation.busy) self.turnRunners[chatID] = conversation.runner;
+  [self loadChatWithID:chatID.integerValue];
+  TLChatTabController *presentation = self.chatPresentations[chatID];
+  if (!presentation) return NO;
+  presentation.messages = conversation.messages;
+  presentation.isLoading = conversation.busy && !conversation.messages.count;
+  presentation.promptTextView.string = conversation.draft;
+  [presentation.messageInput recalculateHeight];
+  presentation.errorMessage = conversation.errorText ?: @"";
+  [presentation resetMessageRowCache];
+  [presentation renderMessagesScrollingToBottom:YES];
+  [self splitTab:[self activeWorkspaceTab] besideTab:source onLeft:NO];
+
+  __weak typeof(self) weakSelf = self;
+  __weak TLBrowserConversation *weakConversation = conversation;
+  conversation.changeHandler = ^{
+    TalariaWindowController *owner = weakSelf;
+    TLBrowserConversation *live = weakConversation;
+    if (!owner || !live) return;
+    TLChatTabController *chat = owner.chatPresentations[chatID];
+    chat.isLoading = live.busy && !live.messages.count;
+    chat.errorMessage = live.errorText ?: @"";
+    if (live.busy) {
+      [chat markMessageDirty:live.runner.streamingMessage];
+      [chat scheduleStreamingMessageRender];
+    } else {
+      live.changeHandler = nil;
+      if (owner.turnRunners[chatID] == live.runner) [owner.turnRunners removeObjectForKey:chatID];
+      if (!live.pendingApproval) [owner.turnMessagesByChat removeObjectForKey:chatID];
+      [owner refreshChatsKeepingActiveSelection];
+      [chat renderMessagesScrollingToBottom:YES];
+      [owner finishQueuedTurnWithResult:live.lastTurnResult forChat:chat];
+    }
+    [owner updateControlStatesForChat:chat];
+  };
+  conversation.changeHandler();
+  return YES;
 }
 
 - (void)reloadBookmarks {
@@ -3030,6 +3086,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
 
   if (self.isSending || self.chatPresentation.queuedPrompts.count) {
+    NSMutableArray *namingHistory = [self.messages mutableCopy];
+    for (TLQueuedPrompt *queued in self.chatPresentation.queuedPrompts) {
+      [namingHistory addObject:[TLChatMessage messageWithRole:TLRoleUser content:queued.text thinking:nil]];
+    }
+    [self generateChatNameForChat:self.activeChat messages:namingHistory nextPrompt:nextPrompt.length ? nextPrompt : @"Attached files" completion:nil];
     [self.chatPresentation.queuedPrompts addObject:[TLQueuedPrompt promptWithText:nextPrompt attachmentURLs:sourceURLs]];
     self.promptTextView.string = @"";
     self.messageInput.attachmentURLs = @[];
@@ -3060,6 +3121,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.chatPresentation.queuePaused = NO;
   TLChatRecord *chat = self.activeChat;
   NSMutableArray<TLChatMessage *> *turnMessages = self.messages;
+  [self generateChatNameForChat:chat messages:turnMessages nextPrompt:nextPrompt completion:nil];
   if (sourceURLs.count) {
     if (!self.preparingAttachmentChats) self.preparingAttachmentChats = [NSMutableSet set];
     [self.preparingAttachmentChats addObject:@(chat.chatID)];
@@ -3185,10 +3247,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
     if ([nextPrompt hasPrefix:@"/"]) strongSelf.hermesCommandsFetchedAt = nil;
     [strongSelf refreshChatsKeepingActiveSelection];
-    if (!result.assistantMessage.approvalRequest && result.generationStatus == TLAssistantTurnGenerationStatusSucceeded &&
-        result.persistenceStatus == TLAssistantTurnPersistenceStatusSucceeded) {
-      [strongSelf generateChatIconIfNeededForChatID:chat.chatID messages:turnMessages];
-    }
     if (showingOrigin) [strongSelf renderMessages];
     else {
       TLChatTabController *originChat = strongSelf.chatPresentations[@(chat.chatID)];
@@ -6683,7 +6741,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   NSError *attachmentCleanupError = nil;
   [self.agentOrchestrator removeAttachmentsForSessionID:deletedChat.hermesSessionID error:&attachmentCleanupError];
   if (attachmentCleanupError) [self presentErrorMessage:attachmentCleanupError.localizedDescription];
-  [self.chatIconRequests removeObject:@(chatID)];
+  [self.chatIconGenerator cancelNamingForChatID:chatID];
   [self.attachmentDrafts removeObjectForKey:@(chatID)];
   [self.attachmentPromptDrafts removeObjectForKey:@(chatID)];
   if (closedIndex != NSNotFound) {
@@ -6807,72 +6865,30 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self.historyPanelController reloadData];
 }
 
-- (void)generateChatIconIfNeededForChatID:(NSInteger)chatID messages:(NSArray<TLChatMessage *> *)messages {
-  if (self.widgetbookMode || chatID <= 0) {
-    return;
-  }
-
-  TLChatSummary *summary = [self summaryForChatID:chatID];
-  if (summary.icon.length > 0) {
-    return;
-  }
-
-  NSNumber *requestKey = @(chatID);
-  if ([self.chatIconRequests containsObject:requestKey]) {
-    return;
-  }
-
-  NSString *firstUserMessage = [self firstUserMessageFromMessages:messages];
-  if (firstUserMessage.length == 0) {
-    return;
-  }
-
-  NSString *token = [self.settings.openRouterToken stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  NSString *model = [(summary.supportingModel ?: self.settings.supportingModel) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (model.length == 0) {
-    return;
-  }
-
-  [self.chatIconRequests addObject:requestKey];
-  NSString *title = summary.title.length > 0 ? summary.title : @"New chat";
+- (void)generateChatNameForChat:(TLChatRecord *)chat messages:(NSArray<TLChatMessage *> *)messages
+                   nextPrompt:(NSString *)prompt completion:(void (^)(void))completion {
+  if (self.widgetbookMode || chat.chatID <= 0) return;
+  NSString *model = chat.supportingModel.length ? chat.supportingModel : self.settings.supportingModel;
   __weak typeof(self) weakSelf = self;
-  [self.chatIconGenerator generateIconForTitle:title
-                              firstUserMessage:firstUserMessage
-                                         token:token
-                                         model:model
-                                    completion:^(NSString *icon, NSError *error) {
-    TalariaWindowController *strongSelf = weakSelf;
-    if (!strongSelf) {
-      return;
-    }
-
-    [strongSelf.chatIconRequests removeObject:requestKey];
-    if (error) {
-      [strongSelf presentErrorMessage:[NSString stringWithFormat:@"Could not generate the chat icon: %@", error.localizedDescription]];
-      return;
-    }
-    if (icon.length == 0) {
-      return;
-    }
-
-    NSError *saveError = nil;
-    TLChatSummary *savedSummary = [strongSelf.database saveChatIcon:icon chatID:chatID error:&saveError];
-    if (!savedSummary) {
-      return;
-    }
-
-    [strongSelf applySavedChatSummary:savedSummary];
-  }];
-}
-
-- (NSString *)firstUserMessageFromMessages:(NSArray<TLChatMessage *> *)messages {
-  for (TLChatMessage *message in messages) {
-    if ([message.role isEqualToString:TLRoleUser] && message.content.length > 0) {
-      return message.content;
-    }
-  }
-
-  return @"";
+  [self.chatIconGenerator generateNameForChatID:chat.chatID messages:messages nextPrompt:prompt
+    token:self.settings.openRouterToken model:model completion:^(NSString *title, NSString *icon, NSError *error) {
+      TalariaWindowController *owner = weakSelf;
+      if (!owner) return;
+      if (error) {
+        [owner presentErrorMessage:[NSString stringWithFormat:@"Could not name the chat: %@", error.localizedDescription]];
+        return;
+      }
+      NSError *saveError = nil;
+      TLChatSummary *saved = [owner.database saveChatTitle:title icon:icon chatID:chat.chatID error:&saveError];
+      if (!saved) {
+        if (saveError) [owner presentErrorMessage:saveError.localizedDescription];
+        return;
+      }
+      chat.title = saved.title;
+      chat.icon = saved.icon;
+      [owner applySavedChatSummary:saved];
+      if (completion) completion();
+    }];
 }
 
 - (void)synchronizeChatTabTitles {
@@ -6902,6 +6918,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
 
   if (!found) [self.chats addObject:[savedSummary copy]];
+  NSMutableArray *history = [self.hermesHistoryChats mutableCopy];
+  for (NSUInteger index = 0; index < history.count; index++) {
+    if (((TLChatSummary *)history[index]).chatID == savedSummary.chatID) history[index] = [savedSummary copy];
+  }
+  self.hermesHistoryChats = history;
 
   if (self.activeChat.chatID == savedSummary.chatID) {
     self.activeChat.title = savedSummary.title;

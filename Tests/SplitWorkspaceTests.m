@@ -9,6 +9,7 @@
 #import "WorkspaceTabRuntime.h"
 #import "AppStateManager.h"
 #import "TLBrowserLinkActions.h"
+#import "BrowserConversation.h"
 #import "design_system/TLButton.h"
 
 static void Check(BOOL value, NSString *message) { if (!value) { NSLog(@"FAIL: %@", message); exit(1); } }
@@ -26,6 +27,7 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 }
 
 @interface TalariaWindowController (SplitTests)
+- (BOOL)openBrowserConversation:(TLBrowserConversation *)conversation besideTab:(TLWorkspaceTab *)source;
 - (NSSize)windowWillResize:(NSWindow *)sender toSize:(NSSize)size;
 - (void)buildInterface;
 - (void)installAppStateBindings;
@@ -83,6 +85,8 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 @interface TLSplitTestDatabase : NSObject
 @end
 @implementation TLSplitTestDatabase
+- (void)performAsync:(void (^)(id database))block { block(self); }
+- (NSArray *)inputSuggestionHistory { return @[]; }
 - (NSArray *)listBookmarks:(NSError **)error { return @[]; }
 - (NSArray *)listBrowserHistory:(NSError **)error { return @[]; }
 - (NSInteger)currentAgentID { return 0; }
@@ -90,6 +94,47 @@ static TLWorkspaceTab *Tab(NSInteger n) {
   TLChatRecord *chat = [TLChatRecord new]; chat.chatID = 123; chat.model = model; chat.reasoningEffort = effort; chat.title = @"Saved chat"; chat.messages = @[]; return chat;
 }
 @end
+
+@interface TLSplitBrowserTestDatabase : TLSplitTestDatabase
+@property TLChatRecord *browserChat;
+@end
+@implementation TLSplitBrowserTestDatabase
+- (NSArray *)listChats:(NSError **)error { return @[]; }
+- (TLChatRecord *)chatWithID:(NSInteger)chatID error:(NSError **)error { return self.browserChat; }
+- (TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error {
+  self.browserChat = [TLChatRecord new]; self.browserChat.chatID = 991; self.browserChat.model = model;
+  self.browserChat.title = @"Page conversation"; self.browserChat.messages = @[];
+  return self.browserChat;
+}
+@end
+
+static void TestBrowserConversationPromotion(TLSplitTestController *owner, TLAppStateManager *state) {
+  [owner setValue:[TLSplitBrowserTestDatabase new] forKey:@"database"];
+  [owner openBrowserTabWithURL:[NSURL URLWithString:@"https://example.com/article"]];
+  TLWorkspaceTab *browser = [state workspaceTabWithKind:TLWorkspaceTabKindBrowser tabID:state.snapshot.activeTabID];
+  TLBrowserConversation *conversation = [[TLBrowserConversation alloc] initWithDatabase:[owner valueForKey:@"database"] orchestrator:(id)[NSObject new]];
+  __block void (^readPage)(NSDictionary *, NSError *);
+  [conversation sendPrompt:@"Explain this page" token:@"token" model:@"test/model" pageReader:^(void (^completion)(NSDictionary *, NSError *)) { readPage = completion; }];
+  conversation.draft = @"A follow-up in progress";
+  Check([owner openBrowserConversation:conversation besideTab:browser], @"split opens while page extraction is pending");
+  TLWorkspaceTab *chatTab = [state workspaceTabWithKind:TLWorkspaceTabKindChat tabID:conversation.chat.chatID];
+  TLWorkspaceSplitState *splits = [owner valueForKey:@"splitState"];
+  Check([splits groupForTab:browser] == [splits groupForTab:chatTab] && [splits groupForTab:chatTab] != nil,
+    @"the existing page and its conversation share a split group");
+  TLChatTabController *chat = [owner valueForKey:@"chatPresentations"][@(conversation.chat.chatID)];
+  Check(chat.messages == conversation.messages && [owner valueForKey:@"turnRunners"][@(conversation.chat.chatID)] == conversation.runner,
+    @"promotion keeps the exact live transcript and runner");
+  Check([chat.promptTextView.string isEqual:conversation.draft], @"promotion preserves an unsent follow-up draft");
+  Check(chat.isLoading && chat.emptyStateView.hidden, @"pending page extraction shows work in progress instead of an empty chat");
+  TLChatMessage *reply = [TLChatMessage messageWithRole:TLRoleAssistant content:@"Live response" thinking:nil];
+  [conversation.messages addObject:reply];
+  conversation.changeHandler(); Drain();
+  Check(chat.messages.lastObject == reply && !chat.isLoading, @"live updates replace the loading state in the split conversation");
+  readPage(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Page changed during extraction"}]);
+  readPage = nil;
+  Check(![owner valueForKey:@"turnRunners"][@(conversation.chat.chatID)] && !conversation.changeHandler &&
+    [chat.errorMessage containsString:@"Page changed"], @"handoff settles errors and releases the runner for normal follow-ups");
+}
 
 static void TestGrouping(void) {
   TLWorkspaceSplitState *state = [TLWorkspaceSplitState new];
@@ -653,6 +698,11 @@ static void TestRealWorkspace(void) {
   [owner setValue:[NSMutableArray array] forKey:@"chats"];
   [owner setValue:@(-1) forKey:@"nextDraftChatID"];
   [owner buildInterface]; [owner installAppStateBindings];
+  if (getenv("TL_BROWSER_PROMOTION_TESTS_ONLY")) {
+    TestBrowserConversationPromotion(owner, state);
+    [window close];
+    return;
+  }
   [owner startNewChatWithModel:@"test-model" focus:NO];
   TLWorkspaceTab *a = state.snapshot.workspaceTabs.lastObject;
   TLChatTabController *pa = [owner valueForKey:@"chatPresentation"];
@@ -884,10 +934,14 @@ static void TestRealWorkspace(void) {
   TestChatInputNavigation(owner, state);
   TestNewTabContextMenu(owner, state);
   TestBrowserChatDefaultWidths(owner, state);
+  TestBrowserConversationPromotion(owner, state);
   [window close];
 }
 int main(void) { @autoreleasepool {
   [NSApplication sharedApplication];
+  if (getenv("TL_BROWSER_PROMOTION_TESTS_ONLY")) {
+    TestRealWorkspace(); NSLog(@"Browser conversation promotion tests passed"); return 0;
+  }
   TestGrouping(); TestGrid(); TestColumnLayout(); TestDropTargets(); TestUnchangedDropTargets(); TestPointerCancellation(); TestPaneGeometry(); TestDraftPromotionAcrossEvents(); TestRealWorkspace();
   NSLog(@"SplitWorkspaceTests passed");
 } return 0; }

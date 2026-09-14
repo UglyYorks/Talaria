@@ -108,8 +108,8 @@
 }
 + (NSString *)labelForToolName:(NSString *)name {
   NSString *key = name.lowercaseString;
-  if ([key hasPrefix:@"web_"] || [key hasPrefix:@"browser"]) return @"Browsing web";
   if ([key containsString:@"search"]) return @"Searching";
+  if ([key hasPrefix:@"web_"] || [key hasPrefix:@"browser"]) return @"Browsing web";
   if ([key containsString:@"fetch"] || [key containsString:@"query"]) return @"Fetching data";
   if ([key isEqual:@"run_host_command"]) return @"Running command on your Mac";
   if ([key containsString:@"terminal"] || [key containsString:@"shell"]) return @"Running command";

@@ -910,7 +910,8 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
   [view addSubview:stack];
 
   if (self.isLoading) {
-    [stack addArrangedSubview:[self labelWithString:@"Loading chats" font:self.palette.emptyTitleFont color:self.palette.appText]];
+    NSString *status = self.streamingProvider && self.streamingProvider() ? @"Working on your request…" : @"Loading chats";
+    [stack addArrangedSubview:[self labelWithString:status font:self.palette.emptyTitleFont color:self.palette.appText]];
   } else if (self.errorMessage.length > 0) {
     [stack addArrangedSubview:[self labelWithString:self.errorMessage font:self.palette.emptyTitleFont color:self.palette.appText]];
   }
