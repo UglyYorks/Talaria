@@ -1813,8 +1813,8 @@ static void TestBrowserExtendedLayout(void) {
       [window setContentSize:NSMakeSize(width.doubleValue,600)];
       [controller.view layoutSubtreeIfNeeded];
       NSView *navigation=input.navigationControls;
-      Check(fabs(NSMinX(navigation.frame)-controller.palette.space3)<0.5 &&
-        NSMaxX(navigation.frame)+controller.palette.space3<=NSMinX(input.frame)+0.5,
+      Check(fabs(NSMinX(navigation.frame)-controller.palette.space10)<0.5 &&
+        NSMaxX(navigation.frame)+controller.palette.space4<=NSMinX(input.frame)+0.5,
         @"navigation stays at the far left without overlapping the address input");
       Check(NSMaxX(input.frame)<=NSWidth(controller.view.bounds) && NSWidth(input.textView.enclosingScrollView.bounds)>0,
         @"footer fits and retains editable text at minimum window width");

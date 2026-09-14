@@ -78,10 +78,11 @@
   [self invalidateIntrinsicContentSize];
   [self updateHoverSurface];
 }
+- (void)setRectangularHoverSurface:(BOOL)value { _rectangularHoverSurface = value; [self updateHoverSurface]; }
 - (void)updateHoverSurface {
   self.needsDisplay = YES;
   if (!self.hoverSurfaceOnly || !self.palette) { return; }
-  self.layer.cornerRadius = MIN(NSWidth(self.bounds), NSHeight(self.bounds)) / 2.0;
+  self.layer.cornerRadius = self.rectangularHoverSurface ? 0 : MIN(NSWidth(self.bounds), NSHeight(self.bounds)) / 2.0;
   self.layer.backgroundColor = TLCGColor(self.enabled && (self.hovered || self.pressed)
     ? (self.pressed ? (self.pressedSurfaceColor ?: self.palette.sidebarActiveSurface) : (self.hoverSurfaceColor ?: self.palette.chromeHoverSurface))
     : (self.idleSurfaceColor ?: self.palette.transparentSurface));

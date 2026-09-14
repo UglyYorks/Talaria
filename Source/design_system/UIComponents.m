@@ -2344,6 +2344,38 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 - (NSView *)hitTest:(NSPoint)point { return nil; }
 @end
 
+// Full-height navigation segments share one clipped glass outline. The layer
+// divider is decorative, so even the center seam belongs to a button hit area.
+@interface TLBrowserNavigationView : TLGlassPaneView
+@property (nonatomic, strong) CALayer *divider;
+@end
+@implementation TLBrowserNavigationView
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.wantsLayer = YES;
+    self.layer.masksToBounds = YES;
+    self.divider = [CALayer layer];
+    self.divider.zPosition = 1;
+    [self.layer addSublayer:self.divider];
+  }
+  return self;
+}
+- (void)setPalette:(TLThemePalette *)palette {
+  [super setPalette:palette];
+  self.divider.backgroundColor = TLCGColor(palette.controlBorder);
+  self.needsLayout = YES;
+}
+- (void)layout {
+  [super layout];
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  self.layer.cornerRadius = MIN(NSHeight(self.bounds) / 2, self.palette.messageInputCornerRadius);
+  self.divider.backgroundColor = TLCGColor(self.palette.controlBorder);
+  self.divider.frame = CGRectMake(NSMidX(self.bounds) - self.palette.borderWidth / 2,
+    self.palette.space5, self.palette.borderWidth, MAX(0, NSHeight(self.bounds) - self.palette.space5 * 2));
+  [CATransaction commit];
+}
+@end
+
 @interface TLBrowserAddressInput ()
 @property (nonatomic, strong) CAShapeLayer *loadingLine;
 @property (nonatomic) BOOL pageLoading;
@@ -2361,7 +2393,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 @property (nonatomic, strong, readwrite) NSButton *chatButton;
 @property (nonatomic, strong) NSTextField *responseCountLabel;
 @property (nonatomic, strong) NSStackView *trailingStack;
-@property (nonatomic, strong) NSStackView *navigationStack;
+@property (nonatomic, strong) NSLayoutConstraint *navigationWidth;
 @property (nonatomic, strong) NSArray<NSLayoutConstraint *> *buttonSizeConstraints;
 - (NSButton *)toolbarButtonWithToolTip:(NSString *)toolTip;
 - (NSImage *)toolbarImageWithSystemName:(NSString *)systemName accessibilityDescription:(NSString *)description;
@@ -2438,23 +2470,27 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     _forwardButton.enabled = NO;
     _reloadButton.enabled = NO;
 
-    _navigationStack = [[NSStackView alloc] init];
-    _navigationStack.translatesAutoresizingMaskIntoConstraints = NO;
-    _navigationStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    _navigationStack.alignment = NSLayoutAttributeCenterY;
-    _navigationStack.distribution = NSStackViewDistributionFill;
-    [_navigationStack addArrangedSubview:_backButton];
-    [_navigationStack addArrangedSubview:_forwardButton];
-    TLGlassPaneView *navigationGlass = [[TLGlassPaneView alloc] init];
+    TLGlassPaneView *navigationGlass = [[TLBrowserNavigationView alloc] init];
     navigationGlass.translatesAutoresizingMaskIntoConstraints = NO;
     _navigationControls = navigationGlass;
-    [navigationGlass addSubview:_navigationStack];
+    for (TLHoverIconButton *button in @[_backButton, _forwardButton]) {
+      button.rectangularHoverSurface = YES;
+      [navigationGlass addSubview:button];
+    }
     _navigationHeight = [navigationGlass.heightAnchor constraintEqualToConstant:self.palette.composerButtonHeight];
+    _navigationWidth = [navigationGlass.widthAnchor constraintEqualToConstant:self.palette.composerButtonHeight * 2];
+    _navigationWidth.priority = NSLayoutPriorityDefaultHigh - 1;
     [NSLayoutConstraint activateConstraints:@[
-      [_navigationStack.leadingAnchor constraintEqualToAnchor:navigationGlass.leadingAnchor constant:self.palette.space3],
-      [_navigationStack.trailingAnchor constraintEqualToAnchor:navigationGlass.trailingAnchor constant:-self.palette.space3],
-      [_navigationStack.centerYAnchor constraintEqualToAnchor:navigationGlass.centerYAnchor],
-      _navigationHeight,
+      [_backButton.leadingAnchor constraintEqualToAnchor:navigationGlass.leadingAnchor],
+      [_backButton.trailingAnchor constraintEqualToAnchor:_forwardButton.leadingAnchor],
+      [_forwardButton.trailingAnchor constraintEqualToAnchor:navigationGlass.trailingAnchor],
+      [_backButton.widthAnchor constraintEqualToAnchor:_forwardButton.widthAnchor],
+      [_backButton.topAnchor constraintEqualToAnchor:navigationGlass.topAnchor],
+      [_backButton.bottomAnchor constraintEqualToAnchor:navigationGlass.bottomAnchor],
+      [_forwardButton.topAnchor constraintEqualToAnchor:navigationGlass.topAnchor],
+      [_forwardButton.bottomAnchor constraintEqualToAnchor:navigationGlass.bottomAnchor],
+      [navigationGlass.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.browserToolbarButtonSize * 2],
+      _navigationWidth, _navigationHeight,
     ]];
     _trailingStack = [NSStackView stackViewWithViews:@[_chatButton, _responseCountLabel]];
     _trailingStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -2486,7 +2522,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
       input.sendButton.enabled = [input.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length > 0;
     };
     NSMutableArray<NSLayoutConstraint *> *buttonSizeConstraints = [NSMutableArray array];
-    for (NSButton *button in @[_backButton, _forwardButton, _reloadButton, _chatButton]) {
+    for (NSButton *button in @[_reloadButton, _chatButton]) {
       [buttonSizeConstraints addObject:[button.widthAnchor constraintEqualToConstant:self.palette.browserToolbarButtonSize]];
       [buttonSizeConstraints addObject:[button.heightAnchor constraintEqualToConstant:self.palette.browserToolbarButtonSize]];
     }
@@ -2589,7 +2625,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   navigationGlass.palette = self.palette;
   navigationGlass.cornerRadius = self.palette.messageInputCornerRadius;
   self.navigationHeight.constant = self.palette.composerButtonHeight;
-  self.navigationStack.spacing = self.palette.space0;
+  self.navigationWidth.constant = self.palette.composerButtonHeight * 2;
   self.trailingStack.spacing = self.palette.space0;
   [self.trailingStack setCustomSpacing:self.palette.space2 afterView:self.chatButton];
   [self.trailingStack setCustomSpacing:self.palette.space3 afterView:self.responseCountLabel];

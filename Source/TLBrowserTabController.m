@@ -182,11 +182,13 @@
   addressInputWidthConstraint.priority = NSLayoutPriorityWindowSizeStayPut - 1.0;
   self.browserAddressInputWidthConstraint = addressInputWidthConstraint;
   NSLayoutConstraint *addressInputLeadingConstraint = [addressInput.leadingAnchor constraintGreaterThanOrEqualToAnchor:addressInput.navigationControls.trailingAnchor
-                                                                                                           constant:self.palette.space3];
+                                                                                                           constant:self.palette.space4];
   NSLayoutConstraint *addressInputTrailingConstraint = [addressInput.trailingAnchor constraintLessThanOrEqualToAnchor:browserContentView.trailingAnchor
                                                                                                              constant:-self.palette.space3];
   NSLayoutConstraint *addressCenter = [addressInput.centerXAnchor constraintEqualToAnchor:browserContentView.centerXAnchor];
   addressCenter.priority = NSLayoutPriorityDefaultLow;
+  NSLayoutConstraint *usableAddressWidth = [addressInput.widthAnchor constraintGreaterThanOrEqualToConstant:self.palette.messageInputMinWidth / 2];
+  usableAddressWidth.priority = NSLayoutPriorityDefaultHigh;
   NSLayoutConstraint *browserHostBottomConstraint =
     [browserHostView.bottomAnchor constraintEqualToAnchor:browserContentView.bottomAnchor];
   self.browserHostBottomConstraint = browserHostBottomConstraint;
@@ -202,9 +204,9 @@
     [browserHostView.trailingAnchor constraintEqualToAnchor:browserContentView.trailingAnchor],
     [browserHostView.topAnchor constraintEqualToAnchor:self.findBar.bottomAnchor],
     browserHostBottomConstraint,
-    [addressInput.navigationControls.leadingAnchor constraintEqualToAnchor:browserContentView.leadingAnchor constant:self.palette.space3],
+    [addressInput.navigationControls.leadingAnchor constraintEqualToAnchor:browserContentView.leadingAnchor constant:self.palette.space10],
     [addressInput.navigationControls.bottomAnchor constraintEqualToAnchor:addressInput.bottomAnchor],
-    addressCenter,
+    addressCenter, usableAddressWidth,
     [addressInput.widthAnchor constraintGreaterThanOrEqualToConstant:0],
     [addressInput.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth],
     addressInputLeadingConstraint,
