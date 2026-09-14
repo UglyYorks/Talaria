@@ -162,7 +162,7 @@
 - (NSString *)shortcutForIndex:(NSInteger)index {
   if (![self isSuggestionEnabledAtIndex:index]) return @"";
   if (index == self.selectedIndex) return @"↵";
-  return [self.suggestions[index][@"kind"] isEqual:@"prompt"] ? @"⌘↵" : @"";
+  return index == 1 ? @"⌘↵" : @"";
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.suggestions.count; }

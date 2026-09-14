@@ -62,21 +62,21 @@
   return resigned;
 }
 
-- (BOOL)handleAgentShortcut:(NSEvent *)event {
+- (BOOL)handleSecondSuggestionShortcut:(NSEvent *)event {
   if (self.window.firstResponder != self || self.hasMarkedText || !self.isEditable || !(event.modifierFlags & NSEventModifierFlagCommand) ||
       (event.keyCode != 36 && event.keyCode != 76)) return NO;
   if ([self.delegate respondsToSelector:@selector(textView:doCommandBySelector:)])
-    return [self.delegate textView:self doCommandBySelector:NSSelectorFromString(@"askAgent:")];
+    return [self.delegate textView:self doCommandBySelector:NSSelectorFromString(@"activateSecondSuggestion:")];
   return NO;
 }
 
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
-  if ([self handleAgentShortcut:event]) return YES;
+  if ([self handleSecondSuggestionShortcut:event]) return YES;
   return [super performKeyEquivalent:event];
 }
 
 - (void)keyDown:(NSEvent *)event {
-  if ([self handleAgentShortcut:event]) return;
+  if ([self handleSecondSuggestionShortcut:event]) return;
   NSEventModifierFlags modifiers = event.modifierFlags;
   BOOL shiftReturn = (event.keyCode == 36 || event.keyCode == 76) &&
     (modifiers & NSEventModifierFlagShift) &&

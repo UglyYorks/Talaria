@@ -4768,8 +4768,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
   [self focusChatContainingView:textView];
   if (textView.hasMarkedText) return NO;
-  if (commandSelector == NSSelectorFromString(@"askAgent:")) {
-    [self sendMessage:textView allowAutomaticRouting:NO];
+  if (commandSelector == NSSelectorFromString(@"activateSecondSuggestion:")) {
+    [self flushSlashCommandUpdate];
+    if (!self.slashCommandListView.hidden) {
+      [self performInputSuggestionAtIndex:1];
+    } else {
+      [self sendMessage:textView allowAutomaticRouting:NO];
+    }
     return YES;
   }
   if (commandSelector == @selector(cancelOperation:)) {

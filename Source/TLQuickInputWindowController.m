@@ -493,8 +493,11 @@
 
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
   if (textView.hasMarkedText) return NO;
-  if (commandSelector == NSSelectorFromString(@"askAgent:")) {
-    [self submitAllowingAutomaticRouting:NO];
+  if (commandSelector == NSSelectorFromString(@"activateSecondSuggestion:")) {
+    if (!self.window.visible || self.window.attachedSheet || self.captureInProgress) return YES;
+    [self updateSuggestions];
+    if (self.suggestionList.suggestions.count) [self performSuggestionAtIndex:1 completing:NO];
+    else [self submitAllowingAutomaticRouting:NO];
     return YES;
   }
   if (commandSelector == @selector(cancelOperation:)) { [self dismiss]; return YES; }

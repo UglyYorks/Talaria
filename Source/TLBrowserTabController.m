@@ -564,12 +564,13 @@
 }
 
 - (BOOL)handleSuggestionCommand:(SEL)command {
-  if (command == NSSelectorFromString(@"askAgent:")) {
-    if (self.isClosed || self.browserAddressInput.textView.hasMarkedText) return NO;
-    [self sendBrowserPrompt:self.browserAddressInput.textView.string];
+  if (self.isClosed || self.browserAddressInput.textView.hasMarkedText) return NO;
+  if (command == NSSelectorFromString(@"activateSecondSuggestion:")) {
+    if (self.suggestionPanel.hidden) [self sendBrowserPrompt:self.browserAddressInput.textView.string];
+    else [self activateInputSuggestion:1];
     return YES;
   }
-  if (self.suggestionPanel.hidden || self.browserAddressInput.textView.hasMarkedText) return NO;
+  if (self.suggestionPanel.hidden) return NO;
   if (command == @selector(cancelOperation:)) {
     self.dismissedSuggestionInput = self.browserAddressInput.textView.string;
     self.suggestionPanel.hidden = YES;
@@ -593,7 +594,7 @@
 }
 
 - (void)activateInputSuggestion:(NSUInteger)index {
-  if (index >= self.suggestionList.suggestions.count || self.isClosed) return;
+  if (self.isClosed || ![self.suggestionList isSuggestionEnabledAtIndex:index]) return;
   NSDictionary *row = self.suggestionList.suggestions[index];
   if (![row[@"value"] ?: self.browserAddressInput.textView.string isEqual:self.browserAddressInput.textView.string]) return;
   self.suggestionPanel.hidden = YES;
