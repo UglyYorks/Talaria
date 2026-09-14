@@ -1,4 +1,4 @@
-#import "design_system/TLProgressiveBlurView.h"
+#import "design_system/TLBrowserFooterView.h"
 #import "TLBrowserContentColor.h"
 #import <QuartzCore/QuartzCore.h>
 #import "TLBrowserTabController.h"
@@ -25,7 +25,7 @@
 @property (nonatomic, strong) TLWebKitBrowserController *browserService;
 @property (nonatomic, strong) TLWebKitBrowserSession *browserSession;
 @property (nonatomic, strong) TLBrowserViewportView *browserHostView;
-@property TLProgressiveBlurView *bottomBlur;
+@property TLBrowserFooterView *bottomBlur;
 @property NSLayoutConstraint *bottomBlurHeight;
 @property (nonatomic, strong) TLBrowserAddressInput *browserAddressInput;
 @property (nonatomic, strong) NSLayoutConstraint *browserAddressInputWidthConstraint;
@@ -146,11 +146,11 @@
   browserHostView.layer.masksToBounds = NO;
   [browserContentView addSubview:browserHostView];
 
-  self.bottomBlur = [[TLProgressiveBlurView alloc] init];
+  self.bottomBlur = [[TLBrowserFooterView alloc] init];
   self.bottomBlur.palette = self.palette;
   self.bottomBlur.translatesAutoresizingMaskIntoConstraints = NO;
   [browserContentView addSubview:self.bottomBlur];
-  self.bottomBlurHeight = [self.bottomBlur.heightAnchor constraintEqualToConstant:[self footerHeight]];
+  self.bottomBlurHeight = [self.bottomBlur.heightAnchor constraintEqualToConstant:[self footerHeight] + self.palette.radiusMedium];
   [NSLayoutConstraint activateConstraints:@[
     [self.bottomBlur.leadingAnchor constraintEqualToAnchor:browserHostView.leadingAnchor],
     [self.bottomBlur.trailingAnchor constraintEqualToAnchor:browserHostView.trailingAnchor],
@@ -174,18 +174,19 @@
   addressInput.forwardButton.action = @selector(navigateBrowserForward:);
   addressInput.reloadButton.action = @selector(reloadBrowser:);
   addressInput.chatButton.action = @selector(restoreBrowserChat:);
+  [browserContentView addSubview:addressInput.navigationControls];
   [browserContentView addSubview:addressInput];
   self.browserAddressInput = addressInput;
 
   NSLayoutConstraint *addressInputWidthConstraint = [addressInput.widthAnchor constraintEqualToConstant:width];
   addressInputWidthConstraint.priority = NSLayoutPriorityWindowSizeStayPut - 1.0;
   self.browserAddressInputWidthConstraint = addressInputWidthConstraint;
-  NSLayoutConstraint *addressInputLeadingConstraint = [addressInput.leadingAnchor constraintGreaterThanOrEqualToAnchor:browserContentView.leadingAnchor
-                                                                                                           constant:self.palette.space11];
+  NSLayoutConstraint *addressInputLeadingConstraint = [addressInput.leadingAnchor constraintGreaterThanOrEqualToAnchor:addressInput.navigationControls.trailingAnchor
+                                                                                                           constant:self.palette.space3];
   NSLayoutConstraint *addressInputTrailingConstraint = [addressInput.trailingAnchor constraintLessThanOrEqualToAnchor:browserContentView.trailingAnchor
-                                                                                                             constant:-self.palette.space11];
-  addressInputLeadingConstraint.priority = NSLayoutPriorityDefaultLow;
-  addressInputTrailingConstraint.priority = NSLayoutPriorityDefaultLow;
+                                                                                                             constant:-self.palette.space3];
+  NSLayoutConstraint *addressCenter = [addressInput.centerXAnchor constraintEqualToAnchor:browserContentView.centerXAnchor];
+  addressCenter.priority = NSLayoutPriorityDefaultLow;
   NSLayoutConstraint *browserHostBottomConstraint =
     [browserHostView.bottomAnchor constraintEqualToAnchor:browserContentView.bottomAnchor];
   self.browserHostBottomConstraint = browserHostBottomConstraint;
@@ -201,7 +202,9 @@
     [browserHostView.trailingAnchor constraintEqualToAnchor:browserContentView.trailingAnchor],
     [browserHostView.topAnchor constraintEqualToAnchor:self.findBar.bottomAnchor],
     browserHostBottomConstraint,
-    [addressInput.centerXAnchor constraintEqualToAnchor:browserContentView.centerXAnchor],
+    [addressInput.navigationControls.leadingAnchor constraintEqualToAnchor:browserContentView.leadingAnchor constant:self.palette.space3],
+    [addressInput.navigationControls.bottomAnchor constraintEqualToAnchor:addressInput.bottomAnchor],
+    addressCenter,
     [addressInput.widthAnchor constraintGreaterThanOrEqualToConstant:0],
     [addressInput.widthAnchor constraintLessThanOrEqualToConstant:self.palette.messageInputMaxWidth],
     addressInputLeadingConstraint,
@@ -405,7 +408,7 @@
 }
 - (void)configureDocumentFooter {
   self.documentFooterContentSize = self.view.bounds.size;
-  self.bottomBlurHeight.constant = [self footerHeight];
+  self.bottomBlurHeight.constant = [self footerHeight] + self.palette.radiusMedium;
   [self.browserService configureDocumentFooter:@{
     @"enabled":@YES, @"height":@([self footerHeight]),
     @"width":@(MAX(1,NSWidth(self.browserHostView.bounds))), @"fallbackColor":[TLBrowserContentColor CSSStringForColor:self.palette.tabBackground],

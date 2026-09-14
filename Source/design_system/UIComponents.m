@@ -2350,6 +2350,9 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 @property (nonatomic) NSUInteger loadingAnimationGeneration;
 @property (nonatomic, strong) NSTextField *domainLabel;
 @property (nonatomic) BOOL addressFocused;
+@property (nonatomic) NSUInteger addressAnimationGeneration;
+@property (nonatomic, strong, readwrite) NSView *navigationControls;
+@property (nonatomic, strong) NSLayoutConstraint *navigationHeight;
 @property (nonatomic, readwrite) BOOL hasUserDraft;
 @property (nonatomic, copy) NSString *latestAddress;
 @property (nonatomic, strong, readwrite) NSButton *backButton;
@@ -2442,12 +2445,22 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     _navigationStack.distribution = NSStackViewDistributionFill;
     [_navigationStack addArrangedSubview:_backButton];
     [_navigationStack addArrangedSubview:_forwardButton];
-    [_navigationStack addArrangedSubview:_reloadButton];
+    TLGlassPaneView *navigationGlass = [[TLGlassPaneView alloc] init];
+    navigationGlass.translatesAutoresizingMaskIntoConstraints = NO;
+    _navigationControls = navigationGlass;
+    [navigationGlass addSubview:_navigationStack];
+    _navigationHeight = [navigationGlass.heightAnchor constraintEqualToConstant:self.palette.composerButtonHeight];
+    [NSLayoutConstraint activateConstraints:@[
+      [_navigationStack.leadingAnchor constraintEqualToAnchor:navigationGlass.leadingAnchor constant:self.palette.space3],
+      [_navigationStack.trailingAnchor constraintEqualToAnchor:navigationGlass.trailingAnchor constant:-self.palette.space3],
+      [_navigationStack.centerYAnchor constraintEqualToAnchor:navigationGlass.centerYAnchor],
+      _navigationHeight,
+    ]];
     _trailingStack = [NSStackView stackViewWithViews:@[_chatButton, _responseCountLabel]];
     _trailingStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     _trailingStack.alignment = NSLayoutAttributeCenterY;
     _trailingStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self setLeadingAccessoryView:_navigationStack trailingAccessoryView:_trailingStack];
+    [self setLeadingAccessoryView:_reloadButton trailingAccessoryView:_trailingStack];
     self.selectsAllOnFocus = YES;
     self.textView.wantsLayer = YES;
     self.textView.delegate = self;
@@ -2464,6 +2477,9 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     self.textChangeHandler = ^{
       TLBrowserAddressInput *input = weakSelf;
       input.hasUserDraft = YES;
+      input.addressAnimationGeneration++;
+      [input.domainLabel.layer removeAllAnimations];
+      [input.textView.layer removeAnimationForKey:@"talaria.addressFocus"];
       input.singleLine = [TLInputSuggestions browserURLForInput:input.textView.string] != nil;
       input.domainLabel.layer.opacity = 0;
       input.textView.alphaValue = 1;
@@ -2569,6 +2585,10 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
   glass.palette = self.palette;
   glass.cornerRadius = self.palette.messageInputCornerRadius;
+  TLGlassPaneView *navigationGlass = (TLGlassPaneView *)self.navigationControls;
+  navigationGlass.palette = self.palette;
+  navigationGlass.cornerRadius = self.palette.messageInputCornerRadius;
+  self.navigationHeight.constant = self.palette.composerButtonHeight;
   self.navigationStack.spacing = self.palette.space0;
   self.trailingStack.spacing = self.palette.space0;
   [self.trailingStack setCustomSpacing:self.palette.space2 afterView:self.chatButton];
@@ -2625,16 +2645,25 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 
 - (void)addressFocusChanged:(BOOL)focused {
-  CGPoint oldPosition = self.domainLabel.layer.position;
-  BOOL animate = focused && !self.addressFocused && !self.hasUserDraft && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  CALayer *domainPresentation = self.domainLabel.layer.presentationLayer ?: self.domainLabel.layer;
+  CALayer *textPresentation = self.textView.layer.presentationLayer ?: self.textView.layer;
+  CGPoint oldPosition = domainPresentation.position;
+  CGFloat oldDomainOpacity = domainPresentation.opacity, oldTextOpacity = textPresentation.opacity;
+  BOOL animate = focused != self.addressFocused && !self.hasUserDraft &&
+    !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  NSUInteger generation = ++self.addressAnimationGeneration;
   self.addressFocused = focused;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
   [self.domainLabel.layer removeAllAnimations];
   [self.textView.layer removeAnimationForKey:@"talaria.addressFocus"];
   if (!self.hasUserDraft) {
-    self.textView.string = focused ? self.latestAddress ?: @"" : [self idleAddress];
+    // Keep the full URL visible while it fades out on blur. Replacing it now
+    // would make the path disappear before the return animation has begun.
+    if (focused || !animate) self.textView.string = focused ? self.latestAddress ?: @"" : [self idleAddress];
     self.domainLabel.stringValue = [self idleAddress];
     self.singleLine = YES;
-    [self.textView scrollRangeToVisible:NSMakeRange(0,0)];
+    if (focused || !animate) [self.textView scrollRangeToVisible:NSMakeRange(0,0)];
   }
   BOOL compact = !focused && !self.hasUserDraft;
   self.textView.alphaValue = compact ? 0 : 1;
@@ -2645,14 +2674,27 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
     CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:@"position"];
     move.fromValue = [NSValue valueWithPoint:oldPosition]; move.toValue = [NSValue valueWithPoint:self.domainLabel.layer.position];
     CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-    fade.values = @[@1,@1,@0]; fade.keyTimes = @[@0,@0.6,@1];
+    fade.values = focused ? @[@(oldDomainOpacity),@1,@0] : @[@(oldDomainOpacity),@1,@1];
+    fade.keyTimes = focused ? @[@0,@0.6,@1] : @[@0,@0.4,@1];
     CAAnimationGroup *group = [CAAnimationGroup animation]; group.animations = @[move,fade]; group.duration = duration;
     group.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
     [self.domainLabel.layer addAnimation:group forKey:@"talaria.domainFocus"];
     CAKeyframeAnimation *reveal = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-    reveal.values = @[@0,@0,@1]; reveal.keyTimes = @[@0,@0.6,@1]; reveal.duration = duration;
+    reveal.values = focused ? @[@(oldTextOpacity),@0,@1] : @[@(oldTextOpacity),@0,@0];
+    reveal.keyTimes = focused ? @[@0,@0.6,@1] : @[@0,@0.4,@1];
+    reveal.duration = duration;
     [self.textView.layer addAnimation:reveal forKey:@"talaria.addressFocus"];
+    if (!focused) {
+      __weak typeof(self) weakSelf = self;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        TLBrowserAddressInput *input = weakSelf;
+        if (!input || input.addressAnimationGeneration != generation || input.addressFocused || input.hasUserDraft) return;
+        input.textView.string = [input idleAddress];
+        [input.textView scrollRangeToVisible:NSMakeRange(0,0)];
+      });
+    }
   }
+  [CATransaction commit];
 }
 
 - (void)setDisplayedAddress:(NSString *)address {

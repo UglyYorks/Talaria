@@ -1809,6 +1809,20 @@ static void TestBrowserExtendedLayout(void) {
     NSView *blur = [controller valueForKey:@"bottomBlur"];
     NSView *page = [controller valueForKey:@"browserHostView"];
     Check([blur hitTest:NSMakePoint(10,10)] == nil, @"native blur leaves page and input interactions intact");
+    for (NSNumber *width in @[@1200, @500, @200]) {
+      [window setContentSize:NSMakeSize(width.doubleValue,600)];
+      [controller.view layoutSubtreeIfNeeded];
+      NSView *navigation=input.navigationControls;
+      Check(fabs(NSMinX(navigation.frame)-controller.palette.space3)<0.5 &&
+        NSMaxX(navigation.frame)+controller.palette.space3<=NSMinX(input.frame)+0.5,
+        @"navigation stays at the far left without overlapping the address input");
+      Check(NSMaxX(input.frame)<=NSWidth(controller.view.bounds) && NSWidth(input.textView.enclosingScrollView.bounds)>0,
+        @"footer fits and retains editable text at minimum window width");
+      if(width.doubleValue==1200) Check(fabs(NSMidX(input.frame)-NSMidX(controller.view.bounds))<0.5,
+        @"address remains centered when there is room beside navigation");
+      Check(fabs(NSHeight(blur.frame)-[service.footerConfiguration[@"height"] doubleValue]-controller.palette.radiusMedium)<0.5,
+        @"blur extends one corner radius above the footer without adding extra scroll range");
+    }
     Check([controller.view.subviews indexOfObject:page] < [controller.view.subviews indexOfObject:blur] &&
       [controller.view.subviews indexOfObject:blur] < [controller.view.subviews indexOfObject:input], @"blur is over the page and under the input");
     TLLoadingWebView *webView = [[TLLoadingWebView alloc] initWithFrame:NSZeroRect];
