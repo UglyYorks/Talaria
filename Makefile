@@ -44,6 +44,7 @@ PASSWORD_AUTOFILL := Source/BrowserPasswordAutofill.js
 DOCUMENT_FOOTER := Source/BrowserDocumentFooter.js Source/BrowserFooterColor.js
 CODE_RESOURCES := Source/MarkdownFind.js Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js Vendor/highlight.js/LICENSE
 MATH_RESOURCES := Source/MarkdownMath.js $(shell find Vendor/katex -type f)
+NOTES_EDITOR_RESOURCES := Source/NotesEditor.js Source/NotesEditor.css Vendor/notes-editor/notes-editor.min.js Vendor/notes-editor/LICENSES.txt
 MARKDOWN_RESOURCES_STAMP := $(BUILD_DIR)/.markdown-resources.stamp
 READABILITY_FILES := Vendor/readability/Readability.js Vendor/readability/LICENSE.md
 SIDEBAR_PLANET := assets/sidebar-planet.png
@@ -108,7 +109,7 @@ $(APP_LINK_EXECUTABLE): $(APP_OBJECTS) $(COMPILE_CONFIG)
 	mkdir -p "$(dir $@)"
 	xcrun clang++ $(APP_OBJECTS) $(APP_FRAMEWORKS) -o "$@"
 
-$(APP_BUILD_STAMP): $(APP_LINK_EXECUTABLE) $(WEBKIT_BRIDGE) $(PASSWORD_AUTOFILL) $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES)
+$(APP_BUILD_STAMP): $(APP_LINK_EXECUTABLE) $(WEBKIT_BRIDGE) $(PASSWORD_AUTOFILL) $(OVERLAY_PROBE) $(DOCUMENT_FOOTER) Makefile $(SIGNING_CONFIG) $(APP_OBJECTS) Info.plist $(APP_ENTITLEMENTS) $(AGENT_RUNTIME_FILES) $(AGENT_LINUX_RUNTIME_STAMP) $(SIDEBAR_PLANET) $(APP_ICON) $(INBOX_ICON_FILES) $(BOOKMARK_ICON_FILES) $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(READABILITY_FILES) $(NOTES_EDITOR_RESOURCES)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"
 	cp "$(APP_LINK_EXECUTABLE)" "$(APP_EXECUTABLE)"
@@ -123,6 +124,7 @@ $(APP_BUILD_STAMP): $(APP_LINK_EXECUTABLE) $(WEBKIT_BRIDGE) $(PASSWORD_AUTOFILL)
 	ditto "assets/browser-bookmarks" "$(APP_BUNDLE)/Contents/Resources/browser-bookmarks"
 	cp "$(MARKDOWN_IT)" "$(APP_BUNDLE)/Contents/Resources/markdown-it.min.js"
 	cp Source/MarkdownMath.js "$(APP_BUNDLE)/Contents/Resources/MarkdownMath.js"
+	cp $(NOTES_EDITOR_RESOURCES) "$(APP_BUNDLE)/Contents/Resources/"
 	cp Source/MarkdownFind.js Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js "$(APP_BUNDLE)/Contents/Resources/"
 	cp Vendor/highlight.js/LICENSE "$(APP_BUNDLE)/Contents/Resources/highlight-LICENSE"
 	cp Vendor/browser-import/leveldb-1.23/LICENSE "$(APP_BUNDLE)/Contents/Resources/leveldb-LICENSE"
@@ -202,8 +204,9 @@ test-screen-capture: $(BUILD_DIR)/ScreenCaptureTests check-signing-identity
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --identifier com.talaria.chat "$<"
 	"$<"
 
-$(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES)
+$(MARKDOWN_RESOURCES_STAMP): $(MARKDOWN_IT) $(MATH_RESOURCES) $(CODE_RESOURCES) $(NOTES_EDITOR_RESOURCES)
 	mkdir -p "$(BUILD_DIR)"
+	cp $(NOTES_EDITOR_RESOURCES) "$(BUILD_DIR)/"
 	cp "$(MARKDOWN_IT)" "$(BUILD_DIR)/markdown-it.min.js"
 	cp Source/MarkdownMath.js "$(BUILD_DIR)/MarkdownMath.js"
 	cp Source/MarkdownFind.js Source/MarkdownCode.js Vendor/highlight.js/highlight.min.js "$(BUILD_DIR)/"
@@ -240,8 +243,14 @@ $(BUILD_DIR)/TerminalClientProbe: Source/TLTerminalClient.m Tests/TerminalClient
 
 # Uses installed Chromium with a temporary profile; requires Node 22+.
 # CHROME_BIN can override the Chrome/Chromium executable path.
+.PHONY: test-notes-editor
+test-notes-editor: $(BUILD_DIR)/NotesTests
+	"$(BUILD_DIR)/NotesTests"
+	node Tests/NotesEditorTests.mjs
+
 .PHONY: test-browser-overlay
 test-browser-overlay:
+	node Tests/NotesEditorTests.mjs
 	node Tests/BrowserDocumentFooterTests.mjs
 	node Tests/BrowserOverlayTests.mjs
 

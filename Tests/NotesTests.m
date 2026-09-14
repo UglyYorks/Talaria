@@ -1,11 +1,16 @@
 #import <AppKit/AppKit.h>
+#import <WebKit/WebKit.h>
 #import "TLNotesTabController.h"
+#import "design_system/TLMarkdownEditorView.h"
 #import "design_system/TLCollectionEditorView.h"
 #import "design_system/TLThemedButton.h"
 #import "TLChatControllerTestSupport.h"
 #import "WorkspaceTabRuntime.h"
 
 @interface TLNotesTabController (Testing)
+- (void)selectNotes:(id)sender;
+- (void)selectMemory:(id)sender;
+- (void)openNoteID:(NSString *)identity;
 - (void)newNote:(id)sender;
 - (void)save:(id)sender;
 - (void)saveCopy:(id)sender;
@@ -133,7 +138,7 @@ static void TestWorkspaceNotes(void) {
   for (NSView *view in [(TLCollectionEditorView *)first.view header].subviews)
     Check(![view isKindOfClass:NSPopUpButton.class], @"Notes does not offer a separate agent picker");
   [first newNote:nil]; Drain(0.05);
-  NSTextView *firstEditor = [first valueForKey:@"textView"];
+  TLMarkdownEditorView *firstEditor = [first valueForKey:@"textView"];
   firstEditor.string = @"# First agent's draft"; [first textDidChange:nil]; [first save:nil]; Drain(0.05);
   Check(pending && pendingAgent == 17 && [pendingParameters[@"content"] isEqual:firstEditor.string], @"pending saves target the original agent");
   agentControl.tag = 23; [owner activateAgentWithID:agentControl.tag]; Drain(0.05);
@@ -142,7 +147,7 @@ static void TestWorkspaceNotes(void) {
     [owner runtimeForTab:tab] == runtime && state.snapshot.workspaceTabs.count == 2,
     @"app agent switching changes the notebook immediately while reusing the Notes tab");
   [second newNote:nil]; Drain(0.05);
-  NSTextView *secondEditor = [second valueForKey:@"textView"];
+  TLMarkdownEditorView *secondEditor = [second valueForKey:@"textView"];
   NSString *secondContent = [secondEditor.string copy];
   pending(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"VM disconnected"}]);
   pending = nil; Drain(0.05);
@@ -165,9 +170,199 @@ static void TestWorkspaceNotes(void) {
   [owner closeNotesTab:nil];
 }
 
+
+static NSDictionary *MemoryNote(NSString *identity, NSString *content, NSString *revision) {
+  NSMutableDictionary *note = [Note(identity, content, revision) mutableCopy];
+  note[@"title"] = [identity isEqual:@"MEMORY.md"] ? @"Learned facts" : @"About you";
+  note[@"preview"] = content;
+  note[@"path"] = [@"/workspace/.hermes/memories/" stringByAppendingString:identity];
+  return note;
+}
+static id EditorJS(TLMarkdownEditorView *editor, NSString *script) {
+  __block BOOL finished = NO; __block id value = nil; __block NSError *failure = nil;
+  WKWebView *web = [editor valueForKey:@"webView"];
+  [web evaluateJavaScript:script completionHandler:^(id result, NSError *error) { value = result; failure = error; finished = YES; }];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+  while (!finished && deadline.timeIntervalSinceNow > 0) Drain(0.01);
+  Check(finished && !failure, [NSString stringWithFormat:@"editor JavaScript completes: %@; script: %@", failure, script]); return value;
+}
+static void WaitForEditor(TLMarkdownEditorView *editor) {
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:15];
+  while (!editor.ready && deadline.timeIntervalSinceNow > 0) Drain(0.01);
+  Check(editor.ready, @"bundled formatted editor loads in WebKit");
+}
+static void TestWYSIWYGEditor(void) {
+  TLMarkdownEditorView *editor = [TLMarkdownEditorView new];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,760,560)
+    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO; window.contentView = editor;
+  editor.editable = YES;
+  __block NSUInteger changes = 0; editor.changeHandler = ^{ changes++; };
+  NSString *original = @"# A heading\n\nA **bold** word and *italic* word.\n\n- First\n- Second\n";
+  editor.string = original; WaitForEditor(editor);
+  Check([EditorJS(editor,@"document.querySelector('h1').textContent") isEqual:@"A heading"], @"headings are rendered in the editable surface");
+  Check([EditorJS(editor,@"document.querySelector('strong').textContent") isEqual:@"bold"], @"Markdown emphasis renders as formatted text");
+  Check([editor finishEditing] && [editor.string isEqual:original] && changes == 0, @"opening and flushing do not normalize or autosave untouched Markdown");
+  EditorJS(editor,@"document.querySelector('.tiptap').focus(); document.execCommand('selectAll'); document.execCommand('insertText', false, 'Typed in the formatted editor');");
+  Check([editor finishEditing] && [editor.string containsString:@"Typed in the formatted editor"] && changes > 0, @"actual WebKit typing reaches the native Markdown draft before saving");
+  EditorJS(editor,@"document.execCommand('selectAll');"); Drain(0.05);
+  EditorJS(editor,@"TalariaNotes.command('bold');");
+  Check([editor finishEditing] && [editor.string containsString:@"**Typed in the formatted editor**"], [NSString stringWithFormat:@"formatting commands serialize to Markdown: %@",editor.string]);
+  NSString *draft = [editor.string copy];
+  for (NSNumber *preference in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:preference.integerValue];
+    editor.palette = palette; Drain(0.2);
+    Check([editor finishEditing] && [editor.string isEqual:draft], @"theme changes preserve editor content and history");
+    NSString *surface = EditorJS(editor,@"getComputedStyle(document.body).backgroundColor");
+    NSColor *rgb = [palette.controlSurface colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    NSArray *channels = EditorJS(editor,@"getComputedStyle(document.body).backgroundColor.match(/[0-9.]+/g).map(Number)");
+    Check(channels.count >= 3 && fabs([channels[0] doubleValue]-lround(rgb.redComponent*255)) < 1 &&
+      fabs([channels[1] doubleValue]-lround(rgb.greenComponent*255)) < 1 && fabs([channels[2] doubleValue]-lround(rgb.blueComponent*255)) < 1 &&
+      fabs((channels.count == 4 ? [channels[3] doubleValue] : 1)-rgb.alphaComponent) < 0.01,
+      [NSString stringWithFormat:@"WebKit receives the active theme surface: %@ vs %@", surface,rgb]);
+    TLThemedButton *button = [[editor valueForKey:@"formatButtons"] firstObject];
+    for (NSNumber *state in @[@0,@1,@2,@3]) {
+      button.enabled = state.integerValue != 3; button.cell.highlighted = state.integerValue == 2;
+      [button setValue:@(state.integerValue == 1) forKey:@"hovered"];
+      NSColor *background = button.primary ? palette.primaryActionSurface : palette.secondaryActionSurface;
+      NSColor *foreground = button.primary ? palette.primaryActionText : palette.secondaryActionText;
+      if (state.integerValue == 1 || state.integerValue == 2) background = Blend(background,palette.chromeHoverSurface,1);
+      if (!button.enabled) { background = Blend(palette.tabBackground,background,palette.disabledOpacity); foreground = Blend(background,foreground,palette.disabledOpacity); }
+      NSBitmapImageRep *bitmap = RenderButton(button);
+      Check(ContainsColor(bitmap,background) && ContainsColor(bitmap,foreground), @"formatting buttons render matching semantic colors in every state");
+    }
+    button.cell.highlighted = NO; button.enabled = YES; [button setValue:@NO forKey:@"hovered"];
+    __block BOOL captured = NO;
+    [(WKWebView *)[editor valueForKey:@"webView"] takeSnapshotWithConfiguration:nil completionHandler:^(NSImage *image, NSError *error) {
+      Check(image && !error, @"WebKit renders the formatted editor snapshot");
+      NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:image.TIFFRepresentation];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:
+        [NSString stringWithFormat:@"/tmp/talaria-formatted-note-%@.png",palette.dark ? @"dark" : @"light"] atomically:YES]; captured = YES;
+    }];
+    NSDate *captureDeadline = [NSDate dateWithTimeIntervalSinceNow:10];
+    while (!captured && captureDeadline.timeIntervalSinceNow > 0) Drain(0.01);
+    Check(captured, @"formatted editor snapshot finishes");
+  }
+  editor.string = @"<!-- keep this -->\n\nText"; WaitForEditor(editor);
+  Check([[editor valueForKey:@"sourceMode"] boolValue] && [editor.string hasPrefix:@"<!-- keep this -->"], @"unsupported embedded markup stays intact in source view");
+  editor.string = @"# New document"; WaitForEditor(editor);
+  Check(![[editor valueForKey:@"sourceMode"] boolValue], @"ordinary notes open in formatted mode after a source-only document");
+  // A stale message from another note cannot replace this document.
+  NSUInteger epoch = [[editor valueForKey:@"epoch"] unsignedIntegerValue];
+  EditorJS(editor,[NSString stringWithFormat:@"webkit.messageHandlers.notesEditor.postMessage({type:'change',epoch:%lu,sequence:999,markdown:'old draft'}); null",(unsigned long)(epoch-1)]);
+  Drain(0.05); Check([editor.string isEqual:@"# New document"], @"late editor events cannot cross note boundaries");
+  [window setContentSize:NSMakeSize(200,560)]; [editor layoutSubtreeIfNeeded];
+  NSView *toolbar = [editor valueForKey:@"toolbarScroll"], *mode = [editor valueForKey:@"modeButton"];
+  Check(!NSIntersectsRect(toolbar.frame,mode.frame) && NSMaxX(mode.frame) <= 200, @"formatting toolbar scrolls inside narrow windows");
+  NSScrollView *scroll = (id)toolbar;
+  Check(scroll.contentSize.height >= editor.palette.settingsActionHeight, @"scrollbar space cannot clip formatting buttons");
+  [editor close]; [window close];
+}
+static void TestMemoryEditor(void) {
+  NSMutableDictionary *notes = [NSMutableDictionary dictionary];
+  NSMutableDictionary *memories = [@{@"MEMORY.md":MemoryNote(@"MEMORY.md", @"Uses Python.", @"memory-v1"),
+    @"USER.md":MemoryNote(@"USER.md", @"Lives in Brisbane.", @"user-v1")} mutableCopy];
+  __block TLNotesReply pending;
+  __block NSDictionary *pendingParameters;
+  __block BOOL deferSave = NO, conflict = NO;
+  __block NSMutableArray *requests = [NSMutableArray array];
+  TLNotesTabController *controller = [[TLNotesTabController alloc] initWithPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]
+    agentID:17 request:^(NSInteger agentID, NSDictionary *parameters, TLNotesReply reply) {
+      [requests addObject:parameters];
+      NSMutableDictionary *store = [parameters[@"collection"] isEqual:@"memory"] ? memories : notes;
+      NSString *action = parameters[@"action"], *identity = parameters[@"id"];
+      if ([action isEqual:@"list"]) {
+        NSArray *items = store == memories ? @[memories[@"MEMORY.md"], memories[@"USER.md"]] : notes.allValues;
+        reply(@{@"notes":items}, nil);
+      } else if ([action isEqual:@"read"]) reply(@{@"note":store[identity]}, nil);
+      else if ([action isEqual:@"save"] || [action isEqual:@"create"]) {
+        if (deferSave) { pending = reply; pendingParameters = parameters; return; }
+        if (conflict && store == memories) { reply(@{@"conflict":@YES, @"message":@"Memory changed outside this editor."}, nil); return; }
+        store[identity] = store == memories ? MemoryNote(identity, parameters[@"content"], NSUUID.UUID.UUIDString) : Note(identity, parameters[@"content"], NSUUID.UUID.UUIDString);
+        reply(@{@"note":store[identity]}, nil);
+      }
+    }];
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 960, 720)
+    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  window.releasedWhenClosed = NO; window.contentView = controller.view;
+  [controller.view layoutSubtreeIfNeeded];
+  [controller selectMemory:nil]; Drain(0.05);
+  TLMarkdownEditorView *editor = [controller valueForKey:@"textView"];
+  Check([[controller valueForKey:@"memoryCollection"] boolValue] && [editor.string isEqual:@"Uses Python."], @"Memory opens the real learned facts collection");
+  Check([(NSView *)[controller valueForKey:@"createButton"] isHidden] &&
+    [[(NSButton *)[controller valueForKey:@"deleteButton"] title] isEqual:@"Clear"], @"fixed memory files offer clearing rather than creating or deleting files");
+  [controller openNoteID:@"USER.md"]; Drain(0.05);
+  editor.string = @"Prefers concise answers."; [controller textDidChange:nil]; Drain(0.75);
+  Check([memories[@"USER.md"][@"content"] isEqual:editor.string] && notes.count == 0, @"profile autosaves to Hermes memory, not ordinary notes");
+  Check([[(NSTextField *)[controller valueForKey:@"status"] stringValue] containsString:@"New chats"], @"memory explains when edited facts take effect");
+  deferSave = YES; editor.string = @"Profile draft before switching"; [controller textDidChange:nil];
+  [controller selectNotes:nil]; Drain(0.05);
+  Check(pending && [[controller valueForKey:@"memoryCollection"] boolValue] && [pendingParameters[@"collection"] isEqual:@"memory"], @"switching tabs waits for the memory draft to save");
+  memories[@"USER.md"] = MemoryNote(@"USER.md", pendingParameters[@"content"], @"user-v2");
+  deferSave = NO; pending(@{@"note":memories[@"USER.md"]}, nil); pending = nil; Drain(0.05);
+  Check(![[controller valueForKey:@"memoryCollection"] boolValue] && ![[controller valueForKey:@"dirty"] boolValue], @"successful save completes the tab switch");
+  [controller newNote:nil]; Drain(0.05);
+  Check(notes.count == 1 && memories.count == 2, @"ordinary notes remain separate");
+  [controller selectMemory:nil]; Drain(0.05);
+  conflict = YES; editor.string = @"Keep my memory draft"; [controller textDidChange:nil]; [controller selectNotes:nil]; Drain(0.05);
+  Check([[controller valueForKey:@"memoryCollection"] boolValue] && [[controller valueForKey:@"dirty"] boolValue] &&
+    [editor.string isEqual:@"Keep my memory draft"], @"a conflicting memory save prevents switching and preserves the draft");
+  [controller saveCopy:nil]; Drain(0.05);
+  Check(notes.count == 2 && ![[controller valueForKey:@"memoryCollection"] boolValue] &&
+    [editor.string isEqual:@"Keep my memory draft"] && [memories[@"MEMORY.md"][@"content"] isEqual:@"Uses Python."],
+    @"Save copy preserves a conflicted memory draft as a regular note without overwriting the agent");
+  conflict = NO; [controller selectMemory:nil]; Drain(0.05);
+  editor.string = @""; [controller textDidChange:nil]; [controller save:nil]; Drain(0.05);
+  Check([memories[@"MEMORY.md"][@"content"] isEqual:@""], @"removing all text saves an empty memory");
+  memories[@"MEMORY.md"] = MemoryNote(@"MEMORY.md", @"New fact learned by the agent.", @"memory-v3");
+  [controller refresh:nil]; Drain(0.05);
+  Check([editor.string isEqual:@"New fact learned by the agent."], @"memory refresh discovers new learning");
+  memories[@"USER.md"] = MemoryNote(@"USER.md", [@"A long profile detail. " stringByPaddingToLength:200 withString:@"More saved preferences. " startingAtIndex:0], @"user-v4");
+  [controller refresh:nil]; Drain(0.05);
+  for (NSNumber *preference in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:preference.integerValue];
+    [controller applyPalette:palette]; WaitForEditor(editor); Drain(0.2);
+    for (NSNumber *width in @[@200, @960]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 720)]; [controller.view layoutSubtreeIfNeeded]; Drain(0.2);
+      TLThemedButton *notesTab = [controller valueForKey:@"notesTabButton"], *memoryTab = [controller valueForKey:@"memoryTabButton"];
+      Check(NSMaxX(memoryTab.frame) <= width.doubleValue && !NSIntersectsRect(notesTab.frame, memoryTab.frame), @"internal tabs fit at the minimum window width");
+      NSTableView *memoryTable = [controller valueForKey:@"table"];
+      if (![(TLCollectionEditorView *)controller.view collection].hidden) {
+        NSTableCellView *profileCell = [memoryTable viewAtColumn:0 row:1 makeIfNecessary:YES];
+        [profileCell layoutSubtreeIfNeeded];
+        Check(NSHeight(profileCell.textField.frame) <= memoryTable.rowHeight && NSMinY(profileCell.textField.frame) >= 0,
+          @"long memory previews remain inside their rows");
+      }
+      NSView *back = [controller valueForKey:@"backButton"], *clear = [controller valueForKey:@"deleteButton"];
+      Check(back.hidden || !NSIntersectsRect(back.frame, clear.frame), @"memory navigation and clear actions do not overlap in narrow windows");
+      for (TLThemedButton *button in @[notesTab, memoryTab]) {
+        for (NSNumber *state in @[@0, @1, @2, @3]) {
+          button.enabled = state.integerValue != 3; button.cell.highlighted = state.integerValue == 2;
+          [button setValue:@(state.integerValue == 1) forKey:@"hovered"];
+          NSColor *surface = button.primary ? palette.primaryActionSurface : palette.secondaryActionSurface;
+          NSColor *text = button.primary ? palette.primaryActionText : palette.secondaryActionText;
+          if (state.integerValue == 1 || state.integerValue == 2) surface = Blend(surface, palette.chromeHoverSurface, 1);
+          if (!button.enabled) { surface = Blend(palette.tabBackground, surface, palette.disabledOpacity); text = Blend(surface, text, palette.disabledOpacity); }
+          NSBitmapImageRep *bitmap = RenderButton(button);
+          Check(ContainsColor(bitmap, surface) && ContainsColor(bitmap, text), @"memory tabs render paired theme colors in every interaction state");
+        }
+        button.enabled = YES; button.cell.highlighted = NO; [button setValue:@NO forKey:@"hovered"];
+      }
+      WaitForEditor(editor); Drain(0.2);
+    NSBitmapImageRep *bitmap = [controller.view bitmapImageRepForCachingDisplayInRect:controller.view.bounds];
+      [controller.view cacheDisplayInRect:controller.view.bounds toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:
+        [NSString stringWithFormat:@"/tmp/talaria-memory-%@-%@.png", palette.dark ? @"dark" : @"light", width] atomically:YES];
+    }
+  }
+  [controller close]; [window close];
+}
+
 int main(void) { @autoreleasepool {
   [NSApplication sharedApplication];
+  TestWYSIWYGEditor();
   TestWorkspaceNotes();
+  TestMemoryEditor();
   __block NSMutableDictionary *storage = [NSMutableDictionary dictionary];
   __block NSMutableArray *requests = [NSMutableArray array];
   __block TLNotesReply pending;
@@ -196,7 +391,7 @@ int main(void) { @autoreleasepool {
   [controller refresh:nil]; Drain(0.05);
   Check([[controller valueForKey:@"notes"] count] == 0, @"empty VM has an empty collection");
   [controller newNote:nil]; Drain(0.05);
-  NSTextView *editor = [controller valueForKey:@"textView"];
+  TLMarkdownEditorView *editor = [controller valueForKey:@"textView"];
   NSTableView *table = [controller valueForKey:@"table"];
   NSDictionary *note = [controller valueForKey:@"note"];
   NSString *identity = note[@"id"];
@@ -243,7 +438,7 @@ int main(void) { @autoreleasepool {
     editor.string = @"# Project ideas\n\nAn idea worth keeping.\n\n- Sketch a small prototype\n- Share it with the agent\n";
     editor.string = [editor.string stringByAppendingFormat:@"\nTheme draft %@", preference];
     [controller textDidChange:nil];
-    [controller applyPalette:palette]; [controller.view layoutSubtreeIfNeeded];
+    [controller applyPalette:palette]; Drain(0.2); [controller.view layoutSubtreeIfNeeded];
     Check([editor.string hasPrefix:@"# Project ideas"] && [[controller valueForKey:@"dirty"] boolValue], @"changing themes preserves drafts");
     TLThemedButton *button = [controller valueForKey:@"createButton"];
     for (NSNumber *primary in @[@YES, @NO]) for (NSNumber *state in @[@0,@1,@2,@3]) {
@@ -258,6 +453,7 @@ int main(void) { @autoreleasepool {
       Check(ContainsColor(bitmap, surface) && ContainsColor(bitmap, text), @"notes buttons render paired theme colors in normal, hover, pressed and disabled states");
     }
     button.primary = YES; button.enabled = YES; button.cell.highlighted = NO; [button setValue:@NO forKey:@"hovered"];
+    WaitForEditor(editor); Drain(0.2);
     NSBitmapImageRep *bitmap = [controller.view bitmapImageRepForCachingDisplayInRect:controller.view.bounds];
     [controller.view cacheDisplayInRect:controller.view.bounds toBitmapImageRep:bitmap];
     NSString *path = [NSString stringWithFormat:@"/tmp/talaria-notes-%@.png", preference.integerValue == TLThemePreferenceDark ? @"dark" : @"light"];
@@ -272,6 +468,8 @@ int main(void) { @autoreleasepool {
   Check(!surface.collection.hidden && surface.editor.hidden, @"All notes returns to the collection at narrow widths");
   [controller revealSelectedNote:nil]; [controller.view layoutSubtreeIfNeeded];
   Check(surface.collection.hidden && !surface.editor.hidden, @"the already-selected note can reopen after going back to the list");
+  NSView *createAction = [controller valueForKey:@"createButton"], *refreshAction = [controller valueForKey:@"refreshButton"];
+  Check(!NSIntersectsRect(createAction.frame, refreshAction.frame), @"New and Refresh remain separate in narrow Notes windows");
   [window setContentSize:NSMakeSize(960,720)]; [controller.view layoutSubtreeIfNeeded];
   Check(!surface.collection.hidden && !surface.editor.hidden, @"wide windows restore both panes");
 
