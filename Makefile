@@ -251,7 +251,7 @@ test-browser-password-autofill: build
 	mkdir -p "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app/Contents/MacOS"
 	cp Info.plist "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app/Contents/Info.plist"
 	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app"
-	xcrun clang $(OBJCFLAGS) -ISource Tests/BrowserPasswordAutofillIntegration.m Source/TLBrowserPasswordAutofill.m Source/design_system/TLBrowserWebView.m Source/TLBrowserWheelSmoother.m Source/TLWheelScrollAnimation.m $(THEME_SOURCES) -framework AppKit -framework WebKit -o "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app/Contents/MacOS/Talaria"
+	xcrun clang $(OBJCFLAGS) -ISource Tests/BrowserPasswordAutofillIntegration.m Source/TLBrowserPasswordAutofill.m Source/design_system/TLBrowserWebView.m $(THEME_SOURCES) -framework AppKit -framework WebKit -o "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(BUILD_DIR)/BrowserPasswordAutofillProbe.app"
 	python3 Scripts/test-browser-password-autofill.py
 
@@ -272,16 +272,6 @@ test-browser-navigation: build
 	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserNavigationIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserNavigationProbe.app/Contents/MacOS/Talaria"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserNavigationProbe.app"
 	python3 Scripts/test-browser-navigation.py
-
-.PHONY: test-browser-smooth-scrolling
-test-browser-smooth-scrolling: build $(BUILD_DIR)/WheelScrollAnimationTests
-	"$(BUILD_DIR)/WheelScrollAnimationTests"
-	mkdir -p "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app/Contents/MacOS"
-	cp Info.plist "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app/Contents/Info.plist"
-	python3 Scripts/prepare-browser-test-bundle.py "$(APP_BUNDLE)" "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app"
-	xcrun clang++ $(APP_OBJCXXFLAGS) -ISource Tests/BrowserSmoothScrollingIntegration.mm $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) $(APP_FRAMEWORKS) -o "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app/Contents/MacOS/Talaria"
-	codesign --force --sign "$(CODE_SIGN_IDENTITY)" --entitlements "$(APP_ENTITLEMENTS)" "$(BUILD_DIR)/BrowserSmoothScrollingProbe.app"
-	python3 Scripts/test-browser-smooth-scrolling.py
 
 .PHONY: test-browser-wheel-routing
 test-browser-wheel-routing: build
