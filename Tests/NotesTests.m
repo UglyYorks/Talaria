@@ -11,7 +11,6 @@
 - (void)saveCopy:(id)sender;
 - (void)textDidChange:(NSNotification *)notification;
 - (void)searchChanged:(id)sender;
-- (void)changeAgent:(id)sender;
 - (void)showList:(id)sender;
 - (void)revealSelectedNote:(id)sender;
 @end
@@ -59,6 +58,24 @@ static BOOL ContainsColor(NSBitmapImageRep *image, NSColor *color) {
 - (NSStackView *)buildSidebarActionStack;
 - (TLWorkspaceTabRuntime *)runtimeForTab:(TLWorkspaceTab *)tab;
 - (void)hydrateWorkspaceTabsFromAppState;
+- (void)activateSidebarAgent:(NSControl *)sender;
+@end
+@interface TLNotesTestDatabase : NSObject
+@property (nonatomic) NSInteger currentAgentID;
+@end
+@implementation TLNotesTestDatabase
+- (BOOL)setCurrentAgentID:(NSInteger)agentID error:(NSError **)error { self.currentAgentID = agentID; return YES; }
+- (id)appSettings:(NSError **)error { return nil; }
+@end
+@interface TLNotesTestOrchestrator : NSObject
+@property (nonatomic, copy) TLNotesRequest request;
+@end
+@implementation TLNotesTestOrchestrator
+- (id)listAgents:(NSError **)error { return nil; }
+- (void)hermesNotesWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID token:(NSString *)token
+                           model:(NSString *)model completion:(TLNotesReply)completion {
+  self.request(agentID, parameters, completion);
+}
 @end
 @interface TLNotesTestOwner : TalariaWindowController
 @end
@@ -87,7 +104,60 @@ static void TestWorkspaceNotes(void) {
   Check(NSApp.windows.count == windowCount, @"Notes uses the existing desktop window");
   [owner showNotes:nil]; [owner hydrateWorkspaceTabsFromAppState];
   Check(state.snapshot.workspaceTabs.count == 2 && [owner runtimeForTab:tab] == runtime, @"opening Notes again reuses its tab and controller");
+
+  TLNotesTestDatabase *database = [TLNotesTestDatabase new];
+  TLNotesTestOrchestrator *orchestrator = [TLNotesTestOrchestrator new];
+  [owner setValue:database forKey:@"database"]; [owner setValue:orchestrator forKey:@"agentOrchestrator"];
+  NSMutableDictionary *storage = [NSMutableDictionary dictionary];
+  __block TLNotesReply pending;
+  __block NSDictionary *pendingParameters;
+  __block NSInteger pendingAgent = 0;
+  __block BOOL deferSave = YES;
+  orchestrator.request = ^(NSInteger agentID, NSDictionary *parameters, TLNotesReply reply) {
+    NSMutableDictionary *notebook = storage[@(agentID)];
+    if (!notebook) { notebook = [NSMutableDictionary dictionary]; storage[@(agentID)] = notebook; }
+    NSString *action = parameters[@"action"], *identity = parameters[@"id"];
+    if (deferSave && [action isEqual:@"save"]) {
+      pending = reply; pendingParameters = parameters; pendingAgent = agentID; return;
+    }
+    if ([action isEqual:@"list"]) reply(@{@"notes":notebook.allValues}, nil);
+    else if ([action isEqual:@"create"] || [action isEqual:@"save"]) {
+      notebook[identity] = Note(identity, parameters[@"content"], NSUUID.UUID.UUIDString);
+      reply(@{@"note":notebook[identity]}, nil);
+    } else if ([action isEqual:@"read"]) reply(@{@"note":notebook[identity]}, nil);
+  };
+  NSButton *agentControl = [NSButton new]; agentControl.tag = 17;
+  [owner activateSidebarAgent:agentControl]; Drain(0.05);
+  TLNotesTabController *first = (id)runtime.featureController;
+  Check([[first valueForKey:@"agentID"] integerValue] == 17, @"Notes follows the app's selected agent");
+  for (NSView *view in [(TLCollectionEditorView *)first.view header].subviews)
+    Check(![view isKindOfClass:NSPopUpButton.class], @"Notes does not offer a separate agent picker");
+  [first newNote:nil]; Drain(0.05);
+  NSTextView *firstEditor = [first valueForKey:@"textView"];
+  firstEditor.string = @"# First agent's draft"; [first textDidChange:nil]; [first save:nil]; Drain(0.05);
+  Check(pending && pendingAgent == 17 && [pendingParameters[@"content"] isEqual:firstEditor.string], @"pending saves target the original agent");
+  agentControl.tag = 23; [owner activateSidebarAgent:agentControl]; Drain(0.05);
+  TLNotesTabController *second = (id)runtime.featureController;
+  Check(second != first && [[second valueForKey:@"agentID"] integerValue] == 23 && !first.closed &&
+    [owner runtimeForTab:tab] == runtime && state.snapshot.workspaceTabs.count == 2,
+    @"app agent switching changes the notebook immediately while reusing the Notes tab");
+  [second newNote:nil]; Drain(0.05);
+  NSTextView *secondEditor = [second valueForKey:@"textView"];
+  NSString *secondContent = [secondEditor.string copy];
+  pending(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"VM disconnected"}]);
+  pending = nil; Drain(0.05);
+  Check([[first valueForKey:@"dirty"] boolValue] && [secondEditor.string isEqual:secondContent], @"a late failure preserves its original draft without touching the new notebook");
+  agentControl.tag = 17; [owner activateSidebarAgent:agentControl]; Drain(0.05);
+  Check(runtime.featureController == first && [firstEditor.string isEqual:@"# First agent's draft"], @"switching back restores an unsaved draft");
+  [first save:nil]; Drain(0.05);
+  agentControl.tag = 23; [owner activateSidebarAgent:agentControl]; Drain(0.05);
+  NSString *identity = pendingParameters[@"id"];
+  storage[@17][identity] = Note(identity, pendingParameters[@"content"], @"saved-revision");
+  deferSave = NO; pending(@{@"note":storage[@17][identity]}, nil); pending = nil; Drain(0.05);
+  Check(![[first valueForKey:@"dirty"] boolValue] && [secondEditor.string isEqual:secondContent] &&
+    [storage[@17] count] == 1 && [storage[@23] count] == 1, @"a late save completes in its original VM after the app agent changes");
   [owner closeNotesTab:nil];
+  Check(first.closed && second.closed, @"closing Notes closes every cached notebook");
   Check(runtime.featureController.closed && ![state hasWorkspaceTabWithKind:TLWorkspaceTabKindNotes tabID:0], @"closing Notes cancels its controller and removes the tab");
   [owner performTabCommand:TLTabCommandReopen];
   TLWorkspaceTab *reopened = [state workspaceTabWithKind:TLWorkspaceTabKindNotes tabID:0];
@@ -98,8 +168,6 @@ static void TestWorkspaceNotes(void) {
 int main(void) { @autoreleasepool {
   [NSApplication sharedApplication];
   TestWorkspaceNotes();
-  TLAgentRecord *agent = [TLAgentRecord new]; agent.agentID = 17; agent.name = @"Personal agent";
-  TLAgentRecord *other = [TLAgentRecord new]; other.agentID = 23; other.name = @"Work agent";
   __block NSMutableDictionary *storage = [NSMutableDictionary dictionary];
   __block NSMutableArray *requests = [NSMutableArray array];
   __block TLNotesReply pending;
@@ -107,7 +175,7 @@ int main(void) { @autoreleasepool {
   __block BOOL deferSave = NO, failSave = NO, conflict = NO, deferList = NO;
   __block NSInteger displayedAgent = 17, revision = 0;
   TLNotesTabController *controller = [[TLNotesTabController alloc] initWithPalette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]
-    agents:@[agent,other] agentID:17 request:^(NSInteger agentID, NSDictionary *parameters, TLNotesReply reply) {
+    agentID:17 request:^(NSInteger agentID, NSDictionary *parameters, TLNotesReply reply) {
       Check(agentID == displayedAgent, @"each operation uses the displayed VM");
       [requests addObject:parameters];
       NSString *action = parameters[@"action"], *identity = parameters[@"id"];
@@ -207,11 +275,6 @@ int main(void) { @autoreleasepool {
   [window setContentSize:NSMakeSize(960,720)]; [controller.view layoutSubtreeIfNeeded];
   Check(!surface.collection.hidden && !surface.editor.hidden, @"wide windows restore both panes");
 
-  NSPopUpButton *picker = [controller valueForKey:@"agentPicker"];
-  [picker selectItemWithTag:23]; displayedAgent = 23;
-  [controller changeAgent:nil]; Drain(0.05);
-  Check([[controller valueForKey:@"agentID"] integerValue] == 23 && [controller valueForKey:@"note"] == nil,
-    @"switching agents clears the previous VM's editor");
   deferList = YES; [controller refresh:nil]; NSUInteger count = requests.count;
   Check(pending != nil, @"refresh can remain pending");
   [controller close]; pending(@{@"notes":@[]}, nil); Drain(0.05); [controller refresh:nil];

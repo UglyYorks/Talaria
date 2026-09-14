@@ -4,12 +4,10 @@
 
 @interface TLNotesTabController () <NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate>
 @property (nonatomic, copy) TLNotesRequest request;
-@property (nonatomic, copy) NSArray<TLAgentRecord *> *agents;
 @property (nonatomic) NSInteger agentID;
 @property (nonatomic, strong) TLCollectionEditorView *surface;
 @property (nonatomic, strong) NSTextField *heading, *subtitle, *status, *pathLabel, *emptyLabel;
 @property (nonatomic, strong) NSTextField *collectionEmptyLabel;
-@property (nonatomic, strong) NSPopUpButton *agentPicker;
 @property (nonatomic, strong) NSSearchField *search;
 @property (nonatomic, strong) NSTableView *table;
 @property (nonatomic, strong) NSScrollView *listScroll, *editorScroll;
@@ -25,10 +23,9 @@
 @end
 
 @implementation TLNotesTabController
-- (instancetype)initWithPalette:(TLThemePalette *)palette agents:(NSArray<TLAgentRecord *> *)agents
-                        agentID:(NSInteger)agentID request:(TLNotesRequest)request {
+- (instancetype)initWithPalette:(TLThemePalette *)palette agentID:(NSInteger)agentID request:(TLNotesRequest)request {
   if ((self = [super initWithPalette:palette])) {
-    _agents = [agents copy]; _agentID = agentID; _request = [request copy]; _notes = @[];
+    _agentID = agentID; _request = [request copy]; _notes = @[];
     [self buildView]; [self applyPalette:palette]; [self updateControls];
     __weak typeof(self) weakSelf = self;
     _refreshTimer = [NSTimer scheduledTimerWithTimeInterval:5 repeats:YES block:^(NSTimer *timer) {
@@ -53,15 +50,7 @@
   self.surface = [TLCollectionEditorView new]; self.view = self.surface;
   self.heading = [self labelWithString:@"Notes" font:self.palette.titleFont colorToken:@"appText"];
   self.subtitle = [self labelWithString:@"A place to write and think with your agent." font:self.palette.bodyFont colorToken:@"textMuted"];
-  self.agentPicker = [NSPopUpButton new];
-  for (TLAgentRecord *agent in self.agents) {
-    [self.agentPicker addItemWithTitle:agent.name.length ? agent.name : @"Agent"];
-    self.agentPicker.lastItem.tag = agent.agentID;
-  }
-  [self.agentPicker selectItemWithTag:self.agentID];
-  self.agentPicker.target = self; self.agentPicker.action = @selector(changeAgent:);
-  self.agentPicker.accessibilityLabel = @"Notes agent";
-  for (NSView *view in @[self.heading, self.subtitle, self.agentPicker]) [self.surface.header addSubview:view];
+  for (NSView *view in @[self.heading, self.subtitle]) [self.surface.header addSubview:view];
   self.createButton = [self button:@"New note" action:@selector(newNote:) parent:self.surface.header];
   self.createButton.primary = YES;
   self.refreshButton = [self button:@"Refresh" action:@selector(refresh:) parent:self.surface.header];
@@ -106,7 +95,7 @@
   self.emptyLabel = [self wrappingLabelWithString:@"Your notes, shared with your agent.\n\nCreate a note to get started, or select one from the list."
     font:self.palette.bodyFont colorToken:@"textMuted"];
   [self.surface.editor addSubview:self.emptyLabel];
-  self.status = [self labelWithString:self.agents.count ? @"Notes are stored as Markdown in the agent’s VM." : @"Create an agent to start using Notes."
+  self.status = [self labelWithString:self.agentID > 0 ? @"Notes are stored as Markdown in the agent’s VM." : @"Create an agent to start using Notes."
     font:self.palette.smallFont colorToken:@"textMuted"];
   self.status.toolTip = self.status.stringValue;
   [self.surface.footer addSubview:self.status];
@@ -124,11 +113,8 @@
   self.createButton.frame = NSMakeRect(MAX(inset, width - inset - newWidth), height - inset - row, newWidth, row);
   self.heading.frame = NSMakeRect(inset, height - inset - row, MAX(0, width - newWidth - inset * 3), row);
   self.refreshButton.frame = NSMakeRect(MAX(inset, width - inset - refreshWidth), inset, refreshWidth, row);
-  CGFloat pickerWidth = MAX(0, MIN(p.settingsSidebarWidth, width - refreshWidth - inset * 2 - gap));
-  self.agentPicker.frame = NSMakeRect(inset, inset, pickerWidth, row);
   self.subtitle.hidden = self.surface.compact;
-  self.subtitle.frame = NSMakeRect(inset + pickerWidth + gap, inset,
-    MAX(0, width - pickerWidth - refreshWidth - inset * 2 - gap * 2), row);
+  self.subtitle.frame = NSMakeRect(inset, inset, MAX(0, width - refreshWidth - inset * 2 - gap), row);
   width = NSWidth(self.surface.collection.bounds); height = NSHeight(self.surface.collection.bounds);
   self.search.frame = NSMakeRect(inset, MAX(0, height - inset - row), MAX(0, width - inset * 2), row);
   self.listScroll.frame = NSMakeRect(0, 0, width, MAX(0, height - row - inset * 2));
@@ -159,7 +145,7 @@
   self.view.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   for (TLThemedButton *button in self.buttons) button.palette = palette;
   self.search.textColor = palette.controlText; self.search.backgroundColor = palette.controlSurface;
-  self.search.font = palette.bodyFont; self.agentPicker.font = palette.bodyFont;
+  self.search.font = palette.bodyFont;
   self.table.backgroundColor = palette.sidebarSurface; self.table.rowHeight = palette.historyRowHeight;
   self.table.intercellSpacing = NSMakeSize(palette.space0, palette.space2);
   self.textView.font = palette.markdownCodeFont; self.textView.textColor = palette.controlText;
@@ -176,7 +162,6 @@
 }
 - (void)updateControls {
   BOOL ready = self.agentID > 0 && !self.closed;
-  self.agentPicker.enabled = !self.busy && ready;
   self.createButton.enabled = self.refreshButton.enabled = !self.busy && ready;
   self.search.enabled = !self.busy && ready;
   self.deleteButton.enabled = !self.busy && self.note != nil;
@@ -239,21 +224,6 @@
   if (self.busy) return;
   if (self.dirty) { self.afterSave = action; [self save:nil]; }
   else action();
-}
-- (void)updateAgents:(NSArray<TLAgentRecord *> *)agents preferredAgentID:(NSInteger)agentID {
-  if (self.busy || self.dirty || self.closed) return;
-  self.agents = [agents copy];
-  [self.agentPicker removeAllItems];
-  for (TLAgentRecord *agent in agents) {
-    [self.agentPicker addItemWithTitle:agent.name.length ? agent.name : @"Agent"];
-    self.agentPicker.lastItem.tag = agent.agentID;
-  }
-  if (![self.agentPicker.menu itemWithTag:self.agentID]) {
-    self.agentID = [self.agentPicker.menu itemWithTag:agentID] ? agentID : [(TLAgentRecord *)agents.firstObject agentID];
-    self.generation++; self.notes = @[]; self.pendingCreate = nil;
-    [self displayNote:nil]; self.surface.showsEditor = NO;
-  }
-  [self.agentPicker selectItemWithTag:self.agentID]; [self updateControls];
 }
 - (void)refresh:(id)sender {
   if (self.closed || self.busy || !self.agentID) return;
@@ -359,19 +329,6 @@
 - (void)searchChanged:(id)sender {
   __weak typeof(self) weakSelf = self;
   [self withSavedDraft:^{ [weakSelf refresh:nil]; }];
-}
-- (void)changeAgent:(id)sender {
-  NSInteger identity = self.agentPicker.selectedItem.tag;
-  [self.agentPicker selectItemWithTag:self.agentID];
-  if (identity == self.agentID) return;
-  __weak typeof(self) weakSelf = self;
-  [self withSavedDraft:^{
-    typeof(self) controller = weakSelf;
-    controller.agentID = identity; controller.generation++; controller.pendingCreate = nil;
-    [controller.agentPicker selectItemWithTag:identity]; controller.search.stringValue = @"";
-    controller.notes = @[]; [controller displayNote:nil]; controller.surface.showsEditor = NO;
-    [controller refresh:nil];
-  }];
 }
 - (void)showList:(id)sender { self.surface.showsEditor = NO; }
 - (void)revealSelectedNote:(id)sender {

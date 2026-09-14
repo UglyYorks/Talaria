@@ -114,6 +114,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *debugTab;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *notesTab;
 @property (nonatomic, strong, nullable) TLNotesTabController *notesController;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, TLNotesTabController *> *notesControllers;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *automationsTab;
 @property (nonatomic, strong, nullable) TLAutomationsTabController *automationsController;
 @property (nonatomic, strong) TLNotificationsController *notificationsController;
@@ -694,7 +695,12 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
 }
 
-- (BOOL)prepareNotesForClosing { return !self.notesController || [self.notesController prepareToClose]; }
+- (BOOL)prepareNotesForClosing {
+  for (TLNotesTabController *controller in self.notesControllers.allValues) {
+    if (![controller prepareToClose]) return NO;
+  }
+  return YES;
+}
 
 - (BOOL)windowShouldClose:(NSWindow *)sender {
   if (![self prepareNotesForClosing]) return NO;
@@ -3853,18 +3859,37 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (NSView *)buildNotesContent {
-  __weak typeof(self) weakSelf = self;
-  NSArray *agents = [self.agentOrchestrator listAgents:nil] ?: @[];
   NSInteger agentID = self.database.currentAgentID;
-  if (!agentID) agentID = [(TLAgentRecord *)agents.lastObject agentID];
-  self.notesController = [[TLNotesTabController alloc] initWithPalette:self.palette
-    agents:agents agentID:agentID request:^(NSInteger selectedAgentID, NSDictionary *parameters, TLNotesReply reply) {
-      typeof(self) controller = weakSelf;
-      if (!controller) return;
-      [controller.agentOrchestrator hermesNotesWithParameters:parameters agentID:selectedAgentID
-        token:controller.settings.openRouterToken model:controller.settings.selectedModel completion:reply];
-    }];
+  if (!self.notesControllers) self.notesControllers = [NSMutableDictionary dictionary];
+  self.notesController = self.notesControllers[@(agentID)];
+  if (!self.notesController) {
+    __weak typeof(self) weakSelf = self;
+    self.notesController = [[TLNotesTabController alloc] initWithPalette:self.palette
+      agentID:agentID request:^(NSInteger selectedAgentID, NSDictionary *parameters, TLNotesReply reply) {
+        typeof(self) controller = weakSelf;
+        if (!controller) return;
+        [controller.agentOrchestrator hermesNotesWithParameters:parameters agentID:selectedAgentID
+          token:controller.settings.openRouterToken model:controller.settings.selectedModel completion:reply];
+      }];
+    self.notesControllers[@(agentID)] = self.notesController;
+  }
+  [self.notesController applyPalette:self.palette];
   return self.notesController.view;
+}
+
+- (void)syncNotesToCurrentAgent {
+  if (!self.notesTab || self.notesController == self.notesControllers[@(self.database.currentAgentID)]) return;
+  TLWorkspaceTabRuntime *runtime = [self runtimeForTab:self.notesTab];
+  if (!runtime) return;
+  NSView *previous = runtime.contentView;
+  runtime.contentView = [self buildNotesContent];
+  // Keep the previous editor alive while its VM saves, and retain any failed
+  // draft for when that agent is selected again. Its callbacks only touch it.
+  runtime.featureController = self.notesController;
+  [previous removeFromSuperview];
+  [self addWorkspaceContentView:runtime.contentView];
+  [self updateWorkspaceMode];
+  [self.notesController refresh:nil];
 }
 
 - (void)showNotes:(id)sender {
@@ -3880,14 +3905,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }
   [self activateTabKind:TLWorkspaceTabKindNotes tabID:self.notesTab.tabID];
   [self updateWorkspaceMode]; [self reloadWorkspaceTabs]; [self updateControlStates];
-  [self.notesController updateAgents:[self.agentOrchestrator listAgents:nil] ?: @[] preferredAgentID:self.database.currentAgentID];
+  [self syncNotesToCurrentAgent];
   [self.notesController refresh:nil];
 }
 
 - (void)closeNotesTab:(id)sender {
-  if (!self.notesTab || ![self.notesController prepareToClose] || [self closeWindowIfOnlyWorkspaceTab:self.notesTab]) return;
+  if (!self.notesTab || ![self prepareNotesForClosing] || [self closeWindowIfOnlyWorkspaceTab:self.notesTab]) return;
   [self rememberClosedWorkspaceTab:self.notesTab];
-  [self.notesController close];
+  for (TLNotesTabController *controller in self.notesControllers.allValues) [controller close];
+  [self.notesControllers removeAllObjects];
   [self.appStateManager removeWorkspaceTabWithKind:self.notesTab.kind tabID:self.notesTab.tabID];
   [[self contentViewForTab:self.notesTab] removeFromSuperview];
   [self removeRuntimeForKind:self.notesTab.kind tabID:self.notesTab.tabID];
@@ -4265,6 +4291,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)refreshAgents {
+  [self syncNotesToCurrentAgent];
   if (!self.agentOrchestrator) {
     return;
   }
@@ -5931,6 +5958,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   for (TLWorkspaceTabRuntime *runtime in self.workspaceTabRuntimes.allValues) {
     [runtime.featureController applyPalette:self.palette];
+  }
+  for (TLNotesTabController *controller in self.notesControllers.allValues) {
+    if (controller != self.notesController) [controller applyPalette:self.palette];
   }
   if (self.agentsView) {
     self.agentsView.fillColor = self.palette.tabBackground;
