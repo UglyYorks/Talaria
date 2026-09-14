@@ -47,33 +47,46 @@ static void Later(double seconds, void (^action)(void)) {
     navigationHandler:^(BOOL back, BOOL forward, BOOL loading) { if (!loading) [self loaded]; }];
   Later(50,^{ Check(NO,@"navigation test timeout"); });
 }
-- (NSImageView *)cover {
-  for (NSView *view in self.window.contentView.subviews)
-    if ([view isKindOfClass:NSImageView.class]) return (NSImageView *)view;
-  return nil;
+- (TLTokenView *)cover { return [self.session valueForKey:@"navigationCover"]; }
+- (void)measureCoverSince:(NSTimeInterval)start {
+  NSTimeInterval elapsed=NSProcessInfo.processInfo.systemUptime-start;
+  if(self.cover){
+    NSLog(@"TIMING: link click to loading surface %.1f ms",elapsed*1000);
+    Check(elapsed<.25,@"old page is hidden promptly before the server responds");
+    [self measureRevealSince:start];return;
+  }
+  if(elapsed>=.25)Check(NO,@"navigation installs a loading surface within 250 ms");
+  Later(.005,^{[self measureCoverSince:start];});
+}
+- (void)measureRevealSince:(NSTimeInterval)start {
+  NSTimeInterval elapsed=NSProcessInfo.processInfo.systemUptime-start;
+  if(!self.cover){NSLog(@"TIMING: link click to destination presentation %.1f ms",elapsed*1000);return;}
+  if(elapsed>=6)Check(NO,@"destination eventually replaces the loading surface");
+  Later(.02,^{[self measureRevealSince:start];});
 }
 - (void)loaded {
   if (!self.session.documentGeneration) return;
   if (self.phase == 0) {
     self.phase = 1;
     Later(.25,^{ [self clickLink]; });
-  } else if (self.phase == 1) {
+  } else if (self.phase == 1 && [self.session.webView.URL.path isEqual:@"/next"] && self.session.documentGeneration>self.initialGeneration) {
     self.phase = 2;
     Later(.25,^{
-      Check(self.checkedCover,@"old frame was checked while destination CSS was pending");
+      Check(self.checkedCover,@"loading surface was checked while destination CSS was pending");
       Check(self.checkedProgressiveRendering,@"destination was revealed before all resources finished");
-      Check(!self.cover,@"destination paint removes the old frame");
+      Check(!self.cover,@"destination paint removes the loading surface");
       [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/blank"]]];
     });
   } else if (self.phase == 2) {
     self.phase = 3;
     Later(.25,^{
-      Check(!self.cover,@"blank destination also releases the old frame");
+      Check(!self.cover,@"blank destination also releases the loading surface");
       [self checkResizeAndClose];
     });
   }
 }
 - (void)clickLink {
+  NSTimeInterval start=NSProcessInfo.processInfo.systemUptime;
   self.initialGeneration = self.session.documentGeneration;
   NSView *view = self.session.webView;
   NSPoint point = [view convertPoint:NSMakePoint(40,view.isFlipped ? 40 : NSHeight(view.bounds)-40) toView:nil];
@@ -83,13 +96,14 @@ static void Later(double seconds, void (^action)(void)) {
     NSView *target = [self.window.contentView hitTest:point];
     if (event.type == NSEventTypeLeftMouseDown) [target mouseDown:event]; else [target mouseUp:event];
   }
+  [self measureCoverSince:start];
   Later(.8,^{
     Check(self.session.documentGeneration == self.initialGeneration + 1,[NSString stringWithFormat:@"link commits exactly one new document (before=%lu after=%lu URL=%@ loading=%d)",(unsigned long)self.initialGeneration,(unsigned long)self.session.documentGeneration,self.session.webView.URL,self.session.webView.loading]);
-    NSImageView *cover = self.cover;
-    Check(cover.image != nil,@"last rendered frame remains visible during cross-origin navigation");
-    NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:cover.image.TIFFRepresentation];
-    NSColor *pixel = [[bitmap colorAtX:10 y:10] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
-    Check(pixel.blueComponent > pixel.redComponent + .2,@"held image contains the blue source page, not a blank frame");
+    TLTokenView *cover = self.cover;
+    Check(cover && cover.fillColor.alphaComponent==1,@"opaque loading surface hides the old page while destination CSS is pending");
+    [TLWebKitBrowserController.sharedController applyDarkAppearance:YES];
+    Check([cover.fillColor isEqual:[TLThemePalette paletteForPreference:TLThemePreferenceDark].tabBackground],@"loading surface follows theme changes");
+    [TLWebKitBrowserController.sharedController applyDarkAppearance:NO];
     self.checkedCover = YES;
     Later(1.2,^{ [self checkProgressiveRendering]; });
   });
@@ -97,7 +111,7 @@ static void Later(double seconds, void (^action)(void)) {
 - (void)checkProgressiveRendering {
   WKWebView *view=self.session.webView;
   Check(view.loading,@"slow image is still loading when the destination is revealed");
-  Check(!self.cover,@"first visible content releases the old frame before load completion");
+  Check(!self.cover,@"first visible content releases the loading surface before load completion");
   Check(!view.configuration.suppressesIncrementalRendering,@"browser allows progressive rendering");
   TLTestEvaluate(view,@"({imagePending:!document.getElementById('slow-image').complete,title:document.querySelector('h1').textContent})",^(id value){
     Check([value[@"imagePending"] boolValue] && [value[@"title"] isEqual:@"Destination page"],@"destination content exists while its image remains pending");
@@ -115,12 +129,12 @@ static void Later(double seconds, void (^action)(void)) {
 - (void)checkResizeAndClose {
   [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/slow"]]];
   Later(.4,^{
-    Check(self.cover.image != nil,@"next navigation can capture a fresh frame");
+    Check(self.cover != nil,@"next navigation immediately hides the previous page");
     [self.window setContentSize:NSMakeSize(800,600)];
-    Check(!self.cover,@"resizing removes a snapshot with obsolete geometry");
+    Check(self.cover && NSEqualRects(self.cover.frame,self.session.webView.frame),@"resizing keeps the old page covered with matching geometry");
     [TLWebKitBrowserController.sharedController closeSession:self.session];
     Later(.3,^{
-      Check(!self.cover,@"closing a tab prevents delayed captures from reappearing");
+      Check(!self.cover,@"closing a tab prevents loading surfaces from reappearing");
       [self checkInsetNavigation];
     });
   });
@@ -134,9 +148,9 @@ static void Later(double seconds, void (^action)(void)) {
     [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/slow"]]];
     Later(.4,^{
       Check(self.session.webView.loading,@"inset regression examines the pending address navigation");
-      Check(![self.session valueForKey:@"navigationCover"],@"overlay input keeps the live page instead of a snapshot with a blank inset band");
+      Check(self.cover && NSEqualRects(self.cover.frame,self.session.webView.frame),@"loading surface covers the page and its footer inset");
       Later(.3,^{
-        Check(![self.session valueForKey:@"navigationCover"],@"delayed snapshot cannot introduce an inset band during loading");
+        Check(self.cover!=nil,@"old content behind the footer stays hidden while loading");
         [TLWebKitBrowserController.sharedController closeSession:self.session];[self checkHistory];
       });
     });
@@ -199,7 +213,7 @@ static void Later(double seconds, void (^action)(void)) {
 - (void)checkFragmentHistory {
   TLTestEvaluate(self.session.webView,@"document.querySelector('a').click();",^(id value){
     [self waitForPath:@"/history/one#section" attempt:0 then:^{
-      Check(![self.session valueForKey:@"navigationCover"],@"fragment link releases the old page image");
+      Check(![self.session valueForKey:@"navigationCover"],@"fragment link releases the loading surface");
       [self.address.backButton performClick:nil];
       [self waitForPath:@"/history/one" attempt:0 then:^{
         Check(![self.session valueForKey:@"navigationCover"],@"Back through fragment history reveals the page");
@@ -237,19 +251,47 @@ static void Later(double seconds, void (^action)(void)) {
       Check([value isEqual:@NO],@"fixture's page script is disabled");
       [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/history/noscript#section"]]];
       [self waitForPath:@"/history/noscript#section" attempt:0 then:^{
-        Check(![self.session valueForKey:@"navigationCover"],@"address-bar fragment navigation releases the old image without page scripts");
+        Check(![self.session valueForKey:@"navigationCover"],@"address-bar fragment navigation releases the loading surface without page scripts");
         [self.address.backButton performClick:nil];
         [self waitForPath:@"/history/noscript" attempt:0 then:^{
           Check(![self.session valueForKey:@"navigationCover"],@"Back works with site JavaScript disabled");
           [self.address.forwardButton performClick:nil];
           [self waitForPath:@"/history/noscript#section" attempt:0 then:^{
             Check(![self.session valueForKey:@"navigationCover"],@"Forward works with site JavaScript disabled");
-            [self.tab close];[NSApp terminate:nil];
+            [self checkCancelledNavigation];
           }];
         }];
       }];
     });
   }];
+}
+- (void)checkCancelledNavigation {
+  TLWebKitBrowserController *controller=TLWebKitBrowserController.sharedController;
+  [controller navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/slow"]]];
+  Later(.15,^{
+    Check(self.cover!=nil,@"pending navigation hides previous content");
+    [self.session.webView stopLoading];
+    Later(.3,^{
+      Check(!self.cover,@"cancelled navigation restores usable content");
+      [controller navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/no-content"]]];
+      Later(.5,^{
+        Check(!self.cover,@"HTTP 204 navigation restores the unchanged page");
+        [self checkDownloadNavigation];
+      });
+    });
+  });
+}
+- (void)checkDownloadNavigation {
+  TLBrowserPreferences *preferences=TLBrowserPreferences.sharedPreferences;
+  [preferences persistValue:@NO forSetting:[TLBrowserPreferences settingWithID:@"askDownload"] error:nil];
+  NSString *directory=[TLBrowserPreferences.profileURL.path stringByAppendingPathComponent:@"Downloads"];
+  [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
+  [preferences persistValue:directory forSetting:[TLBrowserPreferences settingWithID:@"downloadDirectory"] error:nil];
+  [TLWebKitBrowserController.sharedController navigateSession:self.session toURL:[NSURL URLWithString:[self.baseURL stringByAppendingString:@"/download"]]];
+  Later(.5,^{
+    Check(!self.cover,@"navigation that becomes a download restores the source page");
+    [self.tab close];[NSApp terminate:nil];
+  });
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
   return [TLWebKitBrowserController.sharedController prepareForApplicationTermination] ? NSTerminateNow : NSTerminateLater;

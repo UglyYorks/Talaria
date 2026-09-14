@@ -2,6 +2,7 @@
 #import "WebKitPageBridge.h"
 #import "WebKitBrowserSettings.h"
 #import "design_system/TLBrowserWebView.h"
+#import "design_system/UIComponents.h"
 #import "design_system/TLSourceWindowController.h"
 #import "WebKitImageLoader.h"
 #import "AppDelegate.h"
@@ -84,7 +85,7 @@ static void TLStyleBrowserPrompt(NSAlert *alert, TLThemePalette *palette) {
 @property (nonatomic) BOOL paused;
 @property (nonatomic) NSDate *backgroundSince;
 @property (nonatomic) NSDictionary *documentFooterConfiguration;
-@property (nonatomic) NSImageView *navigationCover;
+@property (nonatomic) TLTokenView *navigationCover;
 @property (nonatomic) NSUInteger transitionGeneration;
 @property (nonatomic) BOOL awaitingNavigationCommit;
 @property (nonatomic) NSDictionary *context;
@@ -92,7 +93,6 @@ static void TLStyleBrowserPrompt(NSAlert *alert, TLThemePalette *palette) {
 @property (nonatomic, copy) dispatch_block_t menuCleanup;
 @property (nonatomic) NSString *lastFaviconURL;
 @property (nonatomic) NSString *lastHost;
-@property (nonatomic) id resizeObserver;
 @property (nonatomic) BOOL navigationFailed;
 @property (nonatomic) NSArray<NSNumber *> *lastNavigationState;
 @end
@@ -409,8 +409,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   };
   self.sessions[@(session.browserIdentifier)]=session;
   for(NSString *key in @[@"title",@"URL",@"canGoBack",@"canGoForward",@"loading",@"estimatedProgress",@"fullscreenState"])[webView addObserver:self forKeyPath:key options:0 context:NULL];
-  view.postsFrameChangedNotifications=YES;
-  session.resizeObserver=[NSNotificationCenter.defaultCenter addObserverForName:NSViewFrameDidChangeNotification object:view queue:nil usingBlock:^(NSNotification *note){[weakSelf clearNavigationCover:weakSession];}];
   [view addSubview:webView];
   // Start the page process only after its view belongs to the window, so its
   // initial activity and visibility state reflect the actual native hierarchy.
@@ -478,26 +476,16 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 - (void)focusSession:(TLWebKitBrowserSession *)session {if(session.closed)return;[self resumeSession:session];[session.webView.window makeFirstResponder:session.webView];}
 - (void)beginNavigationCover:(TLWebKitBrowserSession *)session {
   [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
-  if (@available(macOS 26.0, *)) {
-    // WKSnapshot omits live content in obscured insets. Covering the web view
-    // with that image introduces a blank footer as soon as navigation begins.
-    // Keep the live view visible while WebKit loads the replacement document.
-    if (session.webView.obscuredContentInsets.bottom > 0) {
-      [self clearNavigationCover:session];
-      return;
-    }
-  }
-  if(!session.webView || session.fullscreen || !session.containerView.window.visible || session.containerView.hiddenOrHasHiddenAncestor)return;
-  NSUInteger generation=++session.transitionGeneration;NSSize size=session.webView.bounds.size;
-  if(size.width<=0 || size.height<=0 || size.width*size.height>16*1024*1024)return;
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC),dispatch_get_main_queue(),^{if(generation==session.transitionGeneration)[self clearNavigationCover:session];});
+  if(session.closed || !session.webView || session.fullscreen)return;
+  // A navigation acknowledges the click immediately, including the live page
+  // behind the footer. Keep WebKit rendering underneath until the new page paints.
+  session.transitionGeneration++;
   if(session.navigationCover)return;
-  WKSnapshotConfiguration *configuration=[WKSnapshotConfiguration new];configuration.afterScreenUpdates=NO;
-  [session.webView takeSnapshotWithConfiguration:configuration completionHandler:^(NSImage *image,NSError *error){
-    if(!image || session.closed || generation!=session.transitionGeneration || !NSEqualSizes(size,session.webView.bounds.size))return;
-    NSImageView *cover=[[NSImageView alloc] initWithFrame:session.webView.frame];cover.image=image;cover.imageScaling=NSImageScaleAxesIndependently;[cover setAccessibilityHidden:YES];session.navigationCover=cover;
-    [session.containerView addSubview:cover positioned:NSWindowAbove relativeTo:nil];
-  }];
+  TLTokenView *cover=[[TLTokenView alloc] initWithFrame:session.webView.frame];
+  cover.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+  cover.fillColor=[TLThemePalette paletteForPreference:self.darkAppearance ? TLThemePreferenceDark : TLThemePreferenceLight].tabBackground;
+  [cover setAccessibilityHidden:YES];session.navigationCover=cover;
+  [session.containerView addSubview:cover positioned:NSWindowAbove relativeTo:session.webView];
 }
 - (void)clearNavigationCover:(TLWebKitBrowserSession *)session {session.transitionGeneration++;[session.navigationCover removeFromSuperview];session.navigationCover=nil;}
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
@@ -532,6 +520,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   TLWebKitBrowserSession *session=[self sessionForWebView:webView];if(!session)return;
   [session.passwordAutofill reset];
   for(NSAlert *alert in self.alerts.copy)if(alert.window.sheetParent==session.originWindow)[session.originWindow endSheet:alert.window returnCode:NSAlertFirstButtonReturn];
+  [self beginNavigationCover:session];
   session.awaitingNavigationCommit=YES;
   session.navigationFailed=NO;session.context=nil;session.contextFrame=nil;
   [session.pageBridge stopFinding];
@@ -596,11 +585,19 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
     decisionHandler(WKNavigationActionPolicyCancel,preferences);return;
   }
   if(action.shouldPerformDownload){decisionHandler(WKNavigationActionPolicyDownload,preferences);return;}
-  if(action.targetFrame.isMainFrame && action.navigationType!=WKNavigationTypeOther)[self beginNavigationCover:session];
+  NSURLComponents *destination=[NSURLComponents componentsWithURL:URL resolvingAgainstBaseURL:YES];
+  NSURLComponents *current=webView.URL ? [NSURLComponents componentsWithURL:webView.URL resolvingAgainstBaseURL:YES] : nil;
+  BOOL fragmentNavigation=destination.fragment!=nil;
+  destination.fragment=nil;current.fragment=nil;
+  fragmentNavigation=fragmentNavigation && [destination.URL isEqual:current.URL];
+  if(action.targetFrame.isMainFrame && action.navigationType!=WKNavigationTypeOther &&
+     ![URL.scheme.lowercaseString isEqual:@"javascript"] && !fragmentNavigation)
+    [self beginNavigationCover:session];
   decisionHandler(WKNavigationActionPolicyAllow,preferences);
 }
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationResponse:(WKNavigationResponse *)response decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
   BOOL download=!response.canShowMIMEType || ([[response.response.MIMEType lowercaseString] isEqual:@"application/pdf"] && [[TLBrowserPreferences.sharedPreferences localValue:@"pdfDownload"] boolValue]);
+  if(download && response.isForMainFrame)[self clearNavigationCover:[self sessionForWebView:webView]];
   decisionHandler(download ? WKNavigationResponsePolicyDownload : WKNavigationResponsePolicyAllow);
 }
 - (WKWebView *)webView:(WKWebView *)webView createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration forNavigationAction:(WKNavigationAction *)action windowFeatures:(WKWindowFeatures *)features {
@@ -870,7 +867,7 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   self.darkAppearance=dark;[TLSourceWindowController applyPaletteToOpenWindows:[TLThemePalette paletteForPreference:dark ? TLThemePreferenceDark : TLThemePreferenceLight]];for(TLWebKitBrowserSession *session in self.sessions.allValues)session.webView.appearance=[NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   TLThemePalette *palette=[TLThemePalette paletteForPreference:dark ? TLThemePreferenceDark : TLThemePreferenceLight];
   for(NSAlert *alert in self.alerts)TLStyleBrowserPrompt(alert,palette);
-  for(TLWebKitBrowserSession *session in self.sessions.allValues)[session.passwordAutofill applyPalette:palette];
+  for(TLWebKitBrowserSession *session in self.sessions.allValues){[session.passwordAutofill applyPalette:palette];session.navigationCover.fillColor=palette.tabBackground;}
 }
 - (void)importCookies:(NSArray<NSDictionary *> *)cookies completion:(void (^)(NSUInteger,NSUInteger))completion {
   if(!self.persistentStore || self.shuttingDown){completion(0,cookies.count);return;}
@@ -1054,7 +1051,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   if(session.menuCleanup)session.menuCleanup();session.menuCleanup=nil;
   for(NSAlert *alert in self.alerts.copy)if(alert.window.sheetParent==session.originWindow)[session.originWindow endSheet:alert.window returnCode:NSAlertFirstButtonReturn];
   for(NSString *key in @[@"title",@"URL",@"canGoBack",@"canGoForward",@"loading",@"estimatedProgress",@"fullscreenState"])[session.webView removeObserver:self forKeyPath:key];
-  if(session.resizeObserver)[NSNotificationCenter.defaultCenter removeObserver:session.resizeObserver];session.resizeObserver=nil;
   session.titleHandler=nil;session.linkHandler=nil;session.URLHandler=nil;session.faviconHandler=nil;session.navigationHandler=nil;session.contextLinkHandler=nil;session.createTabHandler=nil;session.closeTabHandler=nil;session.findResultsChangedHandler=nil;session.documentStartedHandler=nil;session.topScrollEnded=nil;session.topColorChanged=nil;
   session.devToolsVisible=NO;if(session.devToolsVisibilityChangedHandler)session.devToolsVisibilityChangedHandler();session.devToolsVisibilityChangedHandler=nil;
   webView.navigationDelegate=nil;webView.UIDelegate=nil;

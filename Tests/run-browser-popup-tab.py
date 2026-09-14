@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import sys
 import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / 'build/BrowserPopupTabTests.app'
@@ -26,7 +27,8 @@ with (APP / 'Contents/Info.plist').open('wb') as file:
 subprocess.run(['codesign', '--force', '--sign', '-', str(APP)], check=True)
 class Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        data = b'<!doctype html><title>Popup destination</title><p>Popup destination fixture</p>'
+        if self.path == '/slow': time.sleep(2)
+        data = b'<!doctype html><title>Popup destination</title><style>a{position:absolute;left:16px;top:16px;padding:24px}</style><a href="/slow">Slow destination</a>'
         self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers(); self.wfile.write(data)
     def log_message(self, *_): pass
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
