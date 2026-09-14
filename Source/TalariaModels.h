@@ -96,6 +96,7 @@ NSString * _Nullable TLBrowserHistoryOrigin(NSURL *URL);
 @property (nonatomic, copy) NSString *icon;
 @property (nonatomic, copy) NSString *model;
 @property (nonatomic, copy) NSString *supportingModel;
+@property (nonatomic, copy) NSString *reasoningEffort;
 @property (nonatomic, copy) NSString *hermesSessionID;
 @property (nonatomic) NSInteger sourceAgentID;
 @property (nonatomic, copy) NSString *sourceSessionID;

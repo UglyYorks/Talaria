@@ -45,6 +45,7 @@
     _palette = palette;
     _model = @"";
     _supportingModel = @"";
+    _reasoningEffort = @"";
     _commands = @[];
     _trackingMenus = [NSMutableSet set];
     _inputHeight = palette.composerButtonHeight;
@@ -185,7 +186,7 @@
     if (!owner) return;
     owner.focusCheckPending = NO;
     if (owner.window.visible && !owner.window.keyWindow && !owner.window.attachedSheet &&
-        !owner.trackingMenus.count && !owner.showingSettings && !owner.sheetInteractionActive && !owner.captureInProgress) {
+        !owner.trackingMenus.count && !owner.showingSettings && !owner.settingsPopoverVisible && !owner.sheetInteractionActive && !owner.captureInProgress) {
       [owner dismiss];
     }
   });
@@ -347,7 +348,7 @@
 
 - (void)updateSelectionWindow {
   BOOL enabled = self.window.visible && !self.captureInProgress &&
-    !self.sheetInteractionActive && !self.window.attachedSheet && !self.trackingMenus.count && !self.showingSettings;
+    !self.sheetInteractionActive && !self.window.attachedSheet && !self.trackingMenus.count && !self.showingSettings && !self.settingsPopoverVisible;
   if (!enabled) { [self.selectionWindow orderOut:self]; return; }
   if (!self.selectionWindow) {
     NSPanel *panel = [[TLScreenRegionSelectionPanel alloc] initWithContentRect:NSZeroRect
@@ -459,6 +460,12 @@
   [self.messageInput setAttachmentURLs:@[] animated:NO];
   [self updateSuggestions];
   self.submissionHandler(text, files, allowAutomaticRouting);
+}
+
+- (void)setSettingsPopoverVisible:(BOOL)visible {
+  _settingsPopoverVisible = visible;
+  [self updateSelectionWindow];
+  if (!visible) [self focusMayHaveChanged:nil];
 }
 
 - (void)showSettings:(id)sender {

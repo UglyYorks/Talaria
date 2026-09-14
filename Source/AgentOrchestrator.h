@@ -46,6 +46,13 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
                               token:(NSString *)token
                          completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 
+- (void)selectModel:(NSString *)model reasoningEffort:(NSString *)reasoningEffort sessionID:(NSString *)sessionID
+           agentID:(NSInteger)agentID token:(NSString *)token completion:(TLAgentStreamCompletionHandler)completion;
+- (void)streamChatWithAgentID:(NSInteger)agentID requestID:(NSString *)requestID sessionID:(NSString *)sessionID
+                       token:(NSString *)token model:(NSString *)model reasoningEffort:(NSString *)reasoningEffort
+                    messages:(NSArray<TLChatMessage *> *)messages delta:(TLAgentStreamDeltaHandler)delta
+                  completion:(TLAgentStreamCompletionHandler)completion;
+- (void)fetchModelCatalogueWithAgentID:(NSInteger)agentID token:(NSString *)token completion:(TLAgentModelCatalogueHandler)completion;
 - (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID token:(NSString *)token
         completion:(TLAgentStreamCompletionHandler)completion;
 - (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID agentID:(NSInteger)agentID token:(NSString *)token

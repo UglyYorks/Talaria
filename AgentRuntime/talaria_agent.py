@@ -413,7 +413,7 @@ def stream_hermes_session(request, output=None, cancellation=None):
              ("payload" if isinstance(text, dict) else "text"): text}, output),
             cancellation=cancellation, approval_response=request.get("approval_response"),
             wait_for_previous_turn=request.get("wait_for_previous_turn") is True,
-            host_commands=bool(host_description))
+            host_commands=bool(host_description), reasoning_effort=trim(request.get("reasoning_effort")))
         cancellation.finish()
         if not cancellation.cancelled():
             emit({"type": "complete"}, output)
@@ -429,7 +429,10 @@ def select_hermes_model(request, output=None):
         error("Model and Hermes session are required to switch models.", output)
         return
     try:
-        tui_gateway(token, model).select_model(session_id, model)
+        if trim(request.get("reasoning_effort")):
+            tui_gateway(token, model).select_model(session_id, model, trim(request["reasoning_effort"]))
+        else:
+            tui_gateway(token, model).select_model(session_id, model)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError) as exc:
         error(f"Could not switch Hermes model: {exc}", output)

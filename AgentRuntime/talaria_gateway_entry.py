@@ -134,6 +134,8 @@ def main():
     register(entry.server)
     from hermes_providers import register as register_providers
     register_providers(entry.server)
+    from hermes_thinking import register as register_thinking
+    register_thinking(entry.server)
     register_plugins(entry.server)
     from hermes_notes import register as register_notes
     register_notes(entry.server, os.environ["HERMES_HOME"])
