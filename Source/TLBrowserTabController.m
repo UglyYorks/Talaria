@@ -150,7 +150,7 @@
   self.bottomBlur.palette = self.palette;
   self.bottomBlur.translatesAutoresizingMaskIntoConstraints = NO;
   [browserContentView addSubview:self.bottomBlur];
-  self.bottomBlurHeight = [self.bottomBlur.heightAnchor constraintEqualToConstant:[self footerHeight] + self.palette.radiusMedium];
+  self.bottomBlurHeight = [self.bottomBlur.heightAnchor constraintEqualToConstant:[self footerHeight] + self.palette.space5];
   [NSLayoutConstraint activateConstraints:@[
     [self.bottomBlur.leadingAnchor constraintEqualToAnchor:browserHostView.leadingAnchor],
     [self.bottomBlur.trailingAnchor constraintEqualToAnchor:browserHostView.trailingAnchor],
@@ -410,7 +410,7 @@
 }
 - (void)configureDocumentFooter {
   self.documentFooterContentSize = self.view.bounds.size;
-  self.bottomBlurHeight.constant = [self footerHeight] + self.palette.radiusMedium;
+  self.bottomBlurHeight.constant = [self footerHeight] + self.palette.space5;
   [self.browserService configureDocumentFooter:@{
     @"enabled":@YES, @"height":@([self footerHeight]),
     @"width":@(MAX(1,NSWidth(self.browserHostView.bounds))), @"fallbackColor":[TLBrowserContentColor CSSStringForColor:self.palette.tabBackground],

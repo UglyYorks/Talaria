@@ -34,7 +34,8 @@
   [coverage setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0] forKey:@"inputAVector"];
   [coverage setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1] forKey:@"inputBiasVector"];
   CGFloat width = NSWidth(self.bounds), height = NSHeight(self.bounds);
-  CGFloat radius = MIN(self.palette.radiusMedium, MIN(width / 2, height));
+  // Match the content host and split-pane top corners.
+  CGFloat radius = MIN(self.palette.space5, MIN(width / 2, height));
   // The center stays clear for one radius above the footer. Only the two
   // outer wedges extend upward, rounding the page's visible bottom corners.
   CGMutablePathRef path = CGPathCreateMutable();

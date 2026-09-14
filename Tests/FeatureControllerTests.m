@@ -1820,7 +1820,7 @@ static void TestBrowserExtendedLayout(void) {
         @"footer fits and retains editable text at minimum window width");
       if(width.doubleValue==1200) Check(fabs(NSMidX(input.frame)-NSMidX(controller.view.bounds))<0.5,
         @"address remains centered when there is room beside navigation");
-      Check(fabs(NSHeight(blur.frame)-[service.footerConfiguration[@"height"] doubleValue]-controller.palette.radiusMedium)<0.5,
+      Check(fabs(NSHeight(blur.frame)-[service.footerConfiguration[@"height"] doubleValue]-controller.palette.space5)<0.5,
         @"blur extends one corner radius above the footer without adding extra scroll range");
     }
     Check([controller.view.subviews indexOfObject:page] < [controller.view.subviews indexOfObject:blur] &&

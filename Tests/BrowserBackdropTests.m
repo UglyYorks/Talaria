@@ -63,8 +63,13 @@ static void Check(BOOL value, NSString *message) {
       Check(!CGPathContainsPoint(mask.path,NULL,CGPointMake(400,139),false) &&
         CGPathContainsPoint(mask.path,NULL,CGPointMake(0.01,139),false) &&
         CGPathContainsPoint(mask.path,NULL,CGPointMake(799.99,139),false) &&
-        CGPathContainsPoint(mask.path,NULL,CGPointMake(400,130),false),
+        CGPathContainsPoint(mask.path,NULL,CGPointMake(400,140-self.blur.palette.space5-1),false),
         @"inverse top corners leave the page center clear and blur the outer wedges");
+      CGFloat radius=self.blur.palette.space5;
+      CGFloat cornerX=radius*(1-M_SQRT1_2),cornerY=NSHeight(self.blur.bounds)-radius*M_SQRT1_2;
+      Check(CGPathContainsPoint(mask.path,NULL,CGPointMake(cornerX-0.1,cornerY),false) &&
+        !CGPathContainsPoint(mask.path,NULL,CGPointMake(cornerX+0.1,cornerY),false),
+        @"visible bottom corner follows the same radius as the content top corner");
       self.blur.needsLayout=YES;[self.blur layoutSubtreeIfNeeded];
       Check(self.blur.backgroundFilters.firstObject==filter,@"unchanged layout preserves the blur filter graph");
       self.blur.frame=NSMakeRect(0,0,800,120);[self.blur layoutSubtreeIfNeeded];
