@@ -1,3 +1,4 @@
+#import "TLDevelopmentMode.h"
 #import "AgentVMService.h"
 #import "TLAgentVMLock.h"
 #import "TLFolderMounts.h"
@@ -36,6 +37,7 @@ static NSString *TLAgentTrim(NSString *value) {
 @implementation TLAgentVMService
 
 + (NSURL *)defaultAgentsDirectoryURL {
+  if (TLDevelopmentDataURL()) return [TLDevelopmentDataURL() URLByAppendingPathComponent:@"Agents" isDirectory:YES];
   NSURL *supportURL = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                             inDomains:NSUserDomainMask] firstObject];
   return [[supportURL URLByAppendingPathComponent:@"com.talaria.chat" isDirectory:YES]

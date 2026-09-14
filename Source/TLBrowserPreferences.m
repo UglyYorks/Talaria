@@ -1,3 +1,4 @@
+#import "TLDevelopmentMode.h"
 #import "TLBrowserPreferences.h"
 #import "WebKitBrowserController.h"
 #import "WebKitBrowserSettings.h"
@@ -25,6 +26,7 @@ static NSError *TLBrowserPreferenceError(NSString *message) {
   return preferences;
 }
 + (NSURL *)profileURL {
+  if (TLDevelopmentDataURL()) return [TLDevelopmentDataURL() URLByAppendingPathComponent:@"WebKit" isDirectory:YES];
   NSString *override = NSProcessInfo.processInfo.environment[@"TL_WEBKIT_PROFILE_DIR"];
   if (override.isAbsolutePath) return [NSURL fileURLWithPath:override.stringByStandardizingPath isDirectory:YES];
   return [[[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject

@@ -1,3 +1,4 @@
+#import "TLDevelopmentMode.h"
 #import "TLCredentialStore.h"
 #import <Security/Security.h>
 #import "TLCredentialHelperProtocol.h"
@@ -77,7 +78,8 @@ static BOOL TLCheckKeychainStatus(OSStatus status, NSError **error) {
 }
 
 - (instancetype)init {
-  return [self initWithService:@"com.talaria.chat.credentials"];
+  return [self initWithService:TLDevelopmentDataURL()
+    ? [TLInstanceBundleIdentifier() stringByAppendingString:@".credentials"] : @"com.talaria.chat.credentials"];
 }
 
 - (instancetype)initWithService:(NSString *)service {
