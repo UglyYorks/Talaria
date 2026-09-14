@@ -98,6 +98,9 @@ static void TLStyleBrowserPrompt(NSAlert *alert, TLThemePalette *palette) {
 @property (nonatomic) NSArray<NSNumber *> *lastNavigationState;
 @end
 @implementation TLWebKitBrowserSession
+- (BOOL)pageAppearanceReady {
+  return !self.closed && self.documentGeneration > 0 && !self.awaitingNavigationCommit && !self.navigationCover;
+}
 @end
 
 @class TLWebKitDownloadTransfer;

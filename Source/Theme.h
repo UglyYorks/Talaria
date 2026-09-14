@@ -55,6 +55,7 @@ CGColorRef TLCGColor(NSColor *color);
 @property (nonatomic, strong) NSColor *taskStatusPillBorder;
 @property (nonatomic, strong) NSColor *topbarBorder;
 @property (nonatomic, strong) NSColor *browserLoadingProgress;
+@property (nonatomic, strong) NSColor *browserLoadingProgressEnd;
 @property (nonatomic) CGFloat browserLoadingLineWidth;
 @property (nonatomic) NSTimeInterval browserLoadingProgressDuration;
 @property (nonatomic) NSTimeInterval browserLoadingCompletionHoldDuration;

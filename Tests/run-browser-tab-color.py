@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import sys
 import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / 'build/BrowserTabColorTests.app'
@@ -26,6 +27,11 @@ with (APP / 'Contents/Info.plist').open('wb') as file:
 subprocess.run(['codesign', '--force', '--sign', '-', str(APP)], check=True)
 class Fixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith('/render-delay.css'):
+            time.sleep(1.2)
+            self.send_response(200); self.send_header('Content-Type', 'text/css'); self.end_headers()
+            self.wfile.write(b'/* Hold the first page paint while native sampling runs. */')
+            return
         data = b'''<!doctype html><title>Tab color fixture</title><style>
         html,body{margin:0}body{height:3000px;background:repeating-linear-gradient(90deg,#064a88 0 6px,#39b9b0 6px 12px)}
         h1{margin:0;padding:60px;color:white}p{background:white;padding:40px}</style>
@@ -40,6 +46,10 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             for(let i=0;i<bytes.length;i+=65536)crypto.getRandomValues(bytes.subarray(i,Math.min(i+65536,bytes.length)));
             for(let i=3;i<bytes.length;i+=4)bytes[i]=255;
             ctx.putImageData(pixels,0,0);ctx.fillStyle='rgb(14,47,126)';ctx.fillRect(0,0,c.width,32);</script>'''
+        if self.path.startswith('/white-page'):
+            data = b'<!doctype html><style>html,body{margin:0;background:white}</style><p>White page</p>'
+        else:
+            data = data.replace(b'<title>', b'<link rel="stylesheet" href="/render-delay.css"><title>', 1)
         self.send_response(200); self.send_header('Content-Type', 'text/html'); self.end_headers(); self.wfile.write(data)
     def log_message(self, *_): pass
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)

@@ -19,6 +19,8 @@ typedef void (^TLWebKitBrowserNavigationHandler)(BOOL canGoBack, BOOL canGoForwa
 @property (nonatomic, copy, readonly) NSString *initialURLString;
 @property (nonatomic, readonly) NSInteger browserIdentifier;
 @property (nonatomic, readonly) NSUInteger documentGeneration;
+// The current document has reached presentation, beyond the navigation cover.
+@property (nonatomic, readonly) BOOL pageAppearanceReady;
 @property (nonatomic, readonly, getter=isFullscreen) BOOL fullscreen;
 @property (nonatomic, readonly) BOOL devToolsVisible;
 @property (nonatomic, copy, nullable) dispatch_block_t devToolsVisibilityChangedHandler;

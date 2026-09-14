@@ -1908,6 +1908,21 @@ static void TestBrowserExtendedLayout(void) {
     NSWindow *window = HostController(controller);
     [controller startInWindow:window];
     Check([controller.headerContentColor isEqual:savedColor], @"starting page loading does not erase restored color");
+    TLWebKitBrowserSession *session = service.overlaySession;
+    session.topColorChanged(@[@255, @255, @255]);
+    Check([controller.headerContentColor isEqual:savedColor], @"uncommitted blank page cannot replace the restored tab color");
+    [session setValue:@1 forKey:@"documentGeneration"];
+    [session setValue:@YES forKey:@"awaitingNavigationCommit"];
+    session.topColorChanged(@[@255, @255, @255]);
+    Check([controller.headerContentColor isEqual:savedColor], @"provisional navigation keeps the previous tab color");
+    [session setValue:@NO forKey:@"awaitingNavigationCommit"];
+    [session setValue:[NSView new] forKey:@"navigationCover"];
+    session.topColorChanged(@[@255, @255, @255]);
+    Check([controller.headerContentColor isEqual:savedColor], @"committed but unpainted page cannot turn the tab white");
+    [session setValue:nil forKey:@"navigationCover"];
+    session.topColorChanged(@[@255, @255, @255]);
+    Check([controller.headerContentColor isEqual:[TLBrowserContentColor colorForRGB:@[@255,@255,@255]]], @"a presented white page can set a white tab color");
+
     NSTimer *timer = [controller valueForKey:@"pageAppearanceTimer"];
     NSLayoutConstraint *bottom = [controller valueForKey:@"browserHostBottomConstraint"];
     TLBrowserAddressInput *input = [controller valueForKey:@"browserAddressInput"];
@@ -1951,11 +1966,11 @@ static void TestBrowserExtendedLayout(void) {
     webView.reportedLoading = YES;
     [service updateSession:service.overlaySession];
     Check(controller.loadingProgress == 0.1, @"reload resets progress rather than preserving the previous load");
-    CAShapeLayer *ink = [input valueForKey:@"loadingLine"];
-    Check(!ink.hidden && fabs(ink.strokeEnd - 0.1) < 0.0001, @"browser progress is drawn in its own input");
+    CAShapeLayer *ink = [[controller valueForKey:@"contentEdge"] valueForKey:@"loadingLine"];
+    Check(!ink.hidden && fabs(ink.strokeEnd - 0.1) < 0.0001, @"browser progress is drawn beneath the visible content");
     webView.reportedProgress = 0.7;
     [service updateSession:service.overlaySession];
-    Check(fabs(ink.strokeEnd - 0.7) < 0.0001, @"WebKit progress updates the input line");
+    Check(fabs(ink.strokeEnd - 0.7) < 0.0001, @"WebKit progress updates the content edge line");
 
     for (NSNumber *inspecting in @[@NO, @YES, @NO]) {
       [service.overlaySession setValue:inspecting forKey:@"devToolsVisible"];
@@ -4331,6 +4346,11 @@ int main(void) {
       TestThemedButtonRenderedColors();
       TestDefaultBrowserSettings();
       NSLog(@"Default browser settings tests passed");
+      return 0;
+    }
+    if (getenv("TL_TEST_BROWSER_APPEARANCE_ONLY")) {
+      TestBrowserExtendedLayout();
+      NSLog(@"Browser appearance tests passed");
       return 0;
     }
     if (getenv("TL_TEST_BROWSER_EXTENDED_ONLY")) {
