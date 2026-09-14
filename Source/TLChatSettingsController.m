@@ -1,5 +1,5 @@
 #import "TLChatSettingsController.h"
-#import "design_system/UIComponents.h"
+#import "design_system/TLThemedButton.h"
 #import "design_system/TLModelDropdown.h"
 #import "design_system/TLThinkingSlider.h"
 
@@ -50,7 +50,7 @@
 }
 - (void)loadView {
   TLThemePalette *p = self.palette;
-  self.view = [[TLTokenView alloc] initWithFrame:NSMakeRect(0, 0, p.settingsSheetWidth / 2, p.fieldHeight * 12)];
+  self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, p.settingsSheetWidth / 2, p.fieldHeight * 12)];
   self.modelDropdown = [TLModelDropdown new];
   self.modelDropdown.selectedModelID = self.model;
   self.modelDropdown.accessibilityLabel = @"Large model";
@@ -241,7 +241,6 @@
   if (!self.isViewLoaded) return;
   self.view.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   self.popover.appearance = self.view.appearance;
-  ((TLTokenView *)self.view).fillColor = palette.tabBackground;
   NSMutableArray<NSView *> *views = [NSMutableArray arrayWithObject:self.view];
   while (views.count) {
     NSView *view = views.lastObject; [views removeLastObject]; [views addObjectsFromArray:view.subviews];

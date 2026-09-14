@@ -1,5 +1,4 @@
 #import "TLBookmarkEditorController.h"
-#import "design_system/UIComponents.h"
 #import "design_system/TLEmojiPicker.h"
 #import "design_system/TLThemedButton.h"
 
@@ -25,7 +24,7 @@
 
 - (void)loadView {
   TLThemePalette *p = self.palette;
-  self.view = [[TLTokenView alloc] initWithFrame:NSMakeRect(0, 0, p.settingsSheetWidth / 2, p.fieldHeight * 6)];
+  self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, p.settingsSheetWidth / 2, p.fieldHeight * 6)];
   self.heading = [NSTextField labelWithString:@"Add bookmark"];
   self.nameField = [NSTextField textFieldWithString:self.bookmark.name];
   self.nameField.placeholderString = @"Name";
@@ -134,7 +133,6 @@
 - (void)applyPalette:(TLThemePalette *)palette {
   self.palette = palette;
   if (!self.isViewLoaded) return;
-  ((TLTokenView *)self.view).fillColor = palette.controlSurface;
   self.view.appearance = [NSAppearance appearanceNamed:palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   self.heading.font = palette.labelFont;
   self.heading.textColor = palette.controlText;
