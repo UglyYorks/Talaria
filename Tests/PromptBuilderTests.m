@@ -1316,6 +1316,8 @@ static void TestBrowserConversation(void) {
     finishReading = completion;
   }];
   TLAssertTrue(started && conversation.busy && conversation.loading, @"browser pane loads during page extraction");
+  TLAssertEqualObjects(conversation.activityText, @"Reading page…", @"reports page extraction before model work begins");
+  TLAssertEqualObjects(conversation.transcript, (@[@{@"role":@"user", @"content":@"Summarize this page"}]), @"submitted user prompt is visible before page extraction finishes");
   TLAssertTrue(conversation.collapsed, @"request starts with only its status header visible");
   TLAssertEqualObjects(conversation.title, @"💬 New chat", @"pending identity never displays the raw prompt");
   [database saveChatTitle:@"Article overview" chatID:conversation.chat.chatID error:nil];
@@ -1331,6 +1333,7 @@ static void TestBrowserConversation(void) {
   TLAssertTrue(!conversation.busy && !conversation.loading && conversation.minimized, @"completion does not reopen a minimized pane");
   TLAssertTrue(!conversation.collapsed, @"completed answer is expanded when restored");
   TLAssertTrue(conversation.responseCount == 1, @"counts completed AI replies");
+  TLAssertEqualObjects(conversation.activityText, @"", @"completed work has no stale activity status");
   TLAssertEqualObjects(conversation.markdown, @"assistant reply", @"renders assistant response without injected page text");
   TLAssertEqualObjects(conversation.title, @"📰 Article overview", @"browser pane shows generated emoji and title");
   TLAssertTrue([client.capturedMessages.firstObject.content containsString:@"untrusted reference material"], @"page context explicitly isolates untrusted text");
@@ -1344,6 +1347,8 @@ static void TestBrowserConversation(void) {
     completion(@{@"text":@"Updated page"}, nil);
   }];
   TLAssertTrue(conversation.responseCount == 2 && [database listChats:nil].count == 1, @"follow-ups reuse the conversation");
+  TLAssertEqualObjects([conversation.transcript valueForKey:@"role"], (@[@"user", @"assistant", @"user", @"assistant"]), @"popup transcript keeps both user turns in chronological order");
+  TLAssertEqualObjects(conversation.transcript[2][@"content"], @"Follow up", @"popup transcript includes the follow-up without page context");
   TLAssertTrue(!conversation.collapsed, @"completion automatically expands an undismissed response");
   TLAssertEqualObjects(conversation.title, @"📰 Article overview", @"follow-up retains generated identity while naming is pending");
   TLAssertTrue(client.capturedMessages.count == 1 && !conversation.minimized, @"follow-up relies on Hermes session history and opens pane");

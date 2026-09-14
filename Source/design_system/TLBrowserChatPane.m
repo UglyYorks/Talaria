@@ -4,6 +4,62 @@
 #import "TLToolActivityView.h"
 #import <QuartzCore/QuartzCore.h>
 
+// Uses the same native bubble and typography as the main chat transcript.
+@interface TLBrowserUserMessageRow : NSView
+@property TLMessageBubbleView *bubble;
+@property NSTextField *label;
+@property TLThemePalette *palette;
+@property NSLayoutConstraint *bubbleWidth;
+- (instancetype)initWithText:(NSString *)text palette:(TLThemePalette *)palette;
+@end
+@implementation TLBrowserUserMessageRow
+- (instancetype)initWithText:(NSString *)text palette:(TLThemePalette *)palette {
+  if ((self = [super initWithFrame:NSZeroRect])) {
+    self.translatesAutoresizingMaskIntoConstraints = NO;
+    _palette = palette;
+    _bubble = [TLMessageBubbleView new];
+    _bubble.translatesAutoresizingMaskIntoConstraints = NO;
+    _bubble.palette = palette;
+    _bubble.drawsOutgoingTail = YES;
+    _bubble.fillColor = palette.userMessageSurface;
+    _bubble.borderColor = palette.transparentSurface;
+    _bubble.borderEdges = TLBorderEdgeNone;
+    _bubble.cornerRadius = palette.userMessageCornerRadius;
+    _label = [NSTextField wrappingLabelWithString:text];
+    _label.translatesAutoresizingMaskIntoConstraints = NO;
+    _label.font = palette.messageBodyFont;
+    _label.textColor = palette.userMessageText;
+    _label.selectable = YES;
+    _label.maximumNumberOfLines = 0;
+    [_label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_bubble addSubview:_label];
+    [self addSubview:_bubble];
+    _bubbleWidth = [_bubble.widthAnchor constraintEqualToConstant:palette.userMessageMinWidth];
+    _bubbleWidth.priority = NSLayoutPriorityWindowSizeStayPut - 1;
+    [NSLayoutConstraint activateConstraints:@[
+      _bubbleWidth,
+      [_bubble.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+      [_bubble.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.leadingAnchor],
+      [_bubble.topAnchor constraintEqualToAnchor:self.topAnchor],
+      [_bubble.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+      [_label.leadingAnchor constraintEqualToAnchor:_bubble.leadingAnchor constant:palette.userMessageHorizontalPadding],
+      [_label.trailingAnchor constraintEqualToAnchor:_bubble.trailingAnchor constant:-palette.userMessageHorizontalPadding],
+      [_label.topAnchor constraintEqualToAnchor:_bubble.topAnchor constant:palette.userMessageVerticalPadding],
+      [_label.bottomAnchor constraintEqualToAnchor:_bubble.bottomAnchor constant:-(palette.userMessageVerticalPadding + palette.userMessageTailHeight)],
+    ]];
+  }
+  return self;
+}
+- (void)layout {
+  CGFloat maximum = MAX(self.palette.userMessageMinWidth, NSWidth(self.bounds) * self.palette.userMessageMaxWidthMultiplier);
+  CGFloat natural = ceil([self.label.stringValue sizeWithAttributes:@{NSFontAttributeName:self.label.font}].width);
+  CGFloat width = MIN(maximum, MAX(self.palette.userMessageMinWidth, natural + self.palette.userMessageHorizontalPadding * 2));
+  self.bubbleWidth.constant = width;
+  self.label.preferredMaxLayoutWidth = MAX(1, width - self.palette.userMessageHorizontalPadding * 2);
+  [super layout];
+}
+@end
+
 @interface TLBrowserChatPane ()
 @property NSDictionary *approvalRequest;
 @property NSArray<TLQuestionRequest *> *questions;
@@ -11,6 +67,9 @@
 @property NSArray<NSDictionary *> *questionPresentations;
 @property TLApprovalCardView *approvalCard;
 @property NSStackView *contentStack;
+@property NSStackView *transcriptStack;
+@property NSArray<NSDictionary<NSString *, NSString *> *> *transcript;
+@property NSMutableArray<NSView *> *transcriptViews;
 @property TLToolActivityView *activityView;
 @property (nonatomic, readwrite) NSButton *minimizeButton;
 @property (nonatomic, readwrite) NSButton *closeButton;
@@ -35,7 +94,9 @@
   if ((self = [super initWithFrame:frame])) {
     self.translatesAutoresizingMaskIntoConstraints = NO;
     [self setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [self setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow - 1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    // Preserve the preferred pill width over the title's hugging constraint,
+    // while still allowing the input and narrow window to constrain it.
+    [self setContentCompressionResistancePriority:NSLayoutPriorityWindowSizeStayPut - 2 forOrientation:NSLayoutConstraintOrientationHorizontal];
     TLThemePalette *palette = self.palette ?: [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     TLHoverIconButton *button = [[TLHoverIconButton alloc] init];
     button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -178,6 +239,17 @@
   };
   self.markdownView = [self.renderer viewForMarkdown:self.markdown ?: @"" textColor:palette.assistantMessageText baseFont:palette.messageBodyFont];
   self.markdownView.hidden = !self.markdown.length;
+  self.transcriptStack = [NSStackView new];
+  self.transcriptStack.translatesAutoresizingMaskIntoConstraints = NO;
+  self.transcriptStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  self.transcriptStack.alignment = NSLayoutAttributeWidth;
+  self.transcriptStack.spacing = palette.messageVerticalSpacing;
+  [self.contentStack addArrangedSubview:self.transcriptStack];
+  [self.transcriptStack.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor].active = YES;
+  NSArray *transcript = self.transcript;
+  self.transcript = nil;
+  self.transcriptViews = [NSMutableArray array];
+  [self showTranscript:transcript ?: @[] errorText:self.markdown loading:self.loading];
   [self.contentStack addArrangedSubview:self.activityView];
   [self.contentStack addArrangedSubview:self.markdownView];
   [self.markdownView.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor].active = YES;
@@ -235,18 +307,65 @@
 }
 - (void)setTitle:(NSString *)title {
   _title = [title copy];
-  self.titleLabel.stringValue = title.length ? title : @"💬 New chat";
+  self.titleLabel.stringValue = self.busy && self.collapsed
+    ? (self.activityText.length ? self.activityText : @"Thinking…") : (title.length ? title : @"💬 New chat");
   self.titleLabel.toolTip = self.titleLabel.stringValue;
   [self invalidateIntrinsicContentSize];
 }
+- (void)setActivityText:(NSString *)activityText {
+  _activityText = [activityText copy];
+  self.title = self.title;
+  [self updateHeaderSpinner];
+}
+- (void)showTranscript:(NSArray<NSDictionary<NSString *,NSString *> *> *)messages errorText:(NSString *)errorText loading:(BOOL)loading {
+  BOOL followsBottom = !self.transcript.count || self.loading ||
+    NSMaxY(self.scrollView.documentVisibleRect) >= NSHeight(self.document.bounds) - self.palette.space8;
+  BOOL rebuild = messages.count < self.transcript.count;
+  for (NSUInteger index = 0; index < MIN(messages.count, self.transcript.count); index++) {
+    if (![messages[index][@"role"] isEqual:self.transcript[index][@"role"]]) rebuild = YES;
+  }
+  if (rebuild) {
+    for (NSView *row in self.transcriptViews) { [self.transcriptStack removeArrangedSubview:row]; [row removeFromSuperview]; }
+    [self.transcriptViews removeAllObjects];
+  }
+  for (NSUInteger index = 0; index < messages.count; index++) {
+    NSDictionary *message = messages[index];
+    BOOL user = [message[@"role"] isEqual:@"user"];
+    NSView *view = index < self.transcriptViews.count ? self.transcriptViews[index] : nil;
+    if (!view) {
+      view = user ? [[TLBrowserUserMessageRow alloc] initWithText:message[@"content"] palette:self.palette] :
+        [self.renderer viewForMarkdown:message[@"content"] textColor:self.palette.assistantMessageText baseFont:self.palette.messageBodyFont];
+      [self.transcriptViews addObject:view];
+      [self.transcriptStack addArrangedSubview:view];
+      [view.widthAnchor constraintEqualToAnchor:self.transcriptStack.widthAnchor].active = YES;
+    } else if (user) {
+      NSTextField *label = ((TLBrowserUserMessageRow *)view).label;
+      if (![label.stringValue isEqual:message[@"content"]]) {
+        label.stringValue = message[@"content"];
+        view.needsLayout = YES;
+      }
+    } else {
+      [self.renderer updateMarkdown:message[@"content"] inView:view];
+    }
+  }
+  self.transcript = [messages copy];
+  self.transcriptStack.hidden = !messages.count;
+  [self showMarkdown:errorText loading:loading];
+  self.followsBottom = followsBottom;
+  if (followsBottom) {
+    [self.document layoutSubtreeIfNeeded];
+    [self.scrollView.contentView scrollToPoint:NSMakePoint(0, MAX(0, NSHeight(self.document.bounds) - NSHeight(self.scrollView.contentView.bounds)))];
+  }
+}
+- (BOOL)showsEmptyLoader { return self.loading && !self.transcript.count; }
 - (void)showMarkdown:(NSString *)markdown loading:(BOOL)loading {
-  self.followsBottom = self.loading || !self.markdown.length ||
+  self.followsBottom = self.loading || (!self.markdown.length && !self.transcript.count) ||
     NSMaxY(self.scrollView.documentVisibleRect) >= NSHeight(self.document.bounds) - self.palette.space8;
   self.markdown = markdown ?: @"";
   self.markdownView.hidden = !self.markdown.length;
   self.loading = loading;
-  self.scrollView.hidden = self.collapsed || loading;
-  if (loading && !self.hidden && !self.collapsed) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];
+  self.scrollView.hidden = self.collapsed || self.showsEmptyLoader;
+  if (self.showsEmptyLoader && !self.hidden && !self.collapsed) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];
   [self updateHeaderSpinner];
   [self.renderer updateMarkdown:self.markdown inView:self.markdownView];
 }
@@ -254,20 +373,20 @@
   [super setHidden:hidden];
   [self updateHeaderSpinner];
   if (hidden) [self.spinner stopAnimation:nil];
-  else if (self.loading && !self.collapsed) [self.spinner startAnimation:nil];
+  else if (self.showsEmptyLoader && !self.collapsed) [self.spinner startAnimation:nil];
 }
 
 - (void)setCollapsed:(BOOL)collapsed {
   _collapsed = collapsed;
   [self updateCornerRadius];
   [self invalidateIntrinsicContentSize];
-  self.scrollView.hidden = collapsed || self.loading;
+  self.scrollView.hidden = collapsed || self.showsEmptyLoader;
   self.minimizeButton.image = [NSImage imageWithSystemSymbolName:collapsed ? @"chevron.up" : @"chevron.down"
     accessibilityDescription:collapsed ? @"Expand chat" : @"Collapse chat"];
   self.minimizeButton.toolTip = collapsed ? @"Expand chat" : @"Collapse chat";
   self.title = self.title;
   if (collapsed) [self.spinner stopAnimation:nil];
-  else if (self.loading && !self.hidden) [self.spinner startAnimation:nil];
+  else if (self.showsEmptyLoader && !self.hidden) [self.spinner startAnimation:nil];
 }
 - (void)setBusy:(BOOL)busy {
   _busy = busy;
@@ -276,9 +395,10 @@
 }
 - (NSSize)intrinsicContentSize {
   if (!self.collapsed) return NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
-  CGFloat width = self.titleLeading.constant + self.titleLabel.intrinsicContentSize.width +
+  CGFloat titleWidth = [self.titleLabel.stringValue sizeWithAttributes:@{NSFontAttributeName:self.titleLabel.font ?: self.palette.labelFont}].width;
+  CGFloat width = self.titleLeading.constant + titleWidth +
     self.palette.space4 * 2 + self.palette.browserToolbarButtonSize * 3;
-  return NSMakeSize(ceil(width), NSViewNoIntrinsicMetric);
+  return NSMakeSize(MAX(self.palette.browserPromptWidth, ceil(width)), NSViewNoIntrinsicMetric);
 }
 - (void)updateCornerRadius {
   self.cornerRadius = self.collapsed ? (self.palette.browserToolbarButtonSize + self.palette.space4 * 2) / 2 : self.palette.messageInputCornerRadius;
@@ -286,8 +406,8 @@
 - (void)updateHeaderSpinner {
   BOOL working = self.busy || self.loading;
   self.headerSpinner.hidden = !working;
-  self.headerSpinner.accessibilityLabel = @"Working on your request";
-  self.headerSpinner.toolTip = @"Working on your request…";
+  self.headerSpinner.accessibilityLabel = self.activityText.length ? self.activityText : @"Thinking…";
+  self.headerSpinner.toolTip = self.headerSpinner.accessibilityLabel;
   self.titleLeading.constant = self.palette.space8 + (working ? self.palette.space8 + self.palette.space4 : 0);
   [self invalidateIntrinsicContentSize];
   if (working && !self.hidden) [self.headerSpinner startAnimation:nil];

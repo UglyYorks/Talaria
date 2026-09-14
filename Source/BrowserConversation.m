@@ -12,6 +12,7 @@
 @property (nonatomic, strong, readwrite) TLAssistantTurnResult *lastTurnResult;
 @property (nonatomic, copy, readwrite) NSString *errorText;
 @property NSUInteger turnStart;
+@property (nonatomic, copy) NSString *pendingPrompt;
 @end
 
 @implementation TLBrowserConversation
@@ -37,6 +38,14 @@
 - (void)refreshChatIdentity {
   self.chat = [self.database chatWithID:self.chat.chatID error:nil] ?: self.chat;
   if (self.changeHandler) self.changeHandler();
+}
+- (NSString *)activityText {
+  if (!self.busy) return @"";
+  if (self.pendingApproval) return @"Waiting for approval…";
+  for (TLQuestionRequest *question in self.questions) if (question.pending) return @"Waiting for your answer…";
+  if (self.messages.count <= self.turnStart) return @"Reading page…";
+  TLChatMessage *message = self.messages.lastObject;
+  return message.thinkingActive || !message.content.length ? @"Thinking…" : @"Writing response…";
 }
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)toolActivities {
   return self.messages.count > self.turnStart ? self.messages.lastObject.toolActivities : @[];
@@ -77,6 +86,19 @@
   }
   return YES;
 }
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)transcript {
+  NSMutableArray *entries = [NSMutableArray array];
+  for (TLChatMessage *message in self.messages) {
+    if (message.content.length && ([message.role isEqual:TLRoleUser] || [message.role isEqual:TLRoleAssistant])) {
+      [entries addObject:@{@"role":message.role, @"content":[message.content copy]}];
+    }
+  }
+  // Page extraction happens before the runner appends the durable user message.
+  if (self.pendingPrompt.length && self.messages.count == self.turnStart) {
+    [entries addObject:@{@"role":TLRoleUser, @"content":self.pendingPrompt}];
+  }
+  return entries;
+}
 - (NSString *)markdown {
   NSMutableArray *responses = [NSMutableArray array];
   for (TLChatMessage *message in self.messages) {
@@ -90,6 +112,7 @@
   // NSTextView.string can alias mutable text storage, which the address bar resets
   // to the page URL before asynchronous extraction completes.
   NSString *submittedPrompt = [prompt copy];
+  self.pendingPrompt = submittedPrompt;
   self.busy = YES;
   self.minimized = NO;
   self.collapsed = YES;

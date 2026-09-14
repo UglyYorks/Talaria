@@ -10,6 +10,7 @@
 #import "InputSuggestions.h"
 #import "UIComponents.h"
 #import "design_system/TLBrowserChatPane.h"
+#import "design_system/TLToolStatusPill.h"
 #import "design_system/TLFindBar.h"
 
 @interface TLBrowserTabController ()
@@ -653,6 +654,16 @@
   self.browserChatPane.splitButton.enabled = self.splitConversationHandler != nil && conversation.chat != nil;
   [self.browserChatPane setPresented:!conversation.minimized animated:YES];
   self.browserChatPane.title = conversation.title;
+  NSString *activityText = conversation.activityText;
+  if (conversation.busy) {
+    for (NSDictionary *activity in conversation.toolActivities.reverseObjectEnumerator) {
+      if ([@[@"preparing", @"running"] containsObject:activity[@"state"]]) {
+        activityText = [[TLToolStatusPill labelForToolName:activity[@"name"] ?: @""] stringByAppendingString:@"…"];
+        break;
+      }
+    }
+  }
+  self.browserChatPane.activityText = activityText;
   __weak typeof(self) weakSelf = self;
   self.browserChatPane.approvalHandler = ^BOOL(NSString *requestID, NSString *choice) {
     TLBrowserTabController *controller = weakSelf;
@@ -664,7 +675,7 @@
   [self.browserChatPane showApprovalRequest:conversation.pendingApproval];
   [self.browserChatPane showQuestions:conversation.questions];
   [self.browserChatPane showToolActivities:conversation.toolActivities];
-  [self.browserChatPane showMarkdown:conversation.markdown loading:conversation.loading];
+  [self.browserChatPane showTranscript:conversation.transcript errorText:conversation.errorText loading:conversation.loading];
   self.browserAddressInput.chatVisible = conversation.minimized;
   self.browserAddressInput.responseCount = conversation.responseCount;
 }

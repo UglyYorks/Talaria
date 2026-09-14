@@ -1838,9 +1838,35 @@ static void TestBrowserPromptPresentation(void) {
   TLBrowserConversation *conversation = [browser valueForKey:@"browserConversation"];
   [window.contentView layoutSubtreeIfNeeded];
   Check(conversation.busy && pane.collapsed && pane.presented && pane.splitButton.enabled, @"page extraction shows a compact status with split available");
+  NSTextField *statusLabel = [pane valueForKey:@"titleLabel"];
+  Check([statusLabel.stringValue isEqual:@"Reading page…"], @"pill reports page extraction");
+  TLChatMessage *activityMessage = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
+  [conversation.messages addObject:activityMessage];
+  [browser updateBrowserChat];
+  Check([statusLabel.stringValue isEqual:@"Thinking…"], @"pill reports thinking before answer text arrives");
+  activityMessage.toolActivities = @[@{@"name":@"web_search", @"state":@"running"}];
+  [browser updateBrowserChat];
+  Check([statusLabel.stringValue isEqual:@"Searching…"], @"pill reports the active search tool");
+  activityMessage.toolActivities = @[@{@"name":@"web_search", @"state":@"completed"}];
+  [browser updateBrowserChat];
+  Check([statusLabel.stringValue isEqual:@"Thinking…"], @"completed tools do not leave a stale searching status");
+  activityMessage.content = @"Here is the answer";
+  [browser updateBrowserChat];
+  Check([statusLabel.stringValue isEqual:@"Writing response…"], @"pill reports streamed answer writing");
+  [conversation.messages removeAllObjects];
+  [browser updateBrowserChat];
   Check(NSWidth(pane.frame) < NSWidth(input.frame) && fabs(NSMidX(pane.frame) - NSMidX(input.frame)) < 1,
     @"working pill fits its content and is centered above the address bar");
   Check(fabs(pane.cornerRadius - NSHeight(pane.frame) / 2) < 1, @"compact status has fully rounded pill ends");
+  pane.title = @"👕 What to wear in Tokyo";
+  pane.busy = NO;
+  [pane showMarkdown:@"" loading:NO];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSTextField *pillTitle = [pane valueForKey:@"titleLabel"];
+  CGFloat fullTitleWidth = [pillTitle.stringValue sizeWithAttributes:@{NSFontAttributeName:pillTitle.font}].width;
+  Check(NSWidth(pane.frame) >= browser.palette.browserPromptWidth && NSWidth(pillTitle.frame) >= fullTitleWidth - 1,
+    @"compact named chat keeps a comfortable width and shows its full title when space is available");
+  Check(fabs(NSMidX(pane.frame) - NSMidX(input.frame)) < 1, @"wider named pill stays centered above input");
   Check(NSHeight(pane.frame) == browser.palette.browserToolbarButtonSize + browser.palette.space4 * 2, @"status occupies only one header above the address input");
   window.minSize = NSMakeSize(200, 400);
   window.contentMinSize = NSMakeSize(200, 400);
@@ -1857,6 +1883,7 @@ static void TestBrowserPromptPresentation(void) {
   service.pageCompletion(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Page changed"}]);
   service.pageCompletion = nil;
   Check(!pane.collapsed && pane.presented && [conversation.markdown containsString:@"Page changed"], @"extraction failure auto-expands with a useful error");
+  [conversation.messages addObject:[TLChatMessage messageWithRole:TLRoleUser content:@"What should I wear in Tokyo?" thinking:nil]];
   [conversation.messages addObject:[TLChatMessage messageWithRole:TLRoleAssistant
     content:@"Based on the forecast on your page, pack for **warm, humid days**, cooler evenings, and frequent rain in Tokyo.\n\n- Light, breathable tops\n- A thin cardigan\n- A compact umbrella" thinking:nil]];
   [browser updateBrowserChat];
@@ -4355,7 +4382,7 @@ static void TestLiveThinkingPresentation(void) {
     [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
     if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
       Check(![mask.locations isEqual:locations], @"shimmer highlight moves across the text");
-    Check([pill.accessibilityLabel isEqual:@"Browsing web"], @"web tool gets readable activity text");
+    Check([pill.accessibilityLabel isEqual:@"Searching"], @"web search gets readable activity text");
     Check([[[pill valueForKey:@"avatarLabel"] stringValue] isEqual:@"🦊"], @"pill uses this chat's agent avatar");
     NSRect pillFrame = [pill convertRect:pill.bounds toView:workspace];
     NSRect inputFrame = [chat.messageInput convertRect:chat.messageInput.bounds toView:workspace];

@@ -9,7 +9,9 @@ typedef void (^TLBrowserPageReader)(void (^completion)(NSDictionary *_Nullable p
 @property (nonatomic, readonly) BOOL loading;
 @property (nonatomic, readonly) NSUInteger responseCount;
 @property (nonatomic, copy, readonly) NSString *markdown;
+@property (nonatomic, copy, readonly) NSArray<NSDictionary<NSString *, NSString *> *> *transcript;
 @property (nonatomic, copy, readonly) NSString *title;
+@property (nonatomic, copy, readonly) NSString *activityText;
 @property (nonatomic, copy, readonly) NSArray<NSDictionary<NSString *, NSString *> *> *toolActivities;
 @property (nonatomic, copy, readonly, nullable) NSDictionary *pendingApproval;
 @property (nonatomic, copy, readonly) NSArray<TLQuestionRequest *> *questions;

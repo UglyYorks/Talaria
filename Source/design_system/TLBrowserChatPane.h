@@ -9,6 +9,7 @@
 @property (nonatomic) BOOL collapsed;
 @property (nonatomic) BOOL busy;
 @property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *activityText;
 @property (nonatomic, copy) TLMarkdownLinkHandler linkHandler;
 @property (nonatomic, copy) TLMarkdownLinkContextMenuHandler linkContextMenuHandler;
 @property (nonatomic, copy) BOOL (^approvalHandler)(NSString *requestID, NSString *choice);
@@ -17,5 +18,6 @@
 - (void)showToolActivities:(NSArray<NSDictionary<NSString *, NSString *> *> *)activities;
 @property (nonatomic, readonly, getter=isPresented) BOOL presented;
 - (void)setPresented:(BOOL)presented animated:(BOOL)animated;
+- (void)showTranscript:(NSArray<NSDictionary<NSString *, NSString *> *> *)messages errorText:(NSString *)errorText loading:(BOOL)loading;
 - (void)showMarkdown:(NSString *)markdown loading:(BOOL)loading;
 @end
