@@ -36,18 +36,25 @@ class Notes:
     def __init__(self, workspace):
         self.root = Path(workspace) / "notes"
 
+    def lock_names(self):
+        return (".lock",)
+
     @contextlib.contextmanager
     def directory(self):
         self.root.mkdir(exist_ok=True)
         directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        locks = []
         try:
-            lock = os.open(".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-            try:
+            for name in self.lock_names():
+                lock = os.open(name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
+                locks.append(lock)
+                if not stat.S_ISREG(os.fstat(lock).st_mode):
+                    raise ValueError("The Markdown lock must be a regular file.")
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                yield directory
-            finally:
-                os.close(lock)
+            yield directory
         finally:
+            for lock in reversed(locks):
+                os.close(lock)
             os.close(directory)
 
     def read(self, directory, identity):
@@ -163,13 +170,67 @@ class Notes:
             return {"note": self.read(directory, identity)}
 
 
+
+class Memories(Notes):
+    """The two built-in Hermes stores, including editable, not-yet-created files."""
+    TITLES = {"MEMORY.md": "Learned facts", "USER.md": "About you"}
+    MISSING_REVISION = hashlib.sha256(b"talaria:missing-memory-file").hexdigest()
+
+    def __init__(self, home):
+        self.root = Path(home) / "memories"
+
+    def lock_names(self):
+        # Match Hermes MemoryStore's per-file locks. Hold them through the
+        # revision check and atomic replace so a learning write cannot be lost.
+        return tuple(name + ".lock" for name in self.TITLES)
+
+    def read(self, directory, identity):
+        if identity not in self.TITLES:
+            raise ValueError("Choose Learned facts or About you.")
+        try:
+            note = super().read(directory, identity)
+        except FileNotFoundError:
+            note = {"id": identity, "content": "", "preview": "Nothing saved yet. You can add information here.",
+                    "revision": self.MISSING_REVISION, "modified_at": 0, "path": str(self.root / identity)}
+        note["title"] = self.TITLES[identity]
+        return note
+
+    def request(self, params):
+        if not isinstance(params, dict) or params.get("action") not in {"list", "read", "save"}:
+            raise ValueError("Memory supports listing, reading and saving. Remove text to forget information.")
+        if params["action"] == "list":
+            query = params.get("query", "")
+            if not isinstance(query, str):
+                raise ValueError("The search query must be text.")
+            notes, skipped = [], []
+            with self.directory() as directory:
+                for identity in self.TITLES:
+                    try:
+                        note = self.read(directory, identity)
+                        if query.casefold() in (identity + "\n" + note["title"] + "\n" + note["content"]).casefold():
+                            notes.append({key: value for key, value in note.items() if key != "content"})
+                    except (OSError, ValueError, UnicodeError):
+                        skipped.append(identity)
+            return {"notes": notes, "directory": str(self.root), "skipped": skipped}
+        if not isinstance(params.get("id"), str) or params["id"] not in self.TITLES:
+            raise ValueError("Choose Learned facts or About you.")
+        return super().request(params)
+
+
 def register(server, home):
     notes = Notes(Path(home).parent)
+    memories = Memories(home)
 
     @server.method("talaria.notes")
     def handler(rid, params):
         try:
-            return server._ok(rid, notes.request(params))
+            if not isinstance(params, dict):
+                raise ValueError("Notes parameters must be an object.")
+            collection = params.get("collection", "notes")
+            if not isinstance(collection, str) or collection not in {"notes", "memory"}:
+                raise ValueError("Unknown Notes tab.")
+            store = memories if collection == "memory" else notes
+            return server._ok(rid, store.request(params))
         except (OSError, ValueError, UnicodeError) as exc:
             return server._err(rid, -32602, f"Could not access notes: {exc}")
     return notes

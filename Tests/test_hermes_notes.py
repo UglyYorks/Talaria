@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "AgentRuntime"))
-from hermes_notes import Notes, MAX_BYTES, register
+from hermes_notes import Notes, Memories, MAX_BYTES, register
+import fcntl
 import talaria_agent as worker
 
 
@@ -154,6 +155,121 @@ class NotesTests(unittest.TestCase):
         register(server, self.workspace / ".hermes")
         self.assertEqual(methods["talaria.notes"]("id", {"action": "list"})["directory"], str(self.workspace / "notes"))
         self.assertIn("error", methods["talaria.notes"]("id", {"action": "unknown"}))
+
+
+class MemoriesTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name) / ".hermes"
+        self.home.mkdir()
+        self.memories = Memories(self.home)
+
+    def read(self, identity="MEMORY.md"):
+        return self.memories.request({"action": "read", "id": identity})["note"]
+
+    def save(self, note, content):
+        return self.memories.request({"action": "save", "id": note["id"], "revision": note["revision"], "content": content})
+
+    def test_empty_files_are_editable_without_creating_them_until_save(self):
+        listed = self.memories.request({"action": "list"})["notes"]
+        self.assertEqual([n["title"] for n in listed], ["Learned facts", "About you"])
+        self.assertFalse(list(self.memories.root.glob("*.md")))
+        memory = self.save(self.read(), "Prefers short answers.\n§\nUses Python. 🌱")["note"]
+        profile = self.save(self.read("USER.md"), "Lives in Brisbane.")["note"]
+        self.memories = Memories(self.home)
+        self.assertEqual(self.read()["content"], memory["content"])
+        self.assertEqual(self.read("USER.md")["content"], profile["content"])
+        self.assertEqual(self.memories.request({"action": "list", "query": "BRISBANE"})["notes"][0]["id"], "USER.md")
+        cleared = self.save(memory, "")["note"]
+        self.assertEqual(cleared["content"], "")
+        self.assertNotEqual(cleared["revision"], Memories.MISSING_REVISION)
+        self.assertEqual(self.read("USER.md")["content"], profile["content"])
+        self.assertEqual(Notes(self.home.parent).request({"action": "list"})["notes"], [])
+
+    def test_agent_creating_editing_or_removing_memory_conflicts_with_draft(self):
+        draft = self.read()
+        path = self.memories.root / "MEMORY.md"
+        path.write_text("Agent learned this.")
+        self.assertTrue(self.save(draft, "User draft")["conflict"])
+        self.assertEqual(path.read_text(), "Agent learned this.")
+        draft = self.read()
+        path.write_text("New learning.")
+        self.assertTrue(self.save(draft, "User draft")["conflict"])
+        draft = self.read()
+        path.unlink()
+        self.assertTrue(self.save(draft, "User draft")["conflict"])
+        self.assertFalse(path.exists())
+
+    def test_memory_edits_hold_hermes_per_file_locks(self):
+        draft = self.read()
+        original_read = self.memories.read
+        def checked_read(directory, identity):
+            for name in ("MEMORY.md.lock", "USER.md.lock"):
+                with (self.memories.root / name).open("a+") as lock:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return original_read(directory, identity)
+        with patch.object(self.memories, "read", side_effect=checked_read):
+            self.assertEqual(self.save(draft, "New learning")["note"]["content"], "New learning")
+        for name in ("MEMORY.md.lock", "USER.md.lock"):
+            with (self.memories.root / name).open("a+") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_only_builtin_files_are_accessible_and_invalid_files_are_not_empty(self):
+        self.read()
+        for identity in ("SOUL.md", "../USER.md", "notes.md", [], None):
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                self.memories.request({"action": "save", "id": identity, "content": "text", "revision": "0" * 64})
+        for action in ("create", "delete"):
+            with self.assertRaises(ValueError):
+                self.memories.request({"action": action, "id": "MEMORY.md", "content": "text"})
+        outside = self.home / "outside.md"
+        outside.write_text("untouched")
+        path = self.memories.root / "MEMORY.md"
+        path.symlink_to(outside)
+        with self.assertRaises(OSError):
+            self.read()
+        self.assertEqual(self.memories.request({"action": "list"})["skipped"], ["MEMORY.md"])
+        path.unlink()
+        path.write_bytes(b"\xff")
+        with self.assertRaises(UnicodeError):
+            self.read()
+        self.assertEqual(outside.read_text(), "untouched")
+
+    def test_failed_atomic_save_and_symlinked_lock_preserve_memory(self):
+        note = self.save(self.read(), "Keep this.")["note"]
+        with patch("hermes_notes.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.save(note, "replacement")
+        self.assertEqual(self.read()["content"], "Keep this.")
+        self.assertFalse(list(self.memories.root.glob(".save-*")))
+        lock = self.memories.root / "MEMORY.md.lock"
+        lock.unlink()
+        lock.symlink_to(self.memories.root / "MEMORY.md")
+        with self.assertRaises(OSError):
+            self.save(note, "replacement")
+
+    def test_gateway_routes_memory_to_selected_agent_home(self):
+        methods = {}
+        server = Mock()
+        server.method.side_effect = lambda name: lambda fn: methods.setdefault(name, fn)
+        server._ok.side_effect = lambda rid, result: result
+        server._err.side_effect = lambda rid, code, message: {"error": message}
+        register(server, self.home)
+        rpc = methods["talaria.notes"]
+        params = {"collection": "memory", "action": "read", "id": "USER.md"}
+        note = rpc("id", params)["note"]
+        params.update(action="save", revision=note["revision"], content="User edited this.")
+        self.assertEqual(rpc("id", params)["note"]["content"], "User edited this.")
+        self.assertEqual((self.home / "memories/USER.md").read_text(), "User edited this.")
+        self.assertEqual(rpc("id", {"action": "list"})["notes"], [])
+        self.assertIn("error", rpc("id", {"collection": "unknown", "action": "list"}))
+        output = io.BytesIO()
+        with patch.object(worker, "tui_gateway") as gateway:
+            gateway.return_value.call.return_value = {"note": note}
+            worker.handle_request({"operation": "hermes_notes", "params": params, "request_id": "req"}, output)
+            gateway.return_value.call.assert_called_once_with("talaria.notes", params)
 
 
 if __name__ == "__main__":
