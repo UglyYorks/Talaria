@@ -1,3 +1,4 @@
+#import "TLAgentPickerWindowController.h"
 #import "TLBrowserContentColor.h"
 #import "design_system/TLIncognitoPill.h"
 #import "TLProviderSetupWindowController.h"
@@ -168,8 +169,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong) NSLayoutConstraint *sidebarWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *contentLeadingConstraint;
 @property (nonatomic, strong) NSStackView *sidebarTileGrid;
-@property (nonatomic, strong) TLHoverStackView *sidebarAgentPane;
-@property (nonatomic, strong) NSView *sidebarAgentPaneSurface;
+@property (nonatomic, strong) TLAgentPickerWindowController *agentPickerWindowController;
 @property (nonatomic, strong) NSStackView *sidebarInboxStack;
 @property (nonatomic, strong) TLSidebarShortcutsView *sidebarShortcutsView;
 @property (nonatomic, copy) NSArray<TLBookmark *> *bookmarks;
@@ -1061,7 +1061,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     self.sidebarTileGridLeadingConstraint,
     self.sidebarTileGridTrailingConstraint,
     [self.sidebarTileGrid.topAnchor constraintEqualToAnchor:self.sidebarView.topAnchor constant:self.palette.topbarHeight + self.palette.space8],
-    [self.sidebarTileGrid.heightAnchor constraintEqualToConstant:self.palette.space12 + self.palette.space10],
     self.sidebarInboxLeadingConstraint,
     self.sidebarInboxTrailingConstraint,
     [self.sidebarInboxStack.topAnchor constraintEqualToAnchor:self.sidebarTileGrid.bottomAnchor constant:self.palette.space10],
@@ -1099,196 +1098,61 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (NSStackView *)buildSidebarTileGrid {
-  TLHoverStackView *tileGrid = [[TLHoverStackView alloc] init];
-  tileGrid.translatesAutoresizingMaskIntoConstraints = NO;
-  tileGrid.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  tileGrid.alignment = NSLayoutAttributeCenterY;
-  tileGrid.distribution = NSStackViewDistributionFill;
-  tileGrid.spacing = self.palette.space5;
-
-  __weak typeof(self) weakSelf = self;
-  tileGrid.hoverChanged = ^(BOOL hovered) {
-    if (hovered) {
-      [weakSelf showSidebarAgentPane];
-    } else {
-      [weakSelf scheduleSidebarAgentPaneDismissal];
-    }
-  };
-  return tileGrid;
-}
-
-- (NSImage *)avatarImageForAgent:(TLAgentRecord *)agent {
-  CGFloat size = self.palette.agentMenuAvatarSize;
-  NSAttributedString *emoji = [[NSAttributedString alloc] initWithString:agent.avatar.length ? agent.avatar : @"🤖"
-    attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:self.palette.space16]}];
-  return [NSImage imageWithSize:NSMakeSize(size, size) flipped:NO drawingHandler:^BOOL(NSRect bounds) {
-    NSSize textSize = emoji.size;
-    [emoji drawAtPoint:NSMakePoint((NSWidth(bounds) - textSize.width) / 2,
-                                   (NSHeight(bounds) - textSize.height) / 2)];
-    return YES;
-  }];
+  NSStackView *section = [[NSStackView alloc] init];
+  section.translatesAutoresizingMaskIntoConstraints = NO;
+  section.orientation = NSUserInterfaceLayoutOrientationVertical;
+  section.alignment = NSLayoutAttributeLeading;
+  section.spacing = self.palette.space5;
+  [section setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
+  return section;
 }
 
 - (void)rebuildSidebarAgents {
   if (!self.sidebarTileGrid) return;
-  [self.sidebarAgentPaneSurface removeFromSuperview];
-  self.sidebarAgentPaneSurface = nil;
-  self.sidebarAgentPane = nil;
   for (NSView *view in self.sidebarTileGrid.arrangedSubviews.copy) {
     [self.sidebarTileGrid removeArrangedSubview:view];
     [view removeFromSuperview];
   }
-  NSScrollView *scroll = [[NSScrollView alloc] init];
-  scroll.translatesAutoresizingMaskIntoConstraints = NO;
-  scroll.drawsBackground = NO;
-  scroll.hasHorizontalScroller = YES;
-  scroll.autohidesScrollers = YES;
-  NSStackView *tiles = [[NSStackView alloc] init];
-  tiles.translatesAutoresizingMaskIntoConstraints = NO;
-  tiles.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  tiles.alignment = NSLayoutAttributeCenterY;
-  tiles.spacing = self.palette.space5;
-  NSInteger currentID = self.database.currentAgentID;
-  TLIconTileView *currentTile = nil;
-  for (TLAgentRecord *agent in self.agents) {
-    TLIconTileView *tile = [[TLIconTileView alloc] init];
-    tile.palette = self.palette;
-    tile.image = [self avatarImageForAgent:agent];
-    tile.imageSize = self.palette.space12 + self.palette.space2;
-    tile.selected = agent.agentID == currentID;
-    tile.toolTip = [NSString stringWithFormat:@"%@%@ — Local Hermes", agent.name, tile.selected ? @" (Current)" : @""];
-    tile.accessibilityLabel = tile.toolTip;
-    tile.accessibilitySelected = tile.selected;
-    tile.tag = agent.agentID;
-    tile.target = self;
-    tile.action = @selector(activateSidebarAgent:);
-    [tiles addArrangedSubview:tile];
-    [tile.widthAnchor constraintEqualToConstant:self.palette.sidebarAgentTileMaximumWidth].active = YES;
-    [tile.heightAnchor constraintEqualToAnchor:tiles.heightAnchor].active = YES;
-    if (tile.selected) currentTile = tile;
-  }
-  scroll.documentView = tiles;
-  [self.sidebarTileGrid addArrangedSubview:scroll];
-  [scroll.widthAnchor constraintEqualToAnchor:self.sidebarTileGrid.widthAnchor].active = YES;
-  [scroll.heightAnchor constraintEqualToAnchor:self.sidebarTileGrid.heightAnchor].active = YES;
-  [tiles.heightAnchor constraintEqualToAnchor:scroll.contentView.heightAnchor].active = YES;
-  [self.sidebarTileGrid layoutSubtreeIfNeeded];
-  if (currentTile) [tiles scrollRectToVisible:currentTile.frame];
+  TLAgentRecord *current = nil;
+  for (TLAgentRecord *agent in self.agents) if (agent.agentID == self.database.currentAgentID) { current = agent; break; }
+  NSString *label = current ? [NSString stringWithFormat:@"%@  %@", current.avatar.length ? current.avatar : @"🤖", current.name] : @"Choose agent…";
+  TLThemedButton *button = [TLThemedButton buttonWithTitle:label target:self action:@selector(showAgentPicker:)];
+  button.palette = self.palette;
+  button.alignment = NSTextAlignmentLeft;
+  button.lineBreakMode = NSLineBreakByTruncatingTail;
+  button.image = [NSImage imageWithSystemSymbolName:@"chevron.down" accessibilityDescription:nil];
+  button.imagePosition = NSImageRight;
+  button.toolTip = current ? [NSString stringWithFormat:@"Choose agent (current: %@)", current.name] : @"Choose agent";
+  button.accessibilityLabel = button.toolTip;
+  [button setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [self.sidebarTileGrid addArrangedSubview:button];
+  [button.widthAnchor constraintEqualToAnchor:self.sidebarTileGrid.widthAnchor].active = YES;
 }
 
-- (void)activateSidebarAgent:(NSControl *)sender {
-  if (self.hasSendingTurns) return;
+- (void)showAgentPicker:(id)sender {
+  if (self.window.attachedSheet) return;
+  self.agentPickerWindowController = [[TLAgentPickerWindowController alloc] initWithAgents:self.agents ?: @[]
+    currentAgentID:self.database.currentAgentID selectionEnabled:!self.hasSendingTurns palette:self.palette];
+  __weak typeof(self) weakSelf = self;
+  self.agentPickerWindowController.selectionHandler = ^BOOL(NSInteger agentID) {
+    return [weakSelf activateAgentWithID:agentID];
+  };
+  self.agentPickerWindowController.manageHandler = ^{ [weakSelf showAgents:nil]; };
+  [self.agentPickerWindowController showFromWindow:self.window];
+}
+
+- (BOOL)activateAgentWithID:(NSInteger)agentID {
+  if (self.hasSendingTurns) return NO;
   NSError *error = nil;
-  if (![self.database setCurrentAgentID:sender.tag error:&error]) {
-    [self presentErrorMessage:error.localizedDescription];
-    return;
+  if (![self.database setCurrentAgentID:agentID error:&error]) {
+    NSString *message = error.localizedDescription ?: @"Could not switch agents.";
+    if (self.agentPickerWindowController.window.sheetParent) [self.agentPickerWindowController showErrorMessage:message];
+    else [self presentErrorMessage:message];
+    return NO;
   }
   self.settings = [self.database appSettings:nil] ?: self.settings;
   [self refreshAgents];
-}
-
-- (void)showSidebarAgentPane {
-  if (self.sidebarAgentPane || !self.window.isKeyWindow || self.sidebarTileGrid.hidden) {
-    return;
-  }
-  TLHoverStackView *pane = [[TLHoverStackView alloc] init];
-  pane.translatesAutoresizingMaskIntoConstraints = NO;
-  pane.orientation = NSUserInterfaceLayoutOrientationVertical;
-  pane.alignment = NSLayoutAttributeLeading;
-  pane.distribution = NSStackViewDistributionFill;
-  pane.spacing = self.palette.space2;
-  pane.edgeInsets = NSEdgeInsetsMake(self.palette.space3, self.palette.space3,
-                                     self.palette.space5, self.palette.space3);
-  NSInteger currentID = self.database.currentAgentID;
-  for (TLAgentRecord *agent in self.agents) {
-    NSString *title = [NSString stringWithFormat:@"%@  %@%@", agent.avatar, agent.name,
-      agent.agentID == currentID ? @"  ✓" : @""];
-    NSButton *row = [NSButton buttonWithTitle:title target:self action:@selector(activateSidebarAgent:)];
-    row.tag = agent.agentID;
-    row.bordered = NO;
-    row.alignment = NSTextAlignmentLeft;
-    row.font = self.palette.labelFont;
-    row.contentTintColor = self.palette.appText;
-    row.enabled = !self.hasSendingTurns;
-    row.toolTip = [NSString stringWithFormat:@"%@ — Local Hermes%@", agent.name,
-      agent.agentID == currentID ? @" (Current)" : @""];
-    [pane addArrangedSubview:row];
-    [row.heightAnchor constraintEqualToConstant:self.palette.settingsActionHeight].active = YES;
-  }
-  NSButton *addButton = [[NSButton alloc] init];
-  TLSpacedButtonCell *addCell = [[TLSpacedButtonCell alloc] initTextCell:@"Manage Agents"];
-  addCell.imageTitleSpacing = self.palette.menuActionIconTextSpacing;
-  addCell.imageUpwardOffset = self.palette.menuActionIconUpwardOffset;
-  addButton.cell = addCell;
-  addButton.target = self;
-  addButton.action = @selector(openAgentsFromSidebarPane:);
-  addButton.image = [NSImage imageWithSystemSymbolName:@"person.2" accessibilityDescription:@"Manage Agents"];
-  addButton.imagePosition = NSImageLeft;
-  addButton.imageHugsTitle = YES;
-  addButton.bordered = NO;
-  addButton.alignment = NSTextAlignmentCenter;
-  addButton.contentTintColor = self.palette.labelText;
-  TLSelectionStackView *addRow = [[TLSelectionStackView alloc] init];
-  addRow.palette = self.palette;
-  addRow.wantsLayer = YES;
-  addRow.orientation = NSUserInterfaceLayoutOrientationVertical;
-  addRow.alignment = NSLayoutAttributeWidth;
-  addRow.distribution = NSStackViewDistributionFill;
-  addRow.edgeInsets = NSEdgeInsetsMake(self.palette.space2, self.palette.space6,
-                                      self.palette.space2, self.palette.space6);
-  addButton.translatesAutoresizingMaskIntoConstraints = NO;
-  [addRow addArrangedSubview:addButton];
-  [addButton.widthAnchor constraintEqualToAnchor:addRow.widthAnchor constant:-(self.palette.space6 * 2.0)].active = YES;
-  [addButton.heightAnchor constraintGreaterThanOrEqualToConstant:self.palette.sidebarBookmarkButtonSize].active = YES;
-  [pane addArrangedSubview:addRow];
-  for (NSView *row in pane.arrangedSubviews) {
-    [row.widthAnchor constraintEqualToAnchor:pane.widthAnchor constant:-(self.palette.space3 * 2.0)].active = YES;
-  }
-  // Let the widest row determine the panel width without compressing its contents.
-  NSLayoutConstraint *fittingWidth = [pane.widthAnchor constraintEqualToConstant:self.palette.space0];
-  fittingWidth.priority = NSLayoutPriorityFittingSizeCompression;
-  fittingWidth.active = YES;
-  self.sidebarAgentPane = pane;
-  __weak typeof(self) weakSelf = self;
-  pane.hoverChanged = ^(BOOL hovered) {
-    if (!hovered) { [weakSelf scheduleSidebarAgentPaneDismissal]; }
-  };
-  TLGlassPaneView *surface = [[TLGlassPaneView alloc] init];
-  surface.palette = self.palette;
-  [surface addSubview:pane];
-  self.sidebarAgentPaneSurface = surface;
-  [self.rootView addSubview:surface positioned:NSWindowAbove relativeTo:nil];
-  [NSLayoutConstraint activateConstraints:@[
-    [surface.leadingAnchor constraintEqualToAnchor:self.sidebarTileGrid.leadingAnchor],
-    [surface.topAnchor constraintEqualToAnchor:self.sidebarTileGrid.topAnchor],
-    [pane.leadingAnchor constraintEqualToAnchor:surface.leadingAnchor],
-    [pane.trailingAnchor constraintEqualToAnchor:surface.trailingAnchor],
-    [pane.topAnchor constraintEqualToAnchor:surface.topAnchor],
-    [pane.bottomAnchor constraintEqualToAnchor:surface.bottomAnchor],
-  ]];
-}
-
-- (void)openAgentsFromSidebarPane:(id)sender {
-  [self.sidebarAgentPaneSurface removeFromSuperview];
-  self.sidebarAgentPaneSurface = nil;
-  self.sidebarAgentPane = nil;
-  [self showAgents:sender];
-}
-
-- (void)scheduleSidebarAgentPaneDismissal {
-  __weak typeof(self) weakSelf = self;
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-    TalariaWindowController *controller = weakSelf;
-    if (!controller.sidebarAgentPane) { return; }
-    NSPoint point = controller.window.mouseLocationOutsideOfEventStream;
-    BOOL inPane = NSPointInRect([controller.sidebarAgentPane convertPoint:point fromView:nil], controller.sidebarAgentPane.bounds);
-    BOOL inTiles = NSPointInRect([controller.sidebarTileGrid convertPoint:point fromView:nil], controller.sidebarTileGrid.bounds);
-    if (!controller.window.isKeyWindow || (!inPane && !inTiles)) {
-      [controller.sidebarAgentPaneSurface removeFromSuperview];
-      controller.sidebarAgentPaneSurface = nil;
-      controller.sidebarAgentPane = nil;
-    }
-  });
+  return YES;
 }
 
 - (NSStackView *)buildSidebarInboxStack {
@@ -4458,9 +4322,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)createAgent:(id)sender {
   if (self.widgetbookMode || self.hasSendingTurns || self.window.attachedSheet) return;
-  [self.sidebarAgentPaneSurface removeFromSuperview];
-  self.sidebarAgentPaneSurface = nil;
-  self.sidebarAgentPane = nil;
   self.agentCreationWindowController = [[TLAgentCreationWindowController alloc]
     initWithPalette:self.palette orchestrator:self.agentOrchestrator];
   __weak typeof(self) weakSelf = self;
@@ -6015,9 +5876,6 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)applyTheme {
-  [self.sidebarAgentPaneSurface removeFromSuperview];
-  self.sidebarAgentPaneSurface = nil;
-  self.sidebarAgentPane = nil;
   self.window.appearance = nil;
   self.palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem effectiveAppearance:self.window.effectiveAppearance];
   [TLWebKitBrowserController.sharedController applyDarkAppearance:self.palette.dark];
@@ -6139,6 +5997,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)applySidebarTilePalette {
   [self rebuildSidebarAgents];
+  [self.agentPickerWindowController applyPalette:self.palette];
   [self.agentCreationWindowController applyPalette:self.palette];
   [self.agentFolderAccessWindowController applyPalette:self.palette];
   [self.agentSettingsWindowController applyPalette:self.palette];
