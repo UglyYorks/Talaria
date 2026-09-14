@@ -12,6 +12,7 @@ static void Check(BOOL value, NSString *message) {
 }
 static NSString *developmentPath;
 static NSString *instructions;
+static BOOL reuseAgentState;
 static NSAlert *shownAlert;
 @interface NSBundle (DevelopmentTests)
 - (id)developmentTestInfo:(NSString *)key;
@@ -22,6 +23,7 @@ static NSAlert *shownAlert;
   if (self == NSBundle.mainBundle) {
     if ([key isEqual:@"TLDevelopmentDataDirectory"]) return developmentPath;
     if ([key isEqual:@"TLDevelopmentTestInstructions"]) return instructions;
+    if ([key isEqual:@"TLDevelopmentReuseAgentState"]) return @(reuseAgentState);
   }
   return [self developmentTestInfo:key];
 }
@@ -61,6 +63,12 @@ int main(void) {
     Check([TLInstanceBundleIdentifier() isEqual:@"com.talaria.chat.dev.fixture"], @"singleton handoff is scoped to this snapshot");
     TLKeychainCredentialStore *credentials = [TLKeychainCredentialStore new];
     Check([[credentials valueForKey:@"service"] isEqual:@"com.talaria.chat.dev.fixture.credentials"], @"credential operations cannot use the production helper or keychain service");
+    reuseAgentState = YES;
+    credentials = [TLKeychainCredentialStore new];
+    Check(TLDevelopmentReusesAgentState(), @"new development launches reuse existing agent state");
+    Check([[credentials valueForKey:@"service"] isEqual:@"com.talaria.chat.credentials"], @"reused credentials go through the existing trusted helper");
+    Check([[credentials valueForKey:@"usesCredentialHelper"] boolValue], @"shared credentials use the helper instead of direct Keychain access");
+    Check([TLInstanceBundleIdentifier() isEqual:@"com.talaria.chat.dev.fixture"], @"credential reuse preserves the separate desktop identity");
     // These checks never access a credential, database, VM, or shared reset marker.
     TLAppDelegate *delegate = [TLAppDelegate new];
     [delegate resetApp:nil];
@@ -70,6 +78,7 @@ int main(void) {
     [delegate showTestInstructions:nil];
     Check([shownAlert.informativeText isEqual:instructions], @"instructions are displayed literally");
     developmentPath = nil;
+    Check(!TLDevelopmentReusesAgentState(), @"agent reuse marker only applies to development bundles");
     Check([TLDatabase.defaultDatabaseURL isEqual:normalDatabase], @"normal database location is unchanged");
     method_exchangeImplementations(sheet, testSheet);
     method_exchangeImplementations(identifier, testIdentifier);

@@ -78,7 +78,7 @@ static BOOL TLCheckKeychainStatus(OSStatus status, NSError **error) {
 }
 
 - (instancetype)init {
-  return [self initWithService:TLDevelopmentDataURL()
+  return [self initWithService:TLDevelopmentDataURL() && !TLDevelopmentReusesAgentState()
     ? [TLInstanceBundleIdentifier() stringByAppendingString:@".credentials"] : @"com.talaria.chat.credentials"];
 }
 

@@ -10,3 +10,6 @@ static inline NSURL *TLDevelopmentDataURL(void) {
 static inline NSString *TLInstanceBundleIdentifier(void) {
   return TLDevelopmentDataURL() ? NSBundle.mainBundle.bundleIdentifier : @"com.talaria.chat";
 }
+static inline BOOL TLDevelopmentReusesAgentState(void) {
+  return TLDevelopmentDataURL() && [[NSBundle.mainBundle objectForInfoDictionaryKey:@"TLDevelopmentReuseAgentState"] boolValue];
+}
