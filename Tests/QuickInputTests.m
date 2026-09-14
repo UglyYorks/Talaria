@@ -426,7 +426,7 @@ static void TestPanel(void) {
   NSEvent *commandReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
     timestamp:0 windowNumber:controller.window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
   Check([controller.messageInput.textView performKeyEquivalent:commandReturn], @"quick input handles Cmd Enter even with navigation selected");
-  Check(submissions == 2 && !automaticRouting, @"Ask agent bypasses URL routing by default");
+  Check(submissions == 2 && !automaticRouting, @"Cmd Enter activates Ask agent in the second URL row without automatic routing");
   [controller presentInNotchOnScreen:NSScreen.mainScreen];
   controller.commands = @[@{@"kind":@"hermes", @"command":@"/help", @"title":@"Help", @"icon":@"terminal", @"description":@"Help"}];
   SetText(controller, @"/he");
@@ -457,6 +457,71 @@ static void TestPanel(void) {
   Check(controller.window.visible, @"popup reopens after dismissing an attached dialog");
   [controller dismiss];
   controller.submissionHandler = nil;
+}
+
+static void TestSuggestionShortcuts(void) {
+  TLQuickInputWindowController *controller = [[TLQuickInputWindowController alloc]
+    initWithPalette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  __block NSUInteger submissions = 0;
+  __block BOOL automaticRouting = YES;
+  __block NSDictionary *destination;
+  controller.submissionHandler = ^(NSString *text, NSArray<NSURL *> *files, BOOL allowRouting) {
+    submissions++;
+    automaticRouting = allowRouting;
+  };
+  controller.destinationHandler = ^(NSDictionary *suggestion) { destination = suggestion; };
+  NSDictionary *prompt = @{@"kind":@"prompt", @"command":@"Ask agent"};
+  NSDictionary *second = @{@"kind":@"web", @"command":@"Second destination", @"URL":@"https://second.example"};
+  NSDictionary *third = @{@"kind":@"web", @"command":@"Third destination", @"URL":@"https://third.example"};
+  __block NSArray *rows = @[prompt, second, third];
+  controller.suggestionsProvider = ^NSArray *(NSString *input) { return rows; };
+  [controller presentInNotchOnScreen:NSScreen.mainScreen];
+  SetText(controller, @"Choose a destination");
+  TLInputSuggestionListView *list = [controller valueForKey:@"suggestionList"];
+  list.selectedIndex = 2;
+  NSEvent *plainReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+    timestamp:0 windowNumber:controller.window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
+  [controller.messageInput.textView keyDown:plainReturn];
+  Check([destination isEqual:third] && submissions == 0, @"Enter activates the selected suggestion even beyond the second row");
+
+  for (NSNumber *selectedIndex in @[@0, @2]) {
+    destination = nil;
+    [controller presentInNotchOnScreen:NSScreen.mainScreen];
+    SetText(controller, @"Choose a destination");
+    list.selectedIndex = selectedIndex.integerValue;
+    NSEvent *commandReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
+      timestamp:0 windowNumber:controller.window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
+    Check([controller.messageInput.textView performKeyEquivalent:commandReturn], @"Cmd Enter is handled in quick input");
+    Check([destination isEqual:second] && submissions == 0, @"Cmd Enter activates the second suggestion independently of selection or kind");
+  }
+
+  destination = nil;
+  [controller presentInNotchOnScreen:NSScreen.mainScreen];
+  SetText(controller, @"Keep this draft");
+  NSEvent *commandReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
+    timestamp:0 windowNumber:controller.window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
+  for (NSArray *unavailableRows in @[@[prompt], @[prompt, @{@"kind":@"status", @"command":@"Loading"}],
+      @[prompt, @{@"kind":@"search", @"command":@"Unavailable search", @"URL":@""}]]) {
+    rows = unavailableRows;
+    [controller updateSuggestions];
+    Check([controller.messageInput.textView performKeyEquivalent:commandReturn], @"Cmd Enter consumes an unavailable second suggestion");
+    Check(controller.window.visible && [controller.messageInput.textView.string isEqual:@"Keep this draft"] &&
+      submissions == 0 && !destination, @"a missing or disabled second row cannot submit a different action");
+  }
+
+  rows = @[];
+  [controller updateSuggestions];
+  Check([controller.messageInput.textView performKeyEquivalent:commandReturn], @"Cmd Enter remains handled without suggestions");
+  Check(submissions == 1 && !automaticRouting, @"Cmd Enter preserves direct submission when no suggestions are available");
+
+  controller.suggestionsProvider = nil;
+  controller.commands = @[@{@"kind":@"hermes", @"command":@"/help", @"title":@"Help", @"icon":@"terminal", @"description":@"Help"}];
+  [controller presentInNotchOnScreen:NSScreen.mainScreen];
+  SetText(controller, @"/he");
+  Check([controller.messageInput.textView performKeyEquivalent:commandReturn], @"Cmd Enter activates the second slash-command suggestion");
+  Check([controller.messageInput.textView.string isEqual:@"/help "] && submissions == 1 && controller.window.visible,
+    @"Cmd Enter completes a partial second-row Hermes command without submitting the prompt");
+  [controller dismiss];
 }
 
 static void TestWorkspaceHandoff(void) {
@@ -618,6 +683,7 @@ int main(void) {
     [NSApplication sharedApplication];
     Check(NSScreen.mainScreen != nil, @"native tests require access to the macOS window server");
     TestPanel();
+    TestSuggestionShortcuts();
     TestNotchExpansion();
     TestNotchPresentationAndCapture();
     TestWorkspaceHandoff();

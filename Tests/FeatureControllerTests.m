@@ -1981,14 +1981,19 @@ static void TestBrowserInputSuggestions(void) {
         @"saved favicons render in their original colors in both themes");
       TLSlashCommandItemView *agentRow = [table viewAtColumn:0 row:0 makeIfNecessary:YES];
       Check(agentRow.customIcon == nil, @"action rows keep their system icon");
-      Check([agentRow.shortcutText isEqual:@"⌘↵"] && [row.shortcutText isEqual:@"↵"], @"only the smallest applicable shortcut appears on each action");
+      Check(!agentRow.shortcutText.length && [row.shortcutText isEqual:@"↵"], @"selected second row shows Enter and the first row has no shortcut");
       NSRange match = [title.stringValue rangeOfString:@"Alpha"];
       NSFont *font = [title.attributedStringValue attribute:NSFontAttributeName atIndex:match.location effectiveRange:NULL];
       Check([NSFontManager.sharedFontManager traitsOfFont:font] & NSBoldFontMask, @"matching text is visibly bold");
       Check(CGColorEqualToColor(row.layer.backgroundColor, list.palette.slashCommandItemHighlightedSurface.CGColor), @"selected row renders the current theme surface");
       Check([[title.attributedStringValue attribute:NSForegroundColorAttributeName atIndex:0 effectiveRange:NULL] isEqual:list.palette.slashCommandItemHighlightedText], @"selected row renders the current theme text");
       list.selectedIndex = 0;
-      Check([agentRow.shortcutText isEqual:@"↵"] && !row.shortcutText.length, @"selected Ask agent shows Enter only and clears other shortcuts");
+      Check([agentRow.shortcutText isEqual:@"↵"] && [row.shortcutText isEqual:@"⌘↵"], @"Enter follows selection and Cmd Enter stays on the second row");
+      list.selectedIndex = 2;
+      TLSlashCommandItemView *thirdRow = [table viewAtColumn:0 row:2 makeIfNecessary:YES];
+      Check(!agentRow.shortcutText.length && [row.shortcutText isEqual:@"⌘↵"] && [thirdRow.shortcutText isEqual:@"↵"],
+        @"moving past the second row preserves its Cmd Enter shortcut");
+      list.selectedIndex = 0;
       NSBitmapImageRep *bitmap = [browser.view bitmapImageRepForCachingDisplayInRect:browser.view.bounds];
       [browser.view cacheDisplayInRect:browser.view.bounds toBitmapImageRep:bitmap];
       [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:
@@ -2002,8 +2007,9 @@ static void TestBrowserInputSuggestions(void) {
   browser.sentPrompt = nil;
   NSEvent *commandReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
     timestamp:0 windowNumber:window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
-  Check([input.textView performKeyEquivalent:commandReturn] && [browser.sentPrompt isEqual:@"alpha"] && switched == nil,
-    @"Cmd Enter asks the agent even when Switch to tab is selected");
+  list.selectedIndex = 2;
+  Check([input.textView performKeyEquivalent:commandReturn] && browser.sentPrompt == nil && [switched isEqual:@"42"],
+    @"Cmd Enter activates the second row even when the third row is selected");
   input.textView.string = @"alpha"; [input.textView didChangeText];
   list.activationHandler(1);
   Check([switched isEqual:@"42"] && service.navigatedURL == nil, @"mouse activation switches tabs without duplicate navigation");
@@ -2018,6 +2024,16 @@ static void TestBrowserInputSuggestions(void) {
   Check([input textView:input.textView doCommandBySelector:@selector(moveDown:)] && list.selectedIndex == 1, @"Down selects exact search after Ask agent");
   [input textView:input.textView doCommandBySelector:@selector(insertNewline:)];
   Check([service.navigatedURL.absoluteString containsString:@"%20%20cats%20%26%20dogs%20%20"], @"selecting search preserves the exact draft");
+  [window makeFirstResponder:input.textView];
+  input.textView.string = @"fresh search"; [input.textView didChangeText];
+  browser.sentPrompt = nil;
+  Check([input.textView performKeyEquivalent:commandReturn] && browser.sentPrompt == nil &&
+    [service.navigatedURL.absoluteString containsString:@"fresh%20search"], @"Cmd Enter searches the latest draft when search is the second row");
+  [window makeFirstResponder:input.textView];
+  input.textView.string = @"dismissed draft"; [input.textView didChangeText];
+  [input textView:input.textView doCommandBySelector:@selector(cancelOperation:)];
+  Check([input.textView performKeyEquivalent:commandReturn] && [browser.sentPrompt isEqual:@"dismissed draft"],
+    @"Cmd Enter retains agent submission when suggestions are dismissed");
   [browser close]; [window close];
 }
 
@@ -3626,14 +3642,23 @@ static void TestSuggestionsWithQueuedPrompts(void) {
   NSEvent *commandReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
     timestamp:0 windowNumber:window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
   [window makeFirstResponder:chat.promptTextView];
-  Check([chat.promptTextView performKeyEquivalent:commandReturn], @"chat handles Cmd Enter as an agent shortcut");
+  Check([chat.promptTextView performKeyEquivalent:commandReturn], @"chat handles Cmd Enter as the second suggestion shortcut");
   Check([chat.queuedPrompts.lastObject.text isEqual:@"another.example"] && chat.queuedPrompts.count == 4 && controller.openedCount == 2,
-    @"Cmd Enter bypasses selected navigation and queues the agent prompt");
+    @"Cmd Enter queues the agent prompt when it is the second row");
+  chat.promptTextView.string = @"search this phrase";
+  [controller textDidChange:nil];
+  Check([chat.promptTextView performKeyEquivalent:commandReturn] && chat.queuedPrompts.count == 4 && controller.openedCount == 3 &&
+    [controller.openedURL.absoluteString containsString:@"search%20this%20phrase"],
+    @"Cmd Enter flushes pending suggestions and activates second-row search without queuing a prompt");
   [controller setValue:@[@{@"kind":@"hermes", @"command":@"/help", @"title":@"Help", @"icon":@"terminal"}] forKey:@"hermesCommands"];
+  chat.promptTextView.string = @"/he";
+  [controller textDidChange:nil];
+  Check([chat.promptTextView performKeyEquivalent:commandReturn] && [chat.promptTextView.string isEqual:@"/help "] && chat.queuedPrompts.count == 4,
+    @"Cmd Enter completes the second-row Hermes command instead of sending the partial draft");
   chat.promptTextView.string = @"/help";
   [controller renderSlashCommandList];
-  Check([controller performInputSuggestionAtIndex:1] && [chat.queuedPrompts.lastObject.text isEqual:@"/help"],
-    @"Hermes suggestions enqueue commands behind the current turn");
+  Check([chat.promptTextView performKeyEquivalent:commandReturn] && [chat.queuedPrompts.lastObject.text isEqual:@"/help"],
+    @"Cmd Enter runs a complete second-row Hermes command behind the current turn");
   [runners removeAllObjects]; chat.queuePaused = YES;
   chat.promptTextView.string = @"netflix.com";
   [controller renderSlashCommandList]; [controller updateControlStates];
