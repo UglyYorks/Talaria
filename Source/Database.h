@@ -44,6 +44,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)updateBrowserVisitWithID:(NSInteger)visitID title:(NSString *)title error:(NSError **)error;
 - (BOOL)updateBrowserVisitWithID:(NSInteger)visitID faviconData:(NSData *)data error:(NSError **)error;
 - (nullable NSArray<TLBrowserHistoryEntry *> *)listBrowserHistory:(NSError **)error;
+// Call from performAsync; one destination per URL, with frequency and last visit.
+- (NSArray<NSDictionary *> *)inputSuggestionHistory;
 - (BOOL)deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error;
 
 - (nullable NSArray<TLChatSummary *> *)listChats:(NSError **)error;

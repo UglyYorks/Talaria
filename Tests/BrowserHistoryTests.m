@@ -126,6 +126,24 @@ int main(void) {
       @"late title updates never resurrect deleted browsing history");
     Check([database updateBrowserVisitWithID:firstID faviconData:savedIcon error:&error] && [database listBrowserHistory:&error].count == 4,
       @"late favicon downloads never resurrect deleted visits");
+    __block NSArray *suggestions = nil;
+    [database performAsync:^(TLDatabase *db) { suggestions = [db inputSuggestionHistory]; }];
+    // A subsequent serialized read waits for the snapshot without involving UI timing.
+    [database listBrowserHistory:nil];
+    NSInteger totalVisits = 0;
+    for (NSDictionary *row in suggestions) {
+      totalVisits += [row[@"visits"] integerValue];
+      Check([row[@"visitedAt"] hasSuffix:@"Z"], @"suggestion snapshots normalize visit timestamps");
+      if ([[NSURL URLWithString:row[@"URL"]].host isEqual:firstURL.host])
+        Check([row[@"faviconData"] isEqual:savedIcon], @"suggestions reuse persisted site favicons");
+      if ([row[@"URL"] isEqual:firstURL.absoluteString])
+        Check([row[@"visits"] integerValue] == 2 && [row[@"title"] isEqual:@"Reloaded café"], @"suggestion snapshot aggregates repeated visits using latest title");
+    }
+    Check(totalVisits == 4, @"deleted visits are absent from suggestion frequency");
+    TLDatabase *privateDatabase = [database incognitoDatabase:&error];
+    [privateDatabase performAsync:^(TLDatabase *db) { suggestions = [db inputSuggestionHistory]; }];
+    [privateDatabase listBrowserHistory:nil];
+    Check(suggestions.count == 0, @"private database never exposes saved regular-window history");
     database = nil;
     [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
     NSLog(@"BrowserHistoryTests passed");

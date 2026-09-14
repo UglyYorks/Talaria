@@ -929,6 +929,33 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
+- (NSArray<NSDictionary *> *)inputSuggestionHistory {
+  // Read each saved site icon once on the database queue, never during typing.
+  NSMutableDictionary *icons = [NSMutableDictionary dictionary];
+  TLSQLiteStatement *iconQuery = [self.sqliteConnection prepareSQL:
+    "WITH icons AS (SELECT id, origin, ROW_NUMBER() OVER (PARTITION BY origin ORDER BY visited_at DESC, id DESC) AS position "
+    "FROM browser_history WHERE favicon IS NOT NULL) SELECT icons.origin, h.favicon FROM icons "
+    "JOIN browser_history h ON h.id = icons.id WHERE position = 1" error:nil];
+  while (iconQuery && [iconQuery step] == SQLITE_ROW) {
+    int length = sqlite3_column_bytes(iconQuery.handle, 1);
+    if (length) icons[[iconQuery stringAtColumn:0]] = [NSData dataWithBytes:sqlite3_column_blob(iconQuery.handle, 1) length:length];
+  }
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+    "WITH visits AS (SELECT url, title, visited_at, origin, COUNT(*) OVER (PARTITION BY url) AS count, "
+    "ROW_NUMBER() OVER (PARTITION BY url ORDER BY visited_at DESC, id DESC) AS position FROM browser_history) "
+    "SELECT url, title, strftime('%Y-%m-%dT%H:%M:%SZ', visited_at), count, origin FROM visits WHERE position = 1" error:nil];
+  if (!statement) return @[];
+  NSMutableArray *rows = [NSMutableArray array];
+  while ([statement step] == SQLITE_ROW) {
+    NSMutableDictionary *row = [@{@"URL":[statement stringAtColumn:0], @"title":[statement stringAtColumn:1],
+      @"visitedAt":[statement stringAtColumn:2], @"visits":@(sqlite3_column_int64(statement.handle, 3))} mutableCopy];
+    NSData *icon = icons[[statement stringAtColumn:4]];
+    if (icon) row[@"faviconData"] = icon;
+    [rows addObject:row];
+  }
+  return rows;
+}
+
 - (NSArray<TLBrowserHistoryEntry *> *)onDatabaseQueue_listBrowserHistory:(NSError **)error {
   @synchronized (self) {
     TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:

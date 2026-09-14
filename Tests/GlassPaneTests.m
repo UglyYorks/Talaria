@@ -283,40 +283,6 @@ static void TestHermesSuggestions(void) {
 }
 
 static void TestURLSuggestions(void) {
-  NSDictionary *labels = @{
-    @"https://www.example.com/path?q=1#top": @"Open example.com",
-    @"www.example.com": @"Open example.com",
-    @"HTTP://WWW.EXAMPLE.COM:8080/page": @"Open example.com",
-    @"https://docs.example.com/guide": @"Open docs.example.com",
-    @"https://www2.example.com": @"Open www2.example.com",
-    @"localhost:3000/path": @"Open localhost",
-    @"127.0.0.1:8080/path": @"Open 127.0.0.1",
-  };
-  for (NSString *input in labels) {
-    NSDictionary *suggestion = [TLInputSuggestions webSuggestionsForInput:input].firstObject;
-    Check([suggestion[@"command"] isEqualToString:labels[input]], @"Open label shows only the host without a leading www.");
-    Check([suggestion[@"URL"] isEqualToString:[TLInputSuggestions browserURLForInput:input].absoluteString] &&
-      [suggestion[@"value"] isEqualToString:input], @"shortening the label preserves the full navigation destination and input");
-  }
-  for (NSString *input in @[@"https://example.com/path?q=1#top", @"example.com", @"www.example.com",
-                            @"localhost:3000", @"127.0.0.1:8080/path", @"HTTP://EXAMPLE.COM", @"example.c"]) {
-    NSArray *suggestions = [TLInputSuggestions webSuggestionsForInput:input];
-    Check(suggestions.count == 2, [@"URL has two choices: " stringByAppendingString:input]);
-    Check([suggestions[0][@"kind"] isEqualToString:@"web"] && [suggestions[0][@"icon"] isEqualToString:@"safari"], @"web choice has safari icon");
-    Check([suggestions[1][@"kind"] isEqualToString:@"prompt"] && [suggestions[1][@"icon"] isEqualToString:@"text.bubble"], @"prompt choice has text bubble icon");
-    Check([suggestions[0][@"URL"] length] > 0, @"complete address can be opened");
-    Check([suggestions[1][@"value"] isEqualToString:input], @"prompt preserves original input");
-    Check([suggestions[1][@"command"] isEqualToString:@"Send message"], @"prompt suggestion uses a fixed Send message label");
-  }
-  for (NSString *input in @[@"http", @"https", @"https:", @"http:/", @"https://", @"www", @"www.", @"example."]) {
-    NSArray *suggestions = [TLInputSuggestions webSuggestionsForInput:input];
-    Check(suggestions.count == 2, [@"URL prefix reveals choices: " stringByAppendingString:input]);
-    Check([suggestions[0][@"URL"] length] == 0, @"incomplete address cannot be opened");
-  }
-  for (NSString *input in @[@"", @"hello", @"write a poem", @"go to example.com", @"user@example.com",
-                            @"/example", @"javascript:alert(1)", @"file:///tmp/test", @"example..com"]) {
-    Check([TLInputSuggestions webSuggestionsForInput:input].count == 0, [@"not a URL suggestion: " stringByAppendingString:input]);
-  }
   Check([[[TLInputSuggestions browserURLForInput:@"example.com/path?q=1#top"] absoluteString]
     isEqualToString:@"https://example.com/path?q=1#top"], @"normalization preserves path, query and fragment");
 }

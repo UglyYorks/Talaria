@@ -62,7 +62,21 @@
   return resigned;
 }
 
+- (BOOL)handleAgentShortcut:(NSEvent *)event {
+  if (self.window.firstResponder != self || self.hasMarkedText || !self.isEditable || !(event.modifierFlags & NSEventModifierFlagCommand) ||
+      (event.keyCode != 36 && event.keyCode != 76)) return NO;
+  if ([self.delegate respondsToSelector:@selector(textView:doCommandBySelector:)])
+    return [self.delegate textView:self doCommandBySelector:NSSelectorFromString(@"askAgent:")];
+  return NO;
+}
+
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+  if ([self handleAgentShortcut:event]) return YES;
+  return [super performKeyEquivalent:event];
+}
+
 - (void)keyDown:(NSEvent *)event {
+  if ([self handleAgentShortcut:event]) return;
   NSEventModifierFlags modifiers = event.modifierFlags;
   BOOL shiftReturn = (event.keyCode == 36 || event.keyCode == 76) &&
     (modifiers & NSEventModifierFlagShift) &&
@@ -111,6 +125,8 @@
 @property (nonatomic, strong) NSTextField *placeholderLabel;
 @property (nonatomic, strong) TLGlassButton *sendButton;
 @property (nonatomic, strong) TLGlassButton *settingsButton;
+@property (nonatomic, strong) TLGlassButton *suggestionsButton;
+@property (nonatomic, strong) NSLayoutConstraint *suggestionsTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *heightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sendButtonWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *sendButtonHeightConstraint;
@@ -254,6 +270,8 @@
   self.placeholderLabel.font = self.palette.bodyFont;
   self.placeholderLabel.textColor = self.palette.messageInputPlaceholderText;
   self.textView.textContainer.lineFragmentPadding = self.palette.space0;
+  self.suggestionsButton.palette = self.palette;
+  self.suggestionsButton.contentTintColor = self.palette.labelText;
   self.settingsButton.palette = self.palette;
   self.settingsButton.contentTintColor = self.palette.labelText;
   self.sendButton.palette = self.palette;
@@ -371,12 +389,50 @@
     ]];
   }
   self.settingsButton.hidden = !visible;
+  [self updateComposerTrailingControls];
+  [self applyPalette];
+  [self recalculateHeight];
+}
+
+- (void)updateComposerTrailingControls {
+  NSView *trailing = self.showsSettingsButton ? self.settingsButton : self.sendButton;
+  self.suggestionsTrailingConstraint.active = NO;
+  if (self.suggestionsButton) {
+    self.suggestionsTrailingConstraint = [self.suggestionsButton.trailingAnchor constraintEqualToAnchor:trailing.leadingAnchor];
+    self.suggestionsTrailingConstraint.active = YES;
+  }
   self.textTrailingConstraint.active = NO;
   self.textTrailingConstraint = [self.textScrollView.trailingAnchor constraintEqualToAnchor:
-    visible ? self.settingsButton.leadingAnchor : self.sendButton.leadingAnchor constant:-self.palette.space4];
+    self.showsSuggestionsButton ? self.suggestionsButton.leadingAnchor : trailing.leadingAnchor constant:-self.palette.space4];
   self.textTrailingConstraint.active = YES;
   [self applyPalette];
   [self recalculateHeight];
+}
+
+- (void)setShowsSuggestionsButton:(BOOL)visible {
+  if (_showsSuggestionsButton == visible) return;
+  _showsSuggestionsButton = visible;
+  if (visible && !self.suggestionsButton) {
+    self.suggestionsButton = [[TLGlassButton alloc] initWithUsesGlassEffect:NO];
+    self.suggestionsButton.hoverSurfaceOnly = YES;
+    [self.contentView addSubview:self.suggestionsButton];
+    [NSLayoutConstraint activateConstraints:@[
+      [self.suggestionsButton.widthAnchor constraintEqualToAnchor:self.sendButton.widthAnchor],
+      [self.suggestionsButton.heightAnchor constraintEqualToAnchor:self.sendButton.heightAnchor],
+      [self.suggestionsButton.centerYAnchor constraintEqualToAnchor:self.sendButton.centerYAnchor],
+    ]];
+    [self setSuggestionsExpanded:self.suggestionsExpanded];
+  }
+  self.suggestionsButton.hidden = !visible;
+  [self updateComposerTrailingControls];
+}
+
+- (void)setSuggestionsExpanded:(BOOL)expanded {
+  _suggestionsExpanded = expanded;
+  NSString *label = expanded ? @"Hide suggestions" : @"Show suggestions";
+  self.suggestionsButton.image = [NSImage imageWithSystemSymbolName:expanded ? @"chevron.down" : @"chevron.up" accessibilityDescription:label];
+  self.suggestionsButton.toolTip = label;
+  self.suggestionsButton.accessibilityLabel = label;
 }
 
 - (void)setPlaceholderText:(NSString *)placeholderText {

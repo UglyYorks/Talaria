@@ -1,4 +1,6 @@
 #import "design_system/TLBrowserFooterView.h"
+#import "design_system/TLInputSuggestionListView.h"
+#import "design_system/TLInputSuggestionPanelView.h"
 #import "TLBrowserContentColor.h"
 #import <QuartzCore/QuartzCore.h>
 #import "TLBrowserTabController.h"
@@ -28,6 +30,10 @@
 @property TLBrowserFooterView *bottomBlur;
 @property NSLayoutConstraint *bottomBlurHeight;
 @property (nonatomic, strong) TLBrowserAddressInput *browserAddressInput;
+@property (nonatomic, strong) TLInputSuggestionPanelView *suggestionPanel;
+@property (nonatomic, strong) TLInputSuggestionListView *suggestionList;
+@property (nonatomic, strong) NSLayoutConstraint *suggestionHeight;
+@property (nonatomic, copy) NSString *dismissedSuggestionInput;
 @property (nonatomic, strong) NSLayoutConstraint *browserAddressInputWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *browserHostBottomConstraint;
 @property (nonatomic, strong) TLBrowserConversation *browserConversation;
@@ -95,6 +101,9 @@
   self.browserChatPane.linkContextMenuHandler = nil;
   self.browserChatPane.minimizeButton.target = nil;
   self.browserAddressInput.heightChangeHandler = nil;
+  self.browserAddressInput.suggestionCommandHandler = nil;
+  self.suggestionsProvider = nil;
+  self.switchToTabHandler = nil;
   self.browserAddressInput.sendButton.target = nil;
   for (NSButton *button in @[self.browserAddressInput.backButton,
                              self.browserAddressInput.forwardButton,
@@ -123,6 +132,9 @@
   self.browserHostView.palette = palette;
   self.bottomBlur.palette = palette;
   self.browserAddressInput.palette = palette;
+  self.suggestionPanel.palette = palette;
+  self.suggestionList.palette = palette;
+  [self updateInputSuggestions];
   self.browserChatPane.palette = palette;
   self.findBar.palette = palette;
   if (self.findBarVisible) self.findBarHeightConstraint.constant = palette.fieldHeight + palette.space4 * 2;
@@ -198,6 +210,39 @@
     controller.addressInputHeight = height;
     [controller configureDocumentFooter];
   };
+  self.suggestionPanel = [TLInputSuggestionPanelView new];
+  self.suggestionPanel.palette = self.palette;
+  self.suggestionPanel.translatesAutoresizingMaskIntoConstraints = NO;
+  self.suggestionPanel.hidden = YES;
+  self.suggestionList = [TLInputSuggestionListView new];
+  self.suggestionList.palette = self.palette;
+  [self.suggestionPanel addSubview:self.suggestionList];
+  [browserContentView addSubview:self.suggestionPanel];
+  self.suggestionHeight = [self.suggestionPanel.heightAnchor constraintEqualToConstant:0];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.suggestionPanel.leadingAnchor constraintEqualToAnchor:addressInput.leadingAnchor],
+    [self.suggestionPanel.trailingAnchor constraintEqualToAnchor:addressInput.trailingAnchor],
+    [self.suggestionPanel.bottomAnchor constraintEqualToAnchor:addressInput.topAnchor constant:-self.palette.space5],
+    self.suggestionHeight,
+    [self.suggestionList.leadingAnchor constraintEqualToAnchor:self.suggestionPanel.leadingAnchor constant:self.palette.space3],
+    [self.suggestionList.trailingAnchor constraintEqualToAnchor:self.suggestionPanel.trailingAnchor constant:-self.palette.space3],
+    [self.suggestionList.topAnchor constraintEqualToAnchor:self.suggestionPanel.topAnchor constant:self.palette.space2],
+    [self.suggestionList.bottomAnchor constraintEqualToAnchor:self.suggestionPanel.bottomAnchor constant:-self.palette.space2],
+  ]];
+  void (^addressChanged)(void) = addressInput.textChangeHandler;
+  addressInput.textChangeHandler = ^{
+    if (addressChanged) addressChanged();
+    weakSelf.dismissedSuggestionInput = nil;
+    [weakSelf updateInputSuggestions];
+  };
+  void (^focusChanged)(BOOL) = addressInput.focusChangeHandler;
+  addressInput.focusChangeHandler = ^(BOOL focused) {
+    if (focusChanged) focusChanged(focused);
+    if (!focused) weakSelf.suggestionPanel.hidden = YES;
+    else [weakSelf updateInputSuggestions];
+  };
+  addressInput.suggestionCommandHandler = ^BOOL(SEL command) { return [weakSelf handleSuggestionCommand:command]; };
+  self.suggestionList.activationHandler = ^(NSUInteger index) { [weakSelf activateInputSuggestion:index]; };
   [self buildFindBar];
   [NSLayoutConstraint activateConstraints:@[
     [browserHostView.leadingAnchor constraintEqualToAnchor:browserContentView.leadingAnchor],
@@ -464,29 +509,113 @@
   [self sampleHeaderContentColor];
 }
 
-- (void)browserPreferencesChanged:(NSNotification *)notification { [self updateAddressBarLabels]; }
+- (void)browserPreferencesChanged:(NSNotification *)notification { [self updateAddressBarLabels]; [self updateInputSuggestions]; }
 
 - (void)updateAddressBarLabels {
-  BOOL search = [[self.browserPreferences localValue:@"addressBarMode"] isEqual:@"search"];
-  self.browserAddressInput.textView.accessibilityLabel = search ? @"Search or enter a URL" : @"Give a task or enter a URL";
-  self.browserAddressInput.sendButton.accessibilityLabel = search ? @"Search or navigate" : @"Send task or navigate";
-  self.browserAddressInput.sendButton.toolTip = search ? @"Search or navigate" : @"Send task or navigate";
+  self.browserAddressInput.textView.accessibilityLabel = @"Ask agent, search, or enter a URL";
+  self.browserAddressInput.sendButton.accessibilityLabel = @"Ask agent";
+  self.browserAddressInput.sendButton.toolTip = @"Ask agent";
 }
 
-- (void)navigateBrowserFromAddressInput:(id)sender {
-  if (self.isClosed) return;
+- (void)updateInputSuggestions {
   TLBrowserAddressInput *input = self.browserAddressInput;
-  NSString *text = [input.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (text.length == 0) return;
-  NSURL *URL = input.hasUserDraft ? [TLInputSuggestions browserURLForInput:text] : self.URL;
-  if (!URL && [[self.browserPreferences localValue:@"addressBarMode"] isEqual:@"search"]) URL = [self.browserPreferences searchURLForText:text];
-  if (!URL) { [self sendBrowserPrompt:text]; return; }
-  [input setDisplayedAddress:[self displayAddressForBrowserURL:URL]];
-  input.textView.toolTip = URL.absoluteString;
+  NSString *text = input.textView.string ?: @"";
+  if (self.isClosed || !input.hasUserDraft || input.window.firstResponder != input.textView ||
+      input.textView.hasMarkedText || [self.dismissedSuggestionInput isEqual:text]) {
+    self.suggestionPanel.hidden = YES;
+    return;
+  }
+  NSArray *rows = self.suggestionsProvider ? self.suggestionsProvider(text) :
+    [TLInputSuggestions suggestionsForInput:text commands:@[] localCandidates:@[]
+      searchURL:[self.browserPreferences searchURLForText:text] hasAttachments:NO];
+  BOOL changed = ![rows isEqual:self.suggestionList.suggestions];
+  self.suggestionList.suggestions = rows;
+  if (changed || self.suggestionList.selectedIndex < 0) self.suggestionList.selectedIndex = rows.count ? 0 : -1;
+  CGFloat content = self.suggestionList.contentHeight + self.palette.space2 * 2;
+  CGFloat maximum = MAX(self.palette.slashCommandRowHeight, NSHeight(self.view.bounds) * 0.4);
+  self.suggestionHeight.constant = MIN(content, maximum);
+  self.suggestionList.scrollingEnabled = content > maximum;
+  self.suggestionPanel.hidden = !rows.count;
+  if (rows.count) [self.view addSubview:self.suggestionPanel positioned:NSWindowAbove relativeTo:nil];
+}
+
+- (BOOL)handleSuggestionCommand:(SEL)command {
+  if (command == NSSelectorFromString(@"askAgent:")) {
+    if (self.isClosed || self.browserAddressInput.textView.hasMarkedText) return NO;
+    [self sendBrowserPrompt:self.browserAddressInput.textView.string];
+    return YES;
+  }
+  if (self.suggestionPanel.hidden || self.browserAddressInput.textView.hasMarkedText) return NO;
+  if (command == @selector(cancelOperation:)) {
+    self.dismissedSuggestionInput = self.browserAddressInput.textView.string;
+    self.suggestionPanel.hidden = YES;
+    return YES;
+  }
+  if (command == @selector(moveUp:)) return [self.suggestionList moveSelectionByOffset:-1];
+  if (command == @selector(moveDown:)) return [self.suggestionList moveSelectionByOffset:1];
+  if (command == @selector(insertTab:)) {
+    NSInteger index = self.suggestionList.selectedIndex;
+    if (index < 0) return NO;
+    NSDictionary *row = self.suggestionList.suggestions[index];
+    NSString *completion = [row[@"kind"] isEqual:@"hermes"] ? [row[@"command"] stringByAppendingString:@" "] :
+      ([row[@"strong"] isEqual:@"yes"] ? row[@"URL"] : nil);
+    if (!completion) return NO;
+    self.browserAddressInput.textView.string = completion;
+    [self.browserAddressInput.textView setSelectedRange:NSMakeRange(completion.length, 0)];
+    [self.browserAddressInput.textView didChangeText];
+    return YES;
+  }
+  return NO; // Return uses the same action as the visible submit button.
+}
+
+- (void)activateInputSuggestion:(NSUInteger)index {
+  if (index >= self.suggestionList.suggestions.count || self.isClosed) return;
+  NSDictionary *row = self.suggestionList.suggestions[index];
+  if (![row[@"value"] ?: self.browserAddressInput.textView.string isEqual:self.browserAddressInput.textView.string]) return;
+  self.suggestionPanel.hidden = YES;
+  self.dismissedSuggestionInput = self.browserAddressInput.textView.string;
+  if ([row[@"kind"] isEqual:@"prompt"]) { [self sendBrowserPrompt:row[@"value"]]; return; }
+  if ([row[@"kind"] isEqual:@"hermes"]) {
+    NSString *text = [self.browserAddressInput.textView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if ([text caseInsensitiveCompare:row[@"command"]] == NSOrderedSame) [self sendBrowserPrompt:text];
+    else {
+      self.browserAddressInput.textView.string = [row[@"command"] stringByAppendingString:@" "];
+      [self.browserAddressInput.textView setSelectedRange:NSMakeRange(self.browserAddressInput.textView.string.length, 0)];
+      [self.browserAddressInput.textView didChangeText];
+    }
+    return;
+  }
+  if ([row[@"kind"] isEqual:@"tab"] && self.switchToTabHandler && self.switchToTabHandler(row[@"tabID"])) {
+    [self.browserAddressInput setDisplayedAddress:[self displayAddressForBrowserURL:self.URL]];
+    return;
+  }
+  NSURL *URL = [NSURL URLWithString:row[@"URL"] ?: @""];
+  if (!URL) return;
+  [self navigateToInputURL:URL];
+}
+
+- (void)navigateToInputURL:(NSURL *)URL {
+  [self.browserAddressInput setDisplayedAddress:[self displayAddressForBrowserURL:URL]];
+  self.browserAddressInput.textView.toolTip = URL.absoluteString;
   [self.view.window makeFirstResponder:self.browserHostView];
   self.URL = URL;
   [self publishMetadata];
   [self.browserService navigateSession:self.browserSession toURL:URL];
+}
+
+- (void)navigateBrowserFromAddressInput:(id)sender {
+  if (self.isClosed || self.browserAddressInput.textView.hasMarkedText) return;
+  if (self.browserAddressInput.hasUserDraft) {
+    [self updateInputSuggestions];
+    if (self.suggestionPanel.hidden) {
+      NSString *text = self.browserAddressInput.textView.string;
+      self.suggestionList.suggestions = self.suggestionsProvider ? self.suggestionsProvider(text) :
+        [TLInputSuggestions suggestionsForInput:text commands:@[] localCandidates:@[]
+          searchURL:[self.browserPreferences searchURLForText:text] hasAttachments:NO];
+      self.suggestionList.selectedIndex = 0;
+    }
+    if (self.suggestionList.selectedIndex >= 0) [self activateInputSuggestion:self.suggestionList.selectedIndex];
+  } else if (self.URL) [self navigateToInputURL:self.URL];
 }
 
 - (void)updateBrowserChat {
