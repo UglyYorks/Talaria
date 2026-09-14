@@ -48,7 +48,7 @@
   [CATransaction begin]; [CATransaction setDisableActions:YES];
   // AppKit owns Core Image setup for its backing layer, including redraws.
   self.backgroundFilters = @[blur, coverage];
-  self.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
+  self.layer.backgroundColor = TLCGColor(self.palette.chatInputBackdrop);
   self.footerMask.frame = self.bounds;
   self.footerMask.path = path;
   self.footerMask.fillColor = TLCGColor(self.palette.controlText);

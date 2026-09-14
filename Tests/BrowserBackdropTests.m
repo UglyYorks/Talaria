@@ -38,7 +38,7 @@ static void Check(BOOL value, NSString *message) {
     for(NSNumber *theme in @[@(TLThemePreferenceLight),@(TLThemePreferenceDark)]) {
       self.blur.palette=[TLThemePalette paletteForPreference:theme.integerValue];
       [self.blur layoutSubtreeIfNeeded];
-      Check(self.blur.backgroundFilters.count==2 && CGColorEqualToColor(self.blur.layer.backgroundColor,TLCGColor(self.blur.palette.transparentSurface)),@"footer uses untinted uniform blur");
+      Check(self.blur.backgroundFilters.count==2 && CGColorEqualToColor(self.blur.layer.backgroundColor,TLCGColor(self.blur.palette.chatInputBackdrop)),@"footer overlays uniform blur with the translucent chat background");
       CIFilter *filter=self.blur.backgroundFilters.firstObject;
       CIColor *color=[CIColor colorWithCGColor:TLCGColor(self.blur.palette.tabBackground)];
       CIImage *solid=[[CIImage imageWithColor:color] imageByCroppingToRect:CGRectMake(0,0,80,40)];
