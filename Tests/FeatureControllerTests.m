@@ -1127,8 +1127,13 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
 @interface TLConcurrentChatController : TLSendingNavigationController
 @property TLConcurrentTestStore *store;
 @property TLConcurrentTestStream *stream;
+@property NSMutableArray<NSNumber *> *refreshedLimitAgents;
 @end
 @implementation TLConcurrentChatController
+- (void)refreshProviderLimitsForAgentID:(NSInteger)agentID {
+  if (!self.refreshedLimitAgents) self.refreshedLimitAgents = [NSMutableArray array];
+  [self.refreshedLimitAgents addObject:@(agentID)];
+}
 - (TLAssistantTurnRunner *)newAssistantTurnRunner {
   return [[TLAssistantTurnRunner alloc] initWithMessageStore:self.store streaming:self.stream];
 }
@@ -1141,6 +1146,7 @@ static void TestConcurrentChatStreams(void) {
   TLConcurrentChatController *controller = [[TLConcurrentChatController alloc] initWithWindow:nil];
   controller.store = [[TLConcurrentTestStore alloc] init];
   controller.stream = [[TLConcurrentTestStream alloc] init];
+  [controller setValue:@42 forKey:@"hermesCommandsAgentID"];
   [controller setValue:controller.store forKey:@"database"];
   TLAppSettings *settings = [TLAppSettings defaultSettings];
   settings.openRouterToken = @"test-token"; settings.selectedModel = @"test-model";
@@ -1173,6 +1179,7 @@ static void TestConcurrentChatStreams(void) {
   NSMutableArray *messagesB = [controller valueForKey:@"messages"];
   Check(controller.stream.requests.count == 2 && [a.sessionID isEqual:@"17"] && [b.sessionID isEqual:@"18"],
     @"two independent runners dispatch separate Hermes sessions");
+  [controller setValue:@99 forKey:@"hermesCommandsAgentID"];
   a.delta(a.requestID, TLAgentStreamDeltaKindContent, @" continues");
   a.delta(a.requestID, TLAgentStreamDeltaKindToolActivity, [NSJSONSerialization JSONObjectWithData:[@"{\"id\":\"a-tool\",\"name\":\"terminal\",\"state\":\"running\"}" dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]);
   b.delta(b.requestID, TLAgentStreamDeltaKindContent, @"Answer B");
@@ -1220,6 +1227,8 @@ static void TestConcurrentChatStreams(void) {
   input = [controller valueForKey:@"messageInput"];
   Check([((TLChatMessage *)[[controller valueForKey:@"messages"] lastObject]).content isEqual:@"Second B answer"] &&
     ![[controller valueForKey:@"hasSendingTurns"] boolValue], @"all chats finish independently without stale callbacks");
+  Check([controller.refreshedLimitAgents isEqual:@[@42, @42, @99]],
+    @"each response or cancellation refreshes its originating agent even after switching agents");
 }
 
 @interface TalariaWindowController (QueueTests)
@@ -3742,15 +3751,94 @@ static void TestHermesHistorySearchAndLayout(void) {
 @interface TLProviderServiceMock : NSObject
 @property NSDictionary *params;
 @property NSInteger agentID;
+@property BOOL offline;
+@property NSUInteger requests;
 @property (copy) void (^pending)(NSDictionary *, NSError *);
 @end
 @implementation TLProviderServiceMock
+- (BOOL)isDefaultAgentRunning { return !self.offline; }
+- (BOOL)isVMRunningForAgent:(TLAgentRecord *)agent { return !self.offline; }
 - (void)hermesProvidersForAgentID:(NSInteger)agentID parameters:(NSDictionary *)params completion:(void (^)(NSDictionary *, NSError *))completion {
-  self.agentID = agentID; self.params = params; self.pending = completion;
+  self.agentID = agentID; self.params = params; self.pending = completion; self.requests++;
 }
 @end
 static void ProviderTick(void) {
   [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+}
+
+@interface TalariaWindowController (ProviderLimitsTesting)
+- (NSMenu *)sidebarUserMenu;
+- (void)refreshProviderLimitsForAgentID:(NSInteger)agentID;
+- (NSString *)providerLimitTitleForWindow:(NSDictionary *)window atDate:(NSDate *)now;
+@end
+
+static void TestSidebarProviderLimits(void) {
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TalariaWindowController *controller = [[TalariaWindowController alloc] initWithWindow:nil];
+    TLFeatureSettingsStoreMock *store = [TLFeatureSettingsStoreMock new]; store.currentAgentID = 42;
+    TLProviderServiceMock *service = [TLProviderServiceMock new];
+    TLAgentRecord *agent = [TLAgentRecord new]; agent.agentID = 42;
+    TLAgentRecord *other = [TLAgentRecord new]; other.agentID = 99;
+    [controller setValue:@[agent, other] forKey:@"agents"];
+    [controller setValue:store forKey:@"database"];
+    [controller setValue:service forKey:@"agentOrchestrator"];
+    [controller setValue:[TLThemePalette paletteForPreference:theme.integerValue] forKey:@"palette"];
+    NSMenu *menu = [controller sidebarUserMenu];
+    Check(![menu itemWithTitle:@"Provider limits"] && service.requests == 0,
+      @"a cold menu never starts a network request or displays a loading row");
+    [controller refreshProviderLimitsForAgentID:42];
+    Check(service.agentID == 42 && [service.params[@"action"] isEqual:@"usage"], @"background refresh uses the owning agent");
+    NSDictionary *window = @{@"label": @"Session", @"used_percent": @44,
+      @"reset_at": @([NSDate date].timeIntervalSince1970 + 5 * 86400 + 2 * 3600 + 30)};
+    NSDictionary *snapshot = @{@"providers": @[@{@"name": @"OpenAI Codex", @"windows": @[window], @"details": @[]}]};
+    service.pending(snapshot, nil); ProviderTick();
+    menu = [controller sidebarUserMenu];
+    NSMenuItem *item = [menu itemWithTitle:@"Provider limits"];
+    Check(item.submenu.numberOfItems == 2 && [item.submenu.itemArray[1].title isEqual:@"56% remaining • resets in 5d 2h"],
+      @"cached limits show only remaining percentage and the short reset countdown");
+    Check(service.requests == 1, @"opening a warm menu makes no network requests");
+    Check(!item.submenu.itemArray[1].enabled && [item.submenu.itemArray[1].toolTip isEqual:@"Session"],
+      @"limits stay read-only with the window identity available on hover");
+    NSDate *reset = [NSDate dateWithTimeIntervalSince1970:[window[@"reset_at"] doubleValue]];
+    Check([[controller providerLimitTitleForWindow:window atDate:[reset dateByAddingTimeInterval:-3600]]
+      isEqual:@"56% remaining • resets in 1h 0m"], @"countdown advances locally without refetching");
+    Check([[controller providerLimitTitleForWindow:window atDate:reset] isEqual:@"56% remaining • resets now"],
+      @"a passed reset does not invent restored quota");
+    Check([[controller providerLimitTitleForWindow:@{@"used_percent": @100} atDate:NSDate.date]
+      isEqual:@"0% remaining"], @"zero remaining quota is retained without a reset time");
+
+    [controller refreshProviderLimitsForAgentID:42];
+    [controller refreshProviderLimitsForAgentID:42];
+    [controller refreshProviderLimitsForAgentID:42];
+    Check(service.requests == 2, @"responses during a refresh coalesce instead of starting overlapping requests");
+    Check([[[controller sidebarUserMenu] itemWithTitle:@"Provider limits"].submenu.itemArray[1].title hasPrefix:@"56% remaining"],
+      @"the previous snapshot stays instantly available during refresh");
+    service.pending(snapshot, nil); ProviderTick();
+    Check(service.requests == 3, @"a response during a fetch triggers one follow-up snapshot");
+    service.pending(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Update Hermes."}]);
+    ProviderTick();
+    item = [[controller sidebarUserMenu] itemWithTitle:@"Provider limits"];
+    Check(item.submenu.numberOfItems == 3 && [item.submenu.itemArray[1].title hasPrefix:@"56% remaining"] &&
+      [item.submenu.itemArray[2].toolTip isEqual:@"Update Hermes."], @"failed refresh retains last limits and exposes the error");
+
+    [controller refreshProviderLimitsForAgentID:42];
+    store.currentAgentID = 99;
+    service.pending(snapshot, nil); ProviderTick();
+    Check(![[controller sidebarUserMenu] itemWithTitle:@"Provider limits"], @"another agent never sees the previous account's limits");
+    store.currentAgentID = 42;
+    Check([[controller sidebarUserMenu] itemWithTitle:@"Provider limits"].submenu.numberOfItems == 2,
+      @"switching back uses that agent's cache and clears recovered errors");
+    [controller refreshProviderLimitsForAgentID:42];
+    service.pending(@{@"providers": @[]}, nil); ProviderTick();
+    Check(![[controller sidebarUserMenu] itemWithTitle:@"Provider limits"], @"unavailable providers disappear after a completed refresh");
+    NSUInteger requests = service.requests;
+    service.offline = YES;
+    [controller refreshProviderLimitsForAgentID:42];
+    Check(service.requests == requests, @"background refresh never restarts a stopped VM");
+    menu = [controller sidebarUserMenu];
+    Check([menu itemWithTitle:@"History"] && [menu itemWithTitle:@"Downloads"] &&
+      [menu itemWithTitle:@"Debug"] && [menu itemWithTitle:@"Settings"], @"existing user menu actions stay available");
+  }
 }
 static void ProviderSnapshot(TLProviderSetupWindowController *controller, NSString *name) {
   [controller.window.contentView layoutSubtreeIfNeeded];
@@ -3964,6 +4052,12 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    TestSidebarProviderLimits();
+    if (getenv("TL_TEST_PROVIDER_LIMITS_ONLY")) {
+      TestConcurrentChatStreams();
+      NSLog(@"Provider limits menu tests passed");
+      return 0;
+    }
     if (getenv("TL_ACTIVITY_TESTS_ONLY")) {
       TestLiveThinkingPresentation(); TestConcurrentChatStreams(); TestNavigationWhileSendingPreservesTurn();
       TestStreamingKeepsMessageViewsAttached(); TestStreamingComposerStopButton(); TestApprovalRouting();

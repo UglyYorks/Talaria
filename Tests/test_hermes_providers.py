@@ -5,6 +5,7 @@ import tempfile
 import threading
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch, call
 
@@ -58,6 +59,59 @@ class ProviderTests(unittest.TestCase):
         gateway = self.gateway()
         gateway.call.return_value = {'providers': [{'slug': 'a', 'models': ['same']}, {'slug': 'b', 'models': ['same']}]}
         self.assertEqual(gateway.providers({'action': 'models', 'slug': 'b'}), {'providers': [{'slug': 'b', 'models': ['same']}]})
+
+    def test_usage_is_read_only_during_active_turns_and_uses_authenticated_catalogue(self):
+        gateway = self.gateway()
+        gateway.listeners = {'active': object()}
+        gateway.sessions = {'chat': {'id': 'live'}}
+        gateway.call.side_effect = [
+            {'providers': [{'slug': 'connected', 'authenticated': True},
+                           {'slug': 'not-connected', 'authenticated': False}]},
+            {'providers': [{'name': 'Connected', 'lines': ['Weekly: 25% remaining']}]}]
+        self.assertEqual(gateway.providers({'action': 'usage'})['providers'][0]['name'], 'Connected')
+        self.assertEqual(gateway.call.call_args_list, [
+            call('model.options', {'explicit_only': True}),
+            call('talaria.providers.usage', {'slugs': ['connected']})])
+        self.assertEqual(gateway.sessions, {'chat': {'id': 'live'}})
+        self.assertFalse(getattr(gateway, '_provider_mutating', False))
+
+    def test_usage_omits_unavailable_providers_and_keeps_zero_remaining(self):
+        usage = types.ModuleType('agent.account_usage')
+        reset = datetime(2026, 9, 19, 9, 17, tzinfo=timezone.utc)
+        depleted = types.SimpleNamespace(available=True, windows=[types.SimpleNamespace(
+            label='Weekly', used_percent=100, reset_at=reset, detail=None)], details=[])
+        unavailable = types.SimpleNamespace(available=False)
+        usage.fetch_account_usage = Mock(side_effect=lambda slug: {'connected': depleted, 'unavailable': unavailable}.get(slug))
+        usage.build_nous_credits_snapshot = Mock(return_value=types.SimpleNamespace(
+            available=True, windows=[], details=['Total usable: $2.50']))
+        nous = types.ModuleType('hermes_cli.nous_account')
+        nous.get_nous_portal_account_info = Mock(return_value=object())
+        catalog = types.ModuleType('hermes_cli.provider_catalog')
+        catalog.provider_catalog = lambda: [types.SimpleNamespace(slug=slug, label=slug.title())
+                                           for slug in ['connected', 'unavailable', 'unsupported', 'nous']]
+        with patch.dict(sys.modules, {'agent': types.ModuleType('agent'), 'agent.account_usage': usage,
+                                     'hermes_cli': types.ModuleType('hermes_cli'), 'hermes_cli.provider_catalog': catalog,
+                                     'hermes_cli.nous_account': nous}):
+            result = providers.account_usage(['connected', 'unavailable', 'unsupported', 'nous', 'unknown', 'connected'])
+        self.assertEqual(result, {'providers': [
+            {'slug': 'connected', 'name': 'Connected', 'windows': [
+                {'label': 'Weekly', 'used_percent': 100, 'reset_at': reset.timestamp(), 'detail': None}], 'details': []},
+            {'slug': 'nous', 'name': 'Nous', 'windows': [], 'details': ['Total usable: $2.50']}]})
+        self.assertEqual(usage.fetch_account_usage.call_count, 3)
+        nous.get_nous_portal_account_info.assert_called_once_with(force_fresh=True)
+
+    def test_usage_rpc_runs_off_dispatcher_and_reports_missing_helpers_without_secrets(self):
+        handlers = {}
+        server = types.SimpleNamespace(method=lambda name: lambda fn: handlers.setdefault(name, fn),
+            _LONG_HANDLERS=frozenset(), _ok=lambda rid, payload: payload,
+            _err=lambda rid, code, message: {'code': code, 'message': message})
+        providers.register(server)
+        self.assertIn('talaria.providers.usage', server._LONG_HANDLERS)
+        with patch.object(providers, 'account_usage', side_effect=ImportError('secret-path')):
+            result = handlers['talaria.providers.usage']('r', {'slugs': []})
+        self.assertEqual(result['code'], -32601)
+        self.assertIn('Update Hermes', result['message'])
+        self.assertNotIn('secret-path', str(result))
 
     def test_select_checks_credentials_before_persisting_model_and_preserves_confirmation(self):
         gateway = self.gateway()
@@ -158,6 +212,7 @@ class ProviderTests(unittest.TestCase):
     def test_custom_endpoint_verification_compares_identity_not_billing_class(self):
         handlers = {}
         server = types.SimpleNamespace(method=lambda name: lambda fn: handlers.setdefault(name, fn),
+            _LONG_HANDLERS=frozenset(),
             _ok=lambda rid, payload: payload, _err=lambda rid, code, message: {'error': message},
             _sessions={'s': {'agent': object()}}, _runtime_model_config=lambda agent: {'model': 'same', 'provider': 'custom:gpu-a'})
         providers.register(server)

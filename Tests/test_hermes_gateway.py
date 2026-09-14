@@ -961,7 +961,7 @@ class CredentialRPCTests(unittest.TestCase):
                         main()
                 self.assertEqual(set(handlers), {"talaria.credentials.list", "talaria.credentials.set",
                                                 "talaria.credentials.remove", "talaria.skills.describe", "talaria.automations", "talaria.notes",
-                                    "talaria.providers", "talaria.session.ready", "talaria.session.verify_model",
+                                    "talaria.providers", "talaria.providers.usage", "talaria.session.ready", "talaria.session.verify_model",
                                                 "talaria.notifications.sync", "talaria.notifications.set_read",
                                     "talaria.notifications.open_source", "talaria.plugins",
                                     "talaria.host.configure", "talaria.host.attach", "talaria.host.detach", "talaria.host.respond"})

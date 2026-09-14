@@ -406,7 +406,7 @@ class HermesGateway:
 
     def providers(self, params):
         action = params.get("action")
-        mutating = action not in {"list", "models", "login.poll", "login.cancel"}
+        mutating = action not in {"list", "models", "usage", "login.poll", "login.cancel"}
         if mutating:
             with self.lock:
                 if (self.listeners or getattr(self, "_support_requests", 0) or any(lock.locked() for lock in self.session_locks.values())
@@ -422,6 +422,10 @@ class HermesGateway:
 
     def _provider_request(self, params):
         action = params.get("action")
+        if action == "usage":
+            catalogue = self.model_options()
+            slugs = [row["slug"] for row in catalogue["providers"] if row.get("authenticated")]
+            return self.call("talaria.providers.usage", {"slugs": slugs})
         if action == "list":
             catalogue = self.call("model.options", {"include_unconfigured": True, "refresh": True})
             metadata = self.call("talaria.providers", {"action": "describe"})

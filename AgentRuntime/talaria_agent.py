@@ -466,7 +466,10 @@ def hermes_providers(request, output=None):
         emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError):
-        error("Could not configure this Hermes provider. Check your entries and update Hermes if needed, then retry.", output)
+        if request.get("params", {}).get("action") == "usage":
+            error("Could not refresh provider limits. Update Hermes if needed, then retry.", output)
+        else:
+            error("Could not configure this Hermes provider. Check your entries and update Hermes if needed, then retry.", output)
 
 
 def hermes_credentials(request, output=None):
