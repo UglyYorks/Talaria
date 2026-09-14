@@ -314,7 +314,17 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
 
 - (void)hermesActivityWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
                     completion:(void (^)(NSDictionary *, NSError *))completion {
-  [self performJSONOperation:@"hermes_activity" agent:agent parameters:@{@"session_id":sessionID} completion:completion];
+  [self hermesActivityWithAgent:agent sessionID:sessionID question:nil completion:completion];
+}
+- (void)hermesActivityWithAgent:(TLAgentRecord *)agent sessionID:(NSString *)sessionID
+                     question:(void (^)(id))question completion:(void (^)(NSDictionary *, NSError *))completion {
+  NSDictionary *payload = @{@"operation":@"hermes_activity", @"request_id":NSUUID.UUID.UUIDString,
+    @"session_id":sessionID, @"host_commands":@(question != nil)};
+  TLAgentStreamDeltaHandler delta = question ? ^(NSString *requestID, TLAgentStreamDeltaKind kind, id value) {
+    if (kind == TLAgentStreamDeltaKindQuestion) question(value[@"question"]);
+  } : nil;
+  [self startWorkerWithAgent:agent payload:payload operation:@"hermes_activity" delta:delta
+    streamCompletion:nil modelCompletion:nil resultCompletion:completion];
 }
 
 - (void)hermesPluginsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
@@ -578,7 +588,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   request.streamCompletion = streamCompletion;
   request.modelCompletion = modelCompletion;
   request.resultCompletion = resultCompletion;
-  if ([operation isEqual:@"hermes_session_chat"]) {
+  if ([operation isEqual:@"hermes_session_chat"] || ([operation isEqual:@"hermes_activity"] && [payload[@"host_commands"] boolValue])) {
     TLHostCommandBridge *bridge = self.hostBridge;
     NSString *chatID = payload[@"session_id"];
     NSString *privateScope = self.incognitoID ?: @"";

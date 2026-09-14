@@ -1,7 +1,7 @@
 """Session-bound host command requests over Hermes TUI JSON-RPC.
 
 This adapter never executes commands or stores permissions. The macOS client
-owns consent and execution; only an attached, foreground chat can request it.
+owns consent and execution; requests are routed to the chat that owns the live agent or delegated child.
 """
 import json
 import threading
@@ -31,6 +31,7 @@ class HostCommands:
         self.server = server
         self.lock = threading.RLock()
         self.attached = set()
+        self.owners = {}
         self.pending = {}
         self.description = None
 
@@ -69,16 +70,57 @@ class HostCommands:
                 refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True)
                 agent._talaria_host_description = self.description
             self.attached.add(sid)
+            self.owners = {key: value for key, value in self.owners.items() if self.server._sessions.get(key) is value}
+            self.owners[sid] = session
         return {"attached": True}
 
     def detach(self, sid):
         with self.lock:
             self.attached.discard(sid)
             for request in self.pending.values():
-                if request["session_id"] == sid:
+                if request["session_id"] == sid and not request["child"]:
                     request["result"] = {"error": "Host command chat disconnected."}
                     request["ready"].set()
         return {"detached": True}
+
+    def child_owner(self, session_id):
+        # Hermes's live registry contains actual agent/session objects. Never
+        # accept a parent id, environment variable, or ancestry from tool args.
+        from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+        with _active_subagents_lock:
+            records = list(_active_subagents.values())
+        matches = []
+        for record in records:
+            child = record.get("agent")
+            if getattr(child, "session_id", None) != session_id:
+                continue
+            sid = record.get("owner_session_id")
+            session = self.owners.get(sid)
+            if (session is not None and self.server._sessions.get(sid) is session
+                    and record.get("owner_session_record") is session):
+                matches.append((sid, session, child))
+        return matches[0] if len(matches) == 1 else None
+
+    def poll(self, sid):
+        with self.lock:
+            if self.owners.get(sid) is not self.server._sessions.get(sid) or sid not in self.owners:
+                return {"requests": []}
+            requests = []
+            for rid, request in self.pending.items():
+                if request["session_id"] == sid and request["child"] and not request["delivered"] and not request["ready"].is_set():
+                    request["delivered"] = True
+                    requests.append({**request["arguments"], "request_id": rid, "session_id": sid})
+                    break
+            return {"requests": requests}
+
+    def wait(self, params):
+        with self.lock:
+            request = self.pending.get(params.get("request_id"))
+            if request and request["session_id"] != params.get("session_id"):
+                raise ValueError("This host command belongs to another chat.")
+        if request:
+            request["ready"].wait(365)
+        return {"finished": True}
 
     def execute(self, args, *, session_id=None, **_kwargs):
         from tools.approval_context import _approval_session_id, _approval_tool_call_id
@@ -91,27 +133,37 @@ class HostCommands:
                 matches = [(sid, self.server._sessions.get(sid)) for sid in self.attached]
                 matches = [(sid, s) for sid, s in matches if s and
                            getattr(s.get("agent"), "session_id", None) == session_id]
-                if len(matches) != 1:
-                    raise ValueError("Host commands require an active Talaria chat.")
-                sid, session = matches[0]
-                if session.get("_turn_cancel_requested") or not session.get("running"):
+                child = None
+                if len(matches) == 1:
+                    sid, session = matches[0]
+                else:
+                    owner = self.child_owner(session_id)
+                    if not owner:
+                        raise ValueError("This agent is not connected to a Talaria chat. Retry from the owning chat.")
+                    sid, session, child = owner
+                if session.get("_turn_cancel_requested") or (child is None and not session.get("running")):
                     raise ValueError("The chat has stopped.")
                 rid = uuid.uuid4().hex
-                request = {"session_id": sid, "ready": threading.Event(), "result": None}
+                request = {"session_id": sid, "ready": threading.Event(), "result": None,
+                           "child": child is not None, "delivered": False, "arguments": clean}
                 self.pending[rid] = request
             try:
-                self.server._emit("host.command.request", sid, {**clean, "request_id": rid, "session_id": sid})
+                if child is None:
+                    self.server._emit("host.command.request", sid, {**clean, "request_id": rid, "session_id": sid})
                 deadline = time.monotonic() + 360
                 while not request["ready"].wait(0.1):
-                    if session.get("_turn_cancel_requested") or not session.get("running"):
+                    if (session.get("_turn_cancel_requested") or self.server._sessions.get(sid) is not session
+                            or (child is None and not session.get("running"))
+                            or (child is not None and self.child_owner(session_id) != (sid, session, child))):
                         raise ValueError("Host command cancelled.")
                     if time.monotonic() >= deadline:
                         raise ValueError("Host command permission or execution timed out.")
                 return json.dumps(request["result"], ensure_ascii=False)
             finally:
                 with self.lock:
+                    request["ready"].set()
                     self.pending.pop(rid, None)
-        except (ValueError, RuntimeError) as exc:
+        except (ImportError, ValueError, RuntimeError) as exc:
             return json.dumps({"error": str(exc)})
 
     def respond(self, params):
@@ -129,13 +181,14 @@ class HostCommands:
 
 def register(server):
     service = HostCommands(server)
-    for action in ("configure", "attach", "detach", "respond"):
+    server._LONG_HANDLERS = server._LONG_HANDLERS | {"talaria.host.wait"}
+    for action in ("configure", "attach", "detach", "respond", "poll", "wait"):
         def handler(rid, params, action=action):
             try:
                 if action == "configure":
                     result = service.configure(params.get("description"))
-                elif action == "respond":
-                    result = service.respond(params)
+                elif action in {"respond", "wait"}:
+                    result = getattr(service, action)(params)
                 else:
                     result = getattr(service, action)(params.get("session_id"))
                 return server._ok(rid, result)

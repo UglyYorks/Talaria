@@ -690,6 +690,11 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 
 - (void)hermesActivityForSessionID:(NSString *)sessionID agentID:(NSInteger)agentID
                       completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self hermesActivityForSessionID:sessionID agentID:agentID question:nil completion:completion];
+}
+
+- (void)hermesActivityForSessionID:(NSString *)sessionID agentID:(NSInteger)agentID
+                      question:(void (^)(id))question completion:(void (^)(NSDictionary *, NSError *))completion {
   // A background refresh must not boot a VM or switch the selected agent.
   NSError *error = nil;
   TLAgentRecord *agent = [self.database agentWithID:agentID > 0 ? agentID : self.database.currentAgentID error:&error];
@@ -700,7 +705,9 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   if (![self.agentClient respondsToSelector:@selector(hermesActivityWithAgent:sessionID:completion:)]) {
     completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to view background activity.")); return;
   }
-  [self.agentClient hermesActivityWithAgent:agent sessionID:sessionID completion:completion];
+  if (question && [self.agentClient respondsToSelector:@selector(hermesActivityWithAgent:sessionID:question:completion:)])
+    [self.agentClient hermesActivityWithAgent:agent sessionID:sessionID question:question completion:completion];
+  else [self.agentClient hermesActivityWithAgent:agent sessionID:sessionID completion:completion];
 }
 
 - (void)connectToDefaultAgentTerminal:(TLAgentVMConnectionCompletionHandler)completion {

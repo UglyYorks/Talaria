@@ -291,6 +291,9 @@ def hermes_activity(request, output=None):
             raise RuntimeError("Hermes disconnected. Send a message to reconnect.")
         else:
             result = gateway.activity_snapshot(trim(request.get("session_id")))
+            if request.get("host_commands") is True:
+                gateway.poll_host_commands(trim(request.get("session_id")), lambda payload:
+                    emit({"type": "delta", "request_id": request["request_id"], "kind": "host_command", "payload": payload}, output))
         emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError) as exc:

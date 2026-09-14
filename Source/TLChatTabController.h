@@ -45,6 +45,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)refreshRuntimeActivity;
 @property (nonatomic, copy, nullable) dispatch_block_t intentHandler;
 @property (nonatomic, copy, nullable) BOOL (^notificationRevealHandler)(void);
+- (void)presentBackgroundQuestion:(id)question;
 - (void)renderMessagesScrollingToBottom:(BOOL)scrollToBottom;
 - (void)scheduleStreamingMessageRender;
 - (void)markMessageDirty:(nullable TLChatMessage *)message;

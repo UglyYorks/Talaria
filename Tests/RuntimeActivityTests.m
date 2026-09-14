@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import "TLChatTabController.h"
+#import "TLQuestionRequest.h"
 #import "design_system/TLRuntimeActivityView.h"
 #import "design_system/TLThemedButton.h"
 #import "design_system/TLToolStatusPill.h"
@@ -26,6 +27,25 @@ static NSUInteger PixelsNear(NSBitmapImageRep *rep, NSColor *target) {
   }
   return count;
 }
+// A one-point diagonal symbol has no fully opaque pixels at 1x. Check its
+// rendered coverage toward the expected foreground, excluding reference swatches.
+static NSUInteger SymbolInk(NSBitmapImageRep *rep, NSColor *foreground, NSColor *surface) {
+  foreground = [foreground colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  surface = [surface colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  CGFloat fr = foreground.redComponent - surface.redComponent;
+  CGFloat fg = foreground.greenComponent - surface.greenComponent;
+  CGFloat fb = foreground.blueComponent - surface.blueComponent;
+  CGFloat scale = fr*fr + fg*fg + fb*fb;
+  if (scale < 0.001) return 0;
+  NSUInteger count = 0;
+  for (NSInteger y = 0; y < rep.pixelsHigh; y++) for (NSInteger x = 0; x < rep.pixelsWide - 8; x++) {
+    NSColor *pixel = [[rep colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    CGFloat coverage = ((pixel.redComponent-surface.redComponent)*fr + (pixel.greenComponent-surface.greenComponent)*fg +
+      (pixel.blueComponent-surface.blueComponent)*fb) / scale;
+    if (coverage > 0.5 && coverage <= 1.05) count++;
+  }
+  return count;
+}
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -47,6 +67,12 @@ int main(void) {
     Check([[(NSTextField *)[view valueForKey:@"preview"] stringValue] containsString:@"Checking"], @"latest agent update is visible without expanding");
     [button performClick:nil];
     Check(view.expanded, @"disclosure opens activity details");
+    Check(Output(view) == nil, @"opening activity does not dump every task's output");
+    NSStackView *rows = [view valueForKey:@"details"];
+    NSStackView *firstHeader = [(NSStackView *)rows.arrangedSubviews.firstObject arrangedSubviews].firstObject;
+    TLThemedButton *rowToggle = (id)firstHeader.arrangedSubviews.lastObject;
+    [rowToggle performClick:nil];
+    Check(Output(view) != nil, @"a row disclosure reveals its selectable details");
     for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
       view.palette = [TLThemePalette paletteForPreference:theme.integerValue];
       window.appearance = [NSAppearance appearanceNamed:view.palette.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
@@ -66,6 +92,9 @@ int main(void) {
         [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
           writeToFile:[NSString stringWithFormat:@"build/activity-%@-%@.png", view.palette.dark ? @"dark" : @"light", width] atomically:YES];
       }
+      NSStackView *renderedRows = [view valueForKey:@"details"];
+      NSStackView *renderedHeader = [(NSStackView *)renderedRows.arrangedSubviews.firstObject arrangedSubviews].firstObject;
+      for (TLThemedButton *button in @[[view valueForKey:@"disclosure"], renderedHeader.arrangedSubviews.lastObject])
       for (NSNumber *highlighted in @[@NO, @YES]) {
         button.cell.highlighted = highlighted.boolValue;
         NSSize size = NSMakeSize(NSWidth(button.bounds) + 8, NSHeight(button.bounds));
@@ -78,10 +107,14 @@ int main(void) {
           return YES;
         }];
         NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:rendered.TIFFRepresentation];
+        if (!button.title.length) [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+          writeToFile:[NSString stringWithFormat:@"build/activity-row-control-%@-%@.png", theme, highlighted] atomically:YES];
         NSColor *foreground = [rep colorAtX:rep.pixelsWide-6 y:rep.pixelsHigh/2];
         NSColor *surface = [rep colorAtX:rep.pixelsWide-2 y:rep.pixelsHigh/2];
-        Check(PixelsNear(rep, foreground) > (NSUInteger)rep.pixelsHigh * 4 + 5,
+        if (button.title.length) Check(PixelsNear(rep, foreground) > (NSUInteger)rep.pixelsHigh * 4 + 5,
           @"rendered disclosure text keeps its foreground in normal and pressed states");
+        else Check(SymbolInk(rep, foreground, surface) > 3,
+          @"rendered row disclosure remains readable against its paired surface in both themes");
         if (!highlighted.boolValue) Check(PixelsNear(rep, surface) > (NSUInteger)rep.pixelsHigh * 4 + 40,
           @"rendered disclosure uses its paired surface in both themes");
       }
@@ -123,7 +156,7 @@ int main(void) {
     Check([[chat valueForKey:@"runtimeActivityView"] superview] == nil, @"background activity does not add a transcript panel");
     Check([pill accessibilityPerformPress], @"activity details are accessible from the pill"); Pump();
     NSPopover *popover = [chat valueForKey:@"activityPopover"];
-    Check(popover.shown && Output([chat valueForKey:@"runtimeActivityView"]), @"pill opens selectable terminal output in a popover");
+    Check(popover.shown && !Output([chat valueForKey:@"runtimeActivityView"]), @"pill opens compact activity rows without expanding terminal logs");
     popover.animates = NO;
     [popover close];
     for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
@@ -143,6 +176,15 @@ int main(void) {
         NSView *popoverView = [(NSPopover *)[chat valueForKey:@"activityPopover"] contentViewController].view;
         [popoverView layoutSubtreeIfNeeded];
         Check(NSWidth(popoverView.bounds) <= MAX(160, width.doubleValue - 40), [NSString stringWithFormat:@"activity popover respects the requested width: %@ for %@", NSStringFromRect(popoverView.bounds), width]);
+        TLRuntimeActivityView *activityPanel = [chat valueForKey:@"runtimeActivityView"];
+        if (!Output(activityPanel)) {
+          for (NSStackView *card in [(NSStackView *)[activityPanel valueForKey:@"details"] arrangedSubviews]) {
+            NSStackView *header = card.arrangedSubviews.firstObject;
+            NSButton *toggle = (id)header.arrangedSubviews.lastObject;
+            if ([toggle.identifier isEqual:@"process:1"]) { [toggle performClick:nil]; break; }
+          }
+          [popoverView layoutSubtreeIfNeeded];
+        }
         NSScrollView *terminal = Output([chat valueForKey:@"runtimeActivityView"]);
         Check(NSWidth(terminal.frame) > 0 && NSWidth(terminal.frame) <= NSWidth(popoverView.bounds), @"terminal details fit the activity popover");
         rep = [popoverView bitmapImageRepForCachingDisplayInRect:popoverView.bounds];
@@ -167,7 +209,12 @@ int main(void) {
     chat.chat = other;
     stale(@{@"available":@YES, @"activities":Activities()}, nil); Pump();
     Check(chat.runtimeActivities.count == 0, @"late results cannot cross into another session");
+    __block NSString *answer = nil;
+    TLQuestionRequest *question = [[TLQuestionRequest alloc] initWithPresentation:@{@"title":@"Allow background command?", @"options":@[@{@"id":@"deny", @"title":@"Deny"}]} response:^(NSString *choice) { answer = choice; }];
+    [chat presentBackgroundQuestion:question];
+    Check([chat.messages.lastObject.questions containsObject:question] && question.pending, @"background Mac approval is attached to the owning transcript");
     [chat refreshRuntimeActivity]; [chat close];
+    Check([answer isEqual:@"deny"] && !question.pending, @"closing the chat resolves pending background consent");
     pending(@{@"available":@YES, @"activities":Activities()}, nil); Pump();
     Check(chat.runtimeActivities.count == 0 && ![chat valueForKey:@"activityTimer"], @"closing stops polling and ignores in-flight results");
     [chatWindow close];

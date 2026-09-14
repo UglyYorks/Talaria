@@ -1,4 +1,5 @@
 #import "TLAgentPickerWindowController.h"
+#import "TLQuestionRequest.h"
 #import "TLBrowserContentColor.h"
 #import "design_system/TLIncognitoPill.h"
 #import "TLProviderSetupWindowController.h"
@@ -353,7 +354,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     if (!owner || owner.widgetbookMode || !record) { completion(@{@"available":@NO, @"activities":@[]}, nil); return; }
     NSString *sid = record.continuationSessionID.length ? record.continuationSessionID : record.hermesSessionID;
     if (!sid.length) { completion(@{@"available":@NO, @"activities":@[]}, nil); return; }
-    [owner.agentOrchestrator hermesActivityForSessionID:sid agentID:record.sourceAgentID completion:completion];
+    [owner.agentOrchestrator hermesActivityForSessionID:sid agentID:record.sourceAgentID
+      question:^(id question) {
+        TLChatRecord *current = origin.chat;
+        NSString *currentID = current.continuationSessionID.length ? current.continuationSessionID : current.hermesSessionID;
+        if (!origin || current.sourceAgentID != record.sourceAgentID || ![currentID isEqual:sid])
+          [(TLQuestionRequest *)question respondWithOption:@"deny"];
+        else [origin presentBackgroundQuestion:question];
+      } completion:completion];
   };
   chat.intentHandler = ^{ [weakSelf activateCachedChatWithID:origin.chat.chatID]; [weakSelf sendAWSOutageIntent:nil]; };
   chat.composerTarget = self;

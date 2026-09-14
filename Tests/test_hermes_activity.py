@@ -70,6 +70,17 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(a["summary"], "Fixed")
         self.assertEqual(b["state"], "running")
 
+    def test_long_goals_keep_the_start_and_completion_notice_is_not_duplicated(self):
+        goal = "Implement input suggestions. " + "Additional instructions " * 140
+        self.emit("status.update", {"kind": "process", "text": "Subagent Task Completed: " + goal})
+        self.emit("subagent.start", {"subagent_id": "a", "goal": goal})
+        self.emit("subagent.complete", {"subagent_id": "a", "goal": goal, "status": "completed", "text": "Finished", "summary": "Finished"})
+        row, = self.rows()
+        self.assertTrue(row["name"].startswith("Implement input suggestions."))
+        self.assertLessEqual(len(row["name"]), 100)
+        self.assertEqual(row["summary"], "Finished")
+        self.assertEqual(row["detail"], "")
+
     def test_notifications_deduplicate_and_sessions_do_not_mix(self):
         for _ in range(3): self.emit("status.update", {"kind": "process", "text": "Codex finished"})
         self.emit("status.update", {"kind": "process", "text": "Other finished"}, "two")
@@ -128,6 +139,20 @@ class ActivityTests(unittest.TestCase):
             self.assertEqual([frame["type"] for frame in frames], ["result", "complete"])
             self.assertFalse(frames[0]["result"]["available"])
             start.assert_not_called()
+
+    def test_worker_relays_background_host_request_before_finishing_poll(self):
+        gateway = Mock()
+        gateway.process.poll.return_value = None
+        gateway.activity_snapshot.return_value = {"available": True, "activities": []}
+        request = {"request_id": "host", "session_id": "runtime", "command": "pwd"}
+        gateway.poll_host_commands.side_effect = lambda sid, deliver: deliver(request)
+        with patch.object(worker, "_tui_gateway", gateway):
+            output = io.BytesIO()
+            worker.hermes_activity({"request_id": "poll", "session_id": "chat", "host_commands": True}, output)
+        frames = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([frame["type"] for frame in frames], ["delta", "result", "complete"])
+        self.assertEqual(frames[0]["payload"], request)
+        self.assertEqual(frames[0]["kind"], "host_command")
 
     def test_private_activity_cannot_read_normal_gateway(self):
         identity = "private-window-123456"

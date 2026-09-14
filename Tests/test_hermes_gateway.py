@@ -980,7 +980,7 @@ class CredentialRPCTests(unittest.TestCase):
                                     "talaria.providers", "talaria.providers.usage", "talaria.session.ready", "talaria.session.verify_model", "talaria.models.thinking",
                                                 "talaria.notifications.sync", "talaria.notifications.set_read",
                                     "talaria.notifications.open_source", "talaria.plugins",
-                                    "talaria.host.configure", "talaria.host.attach", "talaria.host.detach", "talaria.host.respond",
+                                    "talaria.host.configure", "talaria.host.attach", "talaria.host.detach", "talaria.host.respond", "talaria.host.poll", "talaria.host.wait",
                                     "talaria.shared_folders.configure", "talaria.shared_folders.attach"})
                 self.assertIn("talaria.automations", server._LONG_HANDLERS)
                 entry.main.assert_called_once_with()

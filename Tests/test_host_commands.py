@@ -20,7 +20,9 @@ class HostCommandsTests(unittest.TestCase):
         self.context = types.ModuleType("tools.approval_context")
         self.context._approval_session_id = contextvars.ContextVar("session", default="")
         self.context._approval_tool_call_id = contextvars.ContextVar("call", default="")
-        self.patch = patch.dict(sys.modules, {"tools.approval_context": self.context})
+        self.children = {}
+        self.registry = types.SimpleNamespace(_active_subagents=self.children, _active_subagents_lock=threading.Lock())
+        self.patch = patch.dict(sys.modules, {"tools.approval_context": self.context, "tools.delegate_tool_registry": self.registry})
         self.patch.start()
         self.addCleanup(self.patch.stop)
         self.session = {"agent": types.SimpleNamespace(session_id="stored-chat"), "running": True}
@@ -30,12 +32,12 @@ class HostCommandsTests(unittest.TestCase):
         self.service = HostCommands(self.server)
         self.service.attach("runtime-chat")
 
-    def start_command(self):
+    def start_command(self, session_id="stored-chat"):
         result = queue.Queue()
         def invoke():
-            self.context._approval_session_id.set("stored-chat")
+            self.context._approval_session_id.set(session_id)
             self.context._approval_tool_call_id.set("tool-call")
-            result.put(json.loads(self.service.execute({"command": "printf hello"}, session_id="stored-chat")))
+            result.put(json.loads(self.service.execute({"command": "printf hello"}, session_id=session_id)))
         thread = threading.Thread(target=invoke)
         thread.start()
         self.addCleanup(lambda: self.service.detach("runtime-chat"))
@@ -81,8 +83,56 @@ class HostCommandsTests(unittest.TestCase):
         self.context._approval_session_id.set("supporting-model")
         self.context._approval_tool_call_id.set("call")
         result = json.loads(self.service.execute({"command": "x"}, session_id="supporting-model"))
-        self.assertIn("active Talaria chat", result["error"])
+        self.assertIn("not connected to a Talaria chat", result["error"])
         self.assertTrue(self.events.empty())
+
+    def test_delegated_command_survives_parent_completion_and_is_polled_once(self):
+        child = types.SimpleNamespace(session_id="child-chat")
+        self.children["child"] = {"agent": child, "owner_session_id": "runtime-chat", "owner_session_record": self.session}
+        self.session["running"] = False
+        self.service.detach("runtime-chat")
+        thread, result = self.start_command("child-chat")
+        import time
+        deadline = time.monotonic() + 2
+        while not self.service.pending and time.monotonic() < deadline: time.sleep(.01)
+        self.assertTrue(self.events.empty(), "background calls use polling, not a finished turn listener")
+        self.assertEqual(self.service.poll("other"), {"requests": []})
+        request = self.service.poll("runtime-chat")["requests"][0]
+        self.assertEqual(self.service.poll("runtime-chat"), {"requests": []})
+        waiter = threading.Thread(target=lambda: self.service.wait(request))
+        waiter.start()
+        self.service.respond({**request, "result": {"stdout": "child output", "exit_code": 0}})
+        self.assertEqual(result.get(timeout=2)["stdout"], "child output")
+        thread.join(2); waiter.join(2)
+        self.assertFalse(thread.is_alive() or waiter.is_alive())
+
+    def test_child_cannot_cross_session_generation_and_stop_cancels_pending(self):
+        child = types.SimpleNamespace(session_id="child-chat")
+        record = {"agent": child, "owner_session_id": "runtime-chat", "owner_session_record": dict(self.session)}
+        self.children["child"] = record
+        self.context._approval_session_id.set("child-chat")
+        self.context._approval_tool_call_id.set("call")
+        self.assertIn("not connected", json.loads(self.service.execute({"command":"x"}, session_id="child-chat"))["error"])
+        record["owner_session_record"] = self.session
+        thread, result = self.start_command("child-chat")
+        import time
+        deadline = time.monotonic() + 2
+        while not self.service.pending and time.monotonic() < deadline: time.sleep(.01)
+        self.session["_turn_cancel_requested"] = True
+        self.assertIn("cancelled", result.get(timeout=2)["error"])
+        thread.join(2)
+        self.assertFalse(self.service.pending)
+
+    def test_gateway_poll_delivers_request_and_waits_for_native_result(self):
+        gateway = HermesGateway.__new__(HermesGateway)
+        gateway.lock = threading.RLock()
+        gateway.sessions = {"chat": {"id": "runtime"}}
+        request = {"request_id": "r", "session_id": "runtime", "command": "pwd"}
+        gateway.call = Mock(side_effect=[{"requests": [request]}, {"finished": True}])
+        delivered = Mock()
+        gateway.poll_host_commands("chat", delivered)
+        delivered.assert_called_once_with(request)
+        gateway.call.assert_called_with("talaria.host.wait", {"session_id": "runtime", "request_id": "r"}, timeout=370)
 
     def test_invalid_arguments_cannot_supply_permissions_or_session_identity(self):
         for invalid in ({"command": "x", "always": True}, {"command": "x", "session_id": "other"},

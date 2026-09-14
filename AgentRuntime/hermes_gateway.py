@@ -111,6 +111,16 @@ class HermesGateway:
         self.activity.reconcile_processes(sid, result["processes"], revision)
         return {**self.activity.snapshot(sid), "available": True}
 
+    def poll_host_commands(self, chat_id, delta):
+        with self.lock:
+            state = self.sessions.get(self._session_registry().runtime_owner(chat_id))
+            sid = state["id"] if state else None
+        if not sid:
+            return
+        for request in self.call("talaria.host.poll", {"session_id": sid}).get("requests", []):
+            delta(request)
+            self.call("talaria.host.wait", {"session_id": sid, "request_id": request["request_id"]}, timeout=370)
+
     def _session_registry(self):
         # Also supports isolated facade tests that inject fake RPC and state.
         if not hasattr(self, "registry"):

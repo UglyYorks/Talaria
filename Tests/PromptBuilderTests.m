@@ -863,7 +863,7 @@ static void TestHostCommandTransport(void) {
   NSString *suite = [@"HostTransportTests." stringByAppendingString:NSUUID.UUID.UUIDString];
   NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
   TLHostCommandBridge *bridge = [[TLHostCommandBridge alloc] initWithDefaults:defaults];
-  for (NSString *policy in @[@"deny", @"always", @"ask"]) {
+  for (NSNumber *background in @[@NO, @YES]) for (NSString *policy in @[@"deny", @"always", @"ask"]) {
     [bridge setPolicy:policy forAgent:@"host-agent"];
     TLDeferredSocketService *vm = [TLDeferredSocketService new];
     vm.mountedFolders = @{@"/Mac/work":@"/mnt/mac/work"};
@@ -871,25 +871,35 @@ static void TestHostCommandTransport(void) {
     [client setValue:bridge forKey:@"hostBridge"];
     TLAgentRecord *agent = [TLAgentRecord new]; agent.vmDirectory = @"host-agent";
     __block BOOL finished = NO;
-    [client streamHermesSessionWithAgent:agent requestID:@"turn" sessionID:@"native-chat" token:@"" model:@"m" prompt:@"host test"
-      delta:^(NSString *rid, TLAgentStreamDeltaKind kind, id value) {
-        TLAssertTrue([policy isEqual:@"ask"] && kind == TLAgentStreamDeltaKindQuestion && [rid isEqual:@"turn"], @"native question targets the original live turn");
-        TLQuestionRequest *question = value[@"question"];
-        TLAssertTrue(question.pending && !finished, @"question does not end the original chat turn");
-        [question respondWithOption:@"once"];
-      }
-      completion:^(NSError *error) { TLAssertTrue(!error, @"host transport completes"); finished = YES; }];
+    TLAgentStreamDeltaHandler delta = ^(NSString *rid, TLAgentStreamDeltaKind kind, id value) {
+      TLAssertTrue([policy isEqual:@"ask"] && kind == TLAgentStreamDeltaKindQuestion, @"native question targets its owning chat");
+      TLQuestionRequest *question = value[@"question"];
+      TLAssertTrue(question.pending && !finished, @"question keeps the host request alive");
+      [question respondWithOption:@"once"];
+    };
+    if (background.boolValue) {
+      [client hermesActivityWithAgent:agent sessionID:@"native-chat" question:^(id question) {
+        delta(@"", TLAgentStreamDeltaKindQuestion, @{@"question":question});
+      } completion:^(NSDictionary *result, NSError *error) { TLAssertTrue(!error, @"background host request completes"); finished = YES; }];
+    } else {
+      [client streamHermesSessionWithAgent:agent requestID:@"turn" sessionID:@"native-chat" token:@"" model:@"m" prompt:@"host test"
+        delta:delta completion:^(NSError *error) { TLAssertTrue(!error, @"host transport completes"); finished = YES; }];
+    }
     TLAgentVMConnectionCompletionHandler originalConnect = vm.connected;
     int stream[2]; socketpair(AF_UNIX, SOCK_STREAM, 0, stream);
     TLTestSocketConnection *connection = [TLTestSocketConnection new]; connection.fileDescriptor = stream[0];
     originalConnect((id)connection, nil);
     char bytes[8192]; ssize_t count = recv(stream[1], bytes, sizeof(bytes), MSG_DONTWAIT);
     NSDictionary *initial = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:bytes length:MAX(0, count)] options:0 error:nil];
+    if (background.boolValue) {
+      TLAssertTrue([initial[@"host_commands"] boolValue] && [initial[@"operation"] isEqual:@"hermes_activity"], @"activity polling explicitly opts into background host requests");
+    } else {
     TLAssertTrue([initial[@"host_command_description"] containsString:@"user's Mac"], @"tool description is supplied by native prompt builder");
     TLAssertEqualObjects(initial[@"prompt"], @"host test", @"shared folders do not alter the user prompt on the wire");
     TLAssertTrue([initial[@"shared_folder_context"] containsString:@"/mnt/mac/work"], @"actual VM mappings travel as separate native context");
     TLAssertTrue([initial[@"shared_folder_summary"] containsString:@"$HERMES_HOME"], @"large mappings have native-generated plugin guidance");
-    NSDictionary *event = @{@"type":@"delta", @"request_id":@"turn", @"kind":@"host_command", @"payload":@{
+    }
+    NSDictionary *event = @{@"type":@"delta", @"request_id":initial[@"request_id"], @"kind":@"host_command", @"payload":@{
       @"request_id":@"host-call", @"session_id":@"runtime-chat", @"command":@"printf native-bridge", @"cwd":@"/private/tmp", @"timeout_seconds":@3}};
     NSMutableData *line = [[NSJSONSerialization dataWithJSONObject:event options:0 error:nil] mutableCopy];
     [line appendBytes:"\n" length:1]; write(stream[1], line.bytes, line.length);
@@ -910,7 +920,7 @@ static void TestHostCommandTransport(void) {
     else TLAssertEqualObjects(result[@"stdout"], @"native-bridge", @"native execution returns output to Hermes");
     NSString *replyFrames = @"{\"type\":\"result\",\"result\":{\"resolved\":true}}\n{\"type\":\"complete\"}\n";
     write(response[1], replyFrames.UTF8String, strlen(replyFrames.UTF8String));
-    NSString *done = @"{\"type\":\"complete\"}\n";
+    NSString *done = background.boolValue ? @"{\"type\":\"result\",\"result\":{\"activities\":[]}}\n{\"type\":\"complete\"}\n" : @"{\"type\":\"complete\"}\n";
     write(stream[1], done.UTF8String, strlen(done.UTF8String));
     while (!finished && deadline.timeIntervalSinceNow > 0)
       [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];

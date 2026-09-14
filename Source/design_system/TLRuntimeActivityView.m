@@ -4,6 +4,7 @@
 @interface TLRuntimeActivityView ()
 @property (nonatomic, strong) TLThemedButton *disclosure;
 @property (nonatomic, strong) NSTextField *preview;
+@property (nonatomic, strong) NSMutableSet<NSString *> *expandedRows;
 @property (nonatomic, strong) NSStackView *details;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSScrollView *> *outputViews;
 @end
@@ -14,7 +15,7 @@
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.orientation = NSUserInterfaceLayoutOrientationVertical;
     self.alignment = NSLayoutAttributeLeading;
-    _activities = @[]; _statusText = @"";
+    _activities = @[]; _statusText = @""; _expandedRows = [NSMutableSet set];
     _outputViews = [NSMutableDictionary dictionary];
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _disclosure = [TLThemedButton new];
@@ -37,6 +38,19 @@
   }
   return self;
 }
++ (NSString *)summaryForActivity:(NSDictionary *)activity {
+  NSString *value = [activity[@"kind"] isEqual:@"agent"] ? activity[@"name"] :
+    [activity[@"summary"] length] ? activity[@"summary"] : [activity[@"detail"] length] ? activity[@"detail"] : activity[@"name"];
+  NSString *line = [[value ?: @"" componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] firstObject];
+  line = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  return line.length > 100 ? [[line substringToIndex:99] stringByAppendingString:@"…"] : line;
+}
+- (void)toggleRow:(NSButton *)sender {
+  NSString *identity = sender.identifier;
+  if ([self.expandedRows containsObject:identity]) [self.expandedRows removeObject:identity];
+  else [self.expandedRows addObject:identity];
+  [self rebuild];
+}
 - (void)toggle:(id)sender { self.expanded = !self.expanded; }
 - (void)layout {
   CGFloat width = NSWidth(self.bounds);
@@ -56,6 +70,7 @@
   _activities = [activities copy] ?: @[];
   NSSet *identities = [NSSet setWithArray:[_activities valueForKey:@"id"]];
   for (NSString *identity in self.outputViews.allKeys) if (![identities containsObject:identity]) [self.outputViews removeObjectForKey:identity];
+  [self.expandedRows intersectSet:identities];
   [self rebuild];
 }
 - (NSTextField *)label:(NSString *)text inStack:(NSStackView *)stack title:(BOOL)title {
@@ -96,14 +111,20 @@
   self.preview.stringValue = self.statusText.length ? self.statusText : preview;
   self.preview.font = self.palette.smallFont;
   self.preview.textColor = self.palette.textMuted;
-  self.preview.hidden = !self.preview.stringValue.length;
+  self.preview.hidden = self.expanded || !self.preview.stringValue.length;
   for (NSView *view in self.details.arrangedSubviews.copy) { [self.details removeArrangedSubview:view]; [view removeFromSuperview]; }
   self.details.hidden = !self.expanded;
   if (!self.expanded) return;
   NSDictionary *states = @{@"preparing":@"Starting", @"running":@"Running", @"completed":@"Done", @"failed":@"Failed",
     @"stopped":@"Stopped", @"interrupted":@"Disconnected", @"ended":@"Ended"};
   // Newest entries are closest to the disclosure; the cache has a fixed row budget.
-  for (NSDictionary *row in self.activities.reverseObjectEnumerator) {
+  NSArray *ordered = [self.activities sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+    BOOL aRunning = [@[@"running", @"preparing"] containsObject:a[@"state"]];
+    BOOL bRunning = [@[@"running", @"preparing"] containsObject:b[@"state"]];
+    if (aRunning != bRunning) return aRunning ? NSOrderedAscending : NSOrderedDescending;
+    return [@([b[@"updated"] integerValue]) compare:@([a[@"updated"] integerValue])];
+  }];
+  for (NSDictionary *row in ordered) {
     NSStackView *card = [NSStackView new];
     card.orientation = NSUserInterfaceLayoutOrientationVertical;
     card.alignment = NSLayoutAttributeLeading;
@@ -111,9 +132,45 @@
     [self.details addArrangedSubview:card];
     [card.widthAnchor constraintEqualToAnchor:self.details.widthAnchor].active = YES;
     NSString *state = [row[@"kind"] isEqual:@"notice"] ? @"Update" : states[row[@"state"]] ?: @"Update";
-    [self label:[NSString stringWithFormat:@"%@ · %@", state, row[@"name"] ?: @"Activity"] inStack:card title:YES];
-    for (NSString *key in @[@"model", @"detail", @"summary"]) if ([row[key] length]) [self label:row[key] inStack:card title:NO];
-    if (![row[@"output"] length]) continue;
+    NSStackView *header = [NSStackView new];
+    header.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    header.distribution = NSStackViewDistributionFill;
+    header.spacing = self.palette.space4;
+    [card addArrangedSubview:header];
+    [header.widthAnchor constraintEqualToAnchor:card.widthAnchor].active = YES;
+    NSString *name = [self.class summaryForActivity:@{@"name":row[@"name"] ?: @"Activity"}];
+    NSTextField *title = [NSTextField labelWithString:[NSString stringWithFormat:@"%@ · %@", state, name]];
+    title.font = self.palette.roleFont; title.textColor = self.palette.labelText;
+    title.lineBreakMode = NSLineBreakByTruncatingTail;
+    [title setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [header addArrangedSubview:title];
+    BOOL open = [self.expandedRows containsObject:row[@"id"]];
+    TLThemedButton *toggle = [TLThemedButton new];
+    toggle.palette = self.palette; toggle.identifier = row[@"id"];
+    [toggle setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [toggle setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [title setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    toggle.title = @""; toggle.imagePosition = NSImageOnly;
+    toggle.image = [NSImage imageWithSystemSymbolName:open ? @"chevron.up" : @"chevron.down" accessibilityDescription:nil];
+    toggle.image.template = YES;
+    toggle.target = self; toggle.action = @selector(toggleRow:);
+    toggle.accessibilityLabel = [NSString stringWithFormat:@"%@ details for %@", open ? @"Hide" : @"Show", name];
+    [header addArrangedSubview:toggle];
+    if (!open) {
+      NSString *summary = [self.class summaryForActivity:row];
+      if (summary.length && ![summary isEqual:name]) {
+        NSTextField *line = [self label:summary inStack:card title:NO];
+        line.maximumNumberOfLines = 1; line.lineBreakMode = NSLineBreakByTruncatingTail;
+      }
+      continue;
+    }
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSString *key in @[@"model", @"goal", @"detail", @"summary", @"output"]) {
+      NSString *part = row[key];
+      if (part.length && ![parts containsObject:part]) [parts addObject:part];
+    }
+    NSString *fullText = [parts componentsJoinedByString:@"\n\n"];
+    if (!fullText.length) fullText = name;
     NSScrollView *scroll = self.outputViews[row[@"id"]];
     BOOL created = scroll == nil;
     if (!scroll) { scroll = [NSScrollView new]; self.outputViews[row[@"id"]] = scroll; }
@@ -136,13 +193,13 @@
     output.autoresizingMask = NSViewWidthSizable;
     output.textContainer.widthTracksTextView = YES;
     output.verticallyResizable = YES; output.horizontallyResizable = NO;
-    if (![output.string isEqual:row[@"output"]]) {
-      output.string = row[@"output"];
+    if (![output.string isEqual:fullText]) {
+      output.string = fullText;
       selection.location = MIN(selection.location, output.string.length);
       selection.length = MIN(selection.length, output.string.length - selection.location);
       output.selectedRange = selection;
     }
-    output.accessibilityLabel = @"Terminal output";
+    output.accessibilityLabel = [row[@"kind"] isEqual:@"process"] ? @"Terminal output" : @"Activity details";
     scroll.documentView = output;
     [card addArrangedSubview:scroll];
     [scroll.widthAnchor constraintEqualToAnchor:card.widthAnchor].active = YES;

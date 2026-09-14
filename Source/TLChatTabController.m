@@ -20,6 +20,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 @property (nonatomic, strong) TLRuntimeActivityView *runtimeActivityView;
 @property (nonatomic, strong) NSPopover *activityPopover;
 @property (nonatomic, copy) NSString *runtimeActivityStatus;
+@property (nonatomic, strong) NSMutableArray<TLQuestionRequest *> *backgroundQuestions;
 @property (nonatomic, strong) NSTimer *activityTimer;
 @property (nonatomic) BOOL activityLoading;
 @property (nonatomic) NSUInteger activityGeneration;
@@ -263,6 +264,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     ![(oldSession ?: @"") isEqual:(newSession ?: @"")];
   _chat = chat;
   if (changed) {
+    [self finishBackgroundQuestions];
     self.activityGeneration++;
     self.activityLoading = NO;
     self.nextActivityPoll = 0;
@@ -272,6 +274,30 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     self.runtimeActivityView.activities = @[];
     self.runtimeActivityView.statusText = @"";
   }
+}
+
+- (void)finishBackgroundQuestions {
+  for (TLQuestionRequest *question in self.backgroundQuestions) {
+    question.changeHandler = nil;
+    if (question.pending) [question respondWithOption:@"deny"];
+  }
+  [self.backgroundQuestions removeAllObjects];
+}
+
+- (void)presentBackgroundQuestion:(TLQuestionRequest *)question {
+  if (self.closed) { [question respondWithOption:@"deny"]; return; }
+  if (!self.backgroundQuestions) self.backgroundQuestions = [NSMutableArray array];
+  [self.backgroundQuestions addObject:question];
+  TLChatMessage *message = self.messages.lastObject;
+  if (![message.role isEqual:TLRoleAssistant]) {
+    message = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
+    [self.messages addObject:message];
+  }
+  message.questions = [(message.questions ?: @[]) arrayByAddingObject:question];
+  __weak typeof(self) weakSelf = self;
+  question.changeHandler = ^{ [weakSelf renderMessagesScrollingToBottom:NO]; };
+  [self.activityPopover close];
+  [self renderMessagesScrollingToBottom:YES];
 }
 
 - (void)refreshRuntimeActivity {
@@ -308,7 +334,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
         for (id value in rows) {
           if (![value isKindOfClass:NSDictionary.class]) continue;
           NSMutableDictionary *row = [NSMutableDictionary dictionary];
-          for (NSString *key in @[@"id", @"name", @"state", @"kind", @"detail", @"summary", @"output", @"model", @"parent_id", @"updated"]) {
+          for (NSString *key in @[@"id", @"name", @"state", @"kind", @"detail", @"summary", @"output", @"model", @"goal", @"parent_id", @"updated"]) {
             NSString *text = value[key];
             if ([text isKindOfClass:NSString.class]) row[key] = [text substringToIndex:MIN(text.length, [key isEqual:@"output"] ? 8000u : 2000u)];
           }
@@ -702,7 +728,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     NSMutableDictionary *presentation = [background mutableCopy];
     NSString *label = [background[@"kind"] isEqual:@"agent"] ? @"Agent working" : @"Running command";
     presentation[@"label"] = backgroundCount > 1 ? [label stringByAppendingFormat:@" · %lu running", backgroundCount] : label;
-    presentation[@"detail"] = [background[@"detail"] length] ? background[@"detail"] : background[@"name"];
+    presentation[@"detail"] = [TLRuntimeActivityView summaryForActivity:background];
     for (NSString *line in [background[@"output"] componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet].reverseObjectEnumerator) {
       if (line.length) { presentation[@"detail"] = line; break; }
     }
@@ -725,7 +751,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
     NSDictionary *latest = self.runtimeActivities.lastObject;
     for (NSDictionary *row in self.runtimeActivities) if ([row[@"updated"] integerValue] > [latest[@"updated"] integerValue]) latest = row;
     active = @{@"label": [latest[@"state"] isEqual:@"failed"] ? @"Activity failed" : @"Activity",
-               @"detail": [latest[@"summary"] length] ? latest[@"summary"] : [latest[@"detail"] length] ? latest[@"detail"] : latest[@"name"],
+               @"detail": [TLRuntimeActivityView summaryForActivity:latest],
                @"state": latest[@"state"]};
   }
   if (!self.runtimeActivityView && (details.count || self.runtimeActivityStatus.length)) self.runtimeActivityView = [TLRuntimeActivityView new];
@@ -1089,6 +1115,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 - (void)setChatWorkspace:(NSView *)chatWorkspace { _chatWorkspace = chatWorkspace; if (chatWorkspace) self.view = chatWorkspace; }
 - (void)sendIntent:(id)sender { if (self.intentHandler) self.intentHandler(); }
 - (void)close {
+  [self finishBackgroundQuestions];
   [self.activityPopover close];
   [self.activityTimer invalidate];
   self.activityTimer = nil;
