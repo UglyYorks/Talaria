@@ -345,6 +345,18 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   completion([NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
 }
 
+- (void)selectModel:(NSString *)model reasoningEffort:(NSString *)reasoningEffort sessionID:(NSString *)sessionID
+           agentID:(NSInteger)agentID token:(NSString *)token completion:(TLAgentStreamCompletionHandler)completion {
+  [self withRunningAgentID:agentID completion:^(TLAgentRecord *agent, NSError *error) {
+    if (!agent) { completion(error ?: TLAgentOrchestratorError(@"Could not open the agent VM.")); return; }
+    if (![self.agentClient respondsToSelector:@selector(selectHermesModelWithAgent:sessionID:token:model:reasoningEffort:completion:)]) {
+      completion(TLAgentOrchestratorError(@"Update the agent runtime to change thinking levels.")); return;
+    }
+    [self.agentClient selectHermesModelWithAgent:agent sessionID:sessionID token:token model:model
+      reasoningEffort:reasoningEffort completion:completion];
+  }];
+}
+
 - (void)selectModel:(NSString *)model sessionID:(NSString *)sessionID token:(NSString *)token
         completion:(TLAgentStreamCompletionHandler)completion {
   [self selectModel:model sessionID:sessionID agentID:0 token:token completion:completion];
@@ -374,6 +386,14 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 - (void)streamChatWithAgentID:(NSInteger)agentID requestID:(NSString *)requestID sessionID:(NSString *)sessionID
                        token:(NSString *)token model:(NSString *)model messages:(NSArray<TLChatMessage *> *)messages
                        delta:(TLAgentStreamDeltaHandler)delta completion:(TLAgentStreamCompletionHandler)completion {
+  [self streamChatWithAgentID:agentID requestID:requestID sessionID:sessionID token:token model:model
+    reasoningEffort:@"" messages:messages delta:delta completion:completion];
+}
+
+- (void)streamChatWithAgentID:(NSInteger)agentID requestID:(NSString *)requestID sessionID:(NSString *)sessionID
+                       token:(NSString *)token model:(NSString *)model reasoningEffort:(NSString *)reasoningEffort
+                    messages:(NSArray<TLChatMessage *> *)messages delta:(TLAgentStreamDeltaHandler)delta
+                  completion:(TLAgentStreamCompletionHandler)completion {
   self.chatCompletions[requestID] = completion;
   TLAgentStreamCompletionHandler finish = ^(NSError *error) {
     TLAgentStreamCompletionHandler callback = self.chatCompletions[requestID];
@@ -401,6 +421,15 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
       if (!self.database.incognito) [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:TLPromptBuilder.notesContext thinking:nil] atIndex:0];
       NSString *context = [TLPromptBuilder sharedFolderContext:[self folderMountPathsForAgent:agent] ?: @{}];
       if (context.length) [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:context thinking:nil] atIndex:0];
+    }
+    if (reasoningEffort.length) {
+      if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:approvalResponse:reasoningEffort:delta:completion:)]) {
+        finish(TLAgentOrchestratorError(@"Update the agent runtime to use the selected thinking level.")); return;
+      }
+      [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID token:token model:model
+        prompt:TLHermesInputFromMessages(inputMessages) approvalResponse:approvalResponse reasoningEffort:reasoningEffort
+        delta:delta completion:finish];
+      return;
     }
     if (approvalResponse) {
       if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:approvalResponse:delta:completion:)]) {
@@ -810,7 +839,11 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (void)fetchModelCatalogueWithToken:(NSString *)token completion:(TLAgentModelCatalogueHandler)completion {
-  [self withDefaultRunningAgent:^(TLAgentRecord *agent, NSError *agentError) {
+  [self fetchModelCatalogueWithAgentID:0 token:token completion:completion];
+}
+
+- (void)fetchModelCatalogueWithAgentID:(NSInteger)agentID token:(NSString *)token completion:(TLAgentModelCatalogueHandler)completion {
+  [self withRunningAgentID:agentID completion:^(TLAgentRecord *agent, NSError *agentError) {
     if (!agent) {
       dispatch_async(dispatch_get_main_queue(), ^{
         if (completion) {

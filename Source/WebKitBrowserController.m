@@ -1,3 +1,4 @@
+#import "TLDevelopmentMode.h"
 #import "WebKitBrowserController.h"
 #import "WebKitPageBridge.h"
 #import "WebKitBrowserSettings.h"
@@ -302,7 +303,11 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   if(@available(macOS 14.0,*)) {} else useDefaultStore=YES;
   // Keep a macOS 13 profile in the same WebKit store after upgrading macOS.
   // Creating a new named store then would silently discard its signed-in state.
-  if(useDefaultStore) {
+  if(TLDevelopmentDataURL()) {
+    // A development run has no shared browser cookies, storage, or credentials,
+    // including on macOS 13 where named persistent stores are unavailable.
+    self.persistentStore=WKWebsiteDataStore.nonPersistentDataStore;
+  }else if(useDefaultStore) {
     if(![NSFileManager.defaultManager fileExistsAtPath:defaultStoreRecord.path] &&
        ![@"default\n" writeToURL:defaultStoreRecord atomically:YES encoding:NSUTF8StringEncoding error:&error]){[self presentError:error window:window];return NO;}
     self.persistentStore=WKWebsiteDataStore.defaultDataStore;
@@ -438,7 +443,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 }
 - (void)loadURL:(NSURL *)URL session:(TLWebKitBrowserSession *)session {
   if(session.closed)return;
-  [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
   if(URL.isFileURL)[session.webView loadFileURL:URL allowingReadAccessToURL:URL.URLByDeletingLastPathComponent];
   else [session.webView loadRequest:[TLWebKitBrowserSettings requestForURL:URL]];
 }
@@ -475,7 +479,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
 - (void)reloadSession:(TLWebKitBrowserSession *)session {if(!session.closed){[self resumeSession:session];[self beginNavigationCover:session];[session.webView reload];}}
 - (void)focusSession:(TLWebKitBrowserSession *)session {if(session.closed)return;[self resumeSession:session];[session.webView.window makeFirstResponder:session.webView];}
 - (void)beginNavigationCover:(TLWebKitBrowserSession *)session {
-  [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
   if(session.closed || !session.webView || session.fullscreen)return;
   // A navigation acknowledges the click immediately, including the live page
   // behind the footer. Keep WebKit rendering underneath until the new page paints.
@@ -498,7 +501,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
     if(session.titleHandler)session.titleHandler(session.webView.title);else session.standaloneWindow.title=session.webView.title;
   }
   if([keyPath isEqual:@"URL"] && session.webView.URL) {
-    [(TLBrowserWebView *)session.webView cancelMouseWheelScrolling];
     NSString *host=session.webView.URL.host ?: @"";
     if(![session.lastHost isEqual:host]){session.lastFaviconURL=nil;if(session.faviconHandler)session.faviconHandler(nil);}session.lastHost=host;
     if(session.URLHandler)session.URLHandler(session.webView.URL);
@@ -516,7 +518,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   if(session.navigationHandler)session.navigationHandler(session.webView.canGoBack,session.webView.canGoForward,session.webView.loading);
 }
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
-  [(TLBrowserWebView *)webView cancelMouseWheelScrolling];
   TLWebKitBrowserSession *session=[self sessionForWebView:webView];if(!session)return;
   [session.passwordAutofill reset];
   for(NSAlert *alert in self.alerts.copy)if(alert.window.sheetParent==session.originWindow)[session.originWindow endSheet:alert.window returnCode:NSAlertFirstButtonReturn];
@@ -1044,7 +1045,6 @@ static NSMenuItem *TLBrowserMenuItem(NSString *title, dispatch_block_t block) {
   WKWebView *webView=session.webView;
   NSNumber *renderer=TLWebKitOptionalValue(webView,@"_webProcessIdentifier");
   __block BOOL mediaSuspended=NO;
-  [(TLBrowserWebView *)webView cancelMouseWheelScrolling];
   [webView setAllMediaPlaybackSuspended:YES completionHandler:^{mediaSuspended=YES;}];
   [self closeInspectorInSession:session];[webView closeAllMediaPresentationsWithCompletionHandler:nil];
   [self clearNavigationCover:session];[session.pageBridge stop];

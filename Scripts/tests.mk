@@ -100,11 +100,7 @@ TEST_AgentProtocolTests_SOURCES := Source/TLAgentProtocol.m Tests/AgentProtocolT
 TEST_AgentProtocolTests_LIBS := -framework Foundation
 $(eval $(call native_test,AgentProtocolTests))
 
-TEST_WheelScrollAnimationTests_SOURCES := Source/TLWheelScrollAnimation.m Source/TLBrowserWheelSmoother.m Tests/WheelScrollAnimationTests.m
-TEST_WheelScrollAnimationTests_LIBS := -framework AppKit -framework WebKit -framework QuartzCore
-$(eval $(call native_test,WheelScrollAnimationTests))
-
-INTEGRATION_TESTS := NotesTests RuntimeActivityTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests AutomationsTests QuickInputTests WorkspaceRestoreTests AppStartupTests FeatureControllerTests TabShortcutTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests
+INTEGRATION_TESTS := ChatSettingsTests DevelopmentModeTests NotesTests RuntimeActivityTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests AutomationsTests QuickInputTests WorkspaceRestoreTests AppStartupTests FeatureControllerTests TabShortcutTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests
 $(addprefix $(BUILD_DIR)/,$(INTEGRATION_TESTS)): $(filter-out $(APP_OBJECT_DIR)/main.mm.o,$(APP_OBJECTS)) Scripts/tests.mk $(COMPILE_CONFIG)
 	xcrun clang++ $(filter %.o,$^) $(APP_FRAMEWORKS) -o "$@"
 $(foreach test,$(INTEGRATION_TESTS),$(eval $(BUILD_DIR)/$(test): $(call test_objects,Tests/$(test).m)))
@@ -118,8 +114,8 @@ CORE_TESTS := RepositoryTests PromptBuilderTests CredentialStoreTests AssistantT
 TEST_HostCommandTests_SOURCES := Source/TLQuestionRequest.m Source/TLHostCommandBridge.m Tests/HostCommandTests.m $(THEME_SOURCES)
 TEST_HostCommandTests_LIBS := -framework Foundation -framework AppKit
 $(eval $(call native_test,HostCommandTests))
-NATIVE_TESTS := WheelScrollAnimationTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
-NATIVE_TESTS += NotesTests HostCommandTests AgentFolderMountTests RuntimeActivityTests
+NATIVE_TESTS := DevelopmentModeTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
+NATIVE_TESTS += ChatSettingsTests NotesTests HostCommandTests AgentFolderMountTests RuntimeActivityTests
 .PHONY: test-runtime-activity
 test-runtime-activity: $(BUILD_DIR)/RuntimeActivityTests $(BUILD_DIR)/FeatureControllerTests
 	"$(BUILD_DIR)/RuntimeActivityTests"

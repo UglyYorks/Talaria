@@ -48,6 +48,10 @@ typedef void (^TLAssistantTurnCompletionHandler)(TLAssistantTurnResult *result);
                                     delta:(TLAgentStreamDeltaHandler)delta
                                completion:(TLAgentStreamCompletionHandler)completion;
 @optional
+- (void)streamChatWithAgentID:(NSInteger)agentID requestID:(NSString *)requestID sessionID:(NSString *)sessionID
+                       token:(NSString *)token model:(NSString *)model reasoningEffort:(NSString *)reasoningEffort
+                    messages:(NSArray<TLChatMessage *> *)messages delta:(TLAgentStreamDeltaHandler)delta
+                  completion:(TLAgentStreamCompletionHandler)completion;
 - (void)streamChatWithAgentID:(NSInteger)agentID requestID:(NSString *)requestID
                   sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model
                    messages:(NSArray<TLChatMessage *> *)messages delta:(TLAgentStreamDeltaHandler)delta

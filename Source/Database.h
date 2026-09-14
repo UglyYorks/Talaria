@@ -49,7 +49,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<TLChatSummary *> *)listChats:(NSError **)error;
 - (nullable TLChatRecord *)createChatWithModel:(NSString *)model error:(NSError **)error;
 // Saves only model choices/defaults; credentials and appearance are untouched.
+- (BOOL)saveChatSettingsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel
+                 reasoningEffort:(NSString *)reasoningEffort error:(NSError **)error;
 - (BOOL)saveModelsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error;
+- (nullable TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel reasoningEffort:(NSString *)reasoningEffort error:(NSError **)error;
 - (nullable TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error;
 - (nullable TLChatRecord *)chatWithID:(NSInteger)chatID error:(NSError **)error;
 - (nullable TLChatSummary *)saveChatTitle:(NSString *)title chatID:(NSInteger)chatID error:(NSError **)error;

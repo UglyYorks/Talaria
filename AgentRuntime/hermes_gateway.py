@@ -398,15 +398,18 @@ class HermesGateway:
             self._session_registry().save_mappings()
         return {"deleted": stored}
 
-    def model_options(self):
+    def model_options(self, include_thinking=True):
         result = self.call("model.options", {"explicit_only": True})
         if not isinstance(result.get("providers"), list):
             raise RuntimeError("Hermes returned an invalid model catalogue.")
+        if include_thinking:
+            thinking = self.call("talaria.models.thinking", {"providers": result["providers"]})
+            result["thinking"] = thinking.get("models", {})
         return result
 
     def providers(self, params):
         action = params.get("action")
-        mutating = action not in {"list", "models", "login.poll", "login.cancel"}
+        mutating = action not in {"list", "models", "usage", "login.poll", "login.cancel"}
         if mutating:
             with self.lock:
                 if (self.listeners or getattr(self, "_support_requests", 0) or any(lock.locked() for lock in self.session_locks.values())
@@ -422,6 +425,10 @@ class HermesGateway:
 
     def _provider_request(self, params):
         action = params.get("action")
+        if action == "usage":
+            catalogue = self.model_options(include_thinking=False)
+            slugs = [row["slug"] for row in catalogue["providers"] if row.get("authenticated")]
+            return self.call("talaria.providers.usage", {"slugs": slugs})
         if action == "list":
             catalogue = self.call("model.options", {"include_unconfigured": True, "refresh": True})
             metadata = self.call("talaria.providers", {"action": "describe"})
@@ -560,9 +567,18 @@ class HermesGateway:
         if force_model or state["model"] != model:
             self._apply_session_model(state["id"], model)
             state["model"] = model
+            state.pop("reasoning_effort", None)
         return state["id"]
 
-    def select_model(self, chat_id, model):
+    def _apply_session_thinking(self, sid, effort):
+        result = self.call("config.set", {"session_id": sid, "key": "reasoning", "value": effort})
+        if result.get("value") != effort:
+            raise RuntimeError("Hermes did not accept the thinking level.")
+        verified = self.call("config.get", {"session_id": sid, "key": "reasoning"})
+        if verified.get("value") != effort:
+            raise RuntimeError("Hermes did not retain the thinking level.")
+
+    def select_model(self, chat_id, model, reasoning_effort=""):
         with self.lock:
             if getattr(self, "_provider_mutating", False):
                 raise RuntimeError("Wait for provider setup to finish before sending or switching models.")
@@ -576,7 +592,11 @@ class HermesGateway:
                 state = self.sessions.get(chat_id)
                 if state and state["id"] in self.listeners:
                     raise RuntimeError("Finish the pending Hermes interaction before switching models.")
-            return self.session(chat_id, model, force_model=True)
+            sid = self.session(chat_id, model, force_model=True)
+            if reasoning_effort:
+                self._apply_session_thinking(sid, reasoning_effort)
+                self.sessions[chat_id]["reasoning_effort"] = reasoning_effort
+            return sid
         finally:
             session_lock.release()
 
@@ -640,7 +660,7 @@ class HermesGateway:
             return self.command(chat_id, sid, target + (" " + arg if arg else ""), model, depth + 1)
         return result
 
-    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False):
+    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort=""):
         if cancellation and cancellation.cancelled():
             return
         with self.lock:
@@ -678,6 +698,12 @@ class HermesGateway:
             sid = self.session(chat_id, model)
             if cancellation and cancellation.cancelled():
                 return
+            # Only reapply when the saved selection changes or the runtime is
+            # rebuilt. A subsequent /reasoning command remains session-owned.
+            if (reasoning_effort and self.sessions[chat_id].get("reasoning_effort") != reasoning_effort
+                    and not approval_response and chat_id not in self.waiting and not text.startswith("/")):
+                self._apply_session_thinking(sid, reasoning_effort)
+                self.sessions[chat_id]["reasoning_effort"] = reasoning_effort
             waiting = self.waiting.get(chat_id)
             if approval_response is not None and (not waiting or waiting[2] not in {"approval.request", "clarify.request"}):
                 raise RuntimeError("This approval is no longer pending. Send your request again.")

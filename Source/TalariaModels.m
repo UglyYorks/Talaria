@@ -211,6 +211,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
     _icon = @"";
     _model = [TLDefaultModelID copy];
     _supportingModel = [TLDefaultSupportingModelID copy];
+    _reasoningEffort = @"";
     _hermesSessionID = @"";
     _sourceSessionID = @"";
     _continuationSessionID = @"";
@@ -227,6 +228,7 @@ NSString *TLAgentDisplayStatus(NSString *status) {
   copy.icon = self.icon;
   copy.model = self.model;
   copy.supportingModel = self.supportingModel;
+  copy.reasoningEffort = self.reasoningEffort;
   copy.hermesSessionID = self.hermesSessionID;
   copy.sourceAgentID = self.sourceAgentID;
   copy.sourceSessionID = self.sourceSessionID;

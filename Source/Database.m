@@ -1,3 +1,4 @@
+#import "TLDevelopmentMode.h"
 #import "Database.h"
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
@@ -344,13 +345,31 @@ static id TLJSONValue(NSString *text) {
   return result;
 }
 - (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
-  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_createChatWithModel:model supportingModel:supportingModel error:error];
+  return [self createChatWithModel:model supportingModel:supportingModel reasoningEffort:@"" error:error];
+}
+
+- (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel reasoningEffort:(NSString *)reasoningEffort error:(NSError **)error {
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_createChatWithModel:model supportingModel:supportingModel reasoningEffort:reasoningEffort error:error];
   __block TLChatRecord * result;
   __block NSError *queryError = nil;
-  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_createChatWithModel:model supportingModel:supportingModel error:&queryError]; });
+  dispatch_sync(self.databaseQueue, ^{ result = [self onDatabaseQueue_createChatWithModel:model supportingModel:supportingModel reasoningEffort:reasoningEffort error:&queryError]; });
   if (error) *error = queryError;
   return result;
 }
+- (BOOL)saveChatSettingsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel
+                 reasoningEffort:(NSString *)reasoningEffort error:(NSError **)error {
+  __block BOOL result = NO;
+  __block NSError *queryError = nil;
+  void (^save)(void) = ^{
+    result = [self onDatabaseQueue_saveChatSettingsForChatID:chatID model:model supportingModel:supportingModel
+      reasoningEffort:reasoningEffort error:&queryError];
+  };
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) save();
+  else dispatch_sync(self.databaseQueue, save);
+  if (error) *error = queryError;
+  return result;
+}
+
 - (BOOL)saveModelsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
   if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_saveModelsForChatID:chatID model:model supportingModel:supportingModel error:error];
   __block BOOL result;
@@ -521,6 +540,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 + (NSURL *)defaultDatabaseURL {
+  if (TLDevelopmentDataURL()) return [TLDevelopmentDataURL() URLByAppendingPathComponent:@"talaria.sqlite3"];
   NSURL *supportURL = [[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                             inDomains:NSUserDomainMask] firstObject];
   return [[supportURL URLByAppendingPathComponent:@"com.talaria.chat" isDirectory:YES]
@@ -1080,7 +1100,7 @@ static id TLJSONValue(NSString *text) {
 - (NSArray<TLChatSummary *> *)onDatabaseQueue_listChats:(NSError **)error {
   @synchronized (self) {
     const char *sql =
-      "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id "
+      "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id, COALESCE((SELECT reasoning_effort FROM chat_model_settings WHERE chat_id = chats.id), '') "
       "FROM chats "
       "ORDER BY datetime(updated_at) DESC, id DESC";
 
@@ -1112,7 +1132,7 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
-- (TLChatRecord *)onDatabaseQueue_createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
+- (TLChatRecord *)onDatabaseQueue_createChatWithModel:(NSString *)model supportingModel:(NSString *)supportingModel reasoningEffort:(NSString *)reasoningEffort error:(NSError **)error {
   @synchronized (self) {
     __block sqlite3_int64 chatID = 0;
     BOOL created = [self performTransaction:^BOOL(NSError **transactionError) {
@@ -1134,7 +1154,7 @@ static id TLJSONValue(NSString *text) {
       }
 
       chatID = [self.sqliteConnection lastInsertRowID];
-      return YES;
+      return [self writeThinkingForChatID:chatID effort:reasoningEffort ?: @"" error:transactionError];
     } error:error];
     if (!created) {
       return nil;
@@ -1144,7 +1164,22 @@ static id TLJSONValue(NSString *text) {
   }
 }
 
+// A separate additive table keeps older main builds able to open this database.
+- (BOOL)writeThinkingForChatID:(NSInteger)chatID effort:(NSString *)effort error:(NSError **)error {
+  TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:
+    "INSERT INTO chat_model_settings(chat_id, reasoning_effort) VALUES (?1, ?2) "
+    "ON CONFLICT(chat_id) DO UPDATE SET reasoning_effort = excluded.reasoning_effort" error:error];
+  if (!statement) return NO;
+  [statement bindInt64:chatID atIndex:1]; [statement bindText:effort atIndex:2];
+  return [statement stepDone:error];
+}
+
 - (BOOL)onDatabaseQueue_saveModelsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel error:(NSError **)error {
+  return [self onDatabaseQueue_saveChatSettingsForChatID:chatID model:model supportingModel:supportingModel reasoningEffort:nil error:error];
+}
+
+- (BOOL)onDatabaseQueue_saveChatSettingsForChatID:(NSInteger)chatID model:(NSString *)model supportingModel:(NSString *)supportingModel
+                               reasoningEffort:(NSString *)reasoningEffort error:(NSError **)error {
   @synchronized (self) {
     if (!TLTrimmedString(model).length || !TLTrimmedString(supportingModel).length) {
       TLSetDatabaseError(error, @"Choose both a large and small model.");
@@ -1160,6 +1195,7 @@ static id TLJSONValue(NSString *text) {
         [statement bindText:supportingModel atIndex:2];
         [statement bindInt64:chatID atIndex:3];
         if (![statement stepDone:transactionError]) return NO;
+        if (reasoningEffort && ![self writeThinkingForChatID:chatID effort:reasoningEffort error:transactionError]) return NO;
       }
       return [self setSetting:@"selectedModel" value:model error:transactionError] &&
         [self setSetting:@"supportingModel" value:supportingModel error:transactionError] &&
@@ -1610,7 +1646,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (TLChatRecord *)loadChatWithID:(NSInteger)chatID error:(NSError **)error {
-  const char *chatSQL = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id FROM chats WHERE id = ?1";
+  const char *chatSQL = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id, COALESCE((SELECT reasoning_effort FROM chat_model_settings WHERE chat_id = chats.id), '') FROM chats WHERE id = ?1";
 
   TLSQLiteStatement *chatStatement = [self.sqliteConnection prepareSQL:chatSQL error:error];
   if (!chatStatement) {
@@ -1632,6 +1668,7 @@ static id TLJSONValue(NSString *text) {
   chat.icon = summary.icon;
   chat.model = summary.model;
   chat.supportingModel = summary.supportingModel;
+  chat.reasoningEffort = summary.reasoningEffort;
   chat.createdAt = summary.createdAt;
   chat.updatedAt = summary.updatedAt;
   chat.hermesSessionID = summary.hermesSessionID;
@@ -1667,7 +1704,7 @@ static id TLJSONValue(NSString *text) {
 }
 
 - (TLChatSummary *)loadChatSummaryWithID:(NSInteger)chatID error:(NSError **)error {
-  const char *sql = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id FROM chats WHERE id = ?1";
+  const char *sql = "SELECT id, title, model, icon, created_at, updated_at, hermes_session_id, supporting_model, source_agent_id, source_session_id, continuation_session_id, COALESCE((SELECT reasoning_effort FROM chat_model_settings WHERE chat_id = chats.id), '') FROM chats WHERE id = ?1";
 
   TLSQLiteStatement *statement = [self.sqliteConnection prepareSQL:sql error:error];
   if (!statement) {
@@ -1758,6 +1795,7 @@ static id TLJSONValue(NSString *text) {
   summary.sourceAgentID = sqlite3_column_int64(statement, 8);
   summary.sourceSessionID = TLStringFromColumn(statement, 9);
   summary.continuationSessionID = TLStringFromColumn(statement, 10);
+  summary.reasoningEffort = TLStringFromColumn(statement, 11);
   return summary;
 }
 

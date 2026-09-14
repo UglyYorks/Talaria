@@ -86,8 +86,8 @@ static TLWorkspaceTab *Tab(NSInteger n) {
 - (NSArray *)listBookmarks:(NSError **)error { return @[]; }
 - (NSArray *)listBrowserHistory:(NSError **)error { return @[]; }
 - (NSInteger)currentAgentID { return 0; }
-- (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supporting error:(NSError **)error {
-  TLChatRecord *chat = [TLChatRecord new]; chat.chatID = 123; chat.model = model; chat.title = @"Saved chat"; chat.messages = @[]; return chat;
+- (TLChatRecord *)createChatWithModel:(NSString *)model supportingModel:(NSString *)supporting reasoningEffort:(NSString *)effort error:(NSError **)error {
+  TLChatRecord *chat = [TLChatRecord new]; chat.chatID = 123; chat.model = model; chat.reasoningEffort = effort; chat.title = @"Saved chat"; chat.messages = @[]; return chat;
 }
 @end
 
@@ -520,12 +520,14 @@ static void TestDraftPromotionAcrossEvents(void) {
     [owner setValue:@(-1) forKey:@"nextDraftChatID"];
     [owner startNewChatWithModel:@"test-model" focus:NO];
     chat = [owner valueForKey:@"chatPresentation"];
+    chat.chat.reasoningEffort = @"high";
     Check(!chat.emptyStateView.hidden, @"draft starts with the empty state visible");
   }
   @autoreleasepool {
     Check([owner persistActiveDraftChatWithModel:@"test-model"], @"first submission saves the draft");
   }
   Check(!chat.closed, @"retiring the draft identity keeps its chat controller alive across events");
+  Check([chat.chat.reasoningEffort isEqual:@"high"], @"draft promotion carries the selected thinking level into the persisted chat");
   TLChatMessage *message = [TLChatMessage messageWithRole:TLRoleUser content:@"First prompt" thinking:nil];
   [chat.messages addObject:message];
   [chat markMessageDirty:message];
