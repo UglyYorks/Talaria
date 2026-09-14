@@ -26,6 +26,13 @@ def visible_text(value, limit=1000):
     return "\n".join(line.rsplit("\r", 1)[-1] for line in text.split("\n"))[-limit:]
 
 
+def headline(value, limit=100):
+    # Titles keep the beginning of the task; terminal output intentionally keeps
+    # its tail. Never use the terminal-tail helper to crop a task prompt.
+    text = " ".join(visible_text(value, max(len(value), 1)).split()) if isinstance(value, str) else ""
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
 class HermesActivity:
     def __init__(self):
         self.lock = threading.RLock()
@@ -100,8 +107,10 @@ class HermesActivity:
                     state = ("failed" if status in {"error", "failed", "timeout", "timed_out"} else
                              "stopped" if status in {"cancelled", "canceled", "stopped"} else
                              "interrupted" if status == "interrupted" else "completed")
-                row = {"id": identity, "kind": "agent", "name": visible_text(payload.get("goal"), 200) or previous.get("name", "Delegated agent"),
+                row = {"id": identity, "kind": "agent", "name": headline(payload.get("goal")) or previous.get("name", "Delegated agent"),
                        "state": state}
+                if payload.get("goal"):
+                    row["goal"] = headline(payload["goal"], 4000)
                 for key in ("parent_id", "model"):
                     if visible_text(payload.get(key), 200): row[key] = visible_text(payload[key], 200)
                 detail = visible_text(payload.get("tool_preview") or payload.get("text"))
@@ -109,13 +118,23 @@ class HermesActivity:
                 if detail or tool:
                     row["detail"] = (tool + " · " + detail) if tool and detail else tool or detail
                 summary = visible_text(payload.get("summary"))
-                if summary: row["summary"] = summary
+                if summary:
+                    row["summary"] = summary
+                    if kind == "subagent.complete": row["detail"] = ""
                 self._put(session, row)
                 return
-            text = visible_text(payload.get("text") or payload.get("message") or payload.get("preview"), 2000)
+            raw_text = payload.get("text") or payload.get("message") or payload.get("preview")
+            text = visible_text(raw_text, max(len(raw_text), 1))[:8000] if isinstance(raw_text, str) else ""
             if not text:
                 return
             category = visible_text(payload.get("kind"), 100) or kind
+            delegated = re.fullmatch(r"Subagent Task (Completed|Failed|Cancelled|Interrupted|Timed Out|Incomplete|Unknown): (.*)", text, re.S)
+            if delegated:
+                goal = headline(delegated[2], 4000)
+                identity = "notice:agent:" + hashlib.sha256(goal.encode()).hexdigest()[:16]
+                self._put(session, {"id": identity, "kind": "notice", "name": "Subagent " + delegated[1].lower(),
+                    "goal": goal, "detail": goal, "state": "completed" if delegated[1] == "Completed" else "failed"})
+                return
             # Process notifications are distinct; spinner/loop progress replaces its last line.
             suffix = hashlib.sha256(text.encode()).hexdigest()[:16] if category == "process" else category
             if kind == "background.complete": suffix = visible_text(payload.get("task_id"), 200) or suffix
@@ -134,7 +153,7 @@ class HermesActivity:
                 identity = "process:" + pid
                 status = process.get("status")
                 state = "running" if status == "running" else "failed" if process.get("exit_code") not in (None, 0) else "completed"
-                row = {"id": identity, "kind": "process", "name": visible_text(process.get("command"), 200) or "Terminal",
+                row = {"id": identity, "kind": "process", "name": headline(process.get("command")) or "Terminal",
                        "state": state, "detail": visible_text(process.get("cwd"))}
                 if status != "running": row["summary"] = "Exited" + (f" · code {process['exit_code']}" if isinstance(process.get("exit_code"), int) else "")
                 # The reader can receive output while process.list is in flight.
@@ -150,4 +169,7 @@ class HermesActivity:
     def snapshot(self, sid):
         with self.lock:
             session = self.sessions.get(sid)
-            return {"activities": [dict(row) for row in session["rows"].values()] if session else [], "revision": self.revision}
+            rows = list(session["rows"].values()) if session else []
+            completed_goals = {row.get("goal") for row in rows if row["kind"] == "agent" and row["state"] in TERMINAL_STATES}
+            return {"activities": [dict(row) for row in rows if not
+                (row["id"].startswith("notice:agent:") and row.get("goal") in completed_goals)], "revision": self.revision}

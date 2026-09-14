@@ -8,5 +8,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSArray<NSDictionary *> *activities;
 @property (nonatomic, copy) NSString *statusText;
 @property (nonatomic) BOOL expanded;
++ (NSString *)summaryForActivity:(NSDictionary *)activity;
 @end
 NS_ASSUME_NONNULL_END

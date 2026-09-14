@@ -96,6 +96,8 @@ def skill_metadata():
 
 
 def register(server):
+    from hermes_shared_folders import register_rpc as register_shared_folders
+    register_shared_folders(server, os.environ["HERMES_HOME"])
     from hermes_host_commands import register as register_host_commands
     register_host_commands(server)
 
@@ -126,6 +128,8 @@ def register(server):
 def main():
     # Must precede entry/server import and its background database maintenance.
     configure_vm_database()
+    from hermes_shared_folders import install as install_shared_folders
+    install_shared_folders(os.environ["HERMES_HOME"])
     from tui_gateway import entry
     from hermes_automations import register as register_automations
     from hermes_notifications import register_rpc as register_notifications, DESCRIPTION_FILE

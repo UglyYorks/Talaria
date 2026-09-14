@@ -36,6 +36,13 @@ def tool_activity(kind, payload):
     name, tool_id = text("name", 200), text("tool_id", 200)
     if not name or (kind != "tool.generating" and not tool_id):
         return None
+    if name == "tool_call" and kind == "tool.generating":
+        return None  # Its target is not known yet; the chat remains Thinking.
+    # Codex can dispatch a tool through Hermes's tool_call wrapper. Show the
+    # selected tool's name, while keeping arguments out of presentation data.
+    args = payload.get("args")
+    if name == "tool_call" and isinstance(args, dict) and isinstance(args.get("name"), str) and args["name"]:
+        name = args["name"][:200]
     state = {"tool.generating": "preparing", "tool.start": "running", "tool.complete": "completed"}[kind]
     result = payload.get("result")
     if kind == "tool.complete" and isinstance(result, dict):
@@ -103,6 +110,16 @@ class HermesGateway:
             raise RuntimeError("Hermes returned an invalid process list.")
         self.activity.reconcile_processes(sid, result["processes"], revision)
         return {**self.activity.snapshot(sid), "available": True}
+
+    def poll_host_commands(self, chat_id, delta):
+        with self.lock:
+            state = self.sessions.get(self._session_registry().runtime_owner(chat_id))
+            sid = state["id"] if state else None
+        if not sid:
+            return
+        for request in self.call("talaria.host.poll", {"session_id": sid}).get("requests", []):
+            delta(request)
+            self.call("talaria.host.wait", {"session_id": sid, "request_id": request["request_id"]}, timeout=370)
 
     def _session_registry(self):
         # Also supports isolated facade tests that inject fake RPC and state.
@@ -660,7 +677,7 @@ class HermesGateway:
             return self.command(chat_id, sid, target + (" " + arg if arg else ""), model, depth + 1)
         return result
 
-    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort=""):
+    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort="", shared_folders=False):
         if cancellation and cancellation.cancelled():
             return
         with self.lock:
@@ -705,6 +722,8 @@ class HermesGateway:
                 self._apply_session_thinking(sid, reasoning_effort)
                 self.sessions[chat_id]["reasoning_effort"] = reasoning_effort
             waiting = self.waiting.get(chat_id)
+            if shared_folders and not waiting:
+                self.call("talaria.shared_folders.attach", {"session_id": sid})
             if approval_response is not None and (not waiting or waiting[2] not in {"approval.request", "clarify.request"}):
                 raise RuntimeError("This approval is no longer pending. Send your request again.")
             if waiting:

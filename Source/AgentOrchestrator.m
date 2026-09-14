@@ -29,7 +29,7 @@ static NSString *TLAgentOrchestratorTrim(NSString *value) {
 }
 
 static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
-  NSString *rawInput = messages.lastObject.content ?: @"";
+  NSString *rawInput = [TLPromptBuilder userTextWithoutLegacySharedFolders:messages.lastObject.content ?: @""];
   if ([rawInput hasPrefix:@"/"]) { return rawInput; }
   NSMutableArray<NSString *> *parts = [NSMutableArray array];
   for (TLChatMessage *message in messages) {
@@ -37,7 +37,7 @@ static NSString *TLHermesInputFromMessages(NSArray<TLChatMessage *> *messages) {
       [parts addObject:message.content];
     }
   }
-  NSString *prompt = messages.lastObject.content ?: @"";
+  NSString *prompt = rawInput;
   if (prompt.length > 0) {
     [parts addObject:prompt];
   }
@@ -419,8 +419,6 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     NSMutableArray<TLChatMessage *> *inputMessages = [messages mutableCopy];
     if (!approvalResponse) {
       if (!self.database.incognito) [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:TLPromptBuilder.notesContext thinking:nil] atIndex:0];
-      NSString *context = [TLPromptBuilder sharedFolderContext:[self folderMountPathsForAgent:agent] ?: @{}];
-      if (context.length) [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:context thinking:nil] atIndex:0];
     }
     if (reasoningEffort.length) {
       if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:approvalResponse:reasoningEffort:delta:completion:)]) {
@@ -692,6 +690,11 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 
 - (void)hermesActivityForSessionID:(NSString *)sessionID agentID:(NSInteger)agentID
                       completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self hermesActivityForSessionID:sessionID agentID:agentID question:nil completion:completion];
+}
+
+- (void)hermesActivityForSessionID:(NSString *)sessionID agentID:(NSInteger)agentID
+                      question:(void (^)(id))question completion:(void (^)(NSDictionary *, NSError *))completion {
   // A background refresh must not boot a VM or switch the selected agent.
   NSError *error = nil;
   TLAgentRecord *agent = [self.database agentWithID:agentID > 0 ? agentID : self.database.currentAgentID error:&error];
@@ -702,7 +705,9 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   if (![self.agentClient respondsToSelector:@selector(hermesActivityWithAgent:sessionID:completion:)]) {
     completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to view background activity.")); return;
   }
-  [self.agentClient hermesActivityWithAgent:agent sessionID:sessionID completion:completion];
+  if (question && [self.agentClient respondsToSelector:@selector(hermesActivityWithAgent:sessionID:question:completion:)])
+    [self.agentClient hermesActivityWithAgent:agent sessionID:sessionID question:question completion:completion];
+  else [self.agentClient hermesActivityWithAgent:agent sessionID:sessionID completion:completion];
 }
 
 - (void)connectToDefaultAgentTerminal:(TLAgentVMConnectionCompletionHandler)completion {

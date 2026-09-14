@@ -291,6 +291,9 @@ def hermes_activity(request, output=None):
             raise RuntimeError("Hermes disconnected. Send a message to reconnect.")
         else:
             result = gateway.activity_snapshot(trim(request.get("session_id")))
+            if request.get("host_commands") is True:
+                gateway.poll_host_commands(trim(request.get("session_id")), lambda payload:
+                    emit({"type": "delta", "request_id": request["request_id"], "kind": "host_command", "payload": payload}, output))
         emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
         emit({"type": "complete"}, output)
     except (OSError, ValueError, RuntimeError) as exc:
@@ -405,6 +408,10 @@ def stream_hermes_session(request, output=None, cancellation=None):
             return
         save_agent_soul(request)
         gateway = tui_gateway(token, model)
+        folder_context = request.get("shared_folder_context")
+        if folder_context is not None:
+            gateway.call("talaria.shared_folders.configure", {"context": folder_context,
+                         "summary": request.get("shared_folder_summary")})
         host_description = request.get("host_command_description")
         if host_description:
             gateway.call("talaria.host.configure", {"description": host_description})
@@ -413,7 +420,8 @@ def stream_hermes_session(request, output=None, cancellation=None):
              ("payload" if isinstance(text, dict) else "text"): text}, output),
             cancellation=cancellation, approval_response=request.get("approval_response"),
             wait_for_previous_turn=request.get("wait_for_previous_turn") is True,
-            host_commands=bool(host_description), reasoning_effort=trim(request.get("reasoning_effort")))
+            host_commands=bool(host_description), reasoning_effort=trim(request.get("reasoning_effort")),
+            shared_folders=folder_context is not None)
         cancellation.finish()
         if not cancellation.cancelled():
             emit({"type": "complete"}, output)

@@ -439,6 +439,19 @@ class GatewayTests(unittest.TestCase):
         activity = tool_activity('tool.complete', {'name': 'x', 'tool_id': 'a', 'result': {'success': False}})
         self.assertEqual(activity['state'], 'failed')
 
+    def test_codex_wrapped_tool_uses_the_target_name_without_exposing_arguments(self):
+        from hermes_gateway import tool_activity
+        self.assertIsNone(tool_activity('tool.generating', {'name': 'tool_call'}))
+        payload = {'name': 'tool_call', 'tool_id': 'mac', 'context': 'Building the app',
+                   'args': {'name': 'run_host_command', 'arguments': {'command': 'private command'}}}
+        started = tool_activity('tool.start', payload)
+        finished = tool_activity('tool.complete', {**payload, 'result': {'exit_code': 0}})
+        self.assertEqual(started['name'], 'run_host_command')
+        self.assertEqual((started['id'], finished['id']), ('mac', 'mac'))
+        self.assertEqual((started['state'], finished['state']), ('running', 'completed'))
+        self.assertEqual(started['detail'], 'Building the app')
+        self.assertNotIn('private command', json.dumps(started))
+
     def test_skill_result_is_submitted_through_live_session(self):
         self.gateway.sessions['chat'] = {'id': 'runtime', 'model': 'model'}
         self.gateway.command = Mock(return_value={'type': 'skill', 'message': 'Hermes skill expansion'})
@@ -932,10 +945,11 @@ class CredentialRPCTests(unittest.TestCase):
 
     def test_rpc_error_never_echoes_value(self):
         from talaria_gateway_entry import register
-        server = Mock()
+        server = Mock(_LONG_HANDLERS=frozenset())
         handlers = {}
         server.method.side_effect = lambda name: lambda fn: handlers.update({name: fn})
-        register(server)
+        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/talaria-entry-test"}):
+            register(server)
         with patch("talaria_gateway_entry.credentials", side_effect=RuntimeError("test-secret")):
             handlers["talaria.credentials.set"](1, {"value": "test-secret"})
         self.assertNotIn("test-secret", str(server._err.call_args))
@@ -954,6 +968,7 @@ class CredentialRPCTests(unittest.TestCase):
                 with patch.dict(sys.modules, {"tui_gateway": types.SimpleNamespace(entry=entry)}), \
                      patch.dict(os.environ, {"HERMES_HOME": "/tmp/talaria-entry-test"}), \
                      patch("talaria_gateway_entry.configure_vm_database") as configure_database, \
+                     patch("hermes_shared_folders.install") as install_folders, \
                      patch("hermes_automations.Automations", return_value=automations):
                     if failure:
                         with self.assertRaisesRegex(RuntimeError, "gateway stopped"):
@@ -965,10 +980,12 @@ class CredentialRPCTests(unittest.TestCase):
                                     "talaria.providers", "talaria.providers.usage", "talaria.session.ready", "talaria.session.verify_model", "talaria.models.thinking",
                                                 "talaria.notifications.sync", "talaria.notifications.set_read",
                                     "talaria.notifications.open_source", "talaria.plugins",
-                                    "talaria.host.configure", "talaria.host.attach", "talaria.host.detach", "talaria.host.respond"})
+                                    "talaria.host.configure", "talaria.host.attach", "talaria.host.detach", "talaria.host.respond", "talaria.host.poll", "talaria.host.wait",
+                                    "talaria.shared_folders.configure", "talaria.shared_folders.attach"})
                 self.assertIn("talaria.automations", server._LONG_HANDLERS)
                 entry.main.assert_called_once_with()
                 configure_database.assert_called_once_with()
+                install_folders.assert_called_once_with("/tmp/talaria-entry-test")
                 automations.stop_event.set.assert_called_once_with()
 
     def test_worker_uses_gateway_and_returns_structured_response(self):

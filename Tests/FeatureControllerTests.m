@@ -6,6 +6,7 @@
 #import "design_system/TLInputSuggestionListView.h"
 #import "design_system/TLMessageInput.h"
 #import <AppKit/AppKit.h>
+#import "PromptBuilder.h"
 #import <QuartzCore/QuartzCore.h>
 #import <WebKit/WebKit.h>
 #import "TLBrowserTabController.h"
@@ -4072,7 +4073,7 @@ static void TestLiveThinkingPresentation(void) {
     NSView *thinking = [chat valueForKey:@"thinkingRow"];
     TLThinkingBubbleView *bubble = [chat valueForKey:@"thinkingBubble"];
     TLToolStatusPill *pill = [chat valueForKey:@"toolStatusPill"];
-    Check(thinking.superview && pill.hidden, @"waiting shows only the thinking bubble");
+    Check(thinking.superview && !pill.hidden && [pill.accessibilityLabel isEqual:@"Thinking"], @"waiting keeps a readable status above the composer");
     Check(![chat.messageMarkdownViews objectForKey:message], @"Hermes status and reasoning text never become visible Markdown");
     NSArray<CALayer *> *dots = [bubble valueForKey:@"dots"];
     Check(dots.count == 3 && NSWidth(bubble.frame) > 0, @"thinking bubble contains three visible dots");
@@ -4112,12 +4113,12 @@ static void TestLiveThinkingPresentation(void) {
     chat.messageInputWidthConstraint.constant = 520;
     [message applyToolActivity:@{@"id":@"web", @"name":@"web_search", @"state":@"completed"}];
     [chat renderMessagesScrollingToBottom:NO];
-    Check(thinking.superview && pill.hidden, @"thinking resumes after tool completion");
-    Check(!shimmer.valid, @"hidden tool pills stop shimmering");
+    Check(thinking.superview && !pill.hidden && [pill.accessibilityLabel containsString:@"Thinking · Last step"], @"thinking keeps the last tool visible between model requests");
+    Check(pill.actionHandler != nil, @"completed foreground steps remain available in activity details");
     message.content = @"Here are the results.";
     message.thinkingActive = NO;
     [chat renderMessagesScrollingToBottom:NO];
-    Check(!thinking.superview && pill.hidden, @"answer streaming clears the activity indicators");
+    Check(!thinking.superview && !pill.hidden && [pill.accessibilityLabel hasPrefix:@"Writing response"], @"answer streaming replaces the thinking status");
     message.thinkingActive = YES;
     [chat renderMessagesScrollingToBottom:NO];
     Check(thinking.superview != nil, @"later reasoning can show dots after response text");
@@ -4128,10 +4129,17 @@ static void TestLiveThinkingPresentation(void) {
     running = NO;
     [chat renderMessagesScrollingToBottom:NO];
     Check(!thinking.superview && pill.hidden, @"completion or cancellation clears progress even with stale thinking state");
+    Check(!shimmer.valid, @"finished turns stop shimmering");
     message.content = @"[{\"qid\":\"q0\",\"question\":\"Which dates?\",\"choices\":null,\"multi_select\":false}] Reply with your answer.";
     [chat renderMessagesScrollingToBottom:NO];
     NSView *questionView = [chat.messageMarkdownViews objectForKey:message];
     Check([[questionView valueForKey:@"text"] isEqual:@"Which dates?\n\nReply with your answer."], @"old question envelopes render readable text without protocol fields");
+    NSString *legacy = [[TLPromptBuilder sharedFolderContext:@{@"/Mac/work":@"/mnt/mac/work"}] stringByAppendingString:@"\nMy actual request"];
+    TLChatMessage *user = [TLChatMessage messageWithRole:TLRoleUser content:legacy thinking:nil];
+    chat.messages = [@[user] mutableCopy];
+    [chat renderMessagesScrollingToBottom:NO];
+    NSTextField *userText = (id)[chat.messageMarkdownViews objectForKey:user];
+    Check([userText.stringValue isEqual:@"My actual request"] && [user.content isEqual:legacy], @"old bubbles hide generated folder context without changing stored content");
     [chat close];
     [window close];
   }

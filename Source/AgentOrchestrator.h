@@ -96,6 +96,9 @@ typedef void (^TLHermesInstallProgressHandler)(NSString *text);
 - (BOOL)isDefaultAgentRunning;
 - (void)hermesActivityForSessionID:(NSString *)sessionID agentID:(NSInteger)agentID
                       completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
+- (void)hermesActivityForSessionID:(NSString *)sessionID agentID:(NSInteger)agentID
+                      question:(void (^_Nullable)(id question))question
+                    completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion;
 - (void)connectToDefaultAgentTerminal:(TLAgentVMConnectionCompletionHandler)completion;
 
 - (void)hermesProvidersForAgentID:(NSInteger)agentID parameters:(NSDictionary *)parameters
