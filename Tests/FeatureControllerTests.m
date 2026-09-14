@@ -701,9 +701,15 @@ static void TestInlineHostQuestion(void) {
   [defaults removePersistentDomainForName:suite];
 }
 
-static void TestThemedButtonRenderedColors(void) {
+static void TestThemedButtonRenderedStyle(BOOL fullscreen) {
   TLThemedButton *button = [TLThemedButton buttonWithTitle:@"Reset everything…" target:nil action:nil];
   button.frame = NSMakeRect(0, 0, 220, 44);
+  if (fullscreen) {
+    button.title = @"Click to exit Fullscreen";
+    button.bezelStyle = NSBezelStyleRegularSquare;
+    button.frame = NSMakeRect(0, 0, 520, 344);
+  }
+  NSInteger centerX = NSWidth(button.bounds) / 2, centerY = NSHeight(button.bounds) / 2;
   NSWindow *window = [[NSWindow alloc] initWithContentRect:button.bounds
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
@@ -730,27 +736,32 @@ static void TestThemedButtonRenderedColors(void) {
         if (focused) {
           CGFloat focusColor[3], alpha;
           RGBComponents(palette.controlFocus, focusColor, &alpha);
-          Check(PixelMatches(bitmap, 1, 22, focusColor), @"keyboard focus uses the theme focus token");
+          Check(PixelMatches(bitmap, 1, centerY, focusColor), @"keyboard focus uses the theme focus token");
         }
         CGFloat surface[3], unusedAlpha;
         RGBComponents(palette.tabBackground, surface, &unusedAlpha);
         CGFloat opacity = button.enabled ? 1 : palette.disabledOpacity;
         CompositeColor(button.primary ? palette.primaryActionSurface : palette.secondaryActionSurface, opacity, surface);
         if ([state isEqualToString:@"hovered"] || [state isEqualToString:@"pressed"]) CompositeColor(palette.chromeHoverSurface, 1, surface);
-        Check(PixelMatches(bitmap, 10, 22, surface), [NSString stringWithFormat:@"%@ button renders its theme surface", state]);
+        Check(PixelMatches(bitmap, 10, centerY, surface), [NSString stringWithFormat:@"%@ button renders its theme surface", state]);
         CGFloat foreground[3] = {surface[0], surface[1], surface[2]};
         CompositeColor(button.primary ? palette.primaryActionText : palette.secondaryActionText, opacity, foreground);
         NSUInteger foregroundPixels = 0;
-        for (NSInteger y = 8; y < 36; y++) {
-          for (NSInteger x = 35; x < 185; x++) if (PixelMatches(bitmap, x, y, foreground)) foregroundPixels++;
+        for (NSInteger y = centerY - 14; y < centerY + 14; y++) {
+          for (NSInteger x = centerX - 100; x < centerX + 100; x++) if (PixelMatches(bitmap, x, y, foreground)) foregroundPixels++;
         }
         Check(foregroundPixels > 10, [NSString stringWithFormat:@"%@ button renders the paired text color in theme %@", state, theme]);
-        NSString *path = [NSString stringWithFormat:@"build/themed-button-%@-%@-%@.png", theme, primary, state];
+        NSString *path = [NSString stringWithFormat:@"build/themed-button-%@-%@-%@-%@.png", fullscreen ? @"fullscreen" : @"standard", theme, primary, state];
         [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
       }
     }
   }
   [window close];
+}
+
+static void TestThemedButtonRenderedColors(void) {
+  TestThemedButtonRenderedStyle(NO);
+  TestThemedButtonRenderedStyle(YES);
 }
 
 @interface TLTerminalStateStore : NSObject
@@ -1736,6 +1747,62 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 - (double)estimatedProgress { return self.reportedProgress; }
 - (BOOL)isLoading { return self.reportedLoading; }
 @end
+
+@interface TLWebKitBrowserSession (FullscreenRecoveryTests)
+- (void)restoreDetachedFullscreenContent;
+@end
+@interface TLWebKitBrowserController (FullscreenRecoveryTests)
+- (void)updateFullscreenExitButton:(TLWebKitBrowserSession *)session;
+@end
+@interface TLFullscreenPresentationMock : NSView
+@property (nonatomic) NSView *placeholder;
+@property (nonatomic) WKFullscreenState fullscreenState;
+@end
+@implementation TLFullscreenPresentationMock
+- (NSView *)_fullScreenPlaceholderView { return self.placeholder; }
+@end
+static void TestFullscreenPlaceholderRecovery(void) {
+  TLWebKitBrowserController *service=[TLWebKitBrowserController new];
+  TLWebKitBrowserSession *session=[TLWebKitBrowserSession new];
+  NSView *host=[[NSView alloc] initWithFrame:NSMakeRect(0,0,800,600)];
+  TLFullscreenPresentationMock *presentation=[TLFullscreenPresentationMock new];
+  presentation.placeholder=[[NSView alloc] initWithFrame:host.bounds];
+  [session setValue:host forKey:@"containerView"];
+  [session setValue:presentation forKey:@"webView"];
+  [session setValue:@YES forKey:@"fullscreen"];
+  [service updateFullscreenExitButton:session];
+  NSButton *button=[session valueForKey:@"fullscreenExitButton"];
+  Check(button && NSEqualRects(button.frame,host.bounds), @"recovery covers the original pane during fullscreen entry");
+  [host addSubview:presentation.placeholder positioned:NSWindowAbove relativeTo:nil];
+  [service updateFullscreenExitButton:session];
+  Check(host.subviews.lastObject==button, @"late WebKit placeholder insertion cannot obscure fullscreen recovery");
+  [session setValue:@NO forKey:@"fullscreen"];
+  [service updateFullscreenExitButton:session];
+  Check(button.superview==host, @"recovery stays visible when engine state clears before its placeholder is removed");
+  [presentation.placeholder removeFromSuperview];
+  [service updateFullscreenExitButton:session];
+  Check(!button.superview && ![session valueForKey:@"fullscreenExitButton"], @"recovery disappears after WebKit removes its placeholder");
+  [host addSubview:presentation.placeholder];
+  [service updateFullscreenExitButton:session];
+  Check([session valueForKey:@"fullscreenExitButton"]!=nil, @"a lingering placeholder restores recovery even without a fullscreen state notification");
+  [presentation.placeholder removeFromSuperview];
+  [session setValue:@1 forKey:@"documentGeneration"];
+  [service updateFullscreenExitButton:session];
+  Check([session valueForKey:@"fullscreenExitButton"]!=nil, @"an orphaned live browser gets recovery even with no fullscreen state or placeholder");
+  [session restoreDetachedFullscreenContent];
+  [service updateFullscreenExitButton:session];
+  Check(presentation.superview==host && NSEqualRects(presentation.frame,host.bounds) && ![session valueForKey:@"fullscreenExitButton"], @"recovery reattaches the orphaned browser and removes the action");
+  [presentation removeFromSuperview];
+  [session setValue:@YES forKey:@"paused"];
+  [service updateFullscreenExitButton:session];
+  [session restoreDetachedFullscreenContent];
+  Check(!presentation.superview && ![session valueForKey:@"fullscreenExitButton"], @"intentionally suspended tabs are not treated as orphaned fullscreen content");
+  [session setValue:@NO forKey:@"paused"];
+  [session setValue:@YES forKey:@"closed"];
+  [service updateFullscreenExitButton:session];
+  [session restoreDetachedFullscreenContent];
+  Check(!presentation.superview && ![session valueForKey:@"fullscreenExitButton"], @"closed sessions cannot restore fullscreen content");
+}
 
 @interface TLWebKitBrowserController (LoadingTests)
 - (void)updateSession:(TLWebKitBrowserSession *)session;
@@ -4458,6 +4525,11 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_FULLSCREEN_RECOVERY_TESTS_ONLY")) {
+      TestFullscreenPlaceholderRecovery(); TestThemedButtonRenderedColors();
+      NSLog(@"Fullscreen recovery and rendered button tests passed");
+      return 0;
+    }
     if (getenv("TL_BROWSER_PROMPT_TESTS_ONLY")) {
       TestBrowserPromptPresentation();
       NSLog(@"Browser prompt presentation tests passed"); return 0;
@@ -4559,6 +4631,7 @@ int main(void) {
     TestBrowserPromptPresentation();
     TestRunningAgentRepairAction();
     TestWarmupAfterSettingsAndManualStart();
+    TestFullscreenPlaceholderRecovery();
     TestThemedButtonRenderedColors();
     TestApprovalCard();
     TestQuestionCard();
