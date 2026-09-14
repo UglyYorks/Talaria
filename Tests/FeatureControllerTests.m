@@ -1,3 +1,4 @@
+#import "TLAgentPickerWindowController.h"
 #import "TLHostCommandBridge.h"
 #import "TLBrowserContentColor.h"
 #import "TLChatControllerTestSupport.h"
@@ -246,6 +247,7 @@ static void TestCompactButtonHitAreaAndMovingHover(void) {
 - (void)sendMessage:(id)sender;
 - (NSStackView *)buildSidebarTileGrid;
 - (void)rebuildSidebarAgents;
+- (void)showAgentPicker:(id)sender;
 - (NSView *)buildDebugTabContent;
 - (void)refreshDebugTerminalAvailability;
 - (void)installAppStateBindings;
@@ -2654,28 +2656,101 @@ static void TestRealSidebarAgents(void) {
   [window.contentView layoutSubtreeIfNeeded];
   [controller rebuildSidebarAgents];
   [window.contentView layoutSubtreeIfNeeded];
-  NSScrollView *scroll = (NSScrollView *)grid.arrangedSubviews.firstObject;
-  NSStackView *tiles = (NSStackView *)scroll.documentView;
-  Check(tiles.arrangedSubviews.count == 5, @"sidebar contains only persisted agents");
-  NSUInteger selected = 0;
-  for (TLIconTileView *tile in tiles.arrangedSubviews) {
-    if (tile.selected) selected++;
-    Check(NSWidth(tile.bounds) > 0 && NSHeight(tile.bounds) > 0, @"agent tiles remain visible in scrolling sidebar");
-  }
-  Check(selected == 1 && ((TLIconTileView *)tiles.arrangedSubviews[2]).selected, @"sidebar marks actual selected agent");
-  Check(NSWidth(tiles.bounds) > NSWidth(scroll.bounds), @"extra agents remain horizontally scrollable");
-  NSString *preview = NSProcessInfo.processInfo.environment[@"TL_AGENT_SIDEBAR_PREVIEW"];
-  if (preview.length) {
+  Check(grid.arrangedSubviews.count == 1, @"sidebar shows only the agent picker button without a section heading");
+  TLThemedButton *button = (id)grid.arrangedSubviews[0];
+  Check([button isKindOfClass:TLThemedButton.class] && [button.title containsString:@"Agent 12"], @"button identifies the current persisted agent");
+  Check(button.action == @selector(showAgentPicker:), @"button opens the agent sheet");
+  Check(NSWidth(button.bounds) > 0 && NSHeight(button.bounds) > 0, @"picker is visible");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    [controller setValue:[TLThemePalette paletteForPreference:theme.integerValue] forKey:@"palette"];
+    [controller rebuildSidebarAgents];
+    [window.contentView layoutSubtreeIfNeeded];
     NSBitmapImageRep *bitmap = [window.contentView bitmapImageRepForCachingDisplayInRect:window.contentView.bounds];
     [window.contentView cacheDisplayInRect:window.contentView.bounds toBitmapImageRep:bitmap];
-    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:preview atomically:YES];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"build/agent-sidebar-%@.png", theme] atomically:YES];
   }
   [controller setValue:@[] forKey:@"agents"];
   [controller rebuildSidebarAgents];
-  scroll = (NSScrollView *)grid.arrangedSubviews.firstObject;
-  tiles = (NSStackView *)scroll.documentView;
-  Check(tiles.arrangedSubviews.count == 0, @"empty sidebar contains no placeholder or creation tiles");
+  button = (id)grid.arrangedSubviews[0];
+  Check(button.enabled && [button.title isEqual:@"Choose agent…"], @"empty sidebar still opens the picker to manage agents");
   [window close];
+}
+
+static void TestAgentPickerSheet(void) {
+  NSMutableArray<TLAgentRecord *> *agents = [NSMutableArray array];
+  for (NSInteger index = 0; index < 8; index++) {
+    TLAgentRecord *agent = [TLAgentRecord new];
+    agent.agentID = index + 1;
+    agent.name = index == 2 ? @"An agent with a very long name that should wrap without overlapping its selection button" :
+      [NSString stringWithFormat:@"Agent %ld", (long)index + 1];
+    agent.avatar = index == 0 ? @"👽" : @"😇";
+    agent.folderPaths = index == 0 ? @[@"/Users/example/work/Talaria", @"/Users/example/work/Website"] :
+      index == 2 ? @[@"/Users/example/work/An unusually long project folder name that should remain readable"] : @[];
+    [agents addObject:agent];
+  }
+  TLAgentPickerWindowController *picker = [[TLAgentPickerWindowController alloc] initWithAgents:agents
+    currentAgentID:1 selectionEnabled:YES palette:[TLThemePalette paletteForPreference:TLThemePreferenceDark]];
+  NSArray<TLThemedButton *> *buttons = [picker valueForKey:@"buttons"];
+  Check(buttons.count == agents.count + 2, @"every persisted agent is available alongside management and dismissal");
+  Check(!buttons[0].enabled && [buttons[0].title isEqual:@"Current"], @"current agent is marked");
+  NSArray<NSTextField *> *labels = [picker valueForKey:@"detailLabels"];
+  NSString *details = [[labels valueForKey:@"stringValue"] componentsJoinedByString:@"\n"];
+  Check([details containsString:@"Read and write to 2 shared folders"] && [details containsString:@"No shared Mac folders"],
+    @"access summaries reflect each agent's actual folder permissions");
+  Check([details containsString:@"Talaria — /Users/example/work/Talaria"] && [details containsString:@"Projects: No shared folders"],
+    @"projects show names and paths, including the empty state");
+  __block NSInteger selected = 0;
+  picker.selectionHandler = ^BOOL(NSInteger agentID) { selected = agentID; return NO; };
+  [buttons[1] performClick:nil];
+  Check(selected == 2, @"select dispatches the chosen agent ID");
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [picker applyPalette:palette];
+    [picker.window.contentView layoutSubtreeIfNeeded];
+    for (TLThemedButton *button in buttons) Check(button.palette == palette, @"open sheet buttons follow theme changes");
+    NSScrollView *scroll = nil;
+    for (NSView *view in picker.window.contentView.subviews) if ([view isKindOfClass:NSScrollView.class]) scroll = (id)view;
+    Check(NSHeight(scroll.documentView.frame) > NSHeight(scroll.contentView.frame), @"long agent lists scroll vertically");
+    NSArray *cards = [picker valueForKey:@"cards"];
+    for (NSView *card in cards) {
+      Check(NSWidth(card.frame) <= NSWidth(scroll.contentView.bounds) && NSHeight(card.frame) > 0, @"cards fit the sheet width");
+      NSView *name = card.subviews[0], *select = card.subviews[1], *access = card.subviews[2];
+      Check(!NSIntersectsRect(name.frame, select.frame) && !NSIntersectsRect(name.frame, access.frame), @"long names do not overlap controls or access summaries");
+    }
+    [scroll.documentView scrollPoint:NSMakePoint(0, NSHeight(scroll.documentView.bounds))];
+    NSBitmapImageRep *bitmap = [picker.window.contentView bitmapImageRepForCachingDisplayInRect:picker.window.contentView.bounds];
+    [picker.window.contentView cacheDisplayInRect:picker.window.contentView.bounds toBitmapImageRep:bitmap];
+    [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"build/agent-picker-%@.png", theme] atomically:YES];
+  }
+  NSWindow *parent = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 900, 700)
+    styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+  parent.releasedWhenClosed = NO;
+  [parent makeKeyAndOrderFront:nil];
+  [picker showFromWindow:parent];
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+  Check(picker.window.sheetParent == parent, [NSString stringWithFormat:@"picker is presented as a native sheet: parent %@, attached %@, sheet parent %@", parent, parent.attachedSheet, picker.window.sheetParent]);
+  [picker showErrorMessage:@"Could not switch agents."];
+  Check([[[picker valueForKey:@"subtitleLabel"] stringValue] isEqual:@"Could not switch agents."], @"selection errors remain visible in the sheet");
+  picker.selectionHandler = ^BOOL(NSInteger agentID) { selected = agentID; return YES; };
+  [buttons[1] performClick:nil];
+  [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+  Check(parent.attachedSheet == nil, @"successful selection dismisses the sheet");
+  [parent close];
+  __block BOOL managed = NO;
+  picker.manageHandler = ^{ managed = YES; };
+  [buttons[buttons.count - 2] performClick:nil];
+  Check(managed, @"management action opens agent management");
+  [picker close];
+  TLAgentPickerWindowController *locked = [[TLAgentPickerWindowController alloc] initWithAgents:agents
+    currentAgentID:1 selectionEnabled:NO palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  for (TLThemedButton *button in [locked valueForKey:@"buttons"]) if (button.tag > 0) Check(!button.enabled, @"switching is unavailable during a response");
+  [locked close];
+  TLAgentPickerWindowController *empty = [[TLAgentPickerWindowController alloc] initWithAgents:@[] currentAgentID:0
+    selectionEnabled:YES palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight]];
+  Check([[empty valueForKey:@"buttons"] count] == 2, @"empty state retains management and dismissal");
+  [empty close];
 }
 
 static void TestNativeEmojiInput(void) {
@@ -4072,6 +4147,11 @@ int main(void) {
       NSLog(@"Provider limits menu tests passed");
       return 0;
     }
+    if (getenv("TL_AGENT_PICKER_TESTS_ONLY")) {
+      TestRealSidebarAgents(); TestAgentPickerSheet(); TestThemedButtonRenderedColors();
+      NSLog(@"Agent picker tests passed");
+      return 0;
+    }
     if (getenv("TL_ACTIVITY_TESTS_ONLY")) {
       TestLiveThinkingPresentation(); TestConcurrentChatStreams(); TestNavigationWhileSendingPreservesTurn();
       TestStreamingKeepsMessageViewsAttached(); TestStreamingComposerStopButton(); TestApprovalRouting();
@@ -4141,6 +4221,7 @@ int main(void) {
     TestSkillsInSettingsWorkspace();
     TestPluginsInSettingsWorkspace();
     TestRealSidebarAgents();
+    TestAgentPickerSheet();
     TestSuggestionTypingAndVirtualization();
     TestRunningAgentRepairAction();
     TestWarmupAfterSettingsAndManualStart();

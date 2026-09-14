@@ -58,7 +58,7 @@ static BOOL ContainsColor(NSBitmapImageRep *image, NSColor *color) {
 - (NSStackView *)buildSidebarActionStack;
 - (TLWorkspaceTabRuntime *)runtimeForTab:(TLWorkspaceTab *)tab;
 - (void)hydrateWorkspaceTabsFromAppState;
-- (void)activateSidebarAgent:(NSControl *)sender;
+- (BOOL)activateAgentWithID:(NSInteger)agentID;
 @end
 @interface TLNotesTestDatabase : NSObject
 @property (nonatomic) NSInteger currentAgentID;
@@ -127,7 +127,7 @@ static void TestWorkspaceNotes(void) {
     } else if ([action isEqual:@"read"]) reply(@{@"note":notebook[identity]}, nil);
   };
   NSButton *agentControl = [NSButton new]; agentControl.tag = 17;
-  [owner activateSidebarAgent:agentControl]; Drain(0.05);
+  [owner activateAgentWithID:agentControl.tag]; Drain(0.05);
   TLNotesTabController *first = (id)runtime.featureController;
   Check([[first valueForKey:@"agentID"] integerValue] == 17, @"Notes follows the app's selected agent");
   for (NSView *view in [(TLCollectionEditorView *)first.view header].subviews)
@@ -136,7 +136,7 @@ static void TestWorkspaceNotes(void) {
   NSTextView *firstEditor = [first valueForKey:@"textView"];
   firstEditor.string = @"# First agent's draft"; [first textDidChange:nil]; [first save:nil]; Drain(0.05);
   Check(pending && pendingAgent == 17 && [pendingParameters[@"content"] isEqual:firstEditor.string], @"pending saves target the original agent");
-  agentControl.tag = 23; [owner activateSidebarAgent:agentControl]; Drain(0.05);
+  agentControl.tag = 23; [owner activateAgentWithID:agentControl.tag]; Drain(0.05);
   TLNotesTabController *second = (id)runtime.featureController;
   Check(second != first && [[second valueForKey:@"agentID"] integerValue] == 23 && !first.closed &&
     [owner runtimeForTab:tab] == runtime && state.snapshot.workspaceTabs.count == 2,
@@ -147,10 +147,10 @@ static void TestWorkspaceNotes(void) {
   pending(nil, [NSError errorWithDomain:@"test" code:1 userInfo:@{NSLocalizedDescriptionKey:@"VM disconnected"}]);
   pending = nil; Drain(0.05);
   Check([[first valueForKey:@"dirty"] boolValue] && [secondEditor.string isEqual:secondContent], @"a late failure preserves its original draft without touching the new notebook");
-  agentControl.tag = 17; [owner activateSidebarAgent:agentControl]; Drain(0.05);
+  agentControl.tag = 17; [owner activateAgentWithID:agentControl.tag]; Drain(0.05);
   Check(runtime.featureController == first && [firstEditor.string isEqual:@"# First agent's draft"], @"switching back restores an unsaved draft");
   [first save:nil]; Drain(0.05);
-  agentControl.tag = 23; [owner activateSidebarAgent:agentControl]; Drain(0.05);
+  agentControl.tag = 23; [owner activateAgentWithID:agentControl.tag]; Drain(0.05);
   NSString *identity = pendingParameters[@"id"];
   storage[@17][identity] = Note(identity, pendingParameters[@"content"], @"saved-revision");
   deferSave = NO; pending(@{@"note":storage[@17][identity]}, nil); pending = nil; Drain(0.05);
