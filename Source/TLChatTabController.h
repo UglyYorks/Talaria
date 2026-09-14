@@ -18,6 +18,7 @@
 // controller; background work receives its originating controller explicitly.
 NS_ASSUME_NONNULL_BEGIN
 @interface TLChatTabController : TLFeatureTabController <TLFindActionTarget>
+@property (nonatomic) BOOL suggestionsExpanded;
 @property (nonatomic, weak, nullable) id composerTarget;
 @property (nonatomic, weak, nullable) id<NSTextViewDelegate> composerDelegate;
 @property (nonatomic) SEL sendAction;

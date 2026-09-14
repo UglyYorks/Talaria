@@ -1,3 +1,4 @@
+#import "TLBrowserPreferences.h"
 #import "TLQuickInputWindowController.h"
 #import "InputSuggestions.h"
 #import "design_system/TLInputSuggestionListView.h"
@@ -251,12 +252,12 @@
 - (void)updateSuggestions {
   NSString *text = self.messageInput.textView.string ?: @"";
   NSString *trimmed = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  NSArray *suggestions = self.messageInput.attachmentURLs.count ? @[] :
-    ([trimmed hasPrefix:@"/"] ? [TLInputSuggestions slashCommandsForInput:text commands:self.commands]
-                              : [TLInputSuggestions webSuggestionsForInput:trimmed]);
+  NSArray *suggestions = self.messageInput.textView.hasMarkedText ? @[] : (self.suggestionsProvider ? self.suggestionsProvider(text) :
+    [TLInputSuggestions suggestionsForInput:text commands:self.commands localCandidates:@[]
+      searchURL:[TLBrowserPreferences.sharedPreferences searchURLForText:text] hasAttachments:self.messageInput.attachmentURLs.count > 0]);
   BOOL changed = ![self.suggestionList.suggestions isEqualToArray:suggestions];
   self.suggestionList.suggestions = suggestions;
-  if (changed) self.suggestionList.selectedIndex = -1;
+  if (changed) self.suggestionList.selectedIndex = suggestions.count ? 0 : -1;
   self.suggestionPanel.hidden = suggestions.count == 0;
   self.messageInput.sendButton.enabled = !self.captureInProgress && (trimmed.length > 0 || self.messageInput.attachmentURLs.count > 0);
   [self.messageInput recalculateHeight];
@@ -436,8 +437,18 @@
       [self submitAllowingAutomaticRouting:NO];
     }
   } else {
-    if (completing) return NO;
-    [self submitAllowingAutomaticRouting:![suggestion[@"kind"] isEqualToString:@"prompt"]];
+    if (completing) {
+      if (![suggestion[@"strong"] isEqual:@"yes"]) return NO;
+      self.messageInput.textView.string = suggestion[@"URL"];
+      [self.messageInput.textView setSelectedRange:NSMakeRange(self.messageInput.textView.string.length, 0)];
+      [self updateSuggestions];
+    } else if ([@[@"web", @"search", @"tab"] containsObject:suggestion[@"kind"]] && self.destinationHandler) {
+      [self dismiss];
+      self.messageInput.textView.string = @"";
+      self.destinationHandler(suggestion);
+    } else {
+      [self submitAllowingAutomaticRouting:![suggestion[@"kind"] isEqualToString:@"prompt"]];
+    }
   }
   return YES;
 }
@@ -481,6 +492,11 @@
 }
 
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
+  if (textView.hasMarkedText) return NO;
+  if (commandSelector == NSSelectorFromString(@"askAgent:")) {
+    [self submitAllowingAutomaticRouting:NO];
+    return YES;
+  }
   if (commandSelector == @selector(cancelOperation:)) { [self dismiss]; return YES; }
   if (commandSelector == @selector(moveUp:)) return [self moveSelection:-1];
   if (commandSelector == @selector(moveDown:)) return [self moveSelection:1];

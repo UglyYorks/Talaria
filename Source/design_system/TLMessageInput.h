@@ -11,6 +11,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong, readonly) TLGlassButton *sendButton;
 // Opt-in model/settings control immediately before Send.
 @property (nonatomic) BOOL showsSettingsButton;
+@property (nonatomic) BOOL showsSuggestionsButton;
+@property (nonatomic) BOOL suggestionsExpanded;
+@property (nonatomic, strong, readonly) TLGlassButton *suggestionsButton;
 @property (nonatomic, strong, readonly) TLGlassButton *settingsButton;
 @property (nonatomic) CGFloat sendButtonSize;
 @property (nonatomic) CGFloat sendButtonInset;

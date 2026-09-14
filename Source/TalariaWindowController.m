@@ -200,6 +200,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 @property (nonatomic, strong) TLHistoryPanelController *historyPanelController;
 @property (nonatomic, strong) TLHistoryRepository *historyRepository;
+@property (nonatomic, copy) NSArray<NSDictionary *> *suggestionHistory;
+@property (nonatomic) NSUInteger suggestionHistoryGeneration;
 @property (nonatomic, copy) NSArray<TLChatSummary *> *hermesHistoryChats;
 @property (nonatomic, copy) NSDictionary<NSNumber *, NSDictionary *> *hermesHistorySessions;
 @property (nonatomic) NSInteger historyAgentID;
@@ -2377,6 +2379,8 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [windowController.appStateManager upsertWorkspaceTab:updatedTab activate:[windowController isWorkspaceTabActive:updatedTab]];
   };
   controller.historyChangedHandler = ^{ [weakSelf reloadHistoryPanel]; };
+  controller.suggestionsProvider = ^NSArray *(NSString *text) { return [weakSelf unifiedSuggestionsForInput:text hasAttachments:NO]; };
+  controller.switchToTabHandler = ^BOOL(NSString *identifier) { return [weakSelf switchToSuggestedTab:identifier]; };
   controller.faviconChangedHandler = ^{ [weakSelf reloadWorkspaceTabs]; };
   __weak TLBrowserTabController *weakBrowser = controller;
   __block BOOL hasInitialHeaderColor = controller.headerContentColor != nil;
@@ -2995,10 +2999,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)sendMessage:(id)sender {
   [self flushSlashCommandUpdate];
-  if (!self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) {
+  if ([self performSelectedSlashCommand]) {
     return;
   }
-  [self sendMessage:sender allowAutomaticRouting:YES];
+  BOOL collapsed = self.chatPresentation.messages.count > 0 && !self.chatPresentation.suggestionsExpanded;
+  [self sendMessage:sender allowAutomaticRouting:!collapsed];
 }
 
 - (void)sendMessage:(id)sender allowAutomaticRouting:(BOOL)allowAutomaticRouting {
@@ -3013,13 +3018,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self finishQueuedPromptEditingSaving:YES];
     return;
   }
-  NSURL *browserURL = allowAutomaticRouting ? [self browserURLFromPromptString:nextPrompt] : nil;
+  NSDictionary *defaultAction = allowAutomaticRouting ? [self unifiedSuggestionsForInput:self.promptTextView.string hasAttachments:NO].firstObject : nil;
+  NSURL *browserURL = [@[@"web", @"search", @"tab"] containsObject:defaultAction[@"kind"] ?: @""] ? [NSURL URLWithString:defaultAction[@"URL"]] : nil;
   if (browserURL) {
     self.promptTextView.string = @"";
     [self.messageInput recalculateHeight];
     [self updateMessageScrollInsets];
     [self updateSlashCommandList];
-    [self openBrowserURLFromChatInput:browserURL];
+    if (![defaultAction[@"kind"] isEqual:@"tab"] || ![self switchToSuggestedTab:defaultAction[@"tabID"]]) [self openBrowserURLFromChatInput:browserURL];
     return;
   }
 
@@ -3265,10 +3271,52 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   return [pending.approvalRequest[@"submitted"] boolValue];
 }
 
+- (void)refreshSuggestionHistory {
+  // Immediately invalidate deleted history; a stale async read cannot restore it.
+  self.suggestionHistory = @[];
+  NSUInteger generation = ++self.suggestionHistoryGeneration;
+  __weak typeof(self) weakSelf = self;
+  [self.database performAsync:^(TLDatabase *database) {
+    NSArray *history = [TLInputSuggestions prepareLocalCandidates:[database inputSuggestionHistory]];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      TalariaWindowController *owner = weakSelf;
+      if (!owner || owner.suggestionHistoryGeneration != generation) return;
+      owner.suggestionHistory = history;
+      if (!owner.slashCommandListView.hidden && owner.window.firstResponder == owner.promptTextView) [owner updateSlashCommandList];
+      for (TLWorkspaceTab *tab in [owner workspaceTabsOfKind:TLWorkspaceTabKindBrowser])
+        [(TLBrowserTabController *)[owner runtimeForTab:tab].featureController updateInputSuggestions];
+      if (owner.quickInputController.window.visible) [owner.quickInputController updateSuggestions];
+    });
+  }];
+}
+
+- (NSArray *)unifiedSuggestionsForInput:(NSString *)input hasAttachments:(BOOL)attachments {
+  NSMutableArray *candidates = [NSMutableArray arrayWithArray:self.suggestionHistory ?: @[]];
+  for (TLBookmark *bookmark in self.bookmarks) if (bookmark.URL) {
+    NSMutableDictionary *candidate = [@{@"URL":bookmark.URL.absoluteString, @"title":bookmark.name ?: @"", @"bookmark":@YES} mutableCopy];
+    if (bookmark.faviconData) candidate[@"faviconData"] = bookmark.faviconData;
+    [candidates addObject:candidate];
+  }
+  // Scope to this workspace, including its private-window boundary.
+  for (TLWorkspaceTab *tab in [self workspaceTabsOfKind:TLWorkspaceTabKindBrowser]) if (tab.URL) {
+    NSMutableDictionary *candidate = [@{@"URL":tab.URL.absoluteString, @"title":tab.title ?: @"", @"tabID":@(tab.tabID)} mutableCopy];
+    NSImage *icon = ((TLBrowserTabController *)[self runtimeForTab:tab].featureController).favicon;
+    if (icon) candidate[@"faviconImage"] = icon;
+    [candidates addObject:candidate];
+  }
+  return [TLInputSuggestions suggestionsForInput:input commands:[self availableSlashCommands]
+    localCandidates:candidates searchURL:[TLBrowserPreferences.sharedPreferences searchURLForText:input] hasAttachments:attachments];
+}
+
+- (BOOL)switchToSuggestedTab:(NSString *)identifier {
+  TLWorkspaceTab *tab = [self browserTabWithID:identifier.integerValue];
+  if (!tab) return NO;
+  [self focusWorkspaceTab:tab];
+  return YES;
+}
+
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)slashCommandsMatchingPrompt:(NSString *)prompt {
-  NSString *trimmed = [prompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (![trimmed hasPrefix:@"/"]) return [TLInputSuggestions webSuggestionsForInput:trimmed];
-  return [TLInputSuggestions slashCommandsForInput:prompt commands:[self availableSlashCommands]];
+  return [self unifiedSuggestionsForInput:prompt hasAttachments:self.messageInput.attachmentURLs.count > 0];
 }
 
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)availableSlashCommands {
@@ -3380,7 +3428,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (BOOL)performInputSuggestionAtIndex:(NSUInteger)index {
-  if (self.preparingAttachments || self.chatPresentation.editingQueuedPrompt || self.messageInput.attachmentURLs.count ||
+  if (self.preparingAttachments || self.chatPresentation.editingQueuedPrompt ||
       index >= self.visibleSlashCommands.count || ![self.slashCommandScrollView isSuggestionEnabledAtIndex:index]) {
     return NO;
   }
@@ -3388,13 +3436,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (![[self slashCommandsMatchingPrompt:self.promptTextView.string ?: @""] containsObject:suggestion]) {
     return NO;
   }
-  if ([suggestion[@"kind"] isEqualToString:@"web"]) {
-    NSURL *URL = [TLInputSuggestions browserURLForInput:suggestion[@"value"]];
+  if ([@[@"web", @"search", @"tab"] containsObject:suggestion[@"kind"]]) {
+    NSURL *URL = [NSURL URLWithString:suggestion[@"URL"]];
     if (!URL) { return NO; }
     self.promptTextView.string = @"";
     [self.messageInput recalculateHeight];
     [self hideSlashCommandList];
-    [self openBrowserURLFromChatInput:URL];
+    if (![suggestion[@"kind"] isEqual:@"tab"] || ![self switchToSuggestedTab:suggestion[@"tabID"]]) [self openBrowserURLFromChatInput:URL];
     return YES;
   }
   if ([suggestion[@"kind"] isEqualToString:@"prompt"]) {
@@ -3553,9 +3601,33 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   chatContext.renderingSlashCommands = NO;
 }
 
+- (void)toggleChatSuggestions:(NSView *)sender {
+  [self focusChatContainingView:sender];
+  TLChatTabController *chat = [self currentChatPresentation];
+  BOOL expanded = !chat.suggestionsExpanded;
+  [self hideSlashCommandListForChat:chat];
+  chat.suggestionsExpanded = expanded;
+  chat.messageInput.suggestionsExpanded = expanded;
+  [self renderSlashCommandListForChat:chat];
+  [chat.promptTextView.window makeFirstResponder:chat.promptTextView];
+}
+
+- (void)updateSuggestionToggleForChat:(TLChatTabController *)chat {
+  BOOL hasDraft = [chat.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length > 0;
+  chat.messageInput.showsSuggestionsButton = chat.messages.count > 0 && hasDraft && !chat.editingQueuedPrompt && ![self preparingAttachmentsForChat:chat];
+  chat.messageInput.suggestionsButton.target = self;
+  chat.messageInput.suggestionsButton.action = @selector(toggleChatSuggestions:);
+  chat.messageInput.suggestionsExpanded = chat.suggestionsExpanded;
+}
+
 - (void)renderSlashCommandList { [self renderSlashCommandListForChat:[self currentChatPresentation]]; }
 - (void)renderSlashCommandListForChat:(TLChatTabController *)chatContext {
-  if ([self preparingAttachmentsForChat:chatContext] || chatContext.editingQueuedPrompt || chatContext.messageInput.attachmentURLs.count || ![self isChatWorkspaceActiveForChat:chatContext] || !chatContext.messageInput.window || NSIsEmptyRect(chatContext.messageInput.bounds)) {
+  [self updateSuggestionToggleForChat:chatContext];
+  if (chatContext.messages.count > 0 && !chatContext.suggestionsExpanded) {
+    [self hideSlashCommandListForChat:chatContext];
+    return;
+  }
+  if (chatContext.promptTextView.hasMarkedText || [self preparingAttachmentsForChat:chatContext] || chatContext.editingQueuedPrompt || ![self isChatWorkspaceActiveForChat:chatContext] || !chatContext.messageInput.window || NSIsEmptyRect(chatContext.messageInput.bounds)) {
     [self hideSlashCommandListForChat:chatContext];
     return;
   }
@@ -3565,7 +3637,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (slashInput) [self refreshHermesCommandsIfNeeded];
   NSArray<NSDictionary<NSString *, NSString *> *> *commands = [self slashCommandsMatchingPrompt:input];
   if (slashInput && self.loadingHermesCommands && self.hermesCommands.count == 0) {
-    commands = @[@{@"kind": @"status", @"command": @"Loading Hermes commands…",
+    commands = [commands arrayByAddingObject:@{@"kind": @"status", @"command": @"Loading Hermes commands…",
                   @"title": @"Starting Hermes for first discovery", @"description": @"", @"icon": @"terminal"}];
   } else if (slashInput && self.hermesCommandsError.length) {
     commands = [commands arrayByAddingObject:@{@"kind": @"status", @"command": self.hermesCommandsError,
@@ -3579,13 +3651,15 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self showSlashCommandListWithCommands:commands forChat:chatContext];
   NSString *trimmedPrompt = [chatContext.promptTextView.string
       stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (trimmedPrompt.length > 1 && chatContext.selectedSlashCommandIndex < 0) {
+  if (trimmedPrompt.length && chatContext.selectedSlashCommandIndex < 0) {
     [self moveSlashCommandSelectionByOffset:1 forChat:chatContext];
   }
 }
 
 - (void)hideSlashCommandList { [self hideSlashCommandListForChat:[self currentChatPresentation]]; }
 - (void)hideSlashCommandListForChat:(TLChatTabController *)chatContext {
+  chatContext.suggestionsExpanded = NO;
+  chatContext.messageInput.suggestionsExpanded = NO;
   [chatContext.slashCommandUpdateTimer invalidate];
   chatContext.slashCommandUpdateTimer = nil;
   if (!chatContext.slashCommandListView.hidden || chatContext.slashCommandListHeightConstraint.constant > self.palette.space0) {
@@ -4635,6 +4709,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
   [self focusChatContainingView:textView];
+  if (textView.hasMarkedText) return NO;
+  if (commandSelector == NSSelectorFromString(@"askAgent:")) {
+    [self sendMessage:textView allowAutomaticRouting:NO];
+    return YES;
+  }
   if (commandSelector == @selector(cancelOperation:)) {
     if (self.chatPresentation.editingQueuedPrompt) { [self finishQueuedPromptEditingSaving:NO]; return YES; }
     if (self.slashCommandUpdateTimer || !self.slashCommandListView.hidden) { [self hideSlashCommandList]; return YES; }
@@ -4646,6 +4725,13 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (commandSelector == @selector(insertTab:) && !self.slashCommandListView.hidden) {
     if (self.selectedSlashCommandIndex < 0) [self moveSlashCommandSelectionByOffset:1];
     NSInteger index = self.selectedSlashCommandIndex;
+    if (index >= 0 && [self.visibleSlashCommands[index][@"strong"] isEqual:@"yes"]) {
+      self.promptTextView.string = self.visibleSlashCommands[index][@"URL"];
+      [self.promptTextView setSelectedRange:NSMakeRange(self.promptTextView.string.length, 0)];
+      [self.messageInput recalculateHeight];
+      [self updateSlashCommandList];
+      return YES;
+    }
     if (index >= 0 && [self.visibleSlashCommands[(NSUInteger)index][@"kind"] isEqualToString:@"hermes"]) {
       self.promptTextView.string = [self.visibleSlashCommands[(NSUInteger)index][@"command"] stringByAppendingString:@" "];
       [self.messageInput recalculateHeight];
@@ -4664,7 +4750,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   if (commandSelector == @selector(insertNewline:)) {
     BOOL shiftPressed = (NSApp.currentEvent.modifierFlags & NSEventModifierFlagShift) == NSEventModifierFlagShift;
     if (!shiftPressed) {
-      if (!self.messageInput.attachmentURLs.count && [self performSelectedSlashCommand]) return YES;
+      if ([self performSelectedSlashCommand]) return YES;
       [self sendMessage:textView];
       return YES;
     }
@@ -6059,6 +6145,14 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     self.quickInputController.submissionHandler = ^(NSString *text, NSArray<NSURL *> *files, BOOL allowAutomaticRouting) {
       [weakSelf submitQuickInput:text files:files allowAutomaticRouting:allowAutomaticRouting];
     };
+    self.quickInputController.suggestionsProvider = ^NSArray *(NSString *text) {
+      return [weakSelf unifiedSuggestionsForInput:text hasAttachments:weakSelf.quickInputController.messageInput.attachmentURLs.count > 0];
+    };
+    self.quickInputController.destinationHandler = ^(NSDictionary *row) {
+      [weakSelf.window makeKeyAndOrderFront:nil];
+      if (![row[@"kind"] isEqual:@"tab"] || ![weakSelf switchToSuggestedTab:row[@"tabID"]])
+        [weakSelf openBrowserTabWithURL:[NSURL URLWithString:row[@"URL"]]];
+    };
     self.quickInputController.settingsHandler = ^{ [weakSelf showQuickInputModelMenu]; };
     self.quickInputController.visibilityChangeHandler = ^(BOOL visible) {
       if (visible) [weakSelf.notchOverlayController stopTracking];
@@ -6134,6 +6228,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)updateControlStates { [self updateControlStatesForChat:[self currentChatPresentation]]; }
 - (void)updateControlStatesForChat:(TLChatTabController *)chatContext {
+  [self updateSuggestionToggleForChat:chatContext];
   TLWorkspaceTab *bookmarkTab = [self activeWorkspaceTab];
   self.sidebarShortcutsView.addButton.enabled = !self.widgetbookMode && bookmarkTab &&
     (bookmarkTab.kind == TLWorkspaceTabKindChat ||
@@ -6702,6 +6797,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)reloadHistoryPanel {
+  [self refreshSuggestionHistory];
   if (!self.historyPanelController) return;
   if (!self.widgetbookMode && !self.historyRepository) {
     self.historyRepository = [[TLHistoryRepository alloc] initWithDatabase:self.database];

@@ -19,6 +19,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) TLBrowserLinkOpenHandler contextLinkHandler;
 @property (nonatomic, copy, nullable) TLAppSettings * _Nullable (^settingsProvider)(void);
 @property (nonatomic, copy, nullable) void (^settingsRequiredHandler)(void);
+@property (nonatomic, copy, nullable) NSArray * (^suggestionsProvider)(NSString *input);
+@property (nonatomic, copy, nullable) BOOL (^switchToTabHandler)(NSString *tabID);
+- (void)updateInputSuggestions;
 - (instancetype)initWithURL:(NSURL *)URL palette:(TLThemePalette *)palette
                   database:(TLDatabase *)database orchestrator:(TLAgentOrchestrator *)orchestrator
                  inputWidth:(CGFloat)inputWidth;

@@ -9,6 +9,7 @@
 
 @interface TLInputSuggestionListView () <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSTableView *table;
+@property (nonatomic, strong) NSCache<NSData *, NSImage *> *faviconCache;
 @property (nonatomic, strong) NSTrackingArea *pointerTrackingArea;
 @end
 
@@ -17,6 +18,8 @@
   self = [super initWithFrame:frame];
   if (self) {
     _suggestions = @[];
+    _faviconCache = [NSCache new];
+    _faviconCache.countLimit = 128;
     _selectedIndex = -1;
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.drawsBackground = NO;
@@ -69,6 +72,7 @@
     width += self.palette.space8 * 2 + scroller;
     if (!status) {
       width += self.palette.sidebarActionIconSize + self.palette.space4;
+      width += self.palette.space4 + [@"⌘↵" sizeWithAttributes:@{NSFontAttributeName:self.palette.bodyFont}].width;
       NSString *description = item[@"description"] ?: @"";
       if (description.length) width += self.palette.space6 + [description sizeWithAttributes:@{NSFontAttributeName: self.palette.bodyFont}].width;
     }
@@ -81,7 +85,9 @@
 
 - (CGFloat)contentHeight {
   // NSTableView includes intercell spacing in every row, including the last one.
-  return ceil(self.suggestions.count * (self.table.rowHeight + self.table.intercellSpacing.height));
+  CGFloat height = 0;
+  for (NSInteger row = 0; row < (NSInteger)self.suggestions.count; row++) height += [self tableView:self.table heightOfRow:row] + self.table.intercellSpacing.height;
+  return ceil(height);
 }
 
 - (void)setScrollingEnabled:(BOOL)enabled {
@@ -99,6 +105,7 @@
   self.table.backgroundColor = palette.slashCommandItemSurface;
   self.table.rowHeight = palette.slashCommandRowHeight;
   self.table.intercellSpacing = NSMakeSize(palette.space0, palette.space2);
+  [self.table noteHeightOfRowsWithIndexesChanged:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.suggestions.count)]];
   [self.table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger index) {
     NSView *view = [self.table viewAtColumn:0 row:index makeIfNecessary:NO];
     if ([view isKindOfClass:TLSlashCommandItemView.class]) {
@@ -136,7 +143,7 @@
   if (index >= self.suggestions.count) return NO;
   NSDictionary *item = self.suggestions[index];
   return ![item[@"kind"] isEqualToString:@"status"] &&
-    (![item[@"kind"] isEqualToString:@"web"] || [item[@"URL"] length] > 0);
+    (![@[@"web", @"search", @"tab"] containsObject:item[@"kind"] ?: @""] || [item[@"URL"] length] > 0);
 }
 
 - (void)setSelectedIndex:(NSInteger)index {
@@ -146,12 +153,22 @@
     NSView *cell = [self.table viewAtColumn:0 row:rowIndex makeIfNecessary:NO];
     if ([cell isKindOfClass:TLSlashCommandItemView.class]) {
       ((TLSlashCommandItemView *)cell).selected = rowIndex == self.selectedIndex;
+      ((TLSlashCommandItemView *)cell).shortcutText = [self shortcutForIndex:rowIndex];
     }
   }];
   if (self.selectionHandler) self.selectionHandler(_selectedIndex);
 }
 
+- (NSString *)shortcutForIndex:(NSInteger)index {
+  if (![self isSuggestionEnabledAtIndex:index]) return @"";
+  if (index == self.selectedIndex) return @"↵";
+  return [self.suggestions[index][@"kind"] isEqual:@"prompt"] ? @"⌘↵" : @"";
+}
+
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.suggestions.count; }
+- (CGFloat)tableView:(NSTableView *)tableView heightOfRow:(NSInteger)row {
+  return self.palette.slashCommandRowHeight;
+}
 - (BOOL)tableView:(NSTableView *)tableView shouldSelectRow:(NSInteger)row { return NO; }
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)index {
   NSDictionary *item = self.suggestions[index];
@@ -188,12 +205,25 @@
   }
   view.selectionManagedExternally = YES;
   view.palette = self.palette;
+  view.stackedDescription = NO;
+  view.matchText = item[@"match"] ?: @"";
   view.command = item[@"command"] ?: @"";
   view.commandDescription = item[@"description"] ?: @"";
   view.systemIconName = item[@"icon"] ?: @"text.bubble";
+  NSData *data = item[@"faviconData"];
+  NSImage *icon = item[@"faviconImage"];
+  if (!icon && data.length) {
+    icon = [self.faviconCache objectForKey:data];
+    if (!icon) {
+      icon = [[NSImage alloc] initWithData:data];
+      if (icon) [self.faviconCache setObject:icon forKey:data];
+    }
+  }
+  view.customIcon = icon;
   view.enabled = [self isSuggestionEnabledAtIndex:index];
   view.selected = index == self.selectedIndex;
-  view.toolTip = item[@"title"];
+  view.shortcutText = [self shortcutForIndex:index];
+  view.toolTip = [item[@"URL"] length] ? [NSString stringWithFormat:@"%@\n%@", item[@"title"] ?: @"", item[@"URL"]] : item[@"title"];
   view.tag = index;
   view.target = self;
   view.action = @selector(activateSuggestion:);

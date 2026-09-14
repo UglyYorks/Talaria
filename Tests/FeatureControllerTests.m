@@ -1,5 +1,6 @@
 #import "TLAgentPickerWindowController.h"
 #import "TLHostCommandBridge.h"
+#import "InputSuggestions.h"
 #import "TLBrowserContentColor.h"
 #import "TLChatControllerTestSupport.h"
 #import "design_system/TLInputSuggestionPanelView.h"
@@ -1108,6 +1109,8 @@ static void TestNavigationWhileSendingPreservesTurn(void) {
 @property BOOL failNextSave;
 @end
 @implementation TLConcurrentTestStore
+- (void)performAsync:(void (^)(id))work { work(self); }
+- (NSArray *)inputSuggestionHistory { return @[]; }
 - (instancetype)init {
   if ((self = [super init])) _chats = [NSMutableDictionary dictionary];
   return self;
@@ -1796,6 +1799,97 @@ static NSWindow *HostController(TLFeatureTabController *controller) {
 @interface TalariaWindowController (RestoredColorTests)
 - (NSColor *)workspaceTabsController:(TLWorkspaceTabsController *)controller backgroundColorForTab:(TLWorkspaceTab *)tab;
 @end
+@interface TLSuggestionBrowserProbe : TLBrowserTabController
+@property (nonatomic, copy) NSString *sentPrompt;
+@end
+@implementation TLSuggestionBrowserProbe
+- (void)sendBrowserPrompt:(NSString *)prompt { self.sentPrompt = prompt; }
+@end
+
+static void TestBrowserInputSuggestions(void) {
+  TLFeatureBrowserMock *service = [TLFeatureBrowserMock new];
+  TLSuggestionBrowserProbe *browser = [[TLSuggestionBrowserProbe alloc] initWithURL:[NSURL URLWithString:@"https://start.example"]
+    palette:[TLThemePalette paletteForPreference:TLThemePreferenceLight] database:(TLDatabase *)[TLFeatureSettingsStoreMock new] orchestrator:(TLAgentOrchestrator *)[NSObject new] inputWidth:480 browserService:service];
+  NSWindow *window = HostController(browser);
+  [window makeKeyAndOrderFront:nil];
+  TLBrowserAddressInput *input = [browser valueForKey:@"browserAddressInput"];
+  TLInputSuggestionListView *list = [browser valueForKey:@"suggestionList"];
+  NSView *panel = [browser valueForKey:@"suggestionPanel"];
+  __block NSString *switched = nil;
+  browser.switchToTabHandler = ^BOOL(NSString *tabID) { switched = tabID; return YES; };
+  NSData *savedFavicon = [NSData dataWithContentsOfFile:@"assets/browser-bookmarks/github.png"];
+  browser.suggestionsProvider = ^NSArray *(NSString *text) {
+    return [TLInputSuggestions suggestionsForInput:text commands:@[] localCandidates:@[
+      @{@"URL":@"https://docs.example/guide", @"title":@"Alpha guide", @"tabID":@42, @"faviconData":savedFavicon},
+      @{@"URL":@"https://saved.example/", @"title":@"Alpha saved page", @"bookmark":@YES}]
+      searchURL:[TLBrowserPreferences.sharedPreferences searchURLForText:text] hasAttachments:NO];
+  };
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    [browser applyPalette:[TLThemePalette paletteForPreference:theme.integerValue]];
+    for (NSNumber *width in @[@200, @600]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 600)];
+      [browser setAddressInputWidth:width.doubleValue - 40];
+      [window makeFirstResponder:input.textView];
+      input.textView.string = @"alpha";
+      [input.textView didChangeText];
+      [browser updateInputSuggestions];
+      [window.contentView layoutSubtreeIfNeeded];
+      Check(!panel.hidden && list.selectedIndex == 0 && [list.suggestions[0][@"command"] isEqual:@"Ask agent"] &&
+        [list.suggestions[1][@"kind"] isEqual:@"tab"], @"browser defaults to Ask agent with a local tab second");
+      Check(NSMinX(panel.frame) >= 0 && NSMaxX(panel.frame) <= NSWidth(browser.view.bounds) + 1, @"browser suggestions fit narrow windows");
+      Check(NSMinY(panel.frame) >= NSMaxY(input.frame), @"browser suggestions sit above the composer");
+      NSTableView *table = [list valueForKey:@"table"];
+      list.selectedIndex = 1;
+      TLSlashCommandItemView *row = [table viewAtColumn:0 row:1 makeIfNecessary:YES];
+      NSTextField *title = [row valueForKey:@"commandLabel"], *URL = [row valueForKey:@"descriptionLabel"];
+      Check(!row.stackedDescription && [URL.stringValue isEqual:@"https://docs.example/guide"], @"local rows show title and URL on one line");
+      [row layoutSubtreeIfNeeded];
+      Check(fabs(NSMidY(title.frame) - NSMidY(URL.frame)) < 2 && NSMaxX(title.frame) <= NSMinX(URL.frame), @"title and URL stay alongside each other");
+      NSImageView *faviconView = [row valueForKey:@"commandIcon"];
+      Check(row.customIcon != nil && faviconView.image == row.customIcon && faviconView.contentTintColor == nil,
+        @"saved favicons render in their original colors in both themes");
+      TLSlashCommandItemView *agentRow = [table viewAtColumn:0 row:0 makeIfNecessary:YES];
+      Check(agentRow.customIcon == nil, @"action rows keep their system icon");
+      Check([agentRow.shortcutText isEqual:@"⌘↵"] && [row.shortcutText isEqual:@"↵"], @"only the smallest applicable shortcut appears on each action");
+      NSRange match = [title.stringValue rangeOfString:@"Alpha"];
+      NSFont *font = [title.attributedStringValue attribute:NSFontAttributeName atIndex:match.location effectiveRange:NULL];
+      Check([NSFontManager.sharedFontManager traitsOfFont:font] & NSBoldFontMask, @"matching text is visibly bold");
+      Check(CGColorEqualToColor(row.layer.backgroundColor, list.palette.slashCommandItemHighlightedSurface.CGColor), @"selected row renders the current theme surface");
+      Check([[title.attributedStringValue attribute:NSForegroundColorAttributeName atIndex:0 effectiveRange:NULL] isEqual:list.palette.slashCommandItemHighlightedText], @"selected row renders the current theme text");
+      list.selectedIndex = 0;
+      Check([agentRow.shortcutText isEqual:@"↵"] && !row.shortcutText.length, @"selected Ask agent shows Enter only and clears other shortcuts");
+      NSBitmapImageRep *bitmap = [browser.view bitmapImageRepForCachingDisplayInRect:browser.view.bounds];
+      [browser.view cacheDisplayInRect:browser.view.bounds toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:
+        [NSString stringWithFormat:@"build/browser-suggestions-%@-%@.png",theme,width] atomically:YES];
+    }
+  }
+  [input textView:input.textView doCommandBySelector:@selector(insertNewline:)];
+  Check([browser.sentPrompt isEqual:@"alpha"] && service.navigatedURL == nil, @"Enter asks the browser agent by default even with a strong local match");
+  input.textView.string = @"alpha"; [input.textView didChangeText];
+  Check([input textView:input.textView doCommandBySelector:@selector(moveDown:)] && list.selectedIndex == 1, @"Down selects the local tab after Ask agent");
+  browser.sentPrompt = nil;
+  NSEvent *commandReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
+    timestamp:0 windowNumber:window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
+  Check([input.textView performKeyEquivalent:commandReturn] && [browser.sentPrompt isEqual:@"alpha"] && switched == nil,
+    @"Cmd Enter asks the agent even when Switch to tab is selected");
+  input.textView.string = @"alpha"; [input.textView didChangeText];
+  list.activationHandler(1);
+  Check([switched isEqual:@"42"] && service.navigatedURL == nil, @"mouse activation switches tabs without duplicate navigation");
+  [window makeFirstResponder:input.textView];
+  input.textView.string = @"  cats & dogs  "; [input.textView didChangeText];
+  Check([input textView:input.textView doCommandBySelector:@selector(cancelOperation:)] && panel.hidden, @"Escape hides suggestions and preserves the draft");
+  Check([input.textView.string isEqual:@"  cats & dogs  "], @"Escape never alters entered text");
+  [browser updateInputSuggestions]; Check(panel.hidden, @"async refresh cannot reopen escaped suggestions");
+  [input textView:input.textView doCommandBySelector:@selector(insertNewline:)];
+  Check([browser.sentPrompt isEqual:@"  cats & dogs  "] && service.navigatedURL == nil, @"Enter asks the agent with the exact draft even after dismissing the panel");
+  input.textView.string = @"  cats & dogs  "; [input.textView didChangeText];
+  Check([input textView:input.textView doCommandBySelector:@selector(moveDown:)] && list.selectedIndex == 1, @"Down selects exact search after Ask agent");
+  [input textView:input.textView doCommandBySelector:@selector(insertNewline:)];
+  Check([service.navigatedURL.absoluteString containsString:@"%20%20cats%20%26%20dogs%20%20"], @"selecting search preserves the exact draft");
+  [browser close]; [window close];
+}
+
 static void TestBrowserExtendedLayout(void) {
   for (NSNumber *preference in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
     TLFeatureBrowserMock *service = [TLFeatureBrowserMock new];
@@ -3276,8 +3370,9 @@ static void TestAgentFolderEditing(void) {
 @end
 
 static void DrainSuggestionTimer(void) {
-  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.06];
-  while (deadline.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runUntilDate:deadline];
+  NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 0.08;
+  while (NSProcessInfo.processInfo.systemUptime < deadline)
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, false);
 }
 
 @interface TalariaWindowController (QueuedSuggestionTests)
@@ -3344,9 +3439,9 @@ static void TestSuggestionsWithQueuedPrompts(void) {
       chat.promptTextView.string = @"netflix.com";
       [controller textDidChange:nil];
       DrainSuggestionTimer();
-      Check(!chat.slashCommandListView.hidden && chat.visibleSlashCommands.count == 2 &&
-        [chat.visibleSlashCommands[0][@"kind"] isEqual:@"web"] && [chat.visibleSlashCommands[1][@"kind"] isEqual:@"prompt"],
-        @"a streaming chat with queued prompts still offers Open site and Send message");
+      Check(!chat.slashCommandListView.hidden && chat.visibleSlashCommands.count == 3 &&
+        [chat.visibleSlashCommands[1][@"command"] isEqual:@"Ask agent"] && [chat.visibleSlashCommands[0][@"kind"] isEqual:@"web"],
+        @"domain inputs offer navigation first, then Ask agent and search");
       [controller updateControlStates];
       Check(!chat.slashCommandListView.hidden, @"streaming control updates cannot hide active suggestions");
       NSRect queueRect = chat.promptQueueView.frame;
@@ -3375,17 +3470,23 @@ static void TestSuggestionsWithQueuedPrompts(void) {
   Check(controller.openedCount == 2 && [controller.openedURL.host isEqual:@"example.com"], @"clicking Open site works during generation");
   chat.promptTextView.string = @"netflix.com";
   [controller renderSlashCommandList];
-  Check([controller performInputSuggestionAtIndex:1] && chat.queuedPrompts.count == 3 &&
+  [controller textView:chat.promptTextView doCommandBySelector:@selector(moveDown:)];
+  Check([controller textView:chat.promptTextView doCommandBySelector:@selector(insertNewline:)] && chat.queuedPrompts.count == 3 &&
     [chat.queuedPrompts.lastObject.text isEqual:@"netflix.com"] && controller.openedCount == 2,
-    @"choosing Send message queues the URL as text instead of opening a browser");
+    @"Enter on Ask agent queues the URL as text");
   chat.promptTextView.string = @"another.example";
-  [controller sendMessage:nil];
-  Check([controller.openedURL.host isEqual:@"another.example"] && chat.queuedPrompts.count == 3,
-    @"direct URL submission retains automatic browser routing while queued");
+  [controller renderSlashCommandList];
+  chat.slashCommandScrollView.selectedIndex = 0;
+  NSEvent *commandReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
+    timestamp:0 windowNumber:window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
+  [window makeFirstResponder:chat.promptTextView];
+  Check([chat.promptTextView performKeyEquivalent:commandReturn], @"chat handles Cmd Enter as an agent shortcut");
+  Check([chat.queuedPrompts.lastObject.text isEqual:@"another.example"] && chat.queuedPrompts.count == 4 && controller.openedCount == 2,
+    @"Cmd Enter bypasses selected navigation and queues the agent prompt");
   [controller setValue:@[@{@"kind":@"hermes", @"command":@"/help", @"title":@"Help", @"icon":@"terminal"}] forKey:@"hermesCommands"];
   chat.promptTextView.string = @"/help";
   [controller renderSlashCommandList];
-  Check([controller performInputSuggestionAtIndex:0] && [chat.queuedPrompts.lastObject.text isEqual:@"/help"],
+  Check([controller performInputSuggestionAtIndex:1] && [chat.queuedPrompts.lastObject.text isEqual:@"/help"],
     @"Hermes suggestions enqueue commands behind the current turn");
   [runners removeAllObjects]; chat.queuePaused = YES;
   chat.promptTextView.string = @"netflix.com";
@@ -3395,6 +3496,42 @@ static void TestSuggestionsWithQueuedPrompts(void) {
   chat.promptTextView.string = @"netflix.com";
   [controller renderSlashCommandList];
   Check(chat.slashCommandListView.hidden && ![controller performInputSuggestionAtIndex:0], @"editing a queued prompt cannot accidentally navigate away");
+  chat.editingQueuedPrompt = nil;
+  chat.messages = [NSMutableArray arrayWithObject:[TLChatMessage new]];
+  for (NSNumber *theme in @[@(TLThemePreferenceLight), @(TLThemePreferenceDark)]) {
+    palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    [controller setValue:palette forKey:@"palette"];
+    chat.messageInput.palette = palette;
+    for (NSNumber *width in @[@200, @650]) {
+      [window setContentSize:NSMakeSize(width.doubleValue, 600)];
+      chat.messageInputWidthConstraint.constant = width.doubleValue - palette.space5 * 2;
+      [controller renderSlashCommandList];
+      TLGlassButton *toggle = chat.messageInput.suggestionsButton;
+      Check(chat.slashCommandListView.hidden && !toggle.hidden, @"existing conversations collapse suggestions behind the chevron");
+      [NSApp sendAction:toggle.action to:toggle.target from:toggle];
+      Check(!chat.slashCommandListView.hidden && chat.suggestionsExpanded && [toggle.toolTip isEqual:@"Hide suggestions"], @"chevron expands suggestions");
+      [controller textDidChange:nil]; DrainSuggestionTimer();
+      Check(!chat.slashCommandListView.hidden, @"typing preserves explicitly expanded suggestions");
+      [window.contentView layoutSubtreeIfNeeded];
+      Check(NSMinX(toggle.frame) >= 0 && NSMaxX(toggle.frame) <= NSWidth(toggle.superview.bounds), @"chevron fits narrow composers");
+      Check([toggle.contentTintColor isEqual:palette.labelText], @"chevron follows the active theme");
+      NSBitmapImageRep *bitmap = [workspace bitmapImageRepForCachingDisplayInRect:workspace.bounds];
+      [workspace cacheDisplayInRect:workspace.bounds toBitmapImageRep:bitmap];
+      [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:
+        [NSString stringWithFormat:@"build/chat-chevron-%@-%@.png",theme,width] atomically:YES];
+      [NSApp sendAction:toggle.action to:toggle.target from:toggle];
+      Check(chat.slashCommandListView.hidden && !chat.suggestionsExpanded, @"chevron collapses suggestions again");
+      [controller textDidChange:nil]; DrainSuggestionTimer();
+      Check(chat.slashCommandListView.hidden, @"typing does not reopen collapsed suggestions");
+    }
+  }
+  [NSApp sendAction:chat.messageInput.suggestionsButton.action to:chat.messageInput.suggestionsButton.target from:chat.messageInput.suggestionsButton];
+  [controller textView:chat.promptTextView doCommandBySelector:@selector(cancelOperation:)];
+  Check(chat.slashCommandListView.hidden && !chat.suggestionsExpanded, @"Escape collapses the chevron panel");
+  NSUInteger openedBefore = controller.openedCount;
+  runners[@17] = runner;
+  [controller textView:chat.promptTextView doCommandBySelector:@selector(insertNewline:)];
+  Check(controller.openedCount == openedBefore && [chat.queuedPrompts.lastObject.text isEqual:@"netflix.com"], @"Enter in a collapsed conversation asks the agent rather than navigating invisibly");
   [window close];
 }
 
@@ -3437,7 +3574,7 @@ static void TestSuggestionTypingAndVirtualization(void) {
   TLInputSuggestionListView *list = [controller valueForKey:@"slashCommandScrollView"];
   NSTableView *table = [list valueForKey:@"table"];
   TLInputSuggestionListView *widthProbe = [[TLInputSuggestionListView alloc] init];
-  widthProbe.suggestions = @[@{@"command": @"Open river.ai"}, @{@"command": @"Send message"}];
+  widthProbe.suggestions = @[@{@"command": @"Ask agent"}, @{@"command": @"Open river.ai"}];
   CGFloat compactWidth = [widthProbe preferredWidthWithMaximum:700];
   Check(compactWidth > 0 && compactWidth < 300, @"short suggestions hug their contents");
   widthProbe.suggestions = @[@{@"command": @"Open river.ai", @"description": @"A description that needs additional room"}];
@@ -3449,16 +3586,16 @@ static void TestSuggestionTypingAndVirtualization(void) {
     [controller textDidChange:nil];
     DrainSuggestionTimer();
     [window.contentView layoutSubtreeIfNeeded];
-    Check(table.numberOfRows == (NSInteger)commands.count, @"large catalogue remains complete");
+    Check(table.numberOfRows == (NSInteger)commands.count + 2, @"large catalogue remains complete");
     Check(list.scrollingEnabled && list.hasVerticalScroller, @"long catalogue scrolls after reaching the viewport limit");
     Check(NSWidth(pane.frame) <= width.doubleValue, [NSString stringWithFormat:@"suggestions fit composers: requested %@, input %.0f, pane %.0f", width, NSWidth(input.bounds), NSWidth(pane.frame)]);
     __block NSUInteger materialized = 0;
     [table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row, NSInteger index) { materialized++; }];
     Check(materialized > 0 && materialized < 30, @"only viewport rows are materialized, independent of catalogue size");
-    list.selectedIndex = commands.count - 1;
+    list.selectedIndex = commands.count + 1;
     [window.contentView layoutSubtreeIfNeeded];
-    Check(NSIntersectsRect(table.visibleRect, [table rectOfRow:commands.count - 1]), @"keyboard selection reaches commands beyond the viewport");
-    TLSlashCommandItemView *last = [table viewAtColumn:0 row:commands.count - 1 makeIfNecessary:NO];
+    Check(NSIntersectsRect(table.visibleRect, [table rectOfRow:commands.count + 1]), @"keyboard selection reaches commands beyond the viewport");
+    TLSlashCommandItemView *last = [table viewAtColumn:0 row:commands.count + 1 makeIfNecessary:NO];
     Check(last.selected && [last.command isEqualToString:@"/model"], @"reused row reflects selection and current command");
   }
   list.selectedIndex = 0;
@@ -3485,9 +3622,10 @@ static void TestSuggestionTypingAndVirtualization(void) {
   input.textView.string = @"/mod"; [controller textDidChange:nil];
   Check(controller.refreshCount == previous, @"rapid edits do not synchronously rebuild suggestions");
   DrainSuggestionTimer();
-  Check(controller.refreshCount == previous + 1 && list.suggestions.count == 1, @"rapid edits coalesce to the latest prompt");
+  Check(controller.refreshCount == previous + 1 && list.suggestions.count == 3, @"rapid edits coalesce to the latest prompt");
   input.textView.string = @"/mo"; [controller textDidChange:nil];
-  Check([controller textView:input.textView doCommandBySelector:@selector(insertTab:)], @"Tab resolves a pending suggestion update");
+  Check([controller textView:input.textView doCommandBySelector:@selector(moveDown:)], @"Down resolves a pending update and selects the command after Ask agent");
+  Check([controller textView:input.textView doCommandBySelector:@selector(insertTab:)], @"Tab completes the selected command");
   Check([input.textView.string isEqualToString:@"/model "], @"Tab uses current input rather than stale rows");
   input.textView.string = @"/"; [controller textDidChange:nil];
   previous = controller.refreshCount;
@@ -3524,9 +3662,9 @@ static void TestSuggestionTypingAndVirtualization(void) {
   input.textView.string = @"/";
   [controller textDidChange:nil];
   DrainSuggestionTimer();
-  Check(list.suggestions.count == 1 && [list.suggestions[0][@"kind"] isEqualToString:@"status"], @"discovery failures render as status text");
-  Check(![controller textView:input.textView doCommandBySelector:@selector(moveDown:)] &&
-        [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == -1,
+  Check(list.suggestions.count == 3 && [list.suggestions[2][@"kind"] isEqualToString:@"status"], @"discovery failures render as status text");
+  Check([controller textView:input.textView doCommandBySelector:@selector(moveDown:)] &&
+        [[controller valueForKey:@"selectedSlashCommandIndex"] integerValue] == 1,
         @"arrow keys cannot select the error message");
   Check(!list.scrollingEnabled && !list.hasVerticalScroller, @"one error message has no scrollbar");
   Check([pane isKindOfClass:TLInputSuggestionPanelView.class] && ![pane isKindOfClass:TLGlassPaneView.class], @"suggestions use background blur without glass treatment");
@@ -4149,6 +4287,12 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_INPUT_SUGGESTIONS_TESTS_ONLY")) {
+      TestSuggestionsWithQueuedPrompts();
+      TestSuggestionTypingAndVirtualization();
+      TestBrowserInputSuggestions();
+      NSLog(@"Input suggestion integration tests passed"); return 0;
+    }
     TestSidebarProviderLimits();
     if (getenv("TL_TEST_PROVIDER_LIMITS_ONLY")) {
       TestConcurrentChatStreams();
@@ -4231,6 +4375,7 @@ int main(void) {
     TestRealSidebarAgents();
     TestAgentPickerSheet();
     TestSuggestionTypingAndVirtualization();
+    TestBrowserInputSuggestions();
     TestRunningAgentRepairAction();
     TestWarmupAfterSettingsAndManualStart();
     TestThemedButtonRenderedColors();

@@ -13,6 +13,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^submissionHandler)(NSString *text, NSArray<NSURL *> *files, BOOL allowAutomaticRouting);
 @property (nonatomic, copy, nullable) void (^settingsHandler)(void);
 @property (nonatomic, copy, nullable) void (^visibilityChangeHandler)(BOOL visible);
+@property (nonatomic, copy, nullable) NSArray * (^suggestionsProvider)(NSString *input);
+@property (nonatomic, copy, nullable) void (^destinationHandler)(NSDictionary *suggestion);
+- (void)updateSuggestions;
 - (instancetype)initWithPalette:(TLThemePalette *)palette;
 - (void)presentInNotchOnScreen:(NSScreen *)screen;
 - (void)presentInNotchOnScreen:(NSScreen *)screen fromFrame:(NSRect)frame;

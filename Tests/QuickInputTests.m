@@ -114,6 +114,7 @@ static void TestNotchExpansion(void) {
     [quick applyPalette:palette];
     [quick presentInNotchOnScreen:screen fromFrame:start];
     SetText(quick, @"A draft typed while the notch expands");
+    target = [[quick valueForKey:@"notchTargetFrame"] rectValue]; // Suggestions grow the live target while typing.
     Check(NSEqualRects(quick.window.frame, middle) && fabs(NSWidth(quick.messageInput.frame) - 600) < 1,
       @"layout, typing, and repeated presentation do not snap or restart expansion");
     now += palette.notchInputExpansionDuration * 0.25;
@@ -195,7 +196,8 @@ static void TestNotchPresentationAndCapture(void) {
       screen.safeAreaInsets = NSEdgeInsetsMake(cameraInset.doubleValue, 0, 0, 0);
       [quick presentInNotchOnScreen:(NSScreen *)screen];
       CGFloat top = NSHeight(quick.window.contentView.bounds) - NSMaxY(quick.messageInput.frame);
-      CGFloat bottom = NSMinY(quick.messageInput.frame);
+      NSView *actions = [quick valueForKey:@"suggestionPanel"];
+      CGFloat bottom = NSMinY(quick.messageInput.frame) - (actions.hidden ? 0 : NSHeight(actions.frame) + palette.space5);
       if (cameraInset.doubleValue == 0) {
         Check(fabs(top - bottom) < 1 && fabs(top - palette.notchInputVerticalPadding) < 1,
               @"screens without a physical notch use equal normal padding above and below the input");
@@ -248,8 +250,10 @@ static void TestNotchPresentationAndCapture(void) {
             @"capture drags can start on either side of the notch above its bottom edge");
       [selection resetSelection];
     }
-    Check(fabs(NSMinY(quick.messageInput.frame) - palette.notchInputVerticalPadding) < 1,
-          @"notch ends below the composer without an extra instructional text row");
+    NSView *suggestionPanel = [quick valueForKey:@"suggestionPanel"];
+    CGFloat suggestionSpace = suggestionPanel.hidden ? 0 : NSHeight(suggestionPanel.frame) + palette.space5;
+    Check(fabs(NSMinY(quick.messageInput.frame) - palette.notchInputVerticalPadding - suggestionSpace) < 1,
+          @"notch fits the composer and applicable actions without an extra instructional row");
     InvalidateSnapshot(selection);
     NSBitmapImageRep *clear = [selection bitmapImageRepForCachingDisplayInRect:selection.bounds];
     [selection cacheDisplayInRect:selection.bounds toBitmapImageRep:clear];
@@ -400,7 +404,7 @@ static void TestPanel(void) {
     Check([controller.messageInput.textView.string hasPrefix:@"A multi-line"], @"dismissed draft is available on reopening");
     SetText(controller, @"example.com");
     TLInputSuggestionListView *list = [controller valueForKey:@"suggestionList"];
-    Check(list.suggestions.count == 2, @"URL suggestions match the app's browser/message choices");
+    Check(list.suggestions.count == 3, @"URL suggestions match the app's browser/message choices");
     NSView *suggestions = [controller valueForKey:@"suggestionPanel"];
     Check(NSMaxY(suggestions.frame) < NSMinY(controller.messageInput.frame), @"suggestions sit below the input without overlap");
     NSBitmapImageRep *full = [controller.window.contentView bitmapImageRepForCachingDisplayInRect:controller.window.contentView.bounds];
@@ -418,13 +422,15 @@ static void TestPanel(void) {
   Check(controller.messageInput.textView.string.length == 0, @"submitted draft is cleared");
   SetText(controller, @"example.com");
   TLInputSuggestionListView *list = [controller valueForKey:@"suggestionList"];
-  list.selectedIndex = 1;
-  TLGlassButton *send = controller.messageInput.sendButton;
-  [NSApp sendAction:send.action to:send.target from:send];
-  Check(submissions == 2 && !automaticRouting, @"Send message suggestion bypasses URL routing");
+  Check(list.selectedIndex == 0 && [list.suggestions[1][@"command"] isEqual:@"Ask agent"], @"quick input defaults to navigation for URLs and keeps Ask agent second");
+  NSEvent *commandReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
+    timestamp:0 windowNumber:controller.window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
+  Check([controller.messageInput.textView performKeyEquivalent:commandReturn], @"quick input handles Cmd Enter even with navigation selected");
+  Check(submissions == 2 && !automaticRouting, @"Ask agent bypasses URL routing by default");
   [controller presentInNotchOnScreen:NSScreen.mainScreen];
   controller.commands = @[@{@"kind":@"hermes", @"command":@"/help", @"title":@"Help", @"icon":@"terminal", @"description":@"Help"}];
   SetText(controller, @"/he");
+  [controller textView:controller.messageInput.textView doCommandBySelector:@selector(moveDown:)];
   [controller textView:controller.messageInput.textView doCommandBySelector:@selector(insertTab:)];
   Check([controller.messageInput.textView.string isEqual:@"/help "] && submissions == 2, @"Tab completes discovered commands without opening workspace");
   Submit(controller);
@@ -502,6 +508,7 @@ static void TestWorkspaceHandoff(void) {
   Check(!window.visible && state.snapshot.workspaceTabs.count == 1 && owner.sendCount == 0, @"Escape leaves the main window hidden and workspace untouched");
   [owner openFromNotchOverlay:nil];
   quick.model = @"chosen-large"; quick.supportingModel = @"chosen-small";
+  Check(((TLInputSuggestionListView *)[quick valueForKey:@"suggestionList"]).selectedIndex == 0, @"reopening quick input keeps Ask agent selected");
   Submit(quick); Drain();
   Check([notch valueForKey:@"trackingTimer"] != nil, @"submission restores normal notch tracking");
   Check(window.visible && !quick.window.visible && state.snapshot.workspaceTabs.count == 2 && owner.sendCount == 1, @"submission opens the main window and a new chat");
@@ -511,7 +518,8 @@ static void TestWorkspaceHandoff(void) {
   Check([existing.promptTextView.string isEqual:@"Existing unsent draft"] && existing.messageInput.attachmentURLs.count == 1,
     @"existing chat draft and attachments remain intact");
   [window orderOut:nil];
-  [owner openFromNotchOverlay:nil]; SetText(quick, @"example.com"); Submit(quick); Drain();
+  [owner openFromNotchOverlay:nil]; SetText(quick, @"example.com");
+  Submit(quick); Drain();
   Check(window.visible && [owner.browserURL.absoluteString isEqual:@"https://example.com"] && state.snapshot.workspaceTabs.count == 3 && owner.sendCount == 1,
     @"URL submission opens one browser tab without an extra empty chat");
   [window orderOut:nil];

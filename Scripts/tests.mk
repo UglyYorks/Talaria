@@ -110,12 +110,17 @@ TEST_RepositoryTests_SOURCES := $(STORAGE_SOURCES) Source/TLHistoryRepository.m 
 TEST_RepositoryTests_LIBS := -framework Foundation -framework Security -lsqlite3
 $(eval $(call native_test,RepositoryTests))
 
+
+TEST_InputSuggestionsTests_SOURCES := Source/InputSuggestions.m Tests/InputSuggestionsTests.m
+TEST_InputSuggestionsTests_LIBS := -framework Foundation
+$(eval $(call native_test,InputSuggestionsTests))
+
 CORE_TESTS := RepositoryTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests AppResetTests AgentVMLockTests AgentProtocolTests
 TEST_HostCommandTests_SOURCES := Source/TLQuestionRequest.m Source/TLHostCommandBridge.m Tests/HostCommandTests.m $(THEME_SOURCES)
 TEST_HostCommandTests_LIBS := -framework Foundation -framework AppKit
 $(eval $(call native_test,HostCommandTests))
 NATIVE_TESTS := DevelopmentModeTests BrowserSettingsTests WebKitDownloadLifecycleTests IncognitoTests NotificationDataTests NotificationSidebarTests NotificationNavigationTests HistoryQueryTests RepositoryTests AutomationsTests QuickInputTests MarkdownCodeTests MarkdownTableTests MarkdownMathTests GlassPaneTests NotchOverlayViewTests TabLayoutTests PromptBuilderTests CredentialStoreTests AssistantTurnResultTests AppStateManagerTests WorkspaceSessionTests WorkspaceRestoreTests AppStartupTests TransitionCoordinatorTests FeatureControllerTests ChatAttachmentTests TabShortcutTests AppResetTests SplitWorkspaceTests AttachmentViewerTests BrowserDownloadTests MarkdownLinkContextTests BrowserFindTests AgentVMLockTests ChatFindTests BookmarkTests BrowserHistoryTests StarryEmptyStateTests AgentProtocolTests
-NATIVE_TESTS += ChatSettingsTests NotesTests HostCommandTests AgentFolderMountTests RuntimeActivityTests
+NATIVE_TESTS += InputSuggestionsTests ChatSettingsTests NotesTests HostCommandTests AgentFolderMountTests RuntimeActivityTests
 .PHONY: test-runtime-activity
 test-runtime-activity: $(BUILD_DIR)/RuntimeActivityTests $(BUILD_DIR)/FeatureControllerTests
 	"$(BUILD_DIR)/RuntimeActivityTests"
@@ -171,3 +176,10 @@ $(BUILD_DIR)/BrowserBackdropTests: Tests/BrowserBackdropTests.m Source/design_sy
 .PHONY: test-browser-backdrop
 test-browser-backdrop: $(BUILD_DIR)/BrowserBackdropTests
 	python3 Tests/run-browser-backdrop.py
+
+.PHONY: test-input-suggestions
+test-input-suggestions: $(addprefix $(BUILD_DIR)/,InputSuggestionsTests FeatureControllerTests QuickInputTests BrowserHistoryTests) audit-theme-colors
+	"$(BUILD_DIR)/InputSuggestionsTests"
+	TL_INPUT_SUGGESTIONS_TESTS_ONLY=1 "$(BUILD_DIR)/FeatureControllerTests"
+	"$(BUILD_DIR)/QuickInputTests"
+	"$(BUILD_DIR)/BrowserHistoryTests"

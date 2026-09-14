@@ -514,8 +514,11 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
 @interface TLSlashCommandItemView ()
 @property (nonatomic, strong) NSTextField *commandLabel;
 @property (nonatomic, strong) NSTextField *descriptionLabel;
+@property (nonatomic, strong) NSTextField *shortcutLabel;
+@property (nonatomic, strong) NSLayoutConstraint *shortcutGapConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *descriptionLeadingConstraint;
 @property (nonatomic, strong) NSImageView *commandIcon;
+@property (nonatomic, copy) NSArray<NSLayoutConstraint *> *labelConstraints;
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
 @property (nonatomic, getter=isHovered) BOOL hovered;
 @end
@@ -528,6 +531,12 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
     _palette = [TLThemePalette paletteForPreference:TLThemePreferenceSystem];
     _command = @"";
     _commandDescription = @"";
+    _shortcutText = @"";
+    _shortcutLabel = [NSTextField labelWithString:@""];
+    _shortcutLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [_shortcutLabel setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_shortcutLabel setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self addSubview:_shortcutLabel];
     _systemIconName = @"text.bubble";
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.wantsLayer = YES;
@@ -537,11 +546,12 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
     _commandLabel = [NSTextField labelWithString:@""];
     _commandLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _commandLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    _commandLabel.maximumNumberOfLines = 1;
     [_commandLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
     _descriptionLabel = [NSTextField labelWithString:@""];
     _descriptionLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _descriptionLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    _descriptionLabel.usesSingleLineMode = YES;
+    _descriptionLabel.maximumNumberOfLines = 1;
     [_descriptionLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     _commandIcon = [[NSImageView alloc] init];
     _commandIcon.translatesAutoresizingMaskIntoConstraints = NO;
@@ -550,17 +560,20 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
     [self addSubview:_commandLabel];
     [self addSubview:_descriptionLabel];
     _descriptionLeadingConstraint = [_descriptionLabel.leadingAnchor constraintEqualToAnchor:_commandLabel.trailingAnchor];
+    _shortcutGapConstraint = [_descriptionLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_shortcutLabel.leadingAnchor];
     [NSLayoutConstraint activateConstraints:@[
       [_commandIcon.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:_palette.space8],
       [_commandIcon.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
       [_commandIcon.widthAnchor constraintEqualToConstant:_palette.sidebarActionIconSize],
       [_commandIcon.heightAnchor constraintEqualToConstant:_palette.sidebarActionIconSize],
       [_commandLabel.leadingAnchor constraintEqualToAnchor:_commandIcon.trailingAnchor constant:_palette.space4],
-      _descriptionLeadingConstraint,
-      [_descriptionLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor constant:-_palette.space8],
-      [_descriptionLabel.firstBaselineAnchor constraintEqualToAnchor:_commandLabel.firstBaselineAnchor],
-      [_commandLabel.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+
+      _shortcutGapConstraint,
+      [_shortcutLabel.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-_palette.space8],
+      [_shortcutLabel.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+
     ]];
+    [self setStackedDescription:NO];
     [self applyCurrentState];
   }
   return self;
@@ -621,6 +634,11 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
   [self applyCurrentState];
 }
 
+- (void)setCustomIcon:(NSImage *)customIcon {
+  _customIcon = customIcon;
+  [self applyCurrentState];
+}
+
 - (void)setSystemIconName:(NSString *)systemIconName {
   _systemIconName = [systemIconName copy];
   [self applyCurrentState];
@@ -631,6 +649,48 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
   [self applyCurrentState];
 }
 
+- (void)setStackedDescription:(BOOL)stackedDescription {
+  _stackedDescription = stackedDescription;
+  [NSLayoutConstraint deactivateConstraints:self.labelConstraints ?: @[]];
+  self.labelConstraints = stackedDescription ? @[
+    [self.commandLabel.topAnchor constraintEqualToAnchor:self.topAnchor constant:self.palette.space2],
+    [self.commandLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor constant:-self.palette.space8],
+    [self.descriptionLabel.leadingAnchor constraintEqualToAnchor:self.commandLabel.leadingAnchor],
+    [self.descriptionLabel.topAnchor constraintEqualToAnchor:self.commandLabel.bottomAnchor constant:self.palette.space2],
+  ] : @[
+    self.descriptionLeadingConstraint,
+    [self.descriptionLabel.firstBaselineAnchor constraintEqualToAnchor:self.commandLabel.firstBaselineAnchor],
+    [self.commandLabel.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+  ];
+  [NSLayoutConstraint activateConstraints:self.labelConstraints];
+}
+
+- (void)setShortcutText:(NSString *)shortcutText {
+  _shortcutText = [shortcutText copy] ?: @"";
+  [self applyCurrentState];
+}
+
+- (void)setMatchText:(NSString *)matchText {
+  _matchText = [matchText copy];
+  [self applyCurrentState];
+}
+
+- (NSAttributedString *)highlightedText:(NSString *)text font:(NSFont *)font color:(NSColor *)color {
+  NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+  paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
+  NSMutableAttributedString *result = [[NSMutableAttributedString alloc] initWithString:text ?: @""
+    attributes:@{NSFontAttributeName:font, NSForegroundColorAttributeName:color, NSParagraphStyleAttributeName:paragraph}];
+  if (!self.matchText.length) return result;
+  NSRange remaining = NSMakeRange(0, result.length);
+  while (remaining.length) {
+    NSRange match = [text rangeOfString:self.matchText options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch range:remaining];
+    if (match.location == NSNotFound) break;
+    [result addAttribute:NSFontAttributeName value:[NSFontManager.sharedFontManager convertFont:font toHaveTrait:NSBoldFontMask] range:match];
+    remaining = NSMakeRange(NSMaxRange(match), result.length - NSMaxRange(match));
+  }
+  return result;
+}
+
 - (void)applyCurrentState {
   BOOL highlighted = self.enabled && (self.isSelected || (!self.selectionManagedExternally && self.isHovered));
   self.layer.backgroundColor = TLCGColor(highlighted
@@ -638,15 +698,21 @@ static NSColor *TLAverageVisibleImageColor(NSImage *image) {
     : self.palette.slashCommandItemSurface);
   self.layer.cornerRadius = self.palette.slashCommandListCornerRadius;
   self.layer.masksToBounds = YES;
-  self.commandLabel.font = self.palette.suggestionCommandFont;
+  self.shortcutLabel.stringValue = self.shortcutText ?: @"";
+  self.shortcutLabel.font = self.palette.bodyFont;
+  self.shortcutLabel.textColor = highlighted ? self.palette.slashCommandItemHighlightedText : self.palette.textMuted;
+  self.shortcutGapConstraint.constant = self.shortcutText.length ? -self.palette.space4 : self.palette.space0;
+  self.commandLabel.font = self.stackedDescription ? self.palette.bodyFont : self.palette.suggestionCommandFont;
   self.descriptionLabel.font = self.palette.bodyFont;
   self.descriptionLabel.textColor = self.palette.textMuted;
   self.descriptionLeadingConstraint.constant = self.commandDescription.length ? self.palette.space6 : self.palette.space0;
   self.commandLabel.textColor = highlighted
     ? self.palette.slashCommandItemHighlightedText
     : self.palette.slashCommandItemText;
-  self.commandIcon.image = [NSImage imageWithSystemSymbolName:self.systemIconName accessibilityDescription:nil];
-  self.commandIcon.contentTintColor = self.commandLabel.textColor;
+  self.commandLabel.attributedStringValue = [self highlightedText:self.command font:self.commandLabel.font color:self.commandLabel.textColor];
+  self.descriptionLabel.attributedStringValue = [self highlightedText:self.commandDescription font:self.palette.bodyFont color:self.palette.textMuted];
+  self.commandIcon.image = self.customIcon ?: [NSImage imageWithSystemSymbolName:self.systemIconName accessibilityDescription:nil];
+  self.commandIcon.contentTintColor = self.customIcon ? nil : self.commandLabel.textColor;
   self.alphaValue = self.enabled ? 1.0 : self.palette.disabledOpacity;
 }
 
@@ -2770,6 +2836,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
+  if (self.suggestionCommandHandler && self.suggestionCommandHandler(commandSelector)) return YES;
   if (commandSelector == @selector(cancelOperation:)) {
     [self setDisplayedAddress:self.latestAddress ?: @""];
     [self.window makeFirstResponder:nil];

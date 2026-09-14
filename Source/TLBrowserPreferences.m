@@ -124,10 +124,9 @@ static NSError *TLBrowserPreferenceError(NSString *message) {
       BOOL asks = [p[3] intValue] == 3;
       add(p[0],@"Site permissions",p[1],p[2],@"content",p[0],p[3],asks ? @[@3,@2] : @[@1,@2], asks ? @[@"Ask first",@"Block"] : @[@"Allow",@"Block"]);
     }
-    add(@"searchEngine",@"Search engine",@"Default search engine",@"Used for web searches from the browser address bar.",@"app",@"",@"https://www.google.com/search?q={searchTerms}",
+    add(@"searchEngine",@"Search engine",@"Default search engine",@"Used for web searches from chat, browser, and quick input.",@"app",@"",@"https://www.google.com/search?q={searchTerms}",
       @[@"https://www.google.com/search?q={searchTerms}",@"https://duckduckgo.com/?q={searchTerms}",@"https://www.bing.com/search?q={searchTerms}",@"https://search.brave.com/search?q={searchTerms}",@"custom"],@[@"Google",@"DuckDuckGo",@"Bing",@"Brave",@"Custom"]);
     add(@"customSearchURL",@"Search engine",@"Custom search URL",@"Use an HTTPS URL with {searchTerms} where the query belongs.",@"app",@"",@"https://duckduckgo.com/?q={searchTerms}",nil,nil);
-    add(@"addressBarMode",@"Search engine",@"Address bar text",@"Choose what happens when you enter text instead of a URL. The chat composer always sends messages to Hermes.",@"app",@"",@"search",@[@"search",@"assistant"],@[@"Search the web",@"Ask Hermes"]);
     add(@"zoom",@"Appearance",@"Default page zoom",@"Apply to open browser tabs and new pages.",@"app",@"",@100,@[@50,@67,@75,@90,@100,@110,@125,@150,@175,@200,@250,@300],@[@"50%",@"67%",@"75%",@"90%",@"100%",@"110%",@"125%",@"150%",@"175%",@"200%",@"250%",@"300%"]);
     add(@"fontSize",@"Appearance",@"Font size",@"Default size for text on websites that use the browser’s font settings.",@"profile",@"webkit.webprefs.default_font_size",@16,@[@12,@14,@16,@18,@20,@24],@[@"12",@"14",@"16",@"18",@"20",@"24"]);
     add(@"minimumFont",@"Appearance",@"Minimum font size",@"Keep small text readable on web pages.",@"profile",@"webkit.webprefs.minimum_font_size",@0,@[@0,@9,@12,@14,@16,@18,@24],@[@"None",@"9",@"12",@"14",@"16",@"18",@"24"]);
@@ -211,8 +210,8 @@ static NSError *TLBrowserPreferenceError(NSString *message) {
   return data && [data writeToURL:self.fileURL options:NSDataWritingAtomic error:error];
 }
 - (NSURL *)searchURLForText:(NSString *)text {
-  NSString *query = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-  if (!query.length) return nil;
+  NSString *query = text;
+  if (![query stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) return nil;
   NSString *template = [self localValue:@"searchEngine"];
   if ([template isEqual:@"custom"]) template = [self localValue:@"customSearchURL"];
   NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"];

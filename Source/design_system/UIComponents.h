@@ -34,7 +34,11 @@ typedef NS_OPTIONS(NSUInteger, TLBorderEdges) {
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSString *command;
 @property (nonatomic, copy) NSString *commandDescription;
+@property (nonatomic, copy) NSString *matchText;
+@property (nonatomic, copy) NSString *shortcutText;
+@property (nonatomic) BOOL stackedDescription;
 @property (nonatomic, copy) NSString *systemIconName;
+@property (nonatomic, strong, nullable) NSImage *customIcon;
 @property (nonatomic, getter=isSelected) BOOL selected;
 @end
 
@@ -58,6 +62,7 @@ NSBezierPath *TLCreateIncomingMessageBubblePath(NSRect bounds, TLThemePalette *p
 @end
 
 @interface TLBrowserAddressInput : TLGlassMessageInput <NSTextViewDelegate>
+@property (nonatomic, copy, nullable) BOOL (^suggestionCommandHandler)(SEL command);
 - (void)setLoading:(BOOL)loading progress:(double)progress;
 @property (nonatomic, readonly) BOOL hasUserDraft;
 // Install beside the address input at the leading edge of the footer.
@@ -90,6 +95,7 @@ typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {
 @property (nonatomic) BOOL roundsImageCorners;
 @property (nonatomic, strong, nullable) NSImage *image;
 @property (nonatomic, copy) NSString *systemIconName;
+@property (nonatomic, strong, nullable) NSImage *customIcon;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, strong, nullable) NSURL *URL;
 @property (nonatomic) TLSidebarShortcutKind shortcutKind;
@@ -139,6 +145,7 @@ typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {
 @property (nonatomic) CGFloat imageSize;
 @property (nonatomic, strong, nullable) NSImage *image;
 @property (nonatomic, copy) NSString *systemIconName;
+@property (nonatomic, strong, nullable) NSImage *customIcon;
 @property (nonatomic, copy, nullable) NSString *badgeSystemIconName;
 @property (nonatomic) BOOL dashed;
 @property (nonatomic) BOOL selected;
@@ -148,6 +155,7 @@ typedef NS_ENUM(NSInteger, TLSidebarShortcutKind) {
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *systemIconName;
+@property (nonatomic, strong, nullable) NSImage *customIcon;
 @property (nonatomic, copy) NSString *accessorySystemIconName;
 @property (nonatomic) BOOL selected;
 @property (nonatomic) BOOL forcesHoverState;
