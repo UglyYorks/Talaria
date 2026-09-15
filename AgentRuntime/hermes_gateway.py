@@ -3,6 +3,7 @@
 Protocol reference: NousResearch/hermes-agent, tui_gateway/entry.py and
 tui_gateway/methods_tools.py (commands.catalog, command.dispatch, slash.exec).
 """
+import base64
 import json
 import os
 from pathlib import Path
@@ -677,7 +678,7 @@ class HermesGateway:
             return self.command(chat_id, sid, target + (" " + arg if arg else ""), model, depth + 1)
         return result
 
-    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort="", shared_folders=False):
+    def run(self, chat_id, model, text, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort="", shared_folders=False, attachments=None):
         if cancellation and cancellation.cancelled():
             return
         with self.lock:
@@ -794,7 +795,34 @@ class HermesGateway:
                 if host_commands:
                     self.call("talaria.host.attach", {"session_id": sid})
                 if not waiting:
-                    self.call("prompt.submit", {"session_id": sid, "text": text})
+                    staged_images = []
+                    try:
+                        for attachment in attachments or []:
+                            if attachment.get("directory"):
+                                continue
+                            path = Path(attachment.get("guestPath", ""))
+                            if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic", ".heif"}:
+                                continue
+                            # Bytes avoid Hermes interpreting spaces/quotes in a filename
+                            # as a dropped path followed by prompt text.
+                            with path.open("rb") as image:
+                                data = image.read(20 * 1024 * 1024 + 1)
+                            if len(data) > 20 * 1024 * 1024:
+                                raise ValueError("Image attachments must be smaller than 20 MB.")
+                            result = self.call("image.attach_bytes", {"session_id": sid,
+                                "filename": path.name, "content_base64": base64.b64encode(data).decode("ascii")})
+                            if not result.get("attached") or not result.get("path"):
+                                raise RuntimeError("Hermes could not attach the image.")
+                            staged_images.append(result["path"])
+                        if cancellation and cancellation.cancelled():
+                            return
+                        self.call("prompt.submit", {"session_id": sid, "text": text})
+                        staged_images.clear()
+                    finally:
+                        # Submit consumes the queue; detach also clears partial staging
+                        # after an error/cancellation so a later turn cannot inherit it.
+                        for image_path in staged_images:
+                            self.call("image.detach", {"session_id": sid, "path": image_path})
                 if cancellation:
                     # Bind only after submission; a Stop during submit is delivered here.
                     # Drain its terminal event before releasing this session's lock, so

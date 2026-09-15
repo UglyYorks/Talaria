@@ -421,6 +421,7 @@ static void TestAttachmentPrompt(void) {
              updateHandler:nil completionHandler:nil error:nil];
   TLAssert([stream.lastMessages.lastObject.content containsString:@"report.pdf"], @"file manifest survives long-prompt compaction");
   TLAssert([stream.lastMessages.lastObject.content containsString:@"reference material"], @"wire prompt distinguishes document content from instructions");
+  TLAssert([stream.lastMessages.lastObject.attachments isEqual:runner.attachments], @"structured attachments reach the runtime alongside prompt text");
   TLAssert([store.savedMessages.firstObject.content isEqual:prompt], @"attachment context does not replace the user's saved text");
   TLAssert(store.savedMessages.firstObject.attachments.count == 1 && store.savedMessages.lastObject.attachments.count == 0,
            @"metadata belongs only to the outgoing message");

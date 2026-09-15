@@ -418,6 +418,15 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
                              prompt:(NSString *)prompt approvalResponse:(NSDictionary *)approvalResponse
                     reasoningEffort:(NSString *)reasoningEffort delta:(TLAgentStreamDeltaHandler)delta
                          completion:(TLAgentStreamCompletionHandler)completion {
+  [self streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID token:token model:model
+    prompt:prompt approvalResponse:approvalResponse reasoningEffort:reasoningEffort attachments:@[] delta:delta completion:completion];
+}
+
+- (void)streamHermesSessionWithAgent:(TLAgentRecord *)agent requestID:(NSString *)requestID
+                          sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model
+                             prompt:(NSString *)prompt approvalResponse:(NSDictionary *)approvalResponse
+                    reasoningEffort:(NSString *)reasoningEffort attachments:(NSArray<NSDictionary *> *)attachments delta:(TLAgentStreamDeltaHandler)delta
+                         completion:(TLAgentStreamCompletionHandler)completion {
   NSMutableDictionary *payload = [@{
     @"operation": @"hermes_session_chat",
     @"wait_for_previous_turn": @YES,
@@ -431,6 +440,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     @"shared_folder_context": [TLPromptBuilder sharedFolderContext:[self.vmService folderMountPathsForAgent:agent] ?: @{} readOnly:self.incognitoID.length > 0],
     @"shared_folder_summary": TLPromptBuilder.sharedFolderPluginSummary,
   } mutableCopy];
+  payload[@"attachments"] = attachments ?: @[];
   payload[@"reasoning_effort"] = reasoningEffort ?: @"";
   if (approvalResponse) payload[@"approval_response"] = approvalResponse;
   [self startWorkerWithAgent:agent payload:payload operation:@"hermes_session_chat"

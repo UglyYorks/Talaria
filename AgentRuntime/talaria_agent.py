@@ -421,7 +421,7 @@ def stream_hermes_session(request, output=None, cancellation=None):
             cancellation=cancellation, approval_response=request.get("approval_response"),
             wait_for_previous_turn=request.get("wait_for_previous_turn") is True,
             host_commands=bool(host_description), reasoning_effort=trim(request.get("reasoning_effort")),
-            shared_folders=folder_context is not None)
+            shared_folders=folder_context is not None, attachments=request.get("attachments"))
         cancellation.finish()
         if not cancellation.cancelled():
             emit({"type": "complete"}, output)
