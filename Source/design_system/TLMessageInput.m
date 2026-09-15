@@ -6,6 +6,8 @@
 
 @interface TLComposerTextView : NSTextView
 @property (nonatomic) BOOL selectsAllOnFocus;
+@property (nonatomic, copy) NSString *actionHint;
+@property (nonatomic, strong) NSColor *actionHintColor;
 @property (nonatomic, copy) void (^focusChangeHandler)(BOOL focused);
 @property (nonatomic, copy) BOOL (^filePasteHandler)(NSPasteboard *pasteboard);
 @property (nonatomic, copy) BOOL (^fileDropEnabled)(void);
@@ -13,6 +15,31 @@
 @end
 
 @implementation TLComposerTextView
+- (void)drawRect:(NSRect)dirtyRect {
+  [super drawRect:dirtyRect];
+  if (!self.string.length || !self.actionHint.length || self.hasMarkedText) return;
+  NSLayoutManager *layout = self.layoutManager;
+  [layout ensureLayoutForTextContainer:self.textContainer];
+  NSRect end;
+  if (layout.extraLineFragmentTextContainer == self.textContainer) {
+    end = layout.extraLineFragmentRect;
+    end.size.width = 0;
+  } else {
+    NSUInteger glyph = [layout glyphIndexForCharacterAtIndex:self.string.length - 1];
+    end = [layout boundingRectForGlyphRange:NSMakeRange(glyph, 1) inTextContainer:self.textContainer];
+  }
+  NSPoint origin = self.textContainerOrigin;
+  CGFloat x = origin.x + NSMaxX(end);
+  NSRect rect = NSMakeRect(x, origin.y + end.origin.y,
+    MAX(0, NSWidth(self.bounds) - x - self.textContainer.lineFragmentPadding),
+    MAX(end.size.height, self.font.ascender - self.font.descender + self.font.leading));
+  NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+  paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
+  [[@" — " stringByAppendingString:self.actionHint] drawInRect:rect withAttributes:@{
+    NSFontAttributeName:self.font, NSForegroundColorAttributeName:self.actionHintColor,
+    NSParagraphStyleAttributeName:paragraph}];
+}
+
 - (NSArray<NSPasteboardType> *)readablePasteboardTypes {
   NSArray<NSPasteboardType> *types = super.readablePasteboardTypes;
   // AppKit uses these types to enable Paste and Cmd+V, even for a plain-text editor.
@@ -269,6 +296,8 @@
   self.textView.insertionPointColor = self.palette.controlText;
   self.placeholderLabel.font = self.palette.bodyFont;
   self.placeholderLabel.textColor = self.palette.messageInputPlaceholderText;
+  ((TLComposerTextView *)self.textView).actionHintColor = self.palette.messageInputPlaceholderText;
+  self.textView.needsDisplay = YES;
   self.textView.textContainer.lineFragmentPadding = self.palette.space0;
   self.suggestionsButton.palette = self.palette;
   self.suggestionsButton.contentTintColor = self.palette.labelText;
@@ -433,6 +462,12 @@
   self.suggestionsButton.image = [NSImage imageWithSystemSymbolName:expanded ? @"chevron.down" : @"chevron.up" accessibilityDescription:label];
   self.suggestionsButton.toolTip = label;
   self.suggestionsButton.accessibilityLabel = label;
+}
+
+- (void)setActionHint:(NSString *)actionHint {
+  _actionHint = [actionHint copy];
+  ((TLComposerTextView *)self.textView).actionHint = actionHint;
+  self.textView.needsDisplay = YES;
 }
 
 - (void)setPlaceholderText:(NSString *)placeholderText {

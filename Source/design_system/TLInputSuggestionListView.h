@@ -1,6 +1,8 @@
 #import <AppKit/AppKit.h>
 #import "Theme.h"
 
+@class TLMessageInput;
+
 NS_ASSUME_NONNULL_BEGIN
 
 // A reusable, virtualized list: the number of views follows the viewport, not the catalogue.
@@ -8,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) TLThemePalette *palette;
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *suggestions;
 @property (nonatomic) NSInteger selectedIndex;
+@property (nonatomic, weak, nullable) TLMessageInput *messageInput;
 @property (nonatomic, readonly) CGFloat contentHeight;
 @property (nonatomic) BOOL scrollingEnabled;
 @property (nonatomic, copy, nullable) void (^selectionHandler)(NSInteger index);

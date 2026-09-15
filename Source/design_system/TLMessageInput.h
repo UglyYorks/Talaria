@@ -23,6 +23,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^focusChangeHandler)(BOOL focused);
 @property (nonatomic) BOOL showsStopButton;
 @property (nonatomic, copy) NSString *placeholderText;
+// Display-only suffix; never becomes part of the draft.
+@property (nonatomic, copy) NSString *actionHint;
 @property (nonatomic, strong, nullable) NSView *backgroundView;
 @property (nonatomic, copy, nullable) void (^textChangeHandler)(void);
 @property (nonatomic, copy, nullable) void (^heightChangeHandler)(CGFloat height);

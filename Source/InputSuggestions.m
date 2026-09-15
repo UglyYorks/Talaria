@@ -131,7 +131,7 @@
   NSDictionary *prompt = @{@"kind":@"prompt", @"value":input, @"command":@"Ask agent",
     @"title":input, @"icon":@"text.bubble"};
   NSDictionary *search = @{@"kind":@"search", @"value":input, @"URL":searchURL.absoluteString ?: @"",
-    @"command":[@"Search for " stringByAppendingString:input], @"title":input, @"icon":@"magnifyingglass"};
+    @"command":@"Google Search", @"title":input, @"icon":@"magnifyingglass"};
   NSArray *slash = [self slashCommandsForInput:input commands:commands];
   if ([query hasPrefix:@"/"]) {
     if (!slash.count) return @[prompt, search];

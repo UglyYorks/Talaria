@@ -236,6 +236,7 @@
   self.suggestionPanel.translatesAutoresizingMaskIntoConstraints = NO;
   self.suggestionPanel.hidden = YES;
   self.suggestionList = [TLInputSuggestionListView new];
+  self.suggestionList.messageInput = self.browserAddressInput;
   self.suggestionList.palette = self.palette;
   [self.suggestionPanel addSubview:self.suggestionList];
   [browserContentView addSubview:self.suggestionPanel];
@@ -547,6 +548,7 @@
   if (self.isClosed || !input.hasUserDraft || input.window.firstResponder != input.textView ||
       input.textView.hasMarkedText || [self.dismissedSuggestionInput isEqual:text]) {
     self.suggestionPanel.hidden = YES;
+    input.actionHint = @"";
     return;
   }
   NSArray *rows = self.suggestionsProvider ? self.suggestionsProvider(text) :
@@ -554,7 +556,7 @@
       searchURL:[self.browserPreferences searchURLForText:text] hasAttachments:NO];
   BOOL changed = ![rows isEqual:self.suggestionList.suggestions];
   self.suggestionList.suggestions = rows;
-  if (changed || self.suggestionList.selectedIndex < 0) self.suggestionList.selectedIndex = rows.count ? 0 : -1;
+  self.suggestionList.selectedIndex = (changed || self.suggestionList.selectedIndex < 0) ? (rows.count ? 0 : -1) : self.suggestionList.selectedIndex;
   CGFloat content = self.suggestionList.contentHeight + self.palette.space2 * 2;
   CGFloat maximum = MAX(self.palette.slashCommandRowHeight, NSHeight(self.view.bounds) * 0.4);
   self.suggestionHeight.constant = MIN(content, maximum);
@@ -573,6 +575,7 @@
   if (self.suggestionPanel.hidden) return NO;
   if (command == @selector(cancelOperation:)) {
     self.dismissedSuggestionInput = self.browserAddressInput.textView.string;
+    self.browserAddressInput.actionHint = @"";
     self.suggestionPanel.hidden = YES;
     return YES;
   }

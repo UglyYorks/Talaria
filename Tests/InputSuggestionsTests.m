@@ -12,7 +12,7 @@ int main(void) { @autoreleasepool {
   NSString *draft = @"  find cats & dogs  ";
   NSArray *rows = Rows(draft, @[]);
   Check(rows.count == 2 && [rows[1][@"kind"] isEqual:@"search"], @"empty history offers exact search after Ask agent");
-  Check([rows[1][@"command"] isEqual:[@"Search for " stringByAppendingString:draft]], @"search displays exact input");
+  Check([rows[1][@"command"] isEqual:@"Google Search"], @"search displays a constant Google Search label");
   Check([rows[0][@"value"] isEqual:draft], @"Ask agent preserves the exact draft");
   Check(Rows(@" \n", @[]).count == 0, @"blank input has no invented queries");
   for (NSString *input in @[@"http", @"https://", @"www.", @"example..com", @"javascript:alert(1)", @"user@example.com", @"file:///tmp/private", @"hello world"]) {
