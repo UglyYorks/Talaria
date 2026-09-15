@@ -41,6 +41,16 @@ static void Check(BOOL condition, NSString *message) {
 - (void)buildSettingsTabContent {}
 - (void)requestPlugins:(NSDictionary *)parameters { self.requests++; }
 @end
+static void CheckPrivateDelivery(TLDatabase *database) {
+  TLAgentOrchestrator *orchestrator = [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:(id)[NSObject new] vmService:[TLAgentVMService new]];
+  NSData *bytes = [@"%PDF-1.7 test" dataUsingEncoding:NSUTF8StringEncoding];
+  NSDictionary *row = @{@"name":@"report.pdf", @"guestPath":@"/private-vm/report.pdf", @"directory":@NO, @"data":[bytes base64EncodedStringWithOptions:0]};
+  NSURL *URL = [orchestrator fileURLForAttachment:row sessionID:@"session"];
+  Check(URL && [[NSData dataWithContentsOfURL:URL] isEqual:bytes], @"private returned file can be previewed without the VM filesystem");
+  [orchestrator closeIncognito];
+  Check(![NSFileManager.defaultManager fileExistsAtPath:URL.path], @"closing Incognito removes exported preview files");
+}
+
 static NSArray<NSView *> *Descendants(NSView *view) {
   NSMutableArray *result = [NSMutableArray arrayWithObject:view];
   for (NSView *child in view.subviews) [result addObjectsFromArray:Descendants(child)];
@@ -112,6 +122,7 @@ int main(void) {
     TLChatRecord *chat = [normal createChatWithModel:settings.selectedModel error:&error];
     [normal saveMessage:[TLChatMessage messageWithRole:TLRoleUser content:@"normal history" thinking:nil] chatID:chat.chatID error:&error];
     TLDatabase *private = [normal incognitoDatabase:&error];
+    CheckPrivateDelivery(private);
     Check(private.incognito && !normal.incognito, @"Only the private database is Incognito");
     Check([private listChats:&error].count == 0, @"Private windows start without saved chats");
     Check([[private appSettings:&error].openRouterToken isEqual:@"fixture-token"], @"Private settings read existing credentials");

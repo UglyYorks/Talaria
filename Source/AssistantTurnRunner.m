@@ -235,7 +235,16 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     assistantMessage.thinkingActive = (kind == TLAgentStreamDeltaKindThinking ||
       (kind == TLAgentStreamDeltaKindStatus && text.length > 0));
     BOOL displayChanged = wasThinking != assistantMessage.thinkingActive;
-    if (kind == TLAgentStreamDeltaKindQuestion) {
+    if (kind == TLAgentStreamDeltaKindAttachments) {
+      if (![value[@"content"] isKindOfClass:NSString.class] || ![value[@"attachments"] isKindOfClass:NSArray.class]) return;
+      for (id row in value[@"attachments"]) if (![row isKindOfClass:NSDictionary.class] ||
+          ![row[@"name"] isKindOfClass:NSString.class] || ![row[@"guestPath"] isKindOfClass:NSString.class] ||
+          ![row[@"directory"] isKindOfClass:NSNumber.class]) return;
+      [assistantContent setString:value[@"content"]];
+      assistantMessage.content = value[@"content"];
+      assistantMessage.attachments = value[@"attachments"];
+      displayChanged = YES;
+    } else if (kind == TLAgentStreamDeltaKindQuestion) {
       TLQuestionRequest *question = [value isKindOfClass:NSDictionary.class] ? value[@"question"] : nil;
       if (![question isKindOfClass:TLQuestionRequest.class] || [assistantMessage.questions containsObject:question]) return;
       assistantMessage.questions = [assistantMessage.questions arrayByAddingObject:question];

@@ -61,6 +61,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 
 @property (nonatomic, strong) TLDatabase *database;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSURL *> *incognitoAttachmentURLs;
+@property (nonatomic, strong) NSURL *incognitoExportDirectory;
 @property (nonatomic, strong) id<TLAgentStreaming> agentClient;
 @property (nonatomic, strong) TLAgentVMService *vmService;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *initializingAgentIDs;
@@ -96,10 +97,16 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   return [[TLAgentOrchestrator alloc] initWithDatabase:database agentClient:client vmService:self.vmService];
 }
 
+- (void)dealloc {
+  if (_incognitoExportDirectory) [NSFileManager.defaultManager removeItemAtURL:_incognitoExportDirectory error:nil];
+}
+
 - (void)closeIncognito {
   if (self.database.incognito && [self.agentClient isKindOfClass:TLBundledAgentClient.class])
     [(TLBundledAgentClient *)self.agentClient closeIncognito];
   [self.incognitoAttachmentURLs removeAllObjects];
+  if (self.incognitoExportDirectory) [NSFileManager.defaultManager removeItemAtURL:self.incognitoExportDirectory error:nil];
+  self.incognitoExportDirectory = nil;
 }
 
 - (NSURL *)runtimeBundleURL {
@@ -418,6 +425,7 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     NSDictionary *approvalResponse = messages.lastObject.approvalResponse;
     NSMutableArray<TLChatMessage *> *inputMessages = [messages mutableCopy];
     if (!approvalResponse) {
+      [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:TLPromptBuilder.fileDeliveryContext thinking:nil] atIndex:0];
       if (!self.database.incognito) [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:TLPromptBuilder.notesContext thinking:nil] atIndex:0];
     }
     if (messages.lastObject.attachments.count) {
@@ -537,7 +545,29 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
 }
 
 - (NSURL *)fileURLForAttachment:(NSDictionary *)attachment sessionID:(NSString *)sessionID {
-  if (self.database.incognito) return self.incognitoAttachmentURLs[attachment[@"guestPath"]];
+  if (self.database.incognito) {
+    NSString *path = attachment[@"guestPath"];
+    if (![path isKindOfClass:NSString.class]) return nil;
+    NSURL *existing = self.incognitoAttachmentURLs[path];
+    if (existing) return existing;
+    NSString *encoded = attachment[@"data"], *name = attachment[@"name"];
+    if (![encoded isKindOfClass:NSString.class] || encoded.length > 28 * 1024 * 1024 ||
+        ![name isKindOfClass:NSString.class] || !name.length || ![name isEqual:name.lastPathComponent] ||
+        [@[@".", @".."] containsObject:name]) return nil;
+    NSData *data = [[NSData alloc] initWithBase64EncodedString:encoded options:0];
+    if (!data || data.length > 20 * 1024 * 1024) return nil;
+    NSFileManager *manager = NSFileManager.defaultManager;
+    if (!self.incognitoExportDirectory) self.incognitoExportDirectory = [manager.temporaryDirectory
+      URLByAppendingPathComponent:[@"Talaria-private-attachments-" stringByAppendingString:NSUUID.UUID.UUIDString] isDirectory:YES];
+    NSURL *directory = [self.incognitoExportDirectory URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+    if (![manager createDirectoryAtURL:directory withIntermediateDirectories:YES
+      attributes:@{NSFilePosixPermissions:@0700} error:nil]) return nil;
+    NSURL *URL = [directory URLByAppendingPathComponent:name];
+    if (![data writeToURL:URL options:NSDataWritingAtomic error:nil]) return nil;
+    if (!self.incognitoAttachmentURLs) self.incognitoAttachmentURLs = [NSMutableDictionary dictionary];
+    self.incognitoAttachmentURLs[path] = URL;
+    return URL;
+  }
   // Reading a saved attachment must never start a VM or create an agent.
   for (TLAgentRecord *agent in [self.database listAgents:nil]) {
     NSURL *workspace = [[NSURL fileURLWithPath:agent.vmDirectory] URLByAppendingPathComponent:@"workspace"];

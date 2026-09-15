@@ -31,6 +31,32 @@ class GatewayTests(unittest.TestCase):
         self.gateway.mapping_path = self.gateway.home / 'sessions.json'
         self.gateway.call = Mock()
 
+    def test_returned_file_is_delivered_and_survives_history_reload(self):
+        self.gateway.home = Path(self.temp.name) / '.hermes'
+        self.gateway.home.mkdir()
+        self.gateway.sessions = {'chat': {'id': 'runtime', 'model': 'model'}}
+        self.gateway.mappings = {'chat': 'stored'}
+        source = Path(self.temp.name) / 'report.pdf'
+        source.write_bytes(b'%PDF-1.7 test')
+        answer = f'Your report.\nTALARIA_ATTACHMENT: {source}'
+        def rpc(method, params):
+            if method == 'prompt.submit':
+                self.gateway.listeners['runtime'].put({'type': 'message.delta', 'payload': {'text': answer}})
+                self.gateway.listeners['runtime'].put({'type': 'message.complete', 'payload': {'text': answer}})
+            if method == 'session.history':
+                return {'messages': [{'role': 'assistant', 'text': answer}]}
+            return {}
+        self.gateway.call.side_effect = rpc
+        delta = Mock()
+        self.gateway.run('chat', 'model', 'Make a PDF', delta)
+        delivery = next(c.args[1] for c in delta.call_args_list if c.args[0] == 'attachments')
+        self.assertEqual(delivery['content'], 'Your report.')
+        self.assertEqual(Path(delivery['attachments'][0]['guestPath']).read_bytes(), source.read_bytes())
+        source.unlink()
+        history = self.gateway.history_session('stored')
+        self.assertEqual(history['messages'][0]['attachments'], delivery['attachments'])
+        self.assertEqual(history['messages'][0]['content'], 'Your report.')
+
     def test_image_attachments_are_uploaded_before_prompt(self):
         self.gateway.sessions = {'chat': {'id': 'runtime', 'model': 'model'}}
         image = Path(self.temp.name) / 'pasted image "one".PNG'

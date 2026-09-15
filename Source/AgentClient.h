@@ -15,6 +15,7 @@ typedef NS_ENUM(NSInteger, TLAgentStreamDeltaKind) {
   // Native-only value containing a live TLQuestionRequest, never decoded from JSON.
   TLAgentStreamDeltaKindQuestion,
   TLAgentStreamDeltaKindClarification,
+  TLAgentStreamDeltaKindAttachments,
 };
 
 typedef void (^TLAgentStreamDeltaHandler)(NSString *requestID, TLAgentStreamDeltaKind kind, id value);

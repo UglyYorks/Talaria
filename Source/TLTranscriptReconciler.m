@@ -42,10 +42,22 @@
       if (error) *error = [NSError errorWithDomain:@"Talaria.Transcript" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Hermes returned invalid source metadata."}];
       return nil;
     }
+    if (item[@"attachments"]) {
+      NSArray *attachments = item[@"attachments"];
+      BOOL validAttachments = [attachments isKindOfClass:NSArray.class];
+      if (validAttachments) for (id row in attachments) if (![row isKindOfClass:NSDictionary.class] ||
+          ![row[@"name"] isKindOfClass:NSString.class] || ![row[@"guestPath"] isKindOfClass:NSString.class] ||
+          ![row[@"directory"] isKindOfClass:NSNumber.class]) { validAttachments = NO; break; }
+      if (!validAttachments) {
+        if (error) *error = [NSError errorWithDomain:@"Talaria.Transcript" code:3 userInfo:@{NSLocalizedDescriptionKey:@"Hermes returned invalid attachments."}];
+        return nil;
+      }
+      message.attachments = attachments;
+    }
     message.sourceToolCallIDs = calls;
     message.notification = notification.count ? notification : nil;
     if (old) [retained addObject:@(old.messageID)];
-    if (!old || ![(old.sourceMessageID ?: @"") isEqual:message.sourceMessageID] ||
+    if (!old || ![old.attachments isEqual:message.attachments] || ![(old.sourceMessageID ?: @"") isEqual:message.sourceMessageID] ||
         ![(old.sourceToolCallIDs ?: @[]) isEqual:message.sourceToolCallIDs] ||
         ![(old.notification ?: @{}) isEqual:message.notification ?: @{}] || old.position != message.position || ![old.createdAt isEqual:message.createdAt] || ![(old.thinking ?: @"") isEqual:message.thinking ?: @""]) [writes addObject:message];
   }
