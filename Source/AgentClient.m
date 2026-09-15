@@ -196,6 +196,7 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
   else if ([kindString isEqualToString:@"clarification"]) kind = TLAgentStreamDeltaKindClarification;
   else if ([kindString isEqualToString:@"approval"]) kind = TLAgentStreamDeltaKindApproval;
   else if ([kindString isEqualToString:@"tool_activity"]) kind = TLAgentStreamDeltaKindToolActivity;
+  else if ([kindString isEqualToString:@"attachments"]) kind = TLAgentStreamDeltaKindAttachments;
   else if ([kindString isEqualToString:@"content"]) kind = TLAgentStreamDeltaKindContent;
   else return;
   id value = event[@"payload"] ?: text;

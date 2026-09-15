@@ -542,8 +542,27 @@ static void TestNativeQuestions(void) {
   }
 }
 
+static void TestReturnedAttachments(void) {
+  TLTurnTestMessageStore *store = [TLTurnTestMessageStore new];
+  TLTurnTestStream *stream = [TLTurnTestStream new];
+  stream.deferred = YES;
+  TLAssistantTurnRunner *runner = [[TLAssistantTurnRunner alloc] initWithMessageStore:store streaming:stream];
+  NSMutableArray *messages = [NSMutableArray array];
+  [runner startTurnWithChat:TLTestChat() token:@"token" model:@"model" messages:messages nextPrompt:@"Make a PDF"
+    updateHandler:nil completionHandler:nil error:nil];
+  TLTurnTestRequest *turn = stream.requests.lastObject;
+  turn.delta(turn.requestID, TLAgentStreamDeltaKindContent, @"Your report.\nTALARIA_ATTACHMENT: /tmp/report.pdf");
+  NSArray *rows = @[@{@"name":@"report.pdf", @"guestPath":@"/workspace/attachments/session/generated/report.pdf", @"directory":@NO}];
+  turn.delta(turn.requestID, TLAgentStreamDeltaKindAttachments, @{@"content":@"Your report.", @"attachments":rows});
+  TLChatMessage *delivered = messages.lastObject;
+  TLAssert([delivered.attachments isEqual:rows] && [delivered.content isEqual:@"Your report."], @"delivery replaces VM markers with live attachment cards");
+  turn.completion(nil);
+  TLAssert([store.savedMessages.lastObject.attachments isEqual:rows] && [store.savedMessages.lastObject.content isEqual:@"Your report."], @"returned attachments and clean content persist with the assistant message");
+}
+
 int main(void) {
   @autoreleasepool {
+    TestReturnedAttachments();
     TestNativeQuestions();
     TestAttachmentPrompt();
     TestRegeneration();

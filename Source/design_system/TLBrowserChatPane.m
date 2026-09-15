@@ -1,3 +1,4 @@
+#import "TLAttachmentChipView.h"
 #import "TLBrowserChatPane.h"
 #import "TLApprovalCardView.h"
 #import "TLGlassButton.h"
@@ -68,8 +69,9 @@
 @property TLApprovalCardView *approvalCard;
 @property NSStackView *contentStack;
 @property NSStackView *transcriptStack;
-@property NSArray<NSDictionary<NSString *, NSString *> *> *transcript;
+@property NSArray<NSDictionary<NSString *, id> *> *transcript;
 @property NSMutableArray<NSView *> *transcriptViews;
+@property NSMutableDictionary<NSNumber *, TLAttachmentChipRow *> *attachmentRows;
 @property TLToolActivityView *activityView;
 @property (nonatomic, readwrite) NSButton *minimizeButton;
 @property (nonatomic, readwrite) NSButton *closeButton;
@@ -249,6 +251,7 @@
   NSArray *transcript = self.transcript;
   self.transcript = nil;
   self.transcriptViews = [NSMutableArray array];
+  self.attachmentRows = [NSMutableDictionary dictionary];
   [self showTranscript:transcript ?: @[] errorText:self.markdown loading:self.loading];
   [self.contentStack addArrangedSubview:self.activityView];
   [self.contentStack addArrangedSubview:self.markdownView];
@@ -317,7 +320,7 @@
   self.title = self.title;
   [self updateHeaderSpinner];
 }
-- (void)showTranscript:(NSArray<NSDictionary<NSString *,NSString *> *> *)messages errorText:(NSString *)errorText loading:(BOOL)loading {
+- (void)showTranscript:(NSArray<NSDictionary<NSString *,id> *> *)messages errorText:(NSString *)errorText loading:(BOOL)loading {
   BOOL followsBottom = !self.transcript.count || self.loading ||
     NSMaxY(self.scrollView.documentVisibleRect) >= NSHeight(self.document.bounds) - self.palette.space8;
   BOOL rebuild = messages.count < self.transcript.count;
@@ -325,7 +328,8 @@
     if (![messages[index][@"role"] isEqual:self.transcript[index][@"role"]]) rebuild = YES;
   }
   if (rebuild) {
-    for (NSView *row in self.transcriptViews) { [self.transcriptStack removeArrangedSubview:row]; [row removeFromSuperview]; }
+    for (NSView *row in [self.transcriptStack.arrangedSubviews copy]) { [self.transcriptStack removeArrangedSubview:row]; [row removeFromSuperview]; }
+    [self.attachmentRows removeAllObjects];
     [self.transcriptViews removeAllObjects];
   }
   for (NSUInteger index = 0; index < messages.count; index++) {
@@ -346,6 +350,35 @@
       }
     } else {
       [self.renderer updateMarkdown:message[@"content"] inView:view];
+    }
+    view.hidden = ![message[@"content"] length];
+    NSArray *attachments = message[@"attachments"] ?: @[];
+    NSArray *previous = index < self.transcript.count ? self.transcript[index][@"attachments"] ?: @[] : @[];
+    if (![attachments isEqual:previous] || (attachments.count && !self.attachmentRows[@(index)])) {
+      TLAttachmentChipRow *old = self.attachmentRows[@(index)];
+      if (old) { [self.transcriptStack removeArrangedSubview:old]; [old removeFromSuperview]; [self.attachmentRows removeObjectForKey:@(index)]; }
+      if (attachments.count) {
+        NSMutableArray *chips = [NSMutableArray array];
+        __weak typeof(self) weakSelf = self;
+        [attachments enumerateObjectsUsingBlock:^(NSDictionary *attachment, NSUInteger attachmentIndex, BOOL *stop) {
+          TLAttachmentChipView *chip = [TLAttachmentChipView new];
+          chip.palette = self.palette;
+          chip.showsRemoveButton = NO;
+          chip.title = attachment[@"name"] ?: @"Attachment";
+          chip.toolTip = chip.title;
+          chip.image = [NSImage imageWithSystemSymbolName:[attachment[@"directory"] boolValue] ? @"folder" : @"doc" accessibilityDescription:nil];
+          chip.activationHandler = ^{ if (weakSelf.attachmentHandler) weakSelf.attachmentHandler(index, attachmentIndex); };
+          NSURL *URL = self.attachmentURLProvider ? self.attachmentURLProvider(attachment) : nil;
+          if (URL) [chip loadPreviewForURL:URL];
+          [chips addObject:chip];
+        }];
+        TLAttachmentChipRow *row = [[TLAttachmentChipRow alloc] initWithChips:chips palette:self.palette];
+        row.alignsTrailing = user;
+        self.attachmentRows[@(index)] = row;
+        NSUInteger position = [self.transcriptStack.arrangedSubviews indexOfObjectIdenticalTo:view] + 1;
+        [self.transcriptStack insertArrangedSubview:row atIndex:position];
+        [row.widthAnchor constraintEqualToAnchor:self.transcriptStack.widthAnchor].active = YES;
+      }
     }
   }
   self.transcript = [messages copy];

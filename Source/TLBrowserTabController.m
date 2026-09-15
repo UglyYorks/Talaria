@@ -1,3 +1,5 @@
+#import "TLAttachmentViewerWindowController.h"
+#import "AgentOrchestrator.h"
 #import "design_system/TLBrowserFooterView.h"
 #import "design_system/TLBrowserContentEdgeView.h"
 #import "design_system/TLInputSuggestionListView.h"
@@ -41,6 +43,7 @@
 @property (nonatomic, strong) NSLayoutConstraint *browserHostBottomConstraint;
 @property (nonatomic, strong) TLBrowserConversation *browserConversation;
 @property (nonatomic, strong) TLBrowserChatPane *browserChatPane;
+@property (nonatomic, strong) TLAttachmentViewerWindowController *attachmentViewer;
 @property (nonatomic, strong) NSLayoutConstraint *browserChatExpandedHeight;
 @property (nonatomic, strong) NSLayoutConstraint *browserChatExpandedWidth;
 @property (nonatomic, strong) NSLayoutConstraint *browserChatCollapsedHeight;
@@ -103,6 +106,10 @@
   self.pageAppearanceTimer = nil;
   [NSNotificationCenter.defaultCenter removeObserver:self name:TLBrowserPreferencesDidChangeNotification object:nil];
   self.browserConversation.changeHandler = nil;
+  [self.attachmentViewer close];
+  self.attachmentViewer = nil;
+  self.browserChatPane.attachmentURLProvider = nil;
+  self.browserChatPane.attachmentHandler = nil;
   self.browserChatPane.linkHandler = nil;
   self.browserChatPane.linkContextMenuHandler = nil;
   self.browserChatPane.minimizeButton.target = nil;
@@ -236,6 +243,7 @@
   self.suggestionPanel.translatesAutoresizingMaskIntoConstraints = NO;
   self.suggestionPanel.hidden = YES;
   self.suggestionList = [TLInputSuggestionListView new];
+  self.suggestionList.messageInput = self.browserAddressInput;
   self.suggestionList.palette = self.palette;
   [self.suggestionPanel addSubview:self.suggestionList];
   [browserContentView addSubview:self.suggestionPanel];
@@ -547,6 +555,7 @@
   if (self.isClosed || !input.hasUserDraft || input.window.firstResponder != input.textView ||
       input.textView.hasMarkedText || [self.dismissedSuggestionInput isEqual:text]) {
     self.suggestionPanel.hidden = YES;
+    input.actionHint = @"";
     return;
   }
   NSArray *rows = self.suggestionsProvider ? self.suggestionsProvider(text) :
@@ -554,7 +563,7 @@
       searchURL:[self.browserPreferences searchURLForText:text] hasAttachments:NO];
   BOOL changed = ![rows isEqual:self.suggestionList.suggestions];
   self.suggestionList.suggestions = rows;
-  if (changed || self.suggestionList.selectedIndex < 0) self.suggestionList.selectedIndex = rows.count ? 0 : -1;
+  self.suggestionList.selectedIndex = (changed || self.suggestionList.selectedIndex < 0) ? (rows.count ? 0 : -1) : self.suggestionList.selectedIndex;
   CGFloat content = self.suggestionList.contentHeight + self.palette.space2 * 2;
   CGFloat maximum = MAX(self.palette.slashCommandRowHeight, NSHeight(self.view.bounds) * 0.4);
   self.suggestionHeight.constant = MIN(content, maximum);
@@ -573,6 +582,7 @@
   if (self.suggestionPanel.hidden) return NO;
   if (command == @selector(cancelOperation:)) {
     self.dismissedSuggestionInput = self.browserAddressInput.textView.string;
+    self.browserAddressInput.actionHint = @"";
     self.suggestionPanel.hidden = YES;
     return YES;
   }
@@ -716,6 +726,28 @@
   [self.browserAddressInput setDisplayedAddress:[self displayAddressForBrowserURL:self.URL]];
 }
 
+- (void)previewBrowserAttachmentsAtMessage:(NSUInteger)messageIndex index:(NSUInteger)attachmentIndex {
+  NSArray *transcript = self.browserConversation.transcript;
+  if (messageIndex >= transcript.count || attachmentIndex >= [transcript[messageIndex][@"attachments"] count]) return;
+  NSMutableArray *items = [NSMutableArray array];
+  NSUInteger selected = 0;
+  TLAgentOrchestrator *orchestrator = self.agentOrchestrator;
+  NSString *sessionID = self.browserConversation.chat.hermesSessionID;
+  for (NSUInteger index = 0; index < transcript.count; index++) {
+    if (index == messageIndex) selected = items.count + attachmentIndex;
+    for (NSDictionary *attachment in transcript[index][@"attachments"]) {
+      TLAttachmentPreviewItem *item = [TLAttachmentPreviewItem new];
+      item.name = attachment[@"name"] ?: @"Attachment";
+      item.directory = [attachment[@"directory"] boolValue];
+      item.URLResolver = ^NSURL *{ return [orchestrator fileURLForAttachment:attachment sessionID:sessionID]; };
+      [items addObject:item];
+    }
+  }
+  [self.attachmentViewer close];
+  self.attachmentViewer = [[TLAttachmentViewerWindowController alloc] initWithItems:items conversationTitle:self.browserConversation.title selectedIndex:selected palette:self.palette];
+  [self.attachmentViewer showOnScreen:self.view.window.screen ?: NSScreen.mainScreen];
+}
+
 - (BOOL)sendBrowserPrompt:(NSString *)prompt {
   if (self.isClosed || ![prompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) return NO;
   prompt = [prompt copy];
@@ -734,6 +766,13 @@
     };
     TLBrowserChatPane *pane = [[TLBrowserChatPane alloc] init];
     pane.palette = self.palette;
+    pane.attachmentURLProvider = ^NSURL *(NSDictionary *attachment) {
+      TLBrowserTabController *owner = weakController;
+      return [owner.agentOrchestrator fileURLForAttachment:attachment sessionID:owner.browserConversation.chat.hermesSessionID];
+    };
+    pane.attachmentHandler = ^(NSUInteger messageIndex, NSUInteger attachmentIndex) {
+      [weakController previewBrowserAttachmentsAtMessage:messageIndex index:attachmentIndex];
+    };
     pane.minimizeButton.target = self;
     pane.minimizeButton.action = @selector(minimizeBrowserChat:);
     pane.closeButton.target = self;

@@ -108,6 +108,7 @@
     _suggestionPanel.translatesAutoresizingMaskIntoConstraints = YES;
     _suggestionPanel.hidden = YES;
     _suggestionList = [[TLInputSuggestionListView alloc] init];
+    _suggestionList.messageInput = _messageInput;
     _suggestionList.activationHandler = ^(NSUInteger index) { [weakSelf performSuggestionAtIndex:index completing:NO]; };
     [_suggestionPanel addSubview:_suggestionList];
     [_inputContainer addSubview:_suggestionPanel];

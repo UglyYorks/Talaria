@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import "ChatAttachmentStore.h"
 #import "Database.h"
+#import "TLTranscriptReconciler.h"
 #import "DatabaseMigrator.h"
 #import "SQLiteConnection.h"
 #import "PromptMessages.h"
@@ -33,6 +34,17 @@ static void Check(BOOL condition, NSString *message) {
 }
 static NSURL *HostURL(NSURL *workspace, NSDictionary *attachment) {
   return [workspace URLByAppendingPathComponent:[attachment[@"guestPath"] substringFromIndex:@"/workspace/".length]];
+}
+
+static void TestReturnedAttachmentReconciliation(void) {
+  NSArray *rows = @[@{@"name":@"report.pdf", @"guestPath":@"/workspace/attachments/session/generated/report.pdf", @"directory":@NO}];
+  NSDictionary *incoming = @{@"role":TLRoleAssistant, @"content":@"Your report.", @"attachments":rows};
+  TLTranscriptChanges *changes = [TLTranscriptReconciler reconcileMessages:@[incoming] previous:@[] error:nil];
+  Check([changes.writes.firstObject.attachments isEqual:rows], @"history reload retains generated attachment metadata");
+  TLStoredChatMessage *old = [TLStoredChatMessage messageWithRole:TLRoleAssistant content:@"Your report." thinking:nil];
+  old.messageID = 42;
+  changes = [TLTranscriptReconciler reconcileMessages:@[incoming] previous:@[old] error:nil];
+  Check(changes.writes.count == 1 && changes.writes.firstObject.messageID == 42 && [changes.writes.firstObject.attachments isEqual:rows], @"history updates attachment metadata without losing message identity");
 }
 
 static void TestAttachmentMigrationCollision(void) {

@@ -2718,6 +2718,7 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 - (void)setDisplayedAddress:(NSString *)address {
   self.latestAddress = address;
   self.hasUserDraft = NO;
+  self.actionHint = @"";
   [self addressFocusChanged:self.addressFocused];
   self.sendButton.enabled = address.length > 0;
   [self recalculateHeight];

@@ -1,3 +1,4 @@
+#import "TLMessageInput.h"
 #import "TLInputSuggestionListView.h"
 #import "UIComponents.h"
 
@@ -121,7 +122,7 @@
 - (void)setSuggestions:(NSArray<NSDictionary<NSString *, NSString *> *> *)suggestions {
   if ([_suggestions isEqualToArray:suggestions]) return;
   _suggestions = [suggestions copy];
-  _selectedIndex = -1;
+  self.selectedIndex = -1;
   [self.table reloadData];
   [self.contentView scrollToPoint:NSZeroPoint];
 }
@@ -156,6 +157,19 @@
       ((TLSlashCommandItemView *)cell).shortcutText = [self shortcutForIndex:rowIndex];
     }
   }];
+  NSDictionary *row = _selectedIndex >= 0 ? self.suggestions[_selectedIndex] : nil;
+  NSString *kind = row[@"kind"];
+  NSString *hint = @"";
+  if ([kind isEqual:@"prompt"]) hint = @"Ask Agent";
+  else if ([kind isEqual:@"search"]) hint = @"Google Search";
+  else if ([kind isEqual:@"web"] || [kind isEqual:@"tab"]) {
+    NSString *address = row[@"URL"] ?: @"";
+    NSRange scheme = [address rangeOfString:@"://"];
+    if (scheme.location != NSNotFound) address = [address substringFromIndex:NSMaxRange(scheme)];
+    if ([address.lowercaseString hasPrefix:@"www."]) address = [address substringFromIndex:4];
+    if (address.length) hint = [@"Open " stringByAppendingString:address];
+  } else if ([kind isEqual:@"hermes"]) hint = row[@"command"] ?: @"";
+  self.messageInput.actionHint = hint;
   if (self.selectionHandler) self.selectionHandler(_selectedIndex);
 }
 

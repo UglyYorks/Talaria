@@ -1354,6 +1354,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 
   self.slashCommandScrollView = [[TLInputSuggestionListView alloc] init];
   __weak typeof(self) weakSelf = self;
+  self.slashCommandScrollView.messageInput = self.messageInput;
   self.slashCommandScrollView.selectionHandler = ^(NSInteger index) { weakSelf.selectedSlashCommandIndex = index; };
   self.slashCommandScrollView.activationHandler = self.suggestionActivationHandler;
   [self.slashCommandListView addSubview:self.slashCommandScrollView];

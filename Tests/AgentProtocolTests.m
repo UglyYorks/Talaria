@@ -17,6 +17,12 @@ int main(void) { @autoreleasepool {
     TLAgentFrameDecoder *decoder = [TLAgentFrameDecoder new]; decoder.requestID = @"r"; NSError *error;
     Check([decoder appendData:[invalid dataUsingEncoding:NSUTF8StringEncoding] error:&error] == nil && error != nil, @"malformed and foreign frames fail");
   }
+  TLAgentFrameDecoder *attachmentsDecoder = [TLAgentFrameDecoder new];
+  attachmentsDecoder.requestID = @"r";
+  NSDictionary *delivery = @{@"type":@"delta", @"request_id":@"r", @"kind":@"attachments", @"payload":@{@"content":@"Ready", @"attachments":@[@{@"name":@"report.pdf", @"guestPath":@"/workspace/attachments/r/report.pdf", @"directory":@NO}]}};
+  NSMutableData *deliveryWire = [[NSJSONSerialization dataWithJSONObject:delivery options:0 error:nil] mutableCopy];
+  [deliveryWire appendData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+  Check([[[attachmentsDecoder appendData:deliveryWire error:nil] firstObject][@"payload"] isEqual:delivery[@"payload"]], @"generated attachment payload survives the worker protocol");
   TLAgentJSONResult *result = [TLAgentJSONResult new]; [result appendLegacyText:@"{\"items\":" ]; [result appendLegacyText:@"[1,2]}"];
   Check([[result finish:nil][@"items"] count] == 2, @"old guest result adaptation");
   result.result = @{@"new":@YES}; Check([[result finish:nil][@"new"] boolValue], @"structured result avoids text parsing");

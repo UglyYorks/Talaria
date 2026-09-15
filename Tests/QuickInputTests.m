@@ -423,6 +423,14 @@ static void TestPanel(void) {
   SetText(controller, @"example.com");
   TLInputSuggestionListView *list = [controller valueForKey:@"suggestionList"];
   Check(list.selectedIndex == 0 && [list.suggestions[1][@"command"] isEqual:@"Ask agent"], @"quick input defaults to navigation for URLs and keeps Ask agent second");
+  Check([controller.messageInput.actionHint isEqual:@"Open example.com"], @"URL selection shows its destination inline");
+  list.selectedIndex = 1;
+  Check([controller.messageInput.actionHint isEqual:@"Ask Agent"], @"selection changes update the inline action");
+  list.selectedIndex = 2;
+  Check([controller.messageInput.actionHint isEqual:@"Google Search"] && [controller.messageInput.textView.string isEqual:@"example.com"], @"search hint leaves the editable draft unchanged");
+  SetText(controller, @"https://www.example.com/Path?q=Value");
+  Check([controller.messageInput.actionHint isEqual:@"Open example.com/Path?q=Value"], @"navigation hint strips only protocol and www");
+  SetText(controller, @"example.com");
   NSEvent *commandReturn = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
     timestamp:0 windowNumber:controller.window.windowNumber context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36];
   Check([controller.messageInput.textView performKeyEquivalent:commandReturn], @"quick input handles Cmd Enter even with navigation selected");

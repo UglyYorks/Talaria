@@ -40,6 +40,7 @@ typedef NS_ENUM(NSInteger, TLPromptCompactionStrategy) {
 @interface TLPromptBuilder : NSObject
 
 + (NSString *)notesContext;
++ (NSString *)fileDeliveryContext;
 + (NSString *)notificationToolDescription;
 + (NSString *)hostCommandToolDescription;
 + (NSString *)sharedFolderContext:(NSDictionary<NSString *, NSString *> *)mountPaths;

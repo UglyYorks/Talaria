@@ -14,6 +14,7 @@ import time
 from hermes_rpc_transport import HermesRPCTransport, RPCError
 from hermes_sessions import SessionRegistry
 from hermes_activity import HermesActivity
+from hermes_attachments import export_response
 
 
 # Talaria manages these bundled skills through Hermes's own profile settings.
@@ -84,6 +85,7 @@ def clarification_request(payload):
 
 class HermesGateway:
     def __init__(self, python, environment, home, entry_module="talaria_gateway_entry"):
+        self.private_attachments = entry_module == "incognito_entry"
         self.home = home
         self.activity = HermesActivity()
         self.transport = HermesRPCTransport(python, environment, home, entry_module, self.activity.event)
@@ -356,6 +358,8 @@ class HermesGateway:
             with self.lock:
                 chat_id = next((chat for chat, target in self.mappings.items() if target == stored), stored)
             sid = self._remember(chat_id, result, model)
+        with self.lock:
+            chat_id = next((chat for chat, target in self.mappings.items() if target == stored), stored)
         result = self.call("session.history", {"session_id": sid})
         messages = result.get("messages")
         if not isinstance(messages, list):
@@ -378,6 +382,11 @@ class HermesGateway:
             for key in ("source_tool_call_ids", "notification"):
                 if key in message:
                     shaped[key] = message[key]
+            if message["role"] == "assistant" and "TALARIA_ATTACHMENT: " in text:
+                shaped["content"], rows = export_response(text, chat_id, self.home.parent,
+                    getattr(self, "private_attachments", False))
+                if rows:
+                    shaped["attachments"] = rows
             transcript.append(shaped)
         return {"messages": transcript, "model": model}
 
@@ -865,6 +874,11 @@ class HermesGateway:
                             delta("content", final[len(streamed):])
                         elif final and not streamed.endswith(final):
                             delta("content", "\n" + final)
+                        if "TALARIA_ATTACHMENT: " in (final or streamed):
+                            delivered, rows = export_response(final or streamed, chat_id, self.home.parent,
+                                getattr(self, "private_attachments", False))
+                            if delivered != (final or streamed) or rows:
+                                delta("attachments", {"content": delivered, "attachments": rows})
                         return
                     elif kind == "error":
                         raise RuntimeError(payload.get("message") or "Hermes turn failed.")
