@@ -1349,6 +1349,11 @@ static void TestBrowserConversation(void) {
   TLAssertTrue(conversation.responseCount == 2 && [database listChats:nil].count == 1, @"follow-ups reuse the conversation");
   TLAssertEqualObjects([conversation.transcript valueForKey:@"role"], (@[@"user", @"assistant", @"user", @"assistant"]), @"popup transcript keeps both user turns in chronological order");
   TLAssertEqualObjects(conversation.transcript[2][@"content"], @"Follow up", @"popup transcript includes the follow-up without page context");
+  TLChatMessage *fileResponse = [TLChatMessage messageWithRole:TLRoleAssistant content:@"" thinking:nil];
+  fileResponse.attachments = @[@{@"name":@"report.pdf", @"guestPath":@"/workspace/attachments/chat/report.pdf", @"directory":@NO}];
+  [conversation.messages addObject:fileResponse];
+  TLAssertEqualObjects(conversation.transcript.lastObject[@"attachments"], fileResponse.attachments, @"mini chat preserves attachment-only responses");
+  [conversation.messages removeLastObject];
   TLAssertTrue(!conversation.collapsed, @"completion automatically expands an undismissed response");
   TLAssertEqualObjects(conversation.title, @"📰 Article overview", @"follow-up retains generated identity while naming is pending");
   TLAssertTrue(client.capturedMessages.count == 1 && !conversation.minimized, @"follow-up relies on Hermes session history and opens pane");

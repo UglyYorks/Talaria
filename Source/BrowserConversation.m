@@ -86,11 +86,11 @@
   }
   return YES;
 }
-- (NSArray<NSDictionary<NSString *, NSString *> *> *)transcript {
+- (NSArray<NSDictionary<NSString *, id> *> *)transcript {
   NSMutableArray *entries = [NSMutableArray array];
   for (TLChatMessage *message in self.messages) {
-    if (message.content.length && ([message.role isEqual:TLRoleUser] || [message.role isEqual:TLRoleAssistant])) {
-      [entries addObject:@{@"role":message.role, @"content":[message.content copy]}];
+    if ((message.content.length || message.attachments.count) && ([message.role isEqual:TLRoleUser] || [message.role isEqual:TLRoleAssistant])) {
+      [entries addObject:@{@"role":message.role, @"content":[message.content copy] ?: @"", @"attachments":[message.attachments copy] ?: @[]}];
     }
   }
   // Page extraction happens before the runner appends the durable user message.

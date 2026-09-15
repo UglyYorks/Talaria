@@ -1,3 +1,4 @@
+#import "design_system/TLAttachmentChipView.h"
 #import "design_system/TLBrowserContentEdgeView.h"
 #import <AppKit/AppKit.h>
 #import "design_system/UIComponents.h"
@@ -194,9 +195,12 @@ static void TestBrowserTranscript(void) {
   ]];
   [window makeKeyAndOrderFront:nil];
   [pane setPresented:YES animated:NO];
+  NSDictionary *attachment = @{@"name":@"Tokyo packing guide.pdf", @"guestPath":@"/workspace/attachments/chat/guide.pdf", @"directory":@NO};
+  __block NSUInteger clickedMessage = NSNotFound, clickedAttachment = NSNotFound;
+  pane.attachmentHandler = ^(NSUInteger messageIndex, NSUInteger attachmentIndex) { clickedMessage = messageIndex; clickedAttachment = attachmentIndex; };
   NSArray *messages = @[
     @{@"role":@"user", @"content":@"What should I wear in Tokyo tomorrow?"},
-    @{@"role":@"assistant", @"content":@"Pack **light layers** and an umbrella.\n\n- Breathable clothes\n- Comfortable shoes"},
+    @{@"role":@"assistant", @"content":@"Pack **light layers** and an umbrella.\n\n- Breathable clothes\n- Comfortable shoes", @"attachments":@[attachment]},
     @{@"role":@"user", @"content":@"And what about Tokyo Game Show?"},
     @{@"role":@"assistant", @"content":@"Casual clothes and comfortable walking shoes are a good choice."}];
   [pane showTranscript:@[messages[0]] errorText:@"" loading:YES];
@@ -208,6 +212,16 @@ static void TestBrowserTranscript(void) {
     [pane showTranscript:messages errorText:@"" loading:NO];
     NSArray<NSView *> *views = [pane valueForKey:@"transcriptViews"];
     Check(views.count == 4, @"each user message and answer has its own ordered transcript row");
+    NSDictionary *attachmentRows = [pane valueForKey:@"attachmentRows"];
+    TLAttachmentChipRow *attachmentRow = attachmentRows[@1];
+    NSStackView *transcriptStack = [pane valueForKey:@"transcriptStack"];
+    NSUInteger responsePosition = [transcriptStack.arrangedSubviews indexOfObjectIdenticalTo:views[1]];
+    Check(attachmentRow && transcriptStack.arrangedSubviews[responsePosition + 1] == attachmentRow, @"file card sits directly below its response");
+    TLAttachmentChipView *chip = nil;
+    for (NSView *child in attachmentRow.subviews) if ([child isKindOfClass:TLAttachmentChipView.class]) chip = (id)child;
+    Check(chip && [chip.title isEqual:attachment[@"name"]] && !chip.showsRemoveButton, @"mini chat uses the saved attachment card");
+    chip.activationHandler();
+    Check(clickedMessage == 1 && clickedAttachment == 0, @"click keeps the originating response and attachment index");
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
     while ((![[views[1] valueForKey:@"documentReady"] boolValue] || ![[views[3] valueForKey:@"documentReady"] boolValue]) && deadline.timeIntervalSinceNow > 0)
       [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]];

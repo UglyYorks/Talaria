@@ -12,12 +12,14 @@
 @property (nonatomic, copy) NSString *activityText;
 @property (nonatomic, copy) TLMarkdownLinkHandler linkHandler;
 @property (nonatomic, copy) TLMarkdownLinkContextMenuHandler linkContextMenuHandler;
+@property (nonatomic, copy) NSURL * (^attachmentURLProvider)(NSDictionary *attachment);
+@property (nonatomic, copy) void (^attachmentHandler)(NSUInteger messageIndex, NSUInteger attachmentIndex);
 @property (nonatomic, copy) BOOL (^approvalHandler)(NSString *requestID, NSString *choice);
 - (void)showApprovalRequest:(NSDictionary *)request;
 - (void)showQuestions:(NSArray<TLQuestionRequest *> *)questions;
 - (void)showToolActivities:(NSArray<NSDictionary<NSString *, NSString *> *> *)activities;
 @property (nonatomic, readonly, getter=isPresented) BOOL presented;
 - (void)setPresented:(BOOL)presented animated:(BOOL)animated;
-- (void)showTranscript:(NSArray<NSDictionary<NSString *, NSString *> *> *)messages errorText:(NSString *)errorText loading:(BOOL)loading;
+- (void)showTranscript:(NSArray<NSDictionary<NSString *, id> *> *)messages errorText:(NSString *)errorText loading:(BOOL)loading;
 - (void)showMarkdown:(NSString *)markdown loading:(BOOL)loading;
 @end
