@@ -20,6 +20,7 @@ typedef NS_ENUM(NSInteger, TLHistoryFilter) {
 @optional
 - (void)historyPanelController:(TLHistoryPanelController *)controller didSelectBrowserURL:(NSURL *)URL;
 - (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteBrowserVisitID:(NSInteger)visitID;
+- (void)historyPanelControllerDidRequestClear:(TLHistoryPanelController *)controller;
 - (void)historyPanelControllerDidRequestRefresh:(TLHistoryPanelController *)controller;
 @end
 

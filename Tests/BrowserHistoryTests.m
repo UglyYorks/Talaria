@@ -144,6 +144,15 @@ int main(void) {
     [privateDatabase performAsync:^(TLDatabase *db) { suggestions = [db inputSuggestionHistory]; }];
     [privateDatabase listBrowserHistory:nil];
     Check(suggestions.count == 0, @"private database never exposes saved regular-window history");
+    for (NSInteger i = 0; i < 205; i++) {
+      Check([database recordBrowserVisitToURL:[NSURL URLWithString:@"https://example.com/bulk"] title:@"Bulk visit" error:&error] > 0, @"creates history beyond one page");
+    }
+    Check([database clearBrowserHistory:&error], @"clears all browsing history");
+    Check([database listBrowserHistory:&error].count == 0 && [database listChats:&error].count == 1, @"bulk clear removes every page and preserves chats");
+    Check([database updateBrowserVisitWithID:firstID title:@"Late title" error:&error] && [database listBrowserHistory:&error].count == 0, @"late callbacks do not restore cleared history");
+    database = [[TLDatabase alloc] initWithURL:URL error:&error];
+    Check([database listBrowserHistory:&error].count == 0, @"clear persists after reopening the database");
+    Check([database clearBrowserHistory:&error], @"clearing empty history succeeds");
     database = nil;
     [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
     NSLog(@"BrowserHistoryTests passed");

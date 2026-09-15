@@ -46,6 +46,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<TLBrowserHistoryEntry *> *)listBrowserHistory:(NSError **)error;
 // Call from performAsync; one destination per URL, with frequency and last visit.
 - (NSArray<NSDictionary *> *)inputSuggestionHistory;
+- (BOOL)clearBrowserHistory:(NSError **)error;
 - (BOOL)deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error;
 
 - (nullable NSArray<TLChatSummary *> *)listChats:(NSError **)error;
