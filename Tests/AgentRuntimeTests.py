@@ -76,6 +76,14 @@ class HermesWarmupTests(unittest.TestCase):
 
 
 class HermesStreamingTests(unittest.TestCase):
+    def test_worker_forwards_image_attachments(self):
+        gateway = Mock()
+        attachments = [{"guestPath": "/workspace/pasted image.png", "directory": False}]
+        with patch.object(runtime, "tui_gateway", return_value=gateway), patch.object(runtime, "save_agent_soul"):
+            runtime.stream_hermes_session({"request_id": "r", "session_id": "chat", "model": "model",
+                "prompt": "What is pictured?", "attachments": attachments}, io.BytesIO())
+        self.assertEqual(gateway.run.call_args.kwargs['attachments'], attachments)
+
     def test_answer_deltas_are_flushed_before_reading_the_next_event(self):
         class FlushedOutput(io.BytesIO):
             flushed = b""
@@ -83,7 +91,7 @@ class HermesStreamingTests(unittest.TestCase):
         output = FlushedOutput()
         chunks = ["Hello", " 🦊", "\n```swift\n", 'print("hi")']
         gateway = Mock()
-        def run(session, model, prompt, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort=""):
+        def run(session, model, prompt, delta, cancellation=None, approval_response=None, wait_for_previous_turn=False, host_commands=False, reasoning_effort="", shared_folders=False, attachments=None):
             self.assertTrue(wait_for_previous_turn)
             self.assertEqual(reasoning_effort, "")
             for index, chunk in enumerate(chunks):

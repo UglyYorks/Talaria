@@ -31,6 +31,39 @@ class GatewayTests(unittest.TestCase):
         self.gateway.mapping_path = self.gateway.home / 'sessions.json'
         self.gateway.call = Mock()
 
+    def test_image_attachments_are_uploaded_before_prompt(self):
+        self.gateway.sessions = {'chat': {'id': 'runtime', 'model': 'model'}}
+        image = Path(self.temp.name) / 'pasted image "one".PNG'
+        image.write_bytes(b'\x89PNG\r\n\x1a\nimage bytes')
+        def rpc(method, params):
+            if method == 'image.attach_bytes':
+                self.assertEqual(params['filename'], image.name)
+                import base64
+                self.assertEqual(base64.b64decode(params['content_base64']), image.read_bytes())
+                return {'attached': True, 'path': '/images/upload.png'}
+            if method == 'prompt.submit':
+                self.gateway.listeners['runtime'].put({'type': 'message.complete', 'payload': {}})
+            return {}
+        self.gateway.call.side_effect = rpc
+        self.gateway.run('chat', 'model', 'What is pictured?', Mock(), attachments=[
+            {'guestPath': str(image), 'directory': False},
+            {'guestPath': '/missing/report.pdf'}, {'guestPath': '/folder.png', 'directory': True}])
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list],
+                         ['image.attach_bytes', 'prompt.submit'])
+
+    def test_failed_image_upload_cleans_queue_and_does_not_submit_text_only(self):
+        self.gateway.sessions = {'chat': {'id': 'runtime', 'model': 'model'}}
+        image = Path(self.temp.name) / 'image.png'
+        image.write_bytes(b'image bytes')
+        self.gateway.call.side_effect = [{'attached': True, 'path': '/images/upload.png'},
+                                         RPCError({'code': 4016, 'message': 'invalid image'}), {}]
+        with self.assertRaisesRegex(RPCError, 'invalid image'):
+            self.gateway.run('chat', 'model', 'Describe both', Mock(), attachments=[
+                {'guestPath': str(image)}, {'guestPath': str(image)}])
+        self.assertEqual([c.args[0] for c in self.gateway.call.call_args_list],
+                         ['image.attach_bytes', 'image.attach_bytes', 'image.detach'])
+        self.assertEqual(self.gateway.listeners, {})
+
     def test_history_expands_beyond_default_window_and_preserves_alias(self):
         rows = [{"id": f"session-{i}", "title": "", "preview": f"Topic {i}", "started_at": 1700000000}
                 for i in range(250)]

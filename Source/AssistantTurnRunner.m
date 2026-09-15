@@ -120,6 +120,7 @@ static NSString *TLAssistantTurnTrim(NSString *value) {
     requestMessages.lastObject.content = [builder build];
   }
   NSUInteger assistantMessageIndex = messages.count + (self.regenerationPrompt ? 0 : 1);
+  requestMessages.lastObject.attachments = attachments;
   requestMessages.lastObject.approvalResponse = self.approvalResponse;
   NSString *requestID = NSUUID.UUID.UUIDString;
   NSMutableString *assistantContent = [NSMutableString string];

@@ -420,6 +420,15 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
     if (!approvalResponse) {
       if (!self.database.incognito) [inputMessages insertObject:[TLChatMessage messageWithRole:TLRoleSystem content:TLPromptBuilder.notesContext thinking:nil] atIndex:0];
     }
+    if (messages.lastObject.attachments.count) {
+      if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:approvalResponse:reasoningEffort:attachments:delta:completion:)]) {
+        finish(TLAgentOrchestratorError(@"Update the agent runtime to send image attachments.")); return;
+      }
+      [self.agentClient streamHermesSessionWithAgent:agent requestID:requestID sessionID:sessionID token:token model:model
+        prompt:TLHermesInputFromMessages(inputMessages) approvalResponse:approvalResponse reasoningEffort:reasoningEffort
+        attachments:messages.lastObject.attachments delta:delta completion:finish];
+      return;
+    }
     if (reasoningEffort.length) {
       if (![self.agentClient respondsToSelector:@selector(streamHermesSessionWithAgent:requestID:sessionID:token:model:prompt:approvalResponse:reasoningEffort:delta:completion:)]) {
         finish(TLAgentOrchestratorError(@"Update the agent runtime to use the selected thinking level.")); return;
