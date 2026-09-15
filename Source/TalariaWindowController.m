@@ -206,6 +206,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, copy) NSDictionary<NSNumber *, NSDictionary *> *hermesHistorySessions;
 @property (nonatomic) NSInteger historyAgentID;
 @property (nonatomic) NSUInteger historyRequestGeneration;
+@property (nonatomic) BOOL clearingHistory;
 @property (nonatomic) BOOL historyWasVisible;
 @property (nonatomic, strong) TLTokenView *agentsView;
 @property (nonatomic, strong) TLSettingsTabController *settingsTabController;
@@ -1151,6 +1152,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (BOOL)activateAgentWithID:(NSInteger)agentID {
+  if (self.clearingHistory) return NO;
   if (self.hasSendingTurns) return NO;
   NSError *error = nil;
   if (![self.database setCurrentAgentID:agentID error:&error]) {
@@ -3063,6 +3065,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 }
 
 - (void)sendMessage:(id)sender allowAutomaticRouting:(BOOL)allowAutomaticRouting {
+  if (self.clearingHistory) { [self presentErrorMessage:@"Wait for history clearing to finish before sending a message."]; return; }
   NSString *token = [self.settings.openRouterToken stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSString *model = [(self.activeChat.model ?: self.settings.selectedModel) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSString *nextPrompt = [self.promptTextView.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -6722,9 +6725,9 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   }];
 }
 
-- (void)deleteChatWithID:(NSInteger)chatID {
+- (BOOL)deleteChatWithID:(NSInteger)chatID {
   if (self.turnRunners[@(chatID)] || self.widgetbookMode || chatID <= 0) {
-    return;
+    return NO;
   }
 
   BOOL deletingLoadedChat = self.activeChat && self.activeChat.chatID == chatID;
@@ -6734,11 +6737,11 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   TLChatRecord *deletedChat = [self.database chatWithID:chatID error:&error];
   if (!deletedChat) {
     [self presentErrorMessage:error.localizedDescription ?: @"Could not load conversation."];
-    return;
+    return NO;
   }
   if (![self.database deleteChatWithID:chatID error:&error]) {
     [self presentErrorMessage:error.localizedDescription ?: @"Could not delete conversation."];
-    return;
+    return NO;
   }
 
   [self.chatPresentations[@(chatID)].queuedPrompts removeAllObjects];
@@ -6783,6 +6786,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
     [self renderMessages];
   }
   [self updateControlStates];
+  return YES;
 }
 
 - (void)historyPanelController:(TLHistoryPanelController *)controller didSelectBrowserURL:(NSURL *)URL {
@@ -6795,11 +6799,102 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   [self reloadHistoryPanel];
 }
 
+- (void)historyPanelControllerDidRequestClear:(TLHistoryPanelController *)controller {
+  if (self.widgetbookMode || self.clearingHistory) return;
+  TLHistoryFilter filter = controller.filter;
+  BOOL chats = filter != TLHistoryFilterBrowsing;
+  if (chats && (controller.loading || controller.statusMessage.length || self.historyAgentID != self.database.currentAgentID)) {
+    [self presentErrorMessage:@"Refresh chat history successfully before clearing it."];
+    return;
+  }
+  NSInteger agentID = self.database.currentAgentID;
+  NSDictionary *sessions = [self.hermesHistorySessions copy];
+  NSString *kind = filter == TLHistoryFilterChats ? @"Chat History" :
+    (filter == TLHistoryFilterBrowsing ? @"Browsing History" : @"All History");
+  NSAlert *alert = [NSAlert new];
+  alert.alertStyle = NSAlertStyleWarning;
+  alert.messageText = [NSString stringWithFormat:@"Clear %@?", kind];
+  alert.informativeText = filter == TLHistoryFilterBrowsing ?
+    @"Permanently delete all browsing visits, including entries hidden by search. Bookmarks, cookies, and open browser tabs will be kept. This cannot be undone." :
+    (filter == TLHistoryFilterChats ?
+     @"Permanently delete all chats and messages in the selected agent’s history, including chats hidden by search. Their open chat tabs will close. This cannot be undone." :
+     @"Permanently delete all browsing visits and all chats and messages in the selected agent’s history, including entries hidden by search. Their open chat tabs will close. Bookmarks for websites, cookies, and open browser tabs will be kept. This cannot be undone.");
+  [alert addButtonWithTitle:@"Cancel"];
+  [alert addButtonWithTitle:@"Clear History"];
+  __weak typeof(self) weakSelf = self;
+  [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || response != NSAlertSecondButtonReturn || owner.clearingHistory) return;
+    if (chats && (agentID != owner.database.currentAgentID || owner.historyPanelController.loading)) return;
+    if (chats && (owner.turnRunners.count || owner.preparingAttachmentChats.count)) {
+      [owner presentErrorMessage:@"Wait for active chats and attachment preparation to finish before clearing chat history."];
+      return;
+    }
+    NSError *error = nil;
+    if (filter != TLHistoryFilterChats && ![owner.database clearBrowserHistory:&error]) {
+      [owner presentErrorMessage:error.localizedDescription ?: @"Could not clear browsing history."];
+      return;
+    }
+    [owner reloadHistoryPanel];
+    if (!chats) return;
+    owner.clearingHistory = YES;
+    owner.historyPanelController.loading = YES;
+    owner.historyPanelController.enabled = NO;
+    [owner clearHistorySessions:sessions chatIDs:sessions.allKeys index:0 agentID:agentID];
+  }];
+}
+
+- (void)finishClearingHistoryWithError:(NSString *)message {
+  self.clearingHistory = NO;
+  self.historyPanelController.loading = NO;
+  self.historyPanelController.enabled = YES;
+  [self refreshHermesHistory];
+  if (message.length) [self presentErrorMessage:message];
+}
+
+- (void)clearHistorySessions:(NSDictionary *)sessions chatIDs:(NSArray<NSNumber *> *)chatIDs
+                      index:(NSUInteger)index agentID:(NSInteger)agentID {
+  if (agentID != self.database.currentAgentID) {
+    [self finishClearingHistoryWithError:@"Clearing stopped because the selected agent changed. Some history may already have been deleted."];
+    return;
+  }
+  if (index == chatIDs.count) { [self finishClearingHistoryWithError:nil]; return; }
+  NSNumber *chatID = chatIDs[index];
+  if (self.turnRunners[chatID] || [self.preparingAttachmentChats containsObject:chatID]) {
+    [self finishClearingHistoryWithError:@"Clearing stopped because a chat became active. Some history may already have been deleted."];
+    return;
+  }
+  NSString *sessionID = sessions[chatID][@"id"];
+  self.historyPanelController.statusMessage = [NSString stringWithFormat:@"Clearing chat %lu of %lu…", index + 1, chatIDs.count];
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesHistoryWithAction:@"delete" sessionID:sessionID
+                                          token:self.settings.openRouterToken model:self.settings.selectedModel
+                                     completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner) return;
+    if (error || ![result[@"deleted"] isEqual:sessionID]) {
+      [owner finishClearingHistoryWithError:[NSString stringWithFormat:@"Clearing stopped. Some history may already have been deleted. %@",
+        error.localizedDescription ?: @"Hermes did not confirm deletion."]];
+      return;
+    }
+    if (agentID != owner.database.currentAgentID) {
+      [owner finishClearingHistoryWithError:@"Clearing stopped because the selected agent changed. Some history may already have been deleted."];
+      return;
+    }
+    if (![owner deleteChatWithID:chatID.integerValue]) {
+      [owner finishClearingHistoryWithError:@"The Hermes session was deleted, but its local chat could not be removed. Clearing stopped."];
+      return;
+    }
+    [owner clearHistorySessions:sessions chatIDs:chatIDs index:index + 1 agentID:agentID];
+  }];
+}
+
 - (void)historyPanelControllerDidRequestRefresh:(TLHistoryPanelController *)controller {
   [self refreshHermesHistory];
 }
 
 - (void)refreshHermesHistory {
+  if (self.clearingHistory) return;
   if (self.widgetbookMode) { [self reloadHistoryPanel]; return; }
   NSInteger agentID = self.database.currentAgentID;
   if (self.historyPanelController.loading && self.historyAgentID == agentID) return;

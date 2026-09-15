@@ -2,6 +2,7 @@
 #import "design_system/UIComponents.h"
 #import "design_system/TLThemedButton.h"
 #import "design_system/TLTabIconView.h"
+#import "design_system/TLWrappingActionView.h"
 
 @interface TLHistoryTableView : NSTableView
 
@@ -54,6 +55,8 @@
 @property (nonatomic, strong) NSSearchField *searchField;
 @property (nonatomic, strong) NSTextField *statusLabel;
 @property (nonatomic, strong) TLThemedButton *refreshButton;
+@property (nonatomic, strong) TLThemedButton *clearButton;
+@property (nonatomic, strong) TLWrappingActionView *headerActions;
 @property (nonatomic, copy) NSArray<TLThemedButton *> *filterButtons;
 
 @end
@@ -80,6 +83,7 @@
 - (void)setEnabled:(BOOL)enabled {
   _enabled = enabled;
   self.tableView.enabled = enabled;
+  [self updateStatus];
 }
 
 - (void)setLoading:(BOOL)loading {
@@ -100,6 +104,7 @@
 }
 
 - (void)updateStatus {
+  self.clearButton.enabled = self.enabled && (self.filter == TLHistoryFilterBrowsing || !self.loading);
   NSString *query = [self.searchField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
   NSMutableArray *messages = [NSMutableArray array];
   if (self.filter != TLHistoryFilterBrowsing) {
@@ -205,6 +210,11 @@
   if (notification.object == self.searchField) [self reloadData];
 }
 
+- (void)clearHistory:(id)sender {
+  if (self.clearButton.enabled && [self.delegate respondsToSelector:@selector(historyPanelControllerDidRequestClear:)])
+    [self.delegate historyPanelControllerDidRequestClear:self];
+}
+
 - (void)refreshHistory:(id)sender {
   if ([self.delegate respondsToSelector:@selector(historyPanelControllerDidRequestRefresh:)]) {
     [self.delegate historyPanelControllerDidRequestRefresh:self];
@@ -254,6 +264,8 @@
   self.statusLabel.textColor = palette.textMuted;
   self.statusLabel.font = palette.roleFont;
   self.refreshButton.palette = palette;
+  self.clearButton.palette = palette;
+  self.headerActions.palette = palette;
   for (TLThemedButton *button in self.filterButtons) button.palette = palette;
   [self.panelView setNeedsDisplay:YES];
   [self.headerView setNeedsDisplay:YES];
@@ -285,21 +297,21 @@
 
   self.headerView = [[TLTokenView alloc] init];
   self.headerView.translatesAutoresizingMaskIntoConstraints = NO;
-  [self.headerView.heightAnchor constraintEqualToConstant:self.palette.topbarHeight].active = YES;
-
   self.titleLabel = [self labelWithString:@"History" font:self.palette.labelFont color:self.palette.labelText];
-  [self.headerView addSubview:self.titleLabel];
   self.refreshButton = [TLThemedButton buttonWithTitle:@"Refresh" target:self action:@selector(refreshHistory:)];
-  self.refreshButton.translatesAutoresizingMaskIntoConstraints = NO;
-  [self.headerView addSubview:self.refreshButton];
+  self.clearButton = [TLThemedButton buttonWithTitle:@"Clear…" target:self action:@selector(clearHistory:)];
+  [self.clearButton setAccessibilityLabel:@"Clear history"];
+  self.headerActions = [[TLWrappingActionView alloc] initWithViews:@[self.clearButton, self.refreshButton] palette:self.palette];
+  [self.headerView addSubview:self.titleLabel];
+  [self.headerView addSubview:self.headerActions];
   [NSLayoutConstraint activateConstraints:@[
-    [self.refreshButton.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-self.palette.space6],
-    [self.refreshButton.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
-  ]];
-  [NSLayoutConstraint activateConstraints:@[
-    [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:self.palette.space12],
-    [self.titleLabel.centerYAnchor constraintEqualToAnchor:self.headerView.centerYAnchor],
-    [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.refreshButton.leadingAnchor constant:-self.palette.space3],
+    [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:self.palette.space6],
+    [self.titleLabel.widthAnchor constraintEqualToConstant:ceil(self.titleLabel.intrinsicContentSize.width) + self.palette.space5],
+    [self.titleLabel.centerYAnchor constraintEqualToAnchor:self.headerActions.topAnchor constant:self.palette.settingsActionHeight * 0.5],
+    [self.headerActions.leadingAnchor constraintEqualToAnchor:self.titleLabel.trailingAnchor constant:self.palette.space5],
+    [self.headerActions.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-self.palette.space6],
+    [self.headerActions.topAnchor constraintEqualToAnchor:self.headerView.topAnchor constant:self.palette.space3],
+    [self.headerActions.bottomAnchor constraintEqualToAnchor:self.headerView.bottomAnchor constant:-self.palette.space3],
   ]];
 
   self.tableView = [[TLHistoryTableView alloc] init];

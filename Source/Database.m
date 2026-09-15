@@ -320,6 +320,20 @@ static id TLJSONValue(NSString *text) {
   if (error) *error = queryError;
   return result;
 }
+- (BOOL)clearBrowserHistory:(NSError **)error {
+  __block BOOL result = NO;
+  __block NSError *queryError = nil;
+  void (^clear)(void) = ^{
+    @synchronized (self) {
+      result = [self.sqliteConnection executeSQL:"DELETE FROM browser_history" error:&queryError];
+    }
+  };
+  if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) clear();
+  else dispatch_sync(self.databaseQueue, clear);
+  if (error) *error = queryError;
+  return result;
+}
+
 - (BOOL)deleteBrowserVisitWithID:(NSInteger)visitID error:(NSError **)error {
   if (!self.databaseQueue || dispatch_get_specific((__bridge void *)self)) return [self onDatabaseQueue_deleteBrowserVisitWithID:visitID error:error];
   __block BOOL result;

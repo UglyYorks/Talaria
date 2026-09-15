@@ -4044,13 +4044,66 @@ static void TestRunningAgentRepairAction(void) {
   Check(!start.enabled && !stop.enabled, @"setup disables duplicate install and stop actions");
 }
 
+@interface TalariaWindowController (HistoryClearingTests)
+- (void)clearHistorySessions:(NSDictionary *)sessions chatIDs:(NSArray *)chatIDs index:(NSUInteger)index agentID:(NSInteger)agentID;
+@end
+
+@interface TLClearHistoryGateway : NSObject
+@property NSMutableArray *deletedSessions;
+@property NSString *failSession;
+@end
+@implementation TLClearHistoryGateway
+- (void)hermesHistoryWithAction:(NSString *)action sessionID:(NSString *)sessionID token:(NSString *)token model:(NSString *)model completion:(void (^)(NSDictionary *, NSError *))completion {
+  Check([action isEqual:@"delete"], @"bulk chat clearing uses the Hermes deletion interface");
+  [self.deletedSessions addObject:sessionID];
+  completion(@{@"deleted": [sessionID isEqual:self.failSession] ? @"unconfirmed" : sessionID}, nil);
+}
+@end
+
+@interface TLClearHistoryController : TalariaWindowController
+@property NSMutableArray *deletedChats;
+@property NSString *clearError;
+@property BOOL finishedClear;
+@end
+@implementation TLClearHistoryController
+- (BOOL)deleteChatWithID:(NSInteger)chatID { [self.deletedChats addObject:@(chatID)]; return YES; }
+- (void)finishClearingHistoryWithError:(NSString *)message { self.finishedClear = YES; self.clearError = message; }
+@end
+
+static void TestBulkChatHistoryClearing(void) {
+  NSDictionary *sessions = @{@1: @{@"id": @"first"}, @2: @{@"id": @"second"}, @3: @{@"id": @"third"}};
+  for (NSNumber *fails in @[@NO, @YES]) {
+    TLClearHistoryController *controller = [[TLClearHistoryController alloc] initWithWindow:nil];
+    TLClearHistoryGateway *gateway = [TLClearHistoryGateway new];
+    gateway.deletedSessions = [NSMutableArray array];
+    gateway.failSession = fails.boolValue ? @"second" : nil;
+    controller.deletedChats = [NSMutableArray array];
+    [controller setValue:gateway forKey:@"agentOrchestrator"];
+    [controller clearHistorySessions:sessions chatIDs:@[@1, @2, @3] index:0 agentID:0];
+    Check(controller.finishedClear, @"bulk chat clearing finishes on success and failure");
+    Check(gateway.deletedSessions.count == (fails.boolValue ? 2 : 3), @"bulk clearing stops immediately on an unconfirmed deletion");
+    Check([controller.deletedChats isEqual:(fails.boolValue ? @[@1] : @[@1, @2, @3])], @"local chats are removed only after Hermes confirms deletion");
+    Check((controller.clearError.length > 0) == fails.boolValue, @"partial failure is reported");
+  }
+  TLClearHistoryController *controller = [[TLClearHistoryController alloc] initWithWindow:nil];
+  [controller setValue:[NSMutableDictionary dictionaryWithObject:@YES forKey:@1] forKey:@"turnRunners"];
+  [controller clearHistorySessions:sessions chatIDs:@[@1] index:0 agentID:0];
+  Check(controller.finishedClear && controller.clearError.length, @"clearing stops before deleting an active chat");
+  controller.finishedClear = NO;
+  [controller clearHistorySessions:sessions chatIDs:@[@1] index:0 agentID:1];
+  Check(controller.finishedClear && controller.clearError.length, @"clearing stops if the selected agent changes");
+}
+
 @interface TLHistorySelectionProbe : NSObject <TLHistoryPanelControllerDelegate>
 @property NSInteger selected;
 @property NSInteger deleted;
 @property NSInteger deletedVisit;
+@property NSInteger clearRequests;
+@property TLHistoryFilter clearedFilter;
 @property NSURL *openedURL;
 @end
 @implementation TLHistorySelectionProbe
+- (void)historyPanelControllerDidRequestClear:(TLHistoryPanelController *)controller { self.clearRequests++; self.clearedFilter = controller.filter; }
 - (void)historyPanelController:(TLHistoryPanelController *)controller didSelectBrowserURL:(NSURL *)URL { self.openedURL = URL; }
 - (void)historyPanelController:(TLHistoryPanelController *)controller didRequestDeleteBrowserVisitID:(NSInteger)visitID { self.deletedVisit = visitID; }
 - (void)historyPanelController:(TLHistoryPanelController *)controller didSelectChatID:(NSInteger)chatID { self.selected = chatID; }
@@ -4135,6 +4188,21 @@ static void TestHermesHistorySearchAndLayout(void) {
   Check(probe.selected == 0, @"chat actions remain blocked during a Hermes refresh");
   controller.loading = NO; controller.statusMessage = @"";
   [filters[0] performClick:nil];
+  TLThemedButton *clear = [controller valueForKey:@"clearButton"];
+  for (NSNumber *filter in @[@(TLHistoryFilterAll), @(TLHistoryFilterChats), @(TLHistoryFilterBrowsing)]) {
+    controller.filter = filter.integerValue;
+    [clear performClick:nil];
+    Check(probe.clearedFilter == filter.integerValue, @"clear action uses the selected history category");
+  }
+  Check(probe.clearRequests == 3, @"clear action reaches its delegate");
+  controller.filter = TLHistoryFilterChats;
+  controller.loading = YES;
+  Check(!clear.enabled, @"chat clearing is disabled during history loading");
+  controller.filter = TLHistoryFilterBrowsing;
+  Check(clear.enabled, @"browsing clearing remains available while Hermes loads");
+  controller.enabled = NO;
+  Check(!clear.enabled, @"clear respects disabled history controls");
+  controller.enabled = YES; controller.loading = NO; controller.filter = TLHistoryFilterAll;
   NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1200, 600)
     styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
@@ -4179,7 +4247,7 @@ static void TestHermesHistorySearchAndLayout(void) {
       [panel cacheDisplayInRect:panel.bounds toBitmapImageRep:image];
       [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
         writeToFile:[NSString stringWithFormat:@"build/history-%@-%@.png", theme, width] atomically:YES];
-      for (TLThemedButton *button in filters) {
+      for (TLThemedButton *button in [filters arrayByAddingObject:clear]) {
         for (NSString *state in @[@"normal", @"hover", @"pressed", @"disabled", @"focused"]) {
           button.enabled = ![state isEqual:@"disabled"];
           [button setValue:@([state isEqual:@"hover"]) forKey:@"hovered"];
@@ -4525,6 +4593,10 @@ static void TestLiveThinkingPresentation(void) {
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (getenv("TL_HISTORY_TESTS_ONLY")) {
+      TestBulkChatHistoryClearing(); TestHermesHistorySearchAndLayout();
+      NSLog(@"History controller tests passed"); return 0;
+    }
     if (getenv("TL_FULLSCREEN_RECOVERY_TESTS_ONLY")) {
       TestFullscreenPlaceholderRecovery(); TestThemedButtonRenderedColors();
       NSLog(@"Fullscreen recovery and rendered button tests passed");
@@ -4615,6 +4687,7 @@ int main(void) {
       return 0;
     }
     TestItemHoverRenderedColors();
+    TestBulkChatHistoryClearing();
     TestHermesHistorySearchAndLayout();
     TestNativeEmojiInput();
     TestFolderAccessTable();
