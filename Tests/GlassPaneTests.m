@@ -774,6 +774,21 @@ static void TestNativeMessageComposer(void) {
     input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
     [window.contentView layoutSubtreeIfNeeded];
     TLGlassPaneView *glass = (TLGlassPaneView *)input.backgroundView;
+    input.textView.string = @"";
+    [input recalculateHeight];
+    [window makeFirstResponder:nil];
+    NSTextField *placeholder = [input valueForKey:@"placeholderLabel"];
+    NSPoint clickPoint = [placeholder convertPoint:NSMakePoint(NSMidX(placeholder.bounds), NSMidY(placeholder.bounds))
+                                           toView:window.contentView.superview];
+    NSView *target = [window.contentView hitTest:clickPoint];
+    Check(target == input.textView, @"empty composer placeholder lets clicks reach the editor after focus leaves");
+    Check([window makeFirstResponder:target] && window.firstResponder == input.textView,
+      @"click target can restore composer focus");
+    [input.textView insertText:@"Draft" replacementRange:NSMakeRange(0, 0)];
+    Check([input.textView.string isEqual:@"Draft"], @"restored composer accepts typing");
+    [window makeFirstResponder:nil];
+    input.textView.string = @"";
+    [input recalculateHeight];
     Check(glass.palette == input.palette, @"message composer reapplies its theme to native glass");
     Check(glass.cornerRadius == input.palette.messageInputCornerRadius, @"message composer uses the browser pill radius");
     Check([input.sendButton.solidSurfaceColor isEqual:input.palette.messageInputSendButtonSurface], @"message composer send button is white");
@@ -990,9 +1005,14 @@ static void TestSendStopImageTransition(void) {
   [window close];
 }
 
-int main(void) {
+int main(int argc, const char *argv[]) {
   @autoreleasepool {
     [TLFocusTestApplication sharedApplication];
+    if (argc == 2 && strcmp(argv[1], "--native-composer") == 0) {
+      TestNativeMessageComposer();
+      NSLog(@"Native composer tests passed");
+      return 0;
+    }
     TestHermesSuggestions();
     TestURLSuggestions();
     TestBrowserChatControls();
