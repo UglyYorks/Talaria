@@ -4,6 +4,15 @@
 #import <math.h>
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
 
+// Placeholder text is decoration over the editor, not a separate click target.
+// Otherwise clicks on an empty composer stop at the label without focusing the text view.
+@interface TLComposerPlaceholderLabel : NSTextField
+@end
+
+@implementation TLComposerPlaceholderLabel
+- (NSView *)hitTest:(NSPoint)point { return nil; }
+@end
+
 @interface TLComposerTextView : NSTextView
 @property (nonatomic) BOOL selectsAllOnFocus;
 @property (nonatomic, copy) NSString *actionHint;
@@ -227,7 +236,7 @@
   self.textView.textContainer.lineFragmentPadding = self.palette.space0;
 
   _placeholderText = @"Give a task or enter a URL";
-  self.placeholderLabel = [NSTextField labelWithString:_placeholderText];
+  self.placeholderLabel = [TLComposerPlaceholderLabel labelWithString:_placeholderText];
   self.placeholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
   self.placeholderLabel.lineBreakMode = NSLineBreakByTruncatingTail;
   [self.placeholderLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
