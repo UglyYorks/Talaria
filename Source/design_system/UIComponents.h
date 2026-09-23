@@ -56,7 +56,8 @@ NSBezierPath *TLCreateIncomingMessageBubblePath(NSRect bounds, TLThemePalette *p
 @end
 
 @interface TLGlassMessageInput : TLMessageInput
-@property (nonatomic) BOOL usesChatBackdrop;
+// The chat composer uses a solid surface; browser address inputs keep glass.
+@property (nonatomic) BOOL usesFlatBackground;
 // Defaults to YES. Disable when embedding the composer in an existing surface.
 @property (nonatomic) BOOL showsBackground;
 @end

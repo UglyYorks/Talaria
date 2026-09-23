@@ -2484,8 +2484,10 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
   [self applyGlassPalette];
 }
 
-- (void)setUsesChatBackdrop:(BOOL)usesChatBackdrop {
-  _usesChatBackdrop = usesChatBackdrop;
+- (void)setUsesFlatBackground:(BOOL)usesFlatBackground {
+  if (_usesFlatBackground == usesFlatBackground) return;
+  _usesFlatBackground = usesFlatBackground;
+  self.backgroundView = usesFlatBackground ? nil : [[TLGlassPaneView alloc] init];
   [self applyGlassPalette];
 }
 
@@ -2495,14 +2497,19 @@ static void TLDrawContentSelection(NSRect bounds, NSColor *accent, TLThemePalett
 }
 
 - (void)applyGlassPalette {
-  TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
-  glass.hidden = !self.showsBackground;
-  glass.palette = self.palette;
-  glass.cornerRadius = self.palette.messageInputCornerRadius;
-  glass.wantsLayer = YES;
-  glass.layer.cornerRadius = self.palette.messageInputCornerRadius;
-  glass.layer.masksToBounds = YES;
-  glass.layer.backgroundColor = TLCGColor(self.usesChatBackdrop ? self.palette.chatInputBackdrop : self.palette.transparentSurface);
+  if (self.usesFlatBackground) {
+    self.layer.backgroundColor = TLCGColor(self.showsBackground ? self.palette.composerSurface : self.palette.transparentSurface);
+    self.layer.borderWidth = self.palette.space0;
+  } else {
+    TLGlassPaneView *glass = (TLGlassPaneView *)self.backgroundView;
+    glass.hidden = !self.showsBackground;
+    glass.palette = self.palette;
+    glass.cornerRadius = self.palette.messageInputCornerRadius;
+    glass.wantsLayer = YES;
+    glass.layer.cornerRadius = self.palette.messageInputCornerRadius;
+    glass.layer.masksToBounds = YES;
+    glass.layer.backgroundColor = TLCGColor(self.palette.transparentSurface);
+  }
   self.sendButtonSize = self.palette.messageInputSendButtonSize;
   self.sendButtonInset = self.palette.space4;
   self.sendButton.solidSurfaceColor = self.palette.messageInputSendButtonSurface;

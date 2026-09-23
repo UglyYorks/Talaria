@@ -1329,7 +1329,7 @@ static NSString *const TLAWSOutageIntent = @"Route Talaria traffic to the US-cen
 }
 - (NSView *)buildMessageInput {
   self.messageInput = [[TLGlassMessageInput alloc] init];
-  ((TLGlassMessageInput *)self.messageInput).usesChatBackdrop = YES;
+  ((TLGlassMessageInput *)self.messageInput).usesFlatBackground = YES;
   self.messageInput.palette = self.palette;
   self.messageInput.attachmentsEnabled = YES;
   self.messageInput.showsSettingsButton = YES;

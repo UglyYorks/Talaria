@@ -759,6 +759,7 @@ static void TestNativeMessageComposer(void) {
     styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed = NO;
   TLGlassMessageInput *input = [[TLGlassMessageInput alloc] init];
+  input.usesFlatBackground = YES;
   [window.contentView addSubview:input];
   [NSLayoutConstraint activateConstraints:@[
     [input.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor constant:30],
@@ -766,14 +767,13 @@ static void TestNativeMessageComposer(void) {
     [input.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor constant:20],
   ]];
   [window.contentView layoutSubtreeIfNeeded];
-  Check([input.backgroundView isKindOfClass:TLGlassPaneView.class], @"message composer uses the native browser glass");
+  Check(input.backgroundView == nil, @"chat composer has no glass background view");
   TLHoverIconButton *send = [input.sendButton valueForKey:@"button"];
   Check(!send.hoverSurfaceOnly, @"message composer keeps its standalone send button");
   NSSize iconSize = input.sendButton.image.size;
   for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
     input.palette = [TLThemePalette paletteForPreference:theme.integerValue];
     [window.contentView layoutSubtreeIfNeeded];
-    TLGlassPaneView *glass = (TLGlassPaneView *)input.backgroundView;
     input.textView.string = @"";
     [input recalculateHeight];
     [window makeFirstResponder:nil];
@@ -789,8 +789,10 @@ static void TestNativeMessageComposer(void) {
     [window makeFirstResponder:nil];
     input.textView.string = @"";
     [input recalculateHeight];
-    Check(glass.palette == input.palette, @"message composer reapplies its theme to native glass");
-    Check(glass.cornerRadius == input.palette.messageInputCornerRadius, @"message composer uses the browser pill radius");
+    Check(CGColorEqualToColor(input.layer.backgroundColor, TLCGColor(input.palette.composerSurface)),
+      @"message composer uses the solid themed surface");
+    Check(input.layer.cornerRadius == input.palette.messageInputCornerRadius,
+      @"message composer keeps its pill radius");
     Check([input.sendButton.solidSurfaceColor isEqual:input.palette.messageInputSendButtonSurface], @"message composer send button is white");
     Check([input.sendButton.disabledSolidSurfaceColor isEqual:input.palette.messageInputSendButtonDisabledSurface],
       @"message composer send button has a themed disabled surface");
@@ -818,8 +820,7 @@ static void TestNativeMessageComposer(void) {
     Check(CGColorEqualToColor(surface.fillColor, TLCGColor(input.palette.messageInputSendButtonSurface)),
       @"message composer send surface returns to white when enabled");
     Check(NSEqualSizes(input.sendButton.image.size, iconSize), @"compact send button preserves the arrow icon size");
-    Check(CGColorGetAlpha(input.layer.backgroundColor) == 0 && input.layer.borderWidth == 0,
-      @"message composer leaves its native glass visible");
+    Check(input.layer.borderWidth == 0, @"message composer has no glass outline");
   }
   input.palette = [TLThemePalette paletteForPreference:TLThemePreferenceDark];
   input.sendButton.enabled = NO;
