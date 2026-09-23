@@ -922,6 +922,31 @@ class TUIOnlyTests(unittest.TestCase):
             gateway.return_value.generate_text.assert_called_once_with('test', 'native instructions', 'native input')
             self.assertEqual([json.loads(line)['type'] for line in output.getvalue().splitlines()], ['delta', 'complete'])
 
+    def test_project_tree_and_sessions_use_hermes_gateway(self):
+        with patch.object(worker, 'tui_gateway') as gateway:
+            gateway.return_value.call.return_value = {'projects': [{'id': 'p_alpha'}]}
+            output = io.BytesIO()
+            worker.handle_request({'operation': 'hermes_projects', 'request_id': 'tree',
+                                   'params': {'action': 'tree'}}, output)
+            gateway.return_value.call.assert_called_with('projects.tree', {})
+            self.assertEqual(json.loads(output.getvalue().splitlines()[0])['result']['projects'][0]['id'], 'p_alpha')
+            gateway.return_value.call.return_value = {'project': {'id': 'p_alpha', 'repos': [
+                {'groups': [{'sessions': [{'id': 's1', 'preview': 'Plan', 'provider': 'nous',
+                                           'model': 'welcome', 'started_at': 1700000000}]}]}]}}
+            output = io.BytesIO()
+            worker.handle_request({'operation': 'hermes_projects', 'request_id': 'detail',
+                                   'params': {'action': 'project_sessions', 'project_id': 'p_alpha'}}, output)
+            gateway.return_value.call.assert_called_with('projects.project_sessions', {'project_id': 'p_alpha'})
+            events = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual([event['type'] for event in events], ['result', 'complete'])
+            session = events[0]['result']['project']['repos'][0]['groups'][0]['sessions'][0]
+            self.assertEqual((session['title'], session['model'], session['created_at']),
+                             ('Plan', 'nous::welcome', '2023-11-14 22:13:20'))
+            output = io.BytesIO()
+            worker.handle_request({'operation': 'hermes_projects', 'request_id': 'bad',
+                                   'params': {'action': 'delete', 'project_id': 'p_alpha'}}, output)
+            self.assertEqual(json.loads(output.getvalue())['type'], 'error')
+
     def test_no_direct_ai_http_transport_in_application(self):
         root = Path(__file__).resolve().parents[1]
         # Downloads for installation are allowed; all provider/session traffic belongs

@@ -12,6 +12,7 @@
 @property (nonatomic, strong) NSLayoutConstraint *titleLeading;
 @property (nonatomic, strong) NSLayoutConstraint *titleTrailing;
 @property (nonatomic, strong) NSLayoutConstraint *titleTop;
+@property (nonatomic, strong) NSLayoutConstraint *hiddenTitleHeight;
 @property (nonatomic, strong) NSLayoutConstraint *scrollTop;
 @property (nonatomic) BOOL layingOut;
 @end
@@ -19,7 +20,7 @@
 @implementation TLNotificationsController
 - (instancetype)initWithPalette:(TLThemePalette *)palette {
   if ((self = [super initWithNibName:nil bundle:nil])) {
-    _palette = palette; _notifications = @[]; _groupViews = @[];
+    _palette = palette; _notifications = @[]; _groupViews = @[]; _showsTitle = YES;
     _groupsByKey = [NSMutableDictionary dictionary];
     [self buildView]; [self applyPalette]; [self updateStatus];
   }
@@ -53,6 +54,7 @@
   self.titleLeading = [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor];
   self.titleTrailing = [self.titleLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor];
   self.titleTop = [self.titleLabel.topAnchor constraintEqualToAnchor:self.view.topAnchor];
+  self.hiddenTitleHeight = [self.titleLabel.heightAnchor constraintEqualToConstant:0];
   self.scrollTop = [self.scrollView.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor];
   [NSLayoutConstraint activateConstraints:@[self.titleLeading, self.titleTrailing, self.titleTop, self.scrollTop,
     [self.scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -60,6 +62,12 @@
     [self.scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]]];
 }
 - (void)setPalette:(TLThemePalette *)palette { _palette = palette; [self applyPalette]; }
+- (void)setShowsTitle:(BOOL)showsTitle {
+  _showsTitle = showsTitle;
+  self.titleLabel.hidden = !showsTitle;
+  self.hiddenTitleHeight.active = !showsTitle;
+  [self applyPalette];
+}
 - (void)applyPalette {
   TLThemePalette *p = self.palette;
   ((TLTokenView *)self.view).fillColor = p.transparentSurface;
@@ -67,8 +75,8 @@
   self.statusLabel.font = p.smallFont; self.statusLabel.textColor = p.textMuted;
   self.titleLeading.constant = p.sidebarInboxItemHorizontalInset + p.sidebarInboxItemLeadingOffset;
   self.titleTrailing.constant = -p.sidebarInboxItemHorizontalInset;
-  self.titleTop.constant = p.space5;
-  self.scrollTop.constant = p.sidebarInboxHeaderItemGap;
+  self.titleTop.constant = self.showsTitle ? p.space5 : p.space0;
+  self.scrollTop.constant = self.showsTitle ? p.sidebarInboxHeaderItemGap : p.space0;
   for (TLNotificationStackView *group in self.groupViews) group.palette = p;
   [self layoutDocument];
 }

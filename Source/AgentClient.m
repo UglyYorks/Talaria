@@ -342,6 +342,13 @@ typedef void (^TLBundledAgentRequestReleaseHandler)(id request);
     parameters:@{@"params":parameters, @"token":token ?: @"", @"model":model ?: @""} completion:completion];
 }
 
+- (void)hermesProjectsWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
+                        token:(NSString *)token model:(NSString *)model
+                   completion:(void (^)(NSDictionary *, NSError *))completion {
+  [self performJSONOperation:@"hermes_projects" agent:agent
+    parameters:@{@"params":parameters, @"token":token ?: @"", @"model":model ?: @""} completion:completion];
+}
+
 - (void)hermesNotesWithAgent:(TLAgentRecord *)agent parameters:(NSDictionary *)parameters
                            token:(NSString *)token model:(NSString *)model
                       completion:(void (^)(NSDictionary *, NSError *))completion {

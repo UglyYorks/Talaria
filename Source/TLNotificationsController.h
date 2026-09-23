@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^readHandler)(NSDictionary *notification, BOOL read);
 @property (nonatomic, copy, nullable) NSString *errorMessage;
 @property (nonatomic) BOOL loading;
+@property (nonatomic) BOOL showsTitle;
 @end
 
 NS_ASSUME_NONNULL_END

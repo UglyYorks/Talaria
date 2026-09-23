@@ -316,6 +316,44 @@ def hermes_notifications(request, output=None):
         error(f"Could not manage Hermes notifications: {exc}", output)
 
 
+def hermes_projects(request, output=None):
+    try:
+        params = request.get("params")
+        if not isinstance(params, dict):
+            raise ValueError("Project parameters must be an object.")
+        action = params.get("action")
+        if action not in {"tree", "project_sessions"}:
+            raise ValueError("Unknown project action.")
+        arguments = {key: value for key, value in params.items() if key != "action"}
+        if action == "project_sessions" and not isinstance(arguments.get("project_id"), str):
+            raise ValueError("A project ID is required.")
+        result = tui_gateway(trim(request.get("token")), trim(request.get("model"))).call(
+            "projects." + action, arguments)
+        if action == "project_sessions" and isinstance(result, dict) and isinstance(result.get("project"), dict):
+            project = dict(result["project"])
+            repos = []
+            for repo in project.get("repos") or []:
+                groups = []
+                for group in repo.get("groups") or []:
+                    sessions = []
+                    for row in group.get("sessions") or []:
+                        session = dict(row)
+                        session["title"] = session.get("title") or session.get("preview") or "Untitled session"
+                        session["created_at"] = HermesGateway.history_date(session.get("started_at"))
+                        session["updated_at"] = HermesGateway.history_date(
+                            session.get("last_active") or session.get("started_at"))
+                        if session.get("provider"):
+                            session["model"] = str(session["provider"]) + "::" + str(session.get("model") or "")
+                        sessions.append(session)
+                    groups.append({**group, "sessions": sessions})
+                repos.append({**repo, "groups": groups})
+            result = {**result, "project": {**project, "repos": repos}}
+        emit({"type": "result", "request_id": request["request_id"], "result": result}, output)
+        emit({"type": "complete"}, output)
+    except (OSError, ValueError, RuntimeError) as exc:
+        error(f"Could not load Hermes projects: {exc}", output)
+
+
 def hermes_plugins(request, output=None):
     try:
         params = request.get("params")
@@ -573,6 +611,9 @@ def _handle_request(request, output=None, cancellation=None):
         return
     if operation == "hermes_notifications":
         hermes_notifications(request, output)
+        return
+    if operation == "hermes_projects":
+        hermes_projects(request, output)
         return
     if operation == "hermes_commands":
         fetch_hermes_commands(request, output)

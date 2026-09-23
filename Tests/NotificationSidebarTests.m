@@ -1,7 +1,9 @@
 #import <AppKit/AppKit.h>
 #import "TLNotificationsController.h"
+#import "TLSystemSidebarController.h"
 #import "design_system/TLNotificationStackView.h"
 #import "design_system/TLThemedButton.h"
+#import "design_system/TLSidebarSelectionButton.h"
 
 static void Check(BOOL value, NSString *message) {
   if (!value) { NSLog(@"FAIL: %@", message); exit(1); }
@@ -48,6 +50,16 @@ static BOOL BitmapContainsLayers(NSBitmapImageRep *bitmap, NSArray<NSColor *> *l
 }
 static BOOL BitmapContains(NSBitmapImageRep *bitmap, NSColor *expected) {
   return BitmapContainsLayers(bitmap, @[expected]);
+}
+static BOOL BitmapContainsAntialiasedText(NSBitmapImageRep *bitmap, NSColor *expected) {
+  NSColor *rgb = [expected colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+  for (NSInteger y = 0; y < bitmap.pixelsHigh; y++) for (NSInteger x = 0; x < bitmap.pixelsWide; x++) {
+    NSColor *pixel = [[bitmap colorAtX:x y:y] colorUsingColorSpace:NSColorSpace.deviceRGBColorSpace];
+    if (fabs(pixel.redComponent - rgb.redComponent) < 0.2 &&
+        fabs(pixel.greenComponent - rgb.greenComponent) < 0.2 &&
+        fabs(pixel.blueComponent - rgb.blueComponent) < 0.2) return YES;
+  }
+  return NO;
 }
 
 // Use a known device color space for pixel assertions; cached window bitmaps can
@@ -172,6 +184,69 @@ int main(void) { @autoreleasepool {
     [[(NSTextField *)[controller valueForKey:@"statusLabel"] stringValue] containsString:@"caught up"],
     @"empty feed clears prior agent's groups and shows a calm empty state");
   [window close];
+
+  TLNotificationsController *feedController = [[TLNotificationsController alloc] initWithPalette:dark];
+  TLSystemSidebarController *system = [[TLSystemSidebarController alloc] initWithPalette:dark notifications:feedController];
+  NSWindow *systemWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 280, 680)
+    styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  systemWindow.releasedWhenClosed = NO;
+  [systemWindow.contentView addSubview:system.view];
+  [NSLayoutConstraint activateConstraints:@[
+    [system.view.leadingAnchor constraintEqualToAnchor:systemWindow.contentView.leadingAnchor],
+    [system.view.trailingAnchor constraintEqualToAnchor:systemWindow.contentView.trailingAnchor],
+    [system.view.topAnchor constraintEqualToAnchor:systemWindow.contentView.topAnchor],
+    [system.view.bottomAnchor constraintEqualToAnchor:systemWindow.contentView.bottomAnchor],
+  ]];
+  TLSidebarSelectionButton *projectsTab = [system valueForKey:@"projectsTab"];
+  TLSidebarSelectionButton *notificationsTab = [system valueForKey:@"notificationsTab"];
+  NSScrollView *projectsScroll = [system valueForKey:@"projectsScroll"];
+  Check(projectsTab.selected && !notificationsTab.selected && !projectsScroll.hidden && feedController.view.hidden,
+    @"Projects is the default system tab");
+  [notificationsTab performClick:nil];
+  Check(!projectsTab.selected && notificationsTab.selected && projectsScroll.hidden && !feedController.view.hidden,
+    @"Notifications tab restores the existing feed");
+  [systemWindow.contentView layoutSubtreeIfNeeded];
+  [[Render(system.view) representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+    writeToFile:@"/tmp/talaria-system-notifications.png" atomically:YES];
+  [projectsTab performClick:nil];
+  NSDictionary *session = @{@"id": @"hermes-session", @"title": @"Build sidebar"};
+  NSDictionary *project = @{@"id": @"p_alpha", @"label": @"Alpha", @"sessionCount": @1,
+    @"repos": @[@{@"groups": @[@{@"sessions": @[session]}]}]};
+  __block NSString *openedProject = nil;
+  __block NSDictionary *openedSession = nil;
+  system.projectHandler = ^(NSString *identifier) { openedProject = identifier; };
+  system.sessionHandler = ^(NSDictionary *item) { openedSession = item; };
+  system.projects = @[project];
+  system.selectedProject = project;
+  [systemWindow.contentView layoutSubtreeIfNeeded];
+  [[Render(system.view) representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+    writeToFile:@"/tmp/talaria-projects-sidebar.png" atomically:YES];
+  NSStackView *list = [system valueForKey:@"projectsList"];
+  Check(list.arrangedSubviews.count == 2, @"expanded project exposes its Hermes session");
+  Check(((NSButton *)list.arrangedSubviews.firstObject).alignment == NSTextAlignmentLeft,
+    @"project rows align their labels to the leading edge");
+  Check(NSMinY(list.arrangedSubviews.firstObject.frame) < 10,
+    @"projects start at the top of the sidebar scroll area");
+  [(NSButton *)list.arrangedSubviews[0] performClick:nil];
+  [(NSButton *)list.arrangedSubviews[1] performClick:nil];
+  Check([openedProject isEqual:@"p_alpha"] && openedSession == session,
+    @"project and session selections preserve Hermes identities");
+  for (NSNumber *theme in @[@(TLThemePreferenceDark), @(TLThemePreferenceLight)]) {
+    TLThemePalette *palette = [TLThemePalette paletteForPreference:theme.integerValue];
+    system.palette = palette;
+    [systemWindow.contentView layoutSubtreeIfNeeded];
+    [[RenderControl(projectsTab) representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+      writeToFile:[NSString stringWithFormat:@"/tmp/talaria-projects-tab-%@.png", palette.dark ? @"dark" : @"light"] atomically:YES];
+    Check(BitmapContainsLayers(RenderControl(projectsTab), @[palette.tabBackground, palette.sidebarActiveSurface]),
+      @"selected system tab renders its semantic surface in both themes");
+    Check(BitmapContainsAntialiasedText(RenderControl(projectsTab), palette.appText),
+      @"selected system tab renders semantic text in both themes");
+  }
+  [systemWindow setContentSize:NSMakeSize(200, 680)];
+  [systemWindow.contentView layoutSubtreeIfNeeded];
+  Check(NSMaxX(projectsTab.frame) <= NSWidth(system.view.bounds) + 0.5,
+    @"system tabs fit the narrow sidebar");
+  [systemWindow close];
   NSLog(@"NotificationSidebarTests passed");
   return 0;
 } }

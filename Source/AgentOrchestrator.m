@@ -807,6 +807,22 @@ typedef void (^TLAgentReadyCompletionHandler)(TLAgentRecord *_Nullable agent, NS
   [self completeDefaultAgent:agent error:error completion:ready];
 }
 
+- (void)hermesProjectsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
+                               token:(NSString *)token model:(NSString *)model
+                          completion:(void (^)(NSDictionary *, NSError *))completion {
+  if (agentID <= 0) { completion(nil, TLAgentOrchestratorError(@"Select an agent to view its projects.")); return; }
+  NSError *error = nil;
+  TLAgentRecord *agent = [self.database agentWithID:agentID error:&error];
+  if (!agent || ![self.vmService isAgentRunning:agent]) {
+    completion(nil, error ?: TLAgentOrchestratorError(@"The agent is stopped. Start it to view Hermes projects."));
+    return;
+  }
+  if (![self.agentClient respondsToSelector:@selector(hermesProjectsWithAgent:parameters:token:model:completion:)]) {
+    completion(nil, TLAgentOrchestratorError(@"Update the agent runtime to use Hermes projects.")); return;
+  }
+  [self.agentClient hermesProjectsWithAgent:agent parameters:parameters token:token model:model completion:completion];
+}
+
 - (void)hermesPluginsWithParameters:(NSDictionary *)parameters agentID:(NSInteger)agentID
                                   token:(NSString *)token model:(NSString *)model
                              completion:(void (^)(NSDictionary *_Nullable result, NSError *_Nullable error))completion {

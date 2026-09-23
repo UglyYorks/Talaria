@@ -11,6 +11,7 @@
 #import "TLAutomationsTabController.h"
 #import "TLNotesTabController.h"
 #import "TLNotificationsController.h"
+#import "TLSystemSidebarController.h"
 #import "design_system/TLNotificationMessageCardView.h"
 #import "design_system/TLInputSuggestionPanelView.h"
 #import "design_system/TLApprovalCardView.h"
@@ -124,6 +125,12 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 @property (nonatomic, strong, nullable) TLWorkspaceTab *automationsTab;
 @property (nonatomic, strong, nullable) TLAutomationsTabController *automationsController;
 @property (nonatomic, strong) TLNotificationsController *notificationsController;
+@property (nonatomic, strong) TLSystemSidebarController *systemSidebarController;
+@property (nonatomic) NSInteger projectsAgentID;
+@property (nonatomic) NSUInteger projectsSyncGeneration;
+@property (nonatomic) NSUInteger projectDetailGeneration;
+@property (nonatomic, strong) NSDate *projectsNextSync;
+@property (nonatomic) BOOL projectsSyncInFlight;
 @property (nonatomic, strong) NSTimer *notificationsTimer;
 @property (nonatomic) NSInteger notificationsAgentID;
 @property (nonatomic) NSUInteger notificationsSyncGeneration;
@@ -1191,13 +1198,17 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.notificationsController.readHandler = ^(NSDictionary *notification, BOOL read) {
     [weakSelf setNotification:notification read:read agentID:weakSelf.notificationsAgentID];
   };
-  NSView *notifications = self.notificationsController.view;
-  notifications.translatesAutoresizingMaskIntoConstraints = NO;
+  self.systemSidebarController = [[TLSystemSidebarController alloc] initWithPalette:self.palette
+    notifications:self.notificationsController];
+  self.systemSidebarController.projectHandler = ^(NSString *projectID) { [weakSelf openHermesProject:projectID]; };
+  self.systemSidebarController.sessionHandler = ^(NSDictionary *session) { [weakSelf openHermesProjectSession:session]; };
+  NSView *systemTabs = self.systemSidebarController.view;
+  systemTabs.translatesAutoresizingMaskIntoConstraints = NO;
   [inboxStack addArrangedSubview:self.sidebarShortcutsView];
   [inboxStack setCustomSpacing:self.palette.space5 afterView:self.sidebarShortcutsView];
-  [inboxStack addArrangedSubview:notifications];
+  [inboxStack addArrangedSubview:systemTabs];
   [self.sidebarShortcutsView.widthAnchor constraintEqualToAnchor:inboxStack.widthAnchor].active = YES;
-  [notifications.widthAnchor constraintEqualToAnchor:inboxStack.widthAnchor].active = YES;
+  [systemTabs.widthAnchor constraintEqualToAnchor:inboxStack.widthAnchor].active = YES;
   return inboxStack;
 }
 
@@ -4418,6 +4429,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
   self.agents = [loadedAgents mutableCopy];
   [self refreshNotifications];
+  [self refreshHermesProjects];
   if (self.historyAgentID != self.database.currentAgentID) {
     self.historyRequestGeneration += 1;
     self.historyPanelController.loading = NO;
@@ -6173,6 +6185,7 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   self.sidebarShortcutsView.palette = self.palette;
   self.sidebarInboxPaneView.palette = self.palette;
   self.notificationsController.palette = self.palette;
+  self.systemSidebarController.palette = self.palette;
 
   for (NSView *view in self.sidebarInboxPaneView.contentStackView.arrangedSubviews) {
     if ([view isKindOfClass:TLSidebarInboxStackView.class]) {
@@ -6366,13 +6379,16 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
   __weak typeof(self) weakSelf = self;
   self.notificationsTimer = [NSTimer timerWithTimeInterval:5 repeats:YES block:^(NSTimer *timer) {
     [weakSelf refreshNotifications];
+    [weakSelf refreshHermesProjects];
   }];
   [[NSRunLoop mainRunLoop] addTimer:self.notificationsTimer forMode:NSRunLoopCommonModes];
   [self refreshNotifications];
+  [self refreshHermesProjects];
 }
 
 - (void)notificationsDidActivate:(NSNotification *)notification {
   [self refreshNotifications];
+  [self refreshHermesProjects];
   for (TLChatTabController *presentation in self.chatPresentations.allValues) {
     if (presentation.notificationDidReveal) [self revealNotificationInPresentation:presentation];
   }
@@ -6380,6 +6396,137 @@ static const CGFloat TLMainWindowOnboardingRevealInitialScale = 0.001;
 
 - (void)windowDidBecomeKey:(NSNotification *)notification {
   [self notificationsDidActivate:notification];
+}
+
+- (void)refreshHermesProjects {
+  if (self.incognito || self.widgetbookMode || !self.systemSidebarController || !self.agentOrchestrator) return;
+  NSInteger agentID = self.database.currentAgentID;
+  if (self.projectsAgentID != agentID) {
+    self.projectsAgentID = agentID;
+    self.projectsSyncGeneration++;
+    self.projectDetailGeneration++;
+    self.projectsSyncInFlight = NO;
+    self.projectsNextSync = nil;
+    self.systemSidebarController.projects = @[];
+    self.systemSidebarController.selectedProject = nil;
+    self.systemSidebarController.errorMessage = nil;
+  }
+  if (agentID <= 0) {
+    self.systemSidebarController.errorMessage = @"Select an agent to view Hermes projects.";
+    self.systemSidebarController.loading = NO;
+    return;
+  }
+  if (self.projectsSyncInFlight || [self.projectsNextSync timeIntervalSinceNow] > 0) return;
+  TLAgentRecord *agent = [self.database agentWithID:agentID error:nil];
+  if (!agent || ![self.agentOrchestrator isVMRunningForAgent:agent]) {
+    self.systemSidebarController.errorMessage = @"Agent offline. Start it to view Hermes projects.";
+    self.systemSidebarController.loading = NO;
+    return;
+  }
+  self.projectsSyncInFlight = YES;
+  self.systemSidebarController.loading = self.systemSidebarController.projects.count == 0;
+  NSUInteger generation = ++self.projectsSyncGeneration;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesProjectsWithParameters:@{@"action": @"tree"} agentID:agentID
+    token:self.settings.openRouterToken model:self.settings.selectedModel completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.projectsSyncGeneration || agentID != owner.database.currentAgentID) return;
+    owner.projectsSyncInFlight = NO;
+    owner.systemSidebarController.loading = NO;
+    NSArray *projects = [result[@"projects"] isKindOfClass:NSArray.class] ? result[@"projects"] : nil;
+    if (error || !projects) {
+      owner.systemSidebarController.errorMessage = error.localizedDescription ?: @"Hermes returned an invalid project tree.";
+      owner.projectsNextSync = [NSDate dateWithTimeIntervalSinceNow:15];
+      return;
+    }
+    owner.systemSidebarController.errorMessage = nil;
+    owner.systemSidebarController.projects = projects;
+    NSString *selectedID = owner.systemSidebarController.selectedProject[@"id"];
+    BOOL selectedProjectExists = NO;
+    for (NSDictionary *item in projects) {
+      if ([item isKindOfClass:NSDictionary.class] && [item[@"id"] isEqual:selectedID]) {
+        selectedProjectExists = YES;
+        break;
+      }
+    }
+    if (selectedID.length && !selectedProjectExists) owner.systemSidebarController.selectedProject = nil;
+    owner.projectsNextSync = [NSDate dateWithTimeIntervalSinceNow:30];
+  }];
+}
+
+- (void)openHermesProject:(NSString *)projectID {
+  if (!projectID.length || self.projectsAgentID != self.database.currentAgentID) return;
+  NSString *selectedID = self.systemSidebarController.selectedProject[@"id"];
+  if ([selectedID isEqual:projectID]) {
+    self.projectDetailGeneration++;
+    self.systemSidebarController.selectedProject = nil;
+    self.systemSidebarController.loading = NO;
+    return;
+  }
+  NSDictionary *project = nil;
+  for (NSDictionary *item in self.systemSidebarController.projects) {
+    if ([item isKindOfClass:NSDictionary.class] && [item[@"id"] isEqual:projectID]) { project = item; break; }
+  }
+  if (!project) return;
+  self.systemSidebarController.selectedProject = project;
+  self.systemSidebarController.errorMessage = nil;
+  self.systemSidebarController.loading = YES;
+  NSInteger agentID = self.projectsAgentID;
+  NSUInteger generation = ++self.projectDetailGeneration;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesProjectsWithParameters:@{@"action": @"project_sessions", @"project_id": projectID}
+    agentID:agentID token:self.settings.openRouterToken model:self.settings.selectedModel
+    completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.projectDetailGeneration || agentID != owner.database.currentAgentID ||
+        ![owner.systemSidebarController.selectedProject[@"id"] isEqual:projectID]) return;
+    owner.systemSidebarController.loading = NO;
+    NSDictionary *detail = [result[@"project"] isKindOfClass:NSDictionary.class] ? result[@"project"] : nil;
+    if (error || ![detail[@"id"] isEqual:projectID]) {
+      owner.systemSidebarController.errorMessage = error.localizedDescription ?: @"Hermes returned an invalid project.";
+      return;
+    }
+    owner.systemSidebarController.selectedProject = detail;
+  }];
+}
+
+- (void)openHermesProjectSession:(NSDictionary *)session {
+  NSString *sessionID = [session[@"id"] isKindOfClass:NSString.class] ? session[@"id"] : nil;
+  NSInteger agentID = self.database.currentAgentID;
+  if (!sessionID.length || agentID <= 0 || agentID != self.projectsAgentID) return;
+  TLChatRecord *existing = [self.database chatWithHermesSessionID:sessionID agentID:agentID error:nil];
+  if (existing && (self.turnRunners[@(existing.chatID)] || [self.preparingAttachmentChats containsObject:@(existing.chatID)])) {
+    [self addChatToSessionIfNeeded:existing.chatID activate:YES];
+    [self loadChatWithID:existing.chatID];
+    return;
+  }
+  self.systemSidebarController.errorMessage = nil;
+  NSUInteger generation = ++self.projectDetailGeneration;
+  __weak typeof(self) weakSelf = self;
+  [self.agentOrchestrator hermesHistoryWithAction:@"open" sessionID:sessionID
+    token:self.settings.openRouterToken model:self.settings.selectedModel completion:^(NSDictionary *result, NSError *error) {
+    TalariaWindowController *owner = weakSelf;
+    if (!owner || generation != owner.projectDetailGeneration || agentID != owner.database.currentAgentID) return;
+    NSArray *messages = [result[@"messages"] isKindOfClass:NSArray.class] ? result[@"messages"] : nil;
+    if (error || !messages) {
+      owner.systemSidebarController.errorMessage = error.localizedDescription ?: @"Hermes returned an invalid transcript.";
+      return;
+    }
+    TLChatRecord *current = [owner.database chatWithHermesSessionID:sessionID agentID:agentID error:nil];
+    BOOL live = current && (owner.turnRunners[@(current.chatID)] || [owner.preparingAttachmentChats containsObject:@(current.chatID)]);
+    NSMutableDictionary *metadata = [session mutableCopy];
+    if ([result[@"model"] isKindOfClass:NSString.class]) metadata[@"model"] = result[@"model"];
+    TLChatRecord *chat = [owner.database cacheHermesSession:metadata messages:live ? nil : messages agentID:agentID error:&error];
+    if (!chat) { owner.systemSidebarController.errorMessage = error.localizedDescription; return; }
+    owner.chats = [[owner.database listChats:nil] mutableCopy];
+    TLChatTabController *presentation = owner.chatPresentations[@(chat.chatID)];
+    if (presentation && !live) {
+      presentation.chat = chat;
+      presentation.messages = [[NSArray alloc] initWithArray:chat.messages copyItems:YES].mutableCopy;
+    }
+    [owner addChatToSessionIfNeeded:chat.chatID activate:YES];
+    [owner loadChatWithID:chat.chatID];
+  }];
 }
 
 - (void)refreshNotifications {
