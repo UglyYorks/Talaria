@@ -157,7 +157,7 @@ CGColorRef TLCGColor(NSColor *color) {
   self.browserPromptWidth = 320.0;
   self.browserToolbarButtonSize = 28.0;
   self.browserToolbarIconSize = 13.0;
-  self.browserReducedHeightSpacing = 40.0;
+  self.browserReducedHeightSpacing = 24.0;
   self.browserHeightTransitionDuration = 0.20;
   self.browserFooterColorTransitionDuration = 0.40;
   self.browserTabColorTransitionDuration = 3.0;
